@@ -1,0 +1,12 @@
+# Single source of truth for pinned upstream revisions.
+# CI, sync tooling, and docs/rules/06-upstream-sync.md read this file.
+
+[pi]
+version = "0.84.3"
+commit = "56700d42ed65a94a80af7376adb19a9298065164"
+repository = "https://github.com/earendil-works/pi"
+
+[luaur]
+version = "0.1.8"
+commit = "c2ed1091fbe9b1fcf07cbbb5a252a875ba37f796"
+repository = "https://github.com/pjankiewicz/luaur"
