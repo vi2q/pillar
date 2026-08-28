@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/pillar-protocol",
+]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+rust-version = "1.85"
+
+[workspace.dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.145"
+thiserror = "2.0.20"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
