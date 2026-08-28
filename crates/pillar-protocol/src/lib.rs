@@ -8,6 +8,7 @@
 //! unknown-field rejection happens in [`schemas::validation`]; typed serde
 //! structs are provided for consumers that trust the validated values.
 
+#![forbid(unsafe_code)]
 pub mod cbor;
 pub mod codec;
 pub mod framing;
