@@ -12,7 +12,7 @@
 
 use serde_json::{Map, Number, Value};
 
-use super::options::{resolve_options, CborError, CborOptions, CborResult};
+use super::options::{CborError, CborOptions, CborResult, resolve_options};
 
 pub(crate) const UINT32_BASE: u64 = 0x1_0000_0000;
 

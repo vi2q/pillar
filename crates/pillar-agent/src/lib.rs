@@ -13,7 +13,7 @@ pub mod agent_loop;
 pub mod types;
 
 pub use abort::AbortSignal;
-pub use agent_loop::{agent_loop, agent_loop_continue, AgentEventSink, AgentStream};
+pub use agent_loop::{AgentEventSink, AgentStream, agent_loop, agent_loop_continue};
 pub use types::thinking::AgentThinkingLevel;
 pub use types::{
     AfterToolCallContext, AfterToolCallResult, AgentContext, AgentEvent, AgentLoopConfig,

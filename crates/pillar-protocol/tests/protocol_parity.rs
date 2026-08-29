@@ -2,13 +2,13 @@
 //!
 //! One Rust test per upstream vitest test, same names in comments.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use pillar_protocol::{
-    decode_cbor, encode_cbor, encode_client_message, encode_frame, encode_server_message,
-    is_supported_protocol_version, parse_client_message, parse_server_message,
-    ClientMessageDecoder, FrameDecoder, FrameDecoderOptions, ProtocolValidationError,
-    ServerMessageDecoder, PROTOCOL_VERSION,
+    ClientMessageDecoder, FrameDecoder, FrameDecoderOptions, PROTOCOL_VERSION,
+    ProtocolValidationError, ServerMessageDecoder, decode_cbor, encode_cbor, encode_client_message,
+    encode_frame, encode_server_message, is_supported_protocol_version, parse_client_message,
+    parse_server_message,
 };
 
 fn client_hello(version: Value) -> Value {
@@ -100,15 +100,19 @@ fn rejects_a_handshake_with_bad_versions_or_extra_fields() {
     // fractional version
     assert!(parse_client_message(&client_hello(json!(PROTOCOL_VERSION as f64 + 0.5))).is_err());
     // credential field
-    assert!(parse_client_message(&json!({
-        "type": "hello", "version": PROTOCOL_VERSION, "token": "secret"
-    }))
-    .is_err());
+    assert!(
+        parse_client_message(&json!({
+            "type": "hello", "version": PROTOCOL_VERSION, "token": "secret"
+        }))
+        .is_err()
+    );
     // unknown field
-    assert!(parse_client_message(&json!({
-        "type": "hello", "version": PROTOCOL_VERSION, "extra": true
-    }))
-    .is_err());
+    assert!(
+        parse_client_message(&json!({
+            "type": "hello", "version": PROTOCOL_VERSION, "extra": true
+        }))
+        .is_err()
+    );
 }
 
 #[test]
@@ -124,17 +128,19 @@ fn does_not_parse_json_strings_as_wire_messages() {
 
 #[test]
 fn rejects_image_input_while_the_mvp_remains_text_only() {
-    assert!(parse_client_message(&json!({
-        "type": "request",
-        "id": "request-1",
-        "request": {
-            "command": "prompt",
-            "sessionId": "session-1",
-            "text": "inspect",
-            "images": [{"type": "image", "data": "abc", "mimeType": "image/png"}],
-        },
-    }))
-    .is_err());
+    assert!(
+        parse_client_message(&json!({
+            "type": "request",
+            "id": "request-1",
+            "request": {
+                "command": "prompt",
+                "sessionId": "session-1",
+                "text": "inspect",
+                "images": [{"type": "image", "data": "abc", "mimeType": "image/png"}],
+            },
+        }))
+        .is_err()
+    );
 }
 
 #[test]
@@ -161,16 +167,18 @@ fn represents_listed_sessions_as_durable_metadata() {
         },
     });
     parse_server_message(&message).unwrap();
-    assert!(parse_server_message(&json!({
-        "type": "response",
-        "id": "request-1",
-        "ok": true,
-        "result": {
-            "command": "list",
-            "sessions": [{"id": "session-1", "createdAt": 1, "phase": "idle"}],
-        },
-    }))
-    .is_err());
+    assert!(
+        parse_server_message(&json!({
+            "type": "response",
+            "id": "request-1",
+            "ok": true,
+            "result": {
+                "command": "list",
+                "sessions": [{"id": "session-1", "createdAt": 1, "phase": "idle"}],
+            },
+        }))
+        .is_err()
+    );
 }
 
 #[test]
@@ -193,20 +201,26 @@ fn rejects_invalid_server_messages() {
     wrong_version["version"] = json!(PROTOCOL_VERSION + 1);
     assert!(parse_server_message(&wrong_version).is_err());
     // hello_error with unknown code
-    assert!(parse_server_message(&json!({
-        "type": "hello_error", "error": {"code": "auth", "message": "Authentication failed"}
-    }))
-    .is_err());
+    assert!(
+        parse_server_message(&json!({
+            "type": "hello_error", "error": {"code": "auth", "message": "Authentication failed"}
+        }))
+        .is_err()
+    );
     // response with unknown command
-    assert!(parse_server_message(&json!({
-        "type": "response", "id": "request-1", "ok": true, "result": {"command": "unknown"}
-    }))
-    .is_err());
+    assert!(
+        parse_server_message(&json!({
+            "type": "response", "id": "request-1", "ok": true, "result": {"command": "unknown"}
+        }))
+        .is_err()
+    );
     // event with numeric sessionId
-    assert!(parse_server_message(&json!({
-        "type": "event", "event": {"type": "session_removed", "sessionId": 42}
-    }))
-    .is_err());
+    assert!(
+        parse_server_message(&json!({
+            "type": "event", "event": {"type": "session_removed", "sessionId": 42}
+        }))
+        .is_err()
+    );
 }
 
 #[test]
@@ -389,25 +403,31 @@ fn encodes_complete_client_and_server_frames() {
 
 #[test]
 fn enforces_an_outbound_frame_limit_before_returning_encoded_bytes() {
-    assert!(encode_client_message(
-        &client_hello(json!(PROTOCOL_VERSION)),
-        FrameDecoderOptions::new().max_frame_length(8)
-    )
-    .is_err());
-    assert!(encode_server_message(
-        &server_hello(),
-        FrameDecoderOptions::new().max_frame_length(8)
-    )
-    .is_err());
+    assert!(
+        encode_client_message(
+            &client_hello(json!(PROTOCOL_VERSION)),
+            FrameDecoderOptions::new().max_frame_length(8)
+        )
+        .is_err()
+    );
+    assert!(
+        encode_server_message(
+            &server_hello(),
+            FrameDecoderOptions::new().max_frame_length(8)
+        )
+        .is_err()
+    );
 }
 
 #[test]
 fn validates_messages_before_encoding() {
-    assert!(encode_client_message(
-        &client_hello(json!(PROTOCOL_VERSION as f64 + 0.5)),
-        FrameDecoderOptions::new()
-    )
-    .is_err());
+    assert!(
+        encode_client_message(
+            &client_hello(json!(PROTOCOL_VERSION as f64 + 0.5)),
+            FrameDecoderOptions::new()
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -482,17 +502,19 @@ fn rejects_invalid_framed_client_input() {
     // empty CBOR payload: frame with zero-length body decodes to nothing.
     let empty = encode_frame(&[]).unwrap();
     assert!(decoder.push(&empty).is_err());
-    assert!(decoder
-        .push(
-            &encode_client_message(
-                &client_hello(json!(PROTOCOL_VERSION)),
-                FrameDecoderOptions::new()
+    assert!(
+        decoder
+            .push(
+                &encode_client_message(
+                    &client_hello(json!(PROTOCOL_VERSION)),
+                    FrameDecoderOptions::new()
+                )
+                .unwrap()
             )
-            .unwrap()
-        )
-        .unwrap_err()
-        .to_string()
-        .contains("failed"));
+            .unwrap_err()
+            .to_string()
+            .contains("failed")
+    );
 
     // malformed CBOR
     let mut decoder = ClientMessageDecoder::new(FrameDecoderOptions::new()).unwrap();

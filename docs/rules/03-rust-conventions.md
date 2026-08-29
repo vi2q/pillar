@@ -56,7 +56,7 @@ Coding conventions for all workspace crates. Applies to hand-written code; gener
 
 - `cargo fmt` is law. CI runs `cargo fmt --all --check`.
 - CI runs `cargo clippy --workspace --all-targets -- -D warnings`.
-- Workspace `Cargo.toml` sets: `edition = "2021"`, `rust-version` matching the oldest supported stable at project start, `lto = "fat"`, `codegen-units = 1` for release (mirroring luaur's release profile).
+- Workspace `Cargo.toml` sets: `edition = "2024"`, `resolver = "3"`, `rust-version = "1.85"` (the minimum supported Rust version), `lto = "fat"`, and `codegen-units = 1` for release (mirroring luaur's release profile).
 
 ## Comments & docs
 

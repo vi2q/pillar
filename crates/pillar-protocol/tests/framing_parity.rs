@@ -3,8 +3,8 @@
 //! One Rust test per upstream vitest test, same names in comments.
 
 use pillar_protocol::{
-    assert_complete_frame, encode_frame, FrameDecoder, FrameDecoderOptions, FrameError,
-    DEFAULT_MAX_FRAME_LENGTH,
+    DEFAULT_MAX_FRAME_LENGTH, FrameDecoder, FrameDecoderOptions, FrameError, assert_complete_frame,
+    encode_frame,
 };
 
 fn concatenate(chunks: &[&[u8]]) -> Vec<u8> {
@@ -27,18 +27,22 @@ fn prefixes_payloads_with_a_four_byte_big_endian_length() {
 
 #[test]
 fn validates_one_complete_bounded_frame_without_accepting_trailing_or_partial_bytes() {
-    assert!(assert_complete_frame(
-        &[0, 0, 0, 2, 1, 2],
-        FrameDecoderOptions::new().max_frame_length(2)
-    )
-    .is_ok());
+    assert!(
+        assert_complete_frame(
+            &[0, 0, 0, 2, 1, 2],
+            FrameDecoderOptions::new().max_frame_length(2)
+        )
+        .is_ok()
+    );
     assert!(assert_complete_frame(&[0, 0, 0, 2, 1], FrameDecoderOptions::new()).is_err());
     assert!(assert_complete_frame(&[0, 0, 0, 1, 1, 2], FrameDecoderOptions::new()).is_err());
-    assert!(assert_complete_frame(
-        &[0, 0, 0, 3, 1, 2, 3],
-        FrameDecoderOptions::new().max_frame_length(2)
-    )
-    .is_err());
+    assert!(
+        assert_complete_frame(
+            &[0, 0, 0, 3, 1, 2, 3],
+            FrameDecoderOptions::new().max_frame_length(2)
+        )
+        .is_err()
+    );
 }
 
 #[test]

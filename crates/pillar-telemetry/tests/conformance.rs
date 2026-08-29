@@ -8,8 +8,8 @@
 use std::sync::Arc;
 
 use pillar_telemetry::{
-    attributes, AttributeValue, InMemoryTelemetryContext, NoopTelemetryContext, SpanHandle,
-    SpanOptions, SpanStarter, SpanStatus, TelemetryContext,
+    AttributeValue, InMemoryTelemetryContext, NoopTelemetryContext, SpanHandle, SpanOptions,
+    SpanStarter, SpanStatus, TelemetryContext, attributes,
 };
 
 async fn in_memory_starter() -> SpanStarter {

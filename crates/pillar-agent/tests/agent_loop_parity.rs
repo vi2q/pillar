@@ -8,8 +8,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use pillar_agent::{
-    agent_loop, agent_loop_continue, AbortSignal, AgentContext, AgentEvent, AgentLoopConfig,
-    AgentMessage, AgentTool, AgentToolResult, BeforeToolCallResult, ToolExecuteError,
+    AbortSignal, AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentTool,
+    AgentToolResult, BeforeToolCallResult, ToolExecuteError, agent_loop, agent_loop_continue,
 };
 use pillar_ai::event_stream::assistant_message_event_stream;
 use pillar_ai::types::{Content, Message, StopReason, Tool, Usage, UsageCost};
@@ -759,10 +759,12 @@ async fn before_tool_call_block_prevents_execution() {
             result, is_error, ..
         }) => {
             assert!(is_error);
-            assert!(result["content"][0]["text"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("Blocked"));
+            assert!(
+                result["content"][0]["text"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("Blocked")
+            );
         }
         _ => panic!("expected tool_execution_end"),
     }

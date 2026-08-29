@@ -4,8 +4,8 @@
 //! with async wait support. Every place pi threads an `AbortSignal` uses
 //! this type. Cloning shares state; `abort()` is idempotent.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Debug, Default, Clone)]
 pub struct AbortSignal {

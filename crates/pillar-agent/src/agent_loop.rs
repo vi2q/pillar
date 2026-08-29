@@ -12,7 +12,7 @@
 
 use std::sync::Arc;
 
-use pillar_ai::event_stream::{assistant_message_event_stream, EventStream};
+use pillar_ai::event_stream::{EventStream, assistant_message_event_stream};
 use pillar_ai::types::{
     AssistantMessage, AssistantMessageEvent, Content, Context, StopReason, ToolResultMessage,
 };
@@ -783,7 +783,7 @@ async fn prepare_tool_call(
             return Preparation::Immediate {
                 result: create_error_tool_result(message),
                 is_error: true,
-            }
+            };
         }
     };
 

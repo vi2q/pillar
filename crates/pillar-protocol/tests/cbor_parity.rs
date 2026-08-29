@@ -2,11 +2,11 @@
 //!
 //! One Rust test per upstream vitest test, same names in comments.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use pillar_protocol::{
-    decode_cbor, encode_cbor, CborOptions, DEFAULT_MAX_CBOR_BYTE_LENGTH,
-    DEFAULT_MAX_CBOR_CONTAINER_LENGTH, DEFAULT_MAX_CBOR_DEPTH,
+    CborOptions, DEFAULT_MAX_CBOR_BYTE_LENGTH, DEFAULT_MAX_CBOR_CONTAINER_LENGTH,
+    DEFAULT_MAX_CBOR_DEPTH, decode_cbor, encode_cbor,
 };
 
 fn from_hex(hex: &str) -> Vec<u8> {
@@ -224,17 +224,21 @@ fn enforces_depth_and_declared_length_limits_before_traversing_values() {
 
 #[test]
 fn supports_stricter_caller_provided_limits() {
-    assert!(decode_cbor(
-        &from_hex("83010203"),
-        CborOptions::new().max_container_length(2)
-    )
-    .is_err());
+    assert!(
+        decode_cbor(
+            &from_hex("83010203"),
+            CborOptions::new().max_container_length(2)
+        )
+        .is_err()
+    );
     assert!(decode_cbor(&from_hex("626162"), CborOptions::new().max_byte_length(2)).is_err());
-    assert!(encode_cbor(
-        &json!([1, 2, 3]),
-        CborOptions::new().max_container_length(2)
-    )
-    .is_err());
+    assert!(
+        encode_cbor(
+            &json!([1, 2, 3]),
+            CborOptions::new().max_container_length(2)
+        )
+        .is_err()
+    );
     assert!(encode_cbor(&json!("ab"), CborOptions::new().max_byte_length(2)).is_err());
 }
 

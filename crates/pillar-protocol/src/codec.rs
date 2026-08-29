@@ -9,13 +9,13 @@
 
 use serde_json::Value;
 
-use crate::cbor::{decode_cbor, encode_cbor, CborOptions};
+use crate::cbor::{CborOptions, decode_cbor, encode_cbor};
 use crate::framing::{
-    assert_complete_frame, encode_frame, FrameDecoder, FrameDecoderOptions, FrameError,
-    DEFAULT_MAX_FRAME_LENGTH,
+    DEFAULT_MAX_FRAME_LENGTH, FrameDecoder, FrameDecoderOptions, FrameError, assert_complete_frame,
+    encode_frame,
 };
 use crate::schemas::validation::{
-    validate_client_message, validate_server_message, ProtocolValidationError,
+    ProtocolValidationError, validate_client_message, validate_server_message,
 };
 
 fn bounded(message: String) -> String {

@@ -1,5 +1,5 @@
 [workspace]
-resolver = "2"
+resolver = "3"
 members = [
     "crates/pillar-protocol",
     "crates/pillar-telemetry",
@@ -8,7 +8,7 @@ members = [
 ]
 
 [workspace.package]
-edition = "2021"
+edition = "2024"
 license = "MIT"
 rust-version = "1.85"
 

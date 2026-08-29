@@ -8,7 +8,7 @@
 
 use serde_json::Value;
 
-use super::options::{resolve_options, CborError, CborOptions, CborResult, ResolvedCborOptions};
+use super::options::{CborError, CborOptions, CborResult, ResolvedCborOptions, resolve_options};
 
 const UINT32_BASE: u64 = 0x1_0000_0000;
 

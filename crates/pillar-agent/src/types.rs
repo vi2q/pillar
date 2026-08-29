@@ -418,7 +418,7 @@ impl FauxModelRef {
             base_url: model.base_url.clone(),
             reasoning: model.reasoning,
             input: model.input.clone(),
-            cost: model.cost.clone(),
+            cost: model.cost,
             context_window: model.context_window,
             max_tokens: model.max_tokens,
         }
