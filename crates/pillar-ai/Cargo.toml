@@ -8,10 +8,18 @@ description = "Unified multi-provider LLM API. Port of pi packages/ai (pi v0.84.
 
 [dependencies]
 async-trait = "0.1.89"
+fastrand = "2.3"
 futures = "0.3.31"
+regex = "1.12"
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls",
+    "gzip",
+    "http2",
+    "charset",
+    "stream",
+] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { version = "1.47", features = ["sync", "time", "macros", "rt", "fs" ] }
 uuid = { version = "1.18", features = ["v7"] }
-regex = "1.12"

@@ -14,14 +14,15 @@ pi v0.84.3 (TypeScript, commit `56700d4`) を Rust に移植する。拡張機�
 | `7217ebf` | pillar-ai: auth基盤 (abort, auth_types, credential_store, models_store, auth_resolve, error) |
 | `83955cf` | chore: workspace を edition 2024 / resolver 3 に更新 (fmt 影響を protocol/telemetry/agent に適用) |
 | 今回 | **feat(ai): Models 本体 + createProvider + models-runtime.test.ts 39ケースの移植完了** (`models.rs`, `auth_context.rs`, `tests/models_runtime_parity.rs` 新規、auth_resolve/types/credential_store/abort の調整を含む) |
+| 今回2 | **feat(ai): プロバイダ層の共有インフラ移植** (transport.rs [FetchFn トレイト + reqwest 既定実装], provider_retry.rs, error_body.rs, provider_env.rs, constrained_sampling.rs, transform_messages.rs, headers.rs, text.rs に sanitize_surrogates)。`tests/api_infra_parity.rs` 27ケース |
 
-**pillar-ai 97テスト (core 35 + faux 22 + models-runtime 39 + 1) と pillar-agent 11テスト全パス。`cargo fmt --check` / `cargo clippy --workspace --all-targets -- -D warnings` クリーン。**
+**pillar-ai 124テスト (core 35 + faux 22 + models-runtime 39 + api-infra 27 + 1) と pillar-agent 11テスト全パス。`cargo fmt --check` / `cargo clippy --workspace --all-targets -- -D warnings` クリーン。**
 
 上流チェックアウトは `/tmp/upstream/pi`, `/tmp/upstream/luaur` (再作成手順は docs/rules/06)。
 
 ## 未移植 (優先順)
 
-1. **pillar-ai のプロバイダ層**: HTTP transport なし。pi の `packages/ai/src/api/*` (openai-completions 1707行, anthropic-messages 1391行など) と `models.generated.ts` (ジェネレータで再生成、手移植禁止 — docs/rules/01) が未移植。faux provider はあるので agent 側テストは賄える。
+1. **pillar-ai のプロバイダ本体**: 共有インフラ (transport / provider-retry / error-body / constrained-sampling / transform-messages / provider-env / headers) は移植済み。次は pi の `packages/ai/src/api/*` 各プロバイダ: `openai-completions.ts` (1707行) が第一候補。`FetchFn` を注入し、SSE は手前でパース、WebSocket transport は後回し。`openai-responses-shared.ts` (792行) が openai-responses/codex/azure と共通。`models.generated.ts` はジェネレータで再生成、手移植禁止 (docs/rules/01、生成器は pillar-ai/src/bin/generate-models.rs に作る)。
 2. **pillar-agent の残り**: `agent.ts` (592行, Agent クラス/状態管理) 未移植。ループは完成。
 3. **pillar-coding-agent**: 未着手 (最大、61k行)。
 4. **pillar-tui / client / server / session-store**: 未着手。
@@ -70,9 +71,21 @@ pi の Promise セマンティクスでは同じ promise を何度でも await �
 
 `InMemoryCredentialStore` (credentials) と provider registry は上流では `Map` で `list`/`getProviders` が挿入順を返す。Rust 側は `Vec<(String, T)>` で保持している。既存キーの再 set は位置を維持 (Vec では in-place 更新)。新規 keyed コレクションの移植時も同様に。
 
+### 15. serde_json の Map は順序付き (既定は BTreeMap)
+
+`serde_json::Value` のオブジェクトは既定で BTreeMap (key ソート)。上流の Map 挿入順に依存する出力 (constrained-sampling の strict 変換が生成する `required` 配列など) は順序が変わる。 providers は配列順に意味がないので控えめに寄せる方針。workspace で `preserve_order` feature を有効化するのは CBOR パリティへの影響が読めないため今回は見送り。
+
+### 16. プロバイダ層の意図的な divergence (今回確定)
+
+- `error_body.rs`: 上流は SDK エラーオブジェクトのフィールドを掘る (Mistral/openai/genai/Bedrock 形, pipe スニッフィング, class instance 判定)。Rust に SDK オブジェクトは無いので `normalize_provider_error(message, status, body)` が transport から受け取る形。`format_provider_error` / truncation は厳密互換。`provider-error-body-passthrough/regression.test.ts` は SDK レベルなので非移植。
+- `provider_retry.rs`: `retry-after` は数値のみパース (HTTP-date は指数バックオフにフォールバック)。jitter は fastrand。
+- `provider_env.rs`: Bun サンドボックスの /proc フォールバックは非移植。
+- `sanitize_surrogates` (text.rs): Rust の String は UTF-8 で unpaired surrogate を保持できないため恒等関数。上流と同じ呼び出し点を維持するための grep-parity 用。
+- `transport.rs`: 上流 `FetchFunction` は WHATWG Response を返すが、Rust は `FetchFn` トレイト + ストリーミング `FetchResponse`。既定実装は `ReqwestFetch` (rustls + gzip + stream)。
+
 ## 次のセッションの最初の一歩
 
-**pillar-ai のプロバイダ層** (packages/ai/src/api/*) の移植。HTTP transport (何を使うか要検討) と `models.generated.ts` の扱い (ジェネレータで再生成、手移植禁止 — docs/rules/01) が論点。faux provider はあるので agent 側テストは賄える。
+**最初のプロバイダ移植: `openai-completions.ts` (1707行)**。`transport::FetchFn` を介して HTTP、`provider_retry::retry_provider_request` でリト包装、`error_body` でエラー組立、`constrained_sampling` / `transform_messages` を流用。上流テストは `openai-completions*.test.ts` 系 (stream 形状, SSE パース, tool calls, reasoning) をモック FetchFn で再現する。その次は `openai-responses-shared.ts` と `anthropic-messages.ts`。
 
 ## セッション運用の反省 (継続)
 
