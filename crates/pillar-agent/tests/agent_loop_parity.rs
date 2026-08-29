@@ -11,7 +11,7 @@ use pillar_agent::{
     agent_loop, agent_loop_continue, AbortSignal, AgentContext, AgentEvent, AgentLoopConfig,
     AgentMessage, AgentTool, AgentToolResult, BeforeToolCallResult, ToolExecuteError,
 };
-use pillar_ai::event_stream::{assistant_message_event_stream, EventStream};
+use pillar_ai::event_stream::assistant_message_event_stream;
 use pillar_ai::types::{Content, Message, StopReason, Tool, Usage, UsageCost};
 
 fn create_usage() -> Usage {
@@ -42,7 +42,10 @@ fn create_model() -> pillar_agent::FauxModelRef {
     }
 }
 
-fn create_assistant_message(content: Vec<Content>, stop_reason: StopReason) -> pillar_ai::AssistantMessage {
+fn create_assistant_message(
+    content: Vec<Content>,
+    stop_reason: StopReason,
+) -> pillar_ai::AssistantMessage {
     pillar_ai::AssistantMessage {
         content,
         api: "openai-responses".into(),
@@ -62,11 +65,11 @@ fn create_assistant_message(content: Vec<Content>, stop_reason: StopReason) -> p
 }
 
 fn create_user_message(text: &str) -> AgentMessage {
-    Message::User { content: pillar_ai::types::UserContent::Text(text.to_owned()), timestamp: 1 }.into()
-}
-
-fn identity_converter(messages: &[AgentMessage]) -> Vec<Message> {
-    messages.iter().map(|m| m.as_message().clone()).collect()
+    Message::User {
+        content: pillar_ai::types::UserContent::Text(text.to_owned()),
+        timestamp: 1,
+    }
+    .into()
 }
 
 fn echo_tool(executed: Arc<Mutex<Vec<String>>>) -> AgentTool {
@@ -102,7 +105,13 @@ fn echo_tool(executed: Arc<Mutex<Vec<String>>>) -> AgentTool {
                         cache_write_1h: None,
                         reasoning: None,
                         total_tokens: 10,
-                        cost: UsageCost { input: 0.1, output: 0.2, cache_read: 0.3, cache_write: 0.4, total: 1.0 },
+                        cost: UsageCost {
+                            input: 0.1,
+                            output: 0.2,
+                            cache_read: 0.3,
+                            cache_write: 0.4,
+                            total: 1.0,
+                        },
                     }),
                     added_tool_names: None,
                     terminate: false,
@@ -148,7 +157,10 @@ async fn should_emit_events_with_agent_message_types() {
         tools: Vec::new(),
     };
     let user_prompt = create_user_message("Hello");
-    let config = AgentLoopConfig { model: Some(create_model()), ..Default::default() };
+    let config = AgentLoopConfig {
+        model: Some(create_model()),
+        ..Default::default()
+    };
 
     let responses = Arc::new(Mutex::new(vec![create_assistant_message(
         vec![Content::text("Hi there!")],
@@ -179,9 +191,11 @@ async fn should_apply_transform_context_before_convert_to_llm() {
         system_prompt: "You are helpful.".into(),
         messages: vec![
             create_user_message("old message 1"),
-            create_assistant_message(vec![Content::text("old response 1")], StopReason::Stop).into(),
+            create_assistant_message(vec![Content::text("old response 1")], StopReason::Stop)
+                .into(),
             create_user_message("old message 2"),
-            create_assistant_message(vec![Content::text("old response 2")], StopReason::Stop).into(),
+            create_assistant_message(vec![Content::text("old response 2")], StopReason::Stop)
+                .into(),
         ],
         tools: Vec::new(),
     };
@@ -192,8 +206,7 @@ async fn should_apply_transform_context_before_convert_to_llm() {
         transform_context: Some(Arc::new(|mut messages, _signal| {
             Box::pin(async move {
                 // Keep only last 2 messages (prune old ones).
-                let keep = messages.split_off(messages.len().saturating_sub(2));
-                keep
+                messages.split_off(messages.len().saturating_sub(2))
             })
         })),
         ..Default::default()
@@ -217,7 +230,11 @@ async fn should_handle_tool_calls_and_results() {
     let executed = Arc::new(Mutex::new(Vec::<String>::new()));
     let tool = echo_tool(Arc::clone(&executed));
 
-    let context = AgentContext { system_prompt: String::new(), messages: Vec::new(), tools: vec![tool] };
+    let context = AgentContext {
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: vec![tool],
+    };
     let user_prompt = create_user_message("echo something");
 
     let tool_usage = Usage {
@@ -228,7 +245,13 @@ async fn should_handle_tool_calls_and_results() {
         cache_write_1h: None,
         reasoning: None,
         total_tokens: 10,
-        cost: UsageCost { input: 0.1, output: 0.2, cache_read: 0.3, cache_write: 0.4, total: 1.0 },
+        cost: UsageCost {
+            input: 0.1,
+            output: 0.2,
+            cache_read: 0.3,
+            cache_write: 0.4,
+            total: 1.0,
+        },
     };
     let patched_tool_usage = Usage {
         input: 5,
@@ -238,7 +261,13 @@ async fn should_handle_tool_calls_and_results() {
         cache_write_1h: None,
         reasoning: None,
         total_tokens: 26,
-        cost: UsageCost { input: 0.5, output: 0.6, cache_read: 0.7, cache_write: 0.8, total: 2.6 },
+        cost: UsageCost {
+            input: 0.5,
+            output: 0.6,
+            cache_read: 0.7,
+            cache_write: 0.8,
+            total: 2.6,
+        },
     };
     let observed_tool_usage = Arc::new(Mutex::new(None::<Usage>));
     let observed_for_hook = Arc::clone(&observed_tool_usage);
@@ -251,7 +280,10 @@ async fn should_handle_tool_calls_and_results() {
             let patched = patched.clone();
             Box::pin(async move {
                 *observed.lock().unwrap() = context.result.usage;
-                Some(pillar_agent::AfterToolCallResult { usage: Some(patched), ..Default::default() })
+                Some(pillar_agent::AfterToolCallResult {
+                    usage: Some(patched),
+                    ..Default::default()
+                })
             })
         })),
         ..Default::default()
@@ -259,7 +291,11 @@ async fn should_handle_tool_calls_and_results() {
 
     let responses = Arc::new(Mutex::new(vec![
         create_assistant_message(
-            vec![Content::tool_call("tool-1", "echo", serde_json::json!({"value": "hello"}))],
+            vec![Content::tool_call(
+                "tool-1",
+                "echo",
+                serde_json::json!({"value": "hello"}),
+            )],
             StopReason::ToolUse,
         ),
         create_assistant_message(vec![Content::text("done")], StopReason::Stop),
@@ -272,13 +308,18 @@ async fn should_handle_tool_calls_and_results() {
 
     assert_eq!(*executed.lock().unwrap(), vec!["hello".to_owned()]);
 
-    let tool_end = events.iter().find(|event| event.kind() == "tool_execution_end");
+    let tool_end = events
+        .iter()
+        .find(|event| event.kind() == "tool_execution_end");
     assert!(tool_end.is_some());
     match tool_end {
         Some(AgentEvent::ToolExecutionEnd { is_error, .. }) => assert!(!is_error),
         _ => unreachable!(),
     }
-    assert_eq!(observed_tool_usage.lock().unwrap().as_ref(), Some(&tool_usage));
+    assert_eq!(
+        observed_tool_usage.lock().unwrap().as_ref(),
+        Some(&tool_usage)
+    );
 
     let _messages = stream.result().await;
     // Usage patching verified through the tool result in the final result.
@@ -289,28 +330,49 @@ async fn should_not_execute_tool_calls_from_a_length_truncated_assistant_message
     let executed = Arc::new(Mutex::new(Vec::<String>::new()));
     let tool = echo_tool(Arc::clone(&executed));
 
-    let context = AgentContext { system_prompt: String::new(), messages: Vec::new(), tools: vec![tool] };
-    let config = AgentLoopConfig { model: Some(create_model()), ..Default::default() };
+    let context = AgentContext {
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: vec![tool],
+    };
+    let config = AgentLoopConfig {
+        model: Some(create_model()),
+        ..Default::default()
+    };
 
     let responses = Arc::new(Mutex::new(vec![
         // Output hit the token limit mid tool call: nothing may execute.
         create_assistant_message(
-            vec![Content::tool_call("tool-1", "echo", serde_json::json!({"value": "hel"}))],
+            vec![Content::tool_call(
+                "tool-1",
+                "echo",
+                serde_json::json!({"value": "hel"}),
+            )],
             StopReason::Length,
         ),
         create_assistant_message(vec![Content::text("done")], StopReason::Stop),
     ]));
     let stream_fn = scripted_stream_fn(responses);
 
-    let stream = agent_loop(vec![create_user_message("echo something")], context, config, None, stream_fn);
+    let stream = agent_loop(
+        vec![create_user_message("echo something")],
+        context,
+        config,
+        None,
+        stream_fn,
+    );
     let events = drain(&stream).await;
 
     // The tool must never execute with potentially truncated arguments.
     assert!(executed.lock().unwrap().is_empty());
 
-    let tool_end = events.iter().find(|event| event.kind() == "tool_execution_end");
+    let tool_end = events
+        .iter()
+        .find(|event| event.kind() == "tool_execution_end");
     match tool_end {
-        Some(AgentEvent::ToolExecutionEnd { result, is_error, .. }) => {
+        Some(AgentEvent::ToolExecutionEnd {
+            result, is_error, ..
+        }) => {
             assert!(is_error);
             let text = result["content"][0]["text"].as_str().unwrap_or_default();
             assert!(text.contains("output token limit"), "got: {text}");
@@ -327,7 +389,11 @@ async fn should_execute_mutated_before_tool_call_args_without_revalidation() {
     let executed = Arc::new(Mutex::new(Vec::<String>::new()));
     let tool = echo_tool(Arc::clone(&executed));
 
-    let context = AgentContext { system_prompt: String::new(), messages: Vec::new(), tools: vec![tool] };
+    let context = AgentContext {
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: vec![tool],
+    };
 
     let config = AgentLoopConfig {
         model: Some(create_model()),
@@ -346,14 +412,24 @@ async fn should_execute_mutated_before_tool_call_args_without_revalidation() {
 
     let responses = Arc::new(Mutex::new(vec![
         create_assistant_message(
-            vec![Content::tool_call("tool-1", "echo", serde_json::json!({"value": "hello"}))],
+            vec![Content::tool_call(
+                "tool-1",
+                "echo",
+                serde_json::json!({"value": "hello"}),
+            )],
             StopReason::ToolUse,
         ),
         create_assistant_message(vec![Content::text("done")], StopReason::Stop),
     ]));
     let stream_fn = scripted_stream_fn(responses);
 
-    let stream = agent_loop(vec![create_user_message("echo something")], context, config, None, stream_fn);
+    let stream = agent_loop(
+        vec![create_user_message("echo something")],
+        context,
+        config,
+        None,
+        stream_fn,
+    );
     let _events = drain(&stream).await;
     let _ = stream.result().await;
 
@@ -368,7 +444,11 @@ async fn should_inject_queued_messages_after_all_tool_calls_complete() {
     let executed = Arc::new(Mutex::new(Vec::<String>::new()));
     let tool = echo_tool(Arc::clone(&executed));
 
-    let context = AgentContext { system_prompt: String::new(), messages: Vec::new(), tools: vec![tool] };
+    let context = AgentContext {
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: vec![tool],
+    };
     let user_prompt = create_user_message("start");
 
     let queued_delivered = Arc::new(AtomicU32::new(0));
@@ -382,9 +462,7 @@ async fn should_inject_queued_messages_after_all_tool_calls_complete() {
             let executed_hook = Arc::clone(&executed_for_hook);
             Box::pin(async move {
                 // Deliver the steering message once both tools have executed.
-                if queued.load(Ordering::SeqCst) == 0
-                    && executed_hook.lock().unwrap().len() >= 2
-                {
+                if queued.load(Ordering::SeqCst) == 0 && executed_hook.lock().unwrap().len() >= 2 {
                     queued.store(1, Ordering::SeqCst);
                     return vec![create_user_message("interrupt")];
                 }
@@ -411,10 +489,15 @@ async fn should_inject_queued_messages_after_all_tool_calls_complete() {
     let _ = stream.result().await;
 
     // Both tools execute before steering is injected.
-    assert_eq!(*executed.lock().unwrap(), vec!["first".to_owned(), "second".to_owned()]);
+    assert_eq!(
+        *executed.lock().unwrap(),
+        vec!["first".to_owned(), "second".to_owned()]
+    );
 
-    let tool_ends: Vec<&AgentEvent> =
-        events.iter().filter(|event| event.kind() == "tool_execution_end").collect();
+    let tool_ends: Vec<&AgentEvent> = events
+        .iter()
+        .filter(|event| event.kind() == "tool_execution_end")
+        .collect();
     assert_eq!(tool_ends.len(), 2);
     for tool_end in tool_ends {
         match tool_end {
@@ -429,16 +512,26 @@ async fn should_inject_queued_messages_after_all_tool_calls_complete() {
         .filter_map(|event| match event {
             AgentEvent::MessageStart { message } => match message.as_message() {
                 Message::ToolResult(result) => Some(format!("tool:{}", result.tool_call_id)),
-                Message::User { content: pillar_ai::types::UserContent::Text(text), .. } => Some(text.clone()),
+                Message::User {
+                    content: pillar_ai::types::UserContent::Text(text),
+                    ..
+                } => Some(text.clone()),
                 _ => None,
             },
             _ => None,
         })
         .collect();
     let interrupt_index = event_sequence.iter().position(|entry| entry == "interrupt");
-    let tool1_index = event_sequence.iter().position(|entry| entry == "tool:tool-1");
-    let tool2_index = event_sequence.iter().position(|entry| entry == "tool:tool-2");
-    assert!(interrupt_index.is_some(), "interrupt delivered: {event_sequence:?}");
+    let tool1_index = event_sequence
+        .iter()
+        .position(|entry| entry == "tool:tool-1");
+    let tool2_index = event_sequence
+        .iter()
+        .position(|entry| entry == "tool:tool-2");
+    assert!(
+        interrupt_index.is_some(),
+        "interrupt delivered: {event_sequence:?}"
+    );
     assert!(tool1_index.is_some());
     assert!(tool2_index.is_some());
     assert!(tool1_index.unwrap() < interrupt_index.unwrap());
@@ -452,7 +545,10 @@ async fn should_throw_when_context_has_no_messages() {
         messages: Vec::new(),
         tools: Vec::new(),
     };
-    let config = AgentLoopConfig { model: Some(create_model()), ..Default::default() };
+    let config = AgentLoopConfig {
+        model: Some(create_model()),
+        ..Default::default()
+    };
     let responses = Arc::new(Mutex::new(vec![]));
     let stream_fn = scripted_stream_fn(responses);
 
@@ -471,7 +567,10 @@ async fn should_continue_from_existing_context_without_emitting_user_message_eve
         messages: vec![create_user_message("Hello")],
         tools: Vec::new(),
     };
-    let config = AgentLoopConfig { model: Some(create_model()), ..Default::default() };
+    let config = AgentLoopConfig {
+        model: Some(create_model()),
+        ..Default::default()
+    };
 
     let responses = Arc::new(Mutex::new(vec![create_assistant_message(
         vec![Content::text("Response")],
@@ -488,8 +587,10 @@ async fn should_continue_from_existing_context_without_emitting_user_message_eve
     assert_eq!(messages[0].role_name(), "assistant");
 
     // No user message events (key difference from agentLoop).
-    let message_end_events: Vec<&AgentEvent> =
-        events.iter().filter(|event| event.kind() == "message_end").collect();
+    let message_end_events: Vec<&AgentEvent> = events
+        .iter()
+        .filter(|event| event.kind() == "message_end")
+        .collect();
     assert_eq!(message_end_events.len(), 1);
     match message_end_events[0] {
         AgentEvent::MessageEnd { message } => assert_eq!(message.role_name(), "assistant"),
@@ -499,7 +600,11 @@ async fn should_continue_from_existing_context_without_emitting_user_message_eve
 
 #[tokio::test]
 async fn should_stop_after_the_current_turn_when_should_stop_after_turn_returns_true() {
-    let context = AgentContext { system_prompt: String::new(), messages: Vec::new(), tools: Vec::new() };
+    let context = AgentContext {
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: Vec::new(),
+    };
     let stop_flag = Arc::new(AtomicU32::new(0));
     let stop_for_hook = Arc::clone(&stop_flag);
     let config = AgentLoopConfig {
@@ -517,7 +622,13 @@ async fn should_stop_after_the_current_turn_when_should_stop_after_turn_returns_
     ]));
     let stream_fn = scripted_stream_fn(responses);
 
-    let stream = agent_loop(vec![create_user_message("go")], context, config, None, stream_fn);
+    let stream = agent_loop(
+        vec![create_user_message("go")],
+        context,
+        config,
+        None,
+        stream_fn,
+    );
     let _events = drain(&stream).await;
     let messages = stream.result().await;
 
@@ -542,8 +653,15 @@ async fn tool_error_becomes_an_error_result_and_the_loop_continues() {
         }),
         execution_mode: None,
     };
-    let context = AgentContext { system_prompt: String::new(), messages: Vec::new(), tools: vec![failing] };
-    let config = AgentLoopConfig { model: Some(create_model()), ..Default::default() };
+    let context = AgentContext {
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: vec![failing],
+    };
+    let config = AgentLoopConfig {
+        model: Some(create_model()),
+        ..Default::default()
+    };
 
     let responses = Arc::new(Mutex::new(vec![
         create_assistant_message(
@@ -554,11 +672,19 @@ async fn tool_error_becomes_an_error_result_and_the_loop_continues() {
     ]));
     let stream_fn = scripted_stream_fn(responses);
 
-    let stream = agent_loop(vec![create_user_message("go")], context, config, None, stream_fn);
+    let stream = agent_loop(
+        vec![create_user_message("go")],
+        context,
+        config,
+        None,
+        stream_fn,
+    );
     let events = drain(&stream).await;
     let messages = stream.result().await;
 
-    let tool_end = events.iter().find(|event| event.kind() == "tool_execution_end");
+    let tool_end = events
+        .iter()
+        .find(|event| event.kind() == "tool_execution_end");
     match tool_end {
         Some(AgentEvent::ToolExecutionEnd { is_error, .. }) => assert!(is_error),
         _ => panic!("expected tool_execution_end"),
@@ -581,7 +707,11 @@ async fn tool_error_becomes_an_error_result_and_the_loop_continues() {
 async fn before_tool_call_block_prevents_execution() {
     let executed = Arc::new(Mutex::new(Vec::<String>::new()));
     let tool = echo_tool(Arc::clone(&executed));
-    let context = AgentContext { system_prompt: String::new(), messages: Vec::new(), tools: vec![tool] };
+    let context = AgentContext {
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: vec![tool],
+    };
 
     let config = AgentLoopConfig {
         model: Some(create_model()),
@@ -599,23 +729,40 @@ async fn before_tool_call_block_prevents_execution() {
 
     let responses = Arc::new(Mutex::new(vec![
         create_assistant_message(
-            vec![Content::tool_call("tool-1", "echo", serde_json::json!({"value": "x"}))],
+            vec![Content::tool_call(
+                "tool-1",
+                "echo",
+                serde_json::json!({"value": "x"}),
+            )],
             StopReason::ToolUse,
         ),
         create_assistant_message(vec![Content::text("done")], StopReason::Stop),
     ]));
     let stream_fn = scripted_stream_fn(responses);
 
-    let stream = agent_loop(vec![create_user_message("go")], context, config, None, stream_fn);
+    let stream = agent_loop(
+        vec![create_user_message("go")],
+        context,
+        config,
+        None,
+        stream_fn,
+    );
     let events = drain(&stream).await;
     let _ = stream.result().await;
 
     assert!(executed.lock().unwrap().is_empty());
-    let tool_end = events.iter().find(|event| event.kind() == "tool_execution_end");
+    let tool_end = events
+        .iter()
+        .find(|event| event.kind() == "tool_execution_end");
     match tool_end {
-        Some(AgentEvent::ToolExecutionEnd { result, is_error, .. }) => {
+        Some(AgentEvent::ToolExecutionEnd {
+            result, is_error, ..
+        }) => {
             assert!(is_error);
-            assert!(result["content"][0]["text"].as_str().unwrap_or_default().contains("Blocked"));
+            assert!(result["content"][0]["text"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("Blocked"));
         }
         _ => panic!("expected tool_execution_end"),
     }

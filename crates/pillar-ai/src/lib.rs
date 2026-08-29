@@ -29,8 +29,8 @@ pub use text::content_text;
 pub use types::{
     Api, AssistantMessage, AssistantMessageDiagnostic, AssistantMessageEvent, CacheRetention,
     ConstrainedSamplingConfig, ConstrainedStrictness, Content, Context, DeferredHandle,
-    DiagnosticErrorInfo, Message, ModelThinkingLevel, ProviderEnv, ProviderHeaders, StopReason,
-    ThinkingBudgets, ThinkingLevel, ThinkingLevelMap, Tool, ToolChoice, ToolResultMessage,
-    Transport, Usage, UsageCost, UserContent,
+    DiagnosticErrorInfo, Message, ModelThinkingLevel, ProviderEnv, ProviderHeaders,
+    SimpleStreamOptionsLike, StopReason, ThinkingBudgets, ThinkingLevel, ThinkingLevelMap, Tool,
+    ToolChoice, ToolResultMessage, Transport, Usage, UsageCost, UserContent,
 };
 pub use uuid::uuidv7;

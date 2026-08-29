@@ -377,6 +377,18 @@ pub struct Context {
     pub tools: Vec<Tool>,
 }
 
+/// The subset of `SimpleStreamOptions` the agent loop threads through to
+/// the stream function. Full option plumbing lands with provider API
+/// modules; this keeps the loop boundary stable now.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SimpleStreamOptionsLike {
+    pub api_key: Option<String>,
+    pub temperature: Option<f64>,
+    pub max_tokens: Option<u64>,
+    pub session_id: Option<String>,
+    pub reasoning: Option<ThinkingLevel>,
+}
+
 // --- Stream events -----------------------------------------------------
 
 /// Event protocol for `AssistantMessageEventStream`. Streams emit `start`
