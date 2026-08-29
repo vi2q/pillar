@@ -204,6 +204,64 @@ pub struct Usage {
     pub cost: UsageCost,
 }
 
+// --- Model metadata ----------------------------------------------------
+
+/// Per-million-token cost rates ($/M tokens).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelCostRates {
+    pub input: f64,
+    pub output: f64,
+    pub cache_read: f64,
+    pub cache_write: f64,
+}
+
+/// Request-wide pricing tier. The highest matching input threshold applies
+/// to the full request.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelCostTier {
+    /// Use this tier for requests whose total input usage exceeds this token count.
+    pub input_tokens_above: u64,
+    #[serde(flatten)]
+    pub rates: ModelCostRates,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelCost {
+    #[serde(flatten)]
+    pub rates: ModelCostRates,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tiers: Option<Vec<ModelCostTier>>,
+}
+
+/// Model metadata for the unified model system. `api` is an `Api` string;
+/// narrow with `hasApi` (upstream `Model<TApi>` generic).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Model {
+    pub id: String,
+    pub name: String,
+    pub api: Api,
+    pub provider: ProviderId,
+    pub base_url: String,
+    pub reasoning: bool,
+    /// Maps pi thinking levels to provider/model-specific values.
+    /// Missing keys use provider defaults. `None` marks a level as unsupported.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_level_map: Option<ThinkingLevelMap>,
+    pub input: Vec<String>,
+    pub cost: ModelCost,
+    pub context_window: u64,
+    pub max_tokens: u64,
+    /// Default sampling parameters; per-request keys override these.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sampling_params: Option<std::collections::BTreeMap<String, Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub headers: Option<ProviderHeaders>,
+}
+
 // --- Messages ----------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
