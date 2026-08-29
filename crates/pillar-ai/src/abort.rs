@@ -5,7 +5,9 @@
 //! port uses a lightweight cloneable signal backed by a tokio watch channel
 //! with the same observable semantics (aborted flag, reason, racing).
 
-use std::sync::Arc;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 
 /// Reason attached to an abort. Upstream uses the signal's `reason` (any
 /// thrown value); the Rust port models the common cases.
@@ -26,19 +28,24 @@ impl std::fmt::Display for AbortReason {
     }
 }
 
-/// (kept for future typed-state refactor; currently the watch channel carries
-/// abort state directly)
-#[allow(dead_code)]
-struct AbortSignalState {
-    aborted: bool,
-    reason: Option<AbortReason>,
-}
-
 /// A cloneable abort signal. Clones share abort state, mirroring how one
 /// DOM signal fans out to many listeners.
 #[derive(Debug, Clone)]
 pub struct AbortSignal {
-    state: Arc<tokio::sync::watch::Sender<Option<AbortReason>>>,
+    inner: Arc<SignalInner>,
+}
+
+#[derive(Debug)]
+struct SignalInner {
+    /// Own abort state (the DOM signal's aborted flag). Kept in a watch
+    /// channel so waiters can subscribe; `abort` stores the flag with
+    /// `send_replace` so late subscribers still observe it.
+    state: tokio::sync::watch::Sender<Option<AbortReason>>,
+    /// Signals this one follows (`AbortSignal.any`). Checked synchronously by
+    /// `is_aborted`/`reason`/`aborted_or_pending`, so an input abort is
+    /// observable immediately — no forwarding task whose scheduling could
+    /// race the caller.
+    inputs: Mutex<Vec<tokio::sync::watch::Receiver<Option<AbortReason>>>>,
 }
 
 impl Default for AbortSignal {
@@ -52,7 +59,10 @@ impl AbortSignal {
     pub fn new() -> Self {
         let (tx, _rx) = tokio::sync::watch::channel(None);
         Self {
-            state: Arc::new(tx),
+            inner: Arc::new(SignalInner {
+                state: tx,
+                inputs: Mutex::new(Vec::new()),
+            }),
         }
     }
 
@@ -64,32 +74,21 @@ impl AbortSignal {
     }
 
     /// Combines several signals: the composite aborts when any input aborts
-    /// (mirrors upstream `AbortSignal.any`).
+    /// (mirrors upstream `AbortSignal.any`). Upstream attaches its listeners
+    /// synchronously; the port stores subscriptions to the inputs so the
+    /// composite observes aborts without a forwarding task.
     pub fn any(signals: &[AbortSignal]) -> Self {
         let composite = AbortSignal::new();
-        for signal in signals {
-            if signal.is_aborted() {
-                composite.abort(signal.reason());
-                return composite;
-            }
-        }
-        let mut rx = composite.state.subscribe();
-        tokio::spawn(async move {
-            let _ = rx.changed().await;
-        });
-        // Subscribe each input; first abort propagates.
-        for signal in signals {
-            let mut input_rx = signal.state.subscribe();
-            let composite_tx = Arc::clone(&composite.state);
-            let _ = input_rx;
-            let composite_rx = composite.state.subscribe();
-            let _ = composite_rx;
-            tokio::spawn(async move {
-                if input_rx.changed().await.is_ok() {
-                    let reason = input_rx.borrow().clone();
-                    let _ = composite_tx.send(reason);
+        {
+            let mut inputs = composite.lock_inputs();
+            for signal in signals {
+                if signal.is_aborted() {
+                    drop(inputs);
+                    composite.abort(signal.reason());
+                    return composite;
                 }
-            });
+                inputs.push(signal.inner.state.subscribe());
+            }
         }
         composite
     }
@@ -97,42 +96,93 @@ impl AbortSignal {
     /// Timeout signal (mirrors upstream `AbortSignal.timeout`).
     pub fn timeout(duration: std::time::Duration) -> Self {
         let signal = AbortSignal::new();
-        let tx = Arc::clone(&signal.state);
+        let task_signal = signal.clone();
         tokio::spawn(async move {
             tokio::time::sleep(duration).await;
-            let _ = tx.send(Some(AbortReason::Custom("TimeoutError".to_string())));
+            task_signal.abort(Some(AbortReason::Custom("TimeoutError".to_string())));
         });
         signal
     }
 
     /// Aborts the signal with an optional reason.
     pub fn abort(&self, reason: Option<AbortReason>) {
-        let _ = self
+        // `send_replace`, not `send`: the aborted flag must be stored even when
+        // no receiver is subscribed yet (upstream DOM signals store the flag,
+        // so late listeners observe the abort). tokio watch's `send` drops the
+        // value when every receiver has been dropped, which would make an
+        // abort racing a queued task silently vanish.
+        self.inner
             .state
-            .send(Some(reason.unwrap_or(AbortReason::Aborted)));
+            .send_replace(Some(reason.unwrap_or(AbortReason::Aborted)));
     }
 
     pub fn is_aborted(&self) -> bool {
-        self.state.borrow().is_some()
+        if self.inner.state.borrow().is_some() {
+            return true;
+        }
+        self.lock_inputs().iter().any(|rx| rx.borrow().is_some())
+    }
+
+    /// Whether two handles share the same underlying signal state.
+    pub fn same_as(&self, other: &AbortSignal) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
     }
 
     /// Returns a clone of the abort reason, if any (avoids borrowing the
     /// temporary watch guard across the return boundary).
     pub fn reason(&self) -> Option<AbortReason> {
-        self.state.borrow().clone()
+        if let Some(reason) = self.inner.state.borrow().clone() {
+            return Some(reason);
+        }
+        self.lock_inputs().iter().find_map(|rx| rx.borrow().clone())
     }
 
     /// Waits until the signal aborts.
     pub async fn aborted_or_pending(&self) -> AbortReason {
-        let mut rx = self.state.subscribe();
+        let own = self.inner.state.subscribe();
+        let mut inputs: Vec<tokio::sync::watch::Receiver<Option<AbortReason>>> =
+            self.lock_inputs().iter().cloned().collect();
         loop {
-            if let Some(reason) = rx.borrow().clone() {
+            if let Some(reason) = own.borrow().clone() {
                 return reason;
             }
-            if rx.changed().await.is_err() {
-                return AbortReason::Aborted;
+            for rx in &inputs {
+                if let Some(reason) = rx.borrow().clone() {
+                    return reason;
+                }
+            }
+            // Park until one of the channels changes. Index 0 is the own
+            // channel; the rest follow the inputs. A channel that closed
+            // (input sender dropped without aborting) is pruned instead of
+            // busy-looping on a ready `Err`.
+            let mut waits: Vec<Pin<Box<dyn Future<Output = bool> + Send>>> =
+                Vec::with_capacity(inputs.len() + 1);
+            {
+                let mut own_wait = own.clone();
+                waits.push(Box::pin(async move { own_wait.changed().await.is_ok() }));
+            }
+            for rx in &inputs {
+                let mut input_wait = rx.clone();
+                waits.push(Box::pin(async move { input_wait.changed().await.is_ok() }));
+            }
+            let (open, index, _) = futures::future::select_all(waits).await;
+            if index == 0 {
+                if !open {
+                    return AbortReason::Aborted;
+                }
+            } else if !open {
+                inputs.remove(index - 1);
             }
         }
+    }
+
+    fn lock_inputs(
+        &self,
+    ) -> std::sync::MutexGuard<'_, Vec<tokio::sync::watch::Receiver<Option<AbortReason>>>> {
+        self.inner
+            .inputs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Upstream `signal.throwIfAborted()`: raises the abort as an error.

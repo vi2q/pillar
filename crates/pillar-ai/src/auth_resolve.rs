@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::abort::{operation_signal, AbortSignal};
+use crate::abort::{AbortSignal, operation_signal};
 use crate::auth_types::{
     ApiKeyAuth, ApiKeyCredential, AuthContext, AuthResult, Credential, CredentialStore, OAuthAuth,
     OAuthCredential, ProviderAuth,
@@ -67,7 +67,15 @@ pub async fn resolve_provider_auth(
     overrides: Option<&AuthResolutionOverrides>,
 ) -> Result<Option<AuthResult>, AiError> {
     let signal = operation_signal(overrides.and_then(|o| o.signal.as_ref()));
-    resolve_provider_auth_with_signal(provider, credentials, auth_context, overrides, &signal).await
+    signal
+        .race(resolve_provider_auth_with_signal(
+            provider,
+            credentials,
+            auth_context,
+            overrides,
+            &signal,
+        ))
+        .await
 }
 
 /// Minimal provider view needed by resolution (id + auth).
@@ -236,20 +244,17 @@ async fn resolve_stored_oauth(
                             {
                                 c
                             }
-                            _ => return None, // logged out meanwhile or already refreshed
+                            _ => return Ok(None), // logged out meanwhile or already refreshed
                         };
-                        let refreshed = match oauth_for_modify
+                        let refreshed = oauth_for_modify
                             .refresh(&current, &refresh_signal_for_modify)
                             .await
-                        {
-                            Ok(credential) => credential,
-                            Err(error) => {
-                                panic!(
+                            .map_err(|error| {
+                                AiError::Other(format!(
                                     "oauth: OAuth refresh failed for {provider_id_for_err}: {error}"
-                                )
-                            }
-                        };
-                        Some(Credential::OAuth(refreshed))
+                                ))
+                            })?;
+                        Ok(Some(Credential::OAuth(refreshed)))
                     })
                 }),
                 Some(&crate::auth_types::AuthOperationOptions {

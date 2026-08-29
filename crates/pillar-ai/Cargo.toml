@@ -12,6 +12,6 @@ futures = "0.3.31"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { version = "1.47", features = ["sync", "time", "macros", "rt" ] }
+tokio = { version = "1.47", features = ["sync", "time", "macros", "rt", "fs" ] }
 uuid = { version = "1.18", features = ["v7"] }
 regex = "1.12"

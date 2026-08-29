@@ -145,9 +145,15 @@ pub trait CredentialStore: Send + Sync {
 }
 
 /// Async modifier closure over the current credential; returns the new
-/// credential or `None` to leave the entry unchanged.
-pub type CredentialModifier<'a> =
-    Box<dyn FnOnce(Option<Credential>) -> BoxFuture<'a, Option<Credential>> + Send + 'a>;
+/// credential or `None` to leave the entry unchanged. Errors propagate out
+/// of `modify` (upstream: the modifier promise rejects).
+pub type CredentialModifier<'a> = Box<
+    dyn FnOnce(
+            Option<Credential>,
+        ) -> BoxFuture<'a, Result<Option<Credential>, crate::error::AiError>>
+        + Send
+        + 'a,
+>;
 
 pub type BoxFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
 
@@ -166,6 +172,12 @@ pub trait ApiKeyAuth: Send + Sync {
         _interaction: &ProviderAuthInteraction,
     ) -> Result<Option<ApiKeyCredential>, crate::error::AiError> {
         Ok(None)
+    }
+
+    /// Whether `check` is overridden (upstream distinguishes method presence;
+    /// Rust defaults cannot, so implementations declare it).
+    fn has_check(&self) -> bool {
+        false
     }
 
     /// Optional side-effect-free availability check. `None` means Models

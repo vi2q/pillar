@@ -14,9 +14,11 @@ use crate::auth_types::{AuthOperationOptions, Credential, CredentialInfo, Creden
 /// Default in-memory credential store. Apps inject persistent stores.
 /// Keyed by `Provider.id`, one credential per provider; see `CredentialStore`.
 /// Writes are serialized per provider through a task queue.
+/// Backed by a `Vec` instead of a `HashMap`: upstream's `Map` iterates in
+/// insertion order and `list` exposes that order.
 #[derive(Debug, Default)]
 pub struct InMemoryCredentialStore {
-    credentials: Mutex<HashMap<String, Credential>>,
+    credentials: Mutex<Vec<(String, Credential)>>,
     /// Per-provider lock ensuring `modify`/`delete` mutual exclusion
     /// (upstream serializes through a promise chain).
     locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
@@ -46,7 +48,10 @@ impl CredentialStore for InMemoryCredentialStore {
             }
         }
         let guard = self.credentials.lock().expect("credential store lock");
-        Ok(guard.get(provider_id).cloned())
+        Ok(guard
+            .iter()
+            .find(|(id, _)| id == provider_id)
+            .map(|(_, credential)| credential.clone()))
     }
 
     async fn list(
@@ -76,17 +81,32 @@ impl CredentialStore for InMemoryCredentialStore {
     ) -> Result<Option<Credential>, crate::error::AiError> {
         let signal = operation_signal(options.and_then(|o| o.signal.as_ref()));
         let lock = self.lock_for(provider_id);
-        let _guard = lock.lock().await;
+        // Waiting in the per-provider queue is abortable (upstream checks
+        // `throwIfAborted` after awaiting the previous task but before running
+        // this one), so a mutation cancelled while queued never runs.
+        let _guard = tokio::select! {
+            biased;
+            reason = signal.aborted_or_pending() => {
+                return Err(crate::error::AiError::Aborted(reason.to_string()));
+            }
+            guard = lock.lock() => guard,
+        };
         signal.throw_if_aborted()?;
         let current = {
             let guard = self.credentials.lock().expect("credential store lock");
-            guard.get(provider_id).cloned()
+            guard
+                .iter()
+                .find(|(id, _)| id == provider_id)
+                .map(|(_, credential)| credential.clone())
         };
-        let next = f(current.clone()).await;
+        let next = f(current.clone()).await?;
         signal.throw_if_aborted()?;
         if let Some(next) = &next {
             let mut guard = self.credentials.lock().expect("credential store lock");
-            guard.insert(provider_id.to_string(), next.clone());
+            match guard.iter_mut().find(|(id, _)| id == provider_id) {
+                Some(slot) => slot.1 = next.clone(),
+                None => guard.push((provider_id.to_string(), next.clone())),
+            }
         }
         Ok(next.or(current))
     }
@@ -98,10 +118,17 @@ impl CredentialStore for InMemoryCredentialStore {
     ) -> Result<(), crate::error::AiError> {
         let signal = operation_signal(options.and_then(|o| o.signal.as_ref()));
         let lock = self.lock_for(provider_id);
-        let _guard = lock.lock().await;
+        // Same abortable-queue semantics as `modify`.
+        let _guard = tokio::select! {
+            biased;
+            reason = signal.aborted_or_pending() => {
+                return Err(crate::error::AiError::Aborted(reason.to_string()));
+            }
+            guard = lock.lock() => guard,
+        };
         signal.throw_if_aborted()?;
         let mut guard = self.credentials.lock().expect("credential store lock");
-        guard.remove(provider_id);
+        guard.retain(|(id, _)| id != provider_id);
         Ok(())
     }
 }

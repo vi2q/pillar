@@ -3,11 +3,11 @@
 //! (pi v0.84.3) — unit tests for utils that don't need an HTTP transport.
 //! One Rust test per upstream test case, same names in comments.
 
-use pillar_ai::faux::{faux_assistant_message, FauxContent, FauxMessageOptions};
+use pillar_ai::faux::{FauxContent, FauxMessageOptions, faux_assistant_message};
 use pillar_ai::types::{Content, Context, Message, StopReason, Usage, UsageCost};
 use pillar_ai::{
-    estimate_context_tokens, is_context_overflow, is_recoverable_length,
-    is_retryable_assistant_error, retry_assistant_call, RetryCallbacks, RetryPolicy,
+    RetryCallbacks, RetryPolicy, estimate_context_tokens, is_context_overflow,
+    is_recoverable_length, is_retryable_assistant_error, retry_assistant_call,
 };
 use std::sync::{Arc, Mutex};
 
@@ -41,12 +41,10 @@ const OPENAI_EXPLICIT_RETRY: &str = "An error occurred while processing your req
 const BEDROCK_EXPLICIT_RETRY: &str = r#"{"message":"The system encountered an unexpected error during processing. Try your request again."}"#;
 const NVIDIA_NIM_RESOURCE_EXHAUSTED: &str =
     "ResourceExhausted: Worker local total request limit reached (288/48)";
-const BUN_FETCH_SOCKET_CLOSED: &str =
-    "The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to fetch()";
+const BUN_FETCH_SOCKET_CLOSED: &str = "The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to fetch()";
 const OPENAI_RESPONSES_EARLY_EOF: &str =
     "OpenAI Responses stream ended before a terminal response event";
-const WRAPPED_DNS_LOOKUP: &str =
-    "The pending stream has been canceled (caused by: getaddrinfo ENOTFOUND bedrock-runtime.us-east-1.amazonaws.com)";
+const WRAPPED_DNS_LOOKUP: &str = "The pending stream has been canceled (caused by: getaddrinfo ENOTFOUND bedrock-runtime.us-east-1.amazonaws.com)";
 
 #[test]
 fn matches_explicit_provider_retry_guidance() {
@@ -521,7 +519,7 @@ fn ignores_stale_assistant_usage_after_a_newer_message_is_inserted_before_it() {
     // The upstream fixture's stale-detection relies on the assistant's usage
     // being after a NEWER prefix; here ordering means usage never applies.
     context.messages[1] = assistant_at(400, 9_500); // newer than user@200? no: user@200 < assistant@400 applies...
-                                                    // Per upstream: user@200, assistant@100 (stale), user@300.
+    // Per upstream: user@200, assistant@100 (stale), user@300.
     context.messages[1] = assistant_at(100, 9_500);
 
     let estimate = estimate_context_tokens(&context);

@@ -5,9 +5,9 @@
 
 use pillar_ai::event_stream::collect_events;
 use pillar_ai::faux::{
-    faux_assistant_message, faux_text, faux_thinking, faux_tool_call, faux_tool_result,
-    faux_user_message, FauxContent, FauxCore, FauxMessageOptions, FauxModel, FauxResponseStep,
-    FauxStreamOptions, RegisterFauxProviderOptions,
+    FauxContent, FauxCore, FauxMessageOptions, FauxModel, FauxResponseStep, FauxStreamOptions,
+    RegisterFauxProviderOptions, faux_assistant_message, faux_text, faux_thinking, faux_tool_call,
+    faux_tool_result, faux_user_message,
 };
 use pillar_ai::types::{Context, Message, StopReason};
 

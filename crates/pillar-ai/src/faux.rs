@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 
-use crate::event_stream::{assistant_message_event_stream, AssistantMessageEventStream};
+use crate::event_stream::{AssistantMessageEventStream, assistant_message_event_stream};
 use crate::types::{
     AssistantMessage, Content, Context, DeferredHandle, Message, StopReason, ToolResultMessage,
     Usage, UsageCost, UserContent,
@@ -991,8 +991,8 @@ async fn stream_with_deltas(
 /// A minimal shared abort handle mirroring the AbortSignal surface the faux
 /// provider consumes (`is_aborted`).
 pub mod tokio_util_abort {
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     #[derive(Debug, Default, Clone)]
     pub struct SharedAbort(Arc<AtomicBool>);

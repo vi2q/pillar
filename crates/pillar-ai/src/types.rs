@@ -177,7 +177,7 @@ impl Content {
 
 // --- Usage -------------------------------------------------------------
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageCost {
     pub input: f64,
