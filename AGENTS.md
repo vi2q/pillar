@@ -8,3 +8,5 @@ For mistakes and important handling, first propose structural safeguards through
 
 Put other guidance under `<project name>/docs`, and generally read it when it has not yet been reviewed.
 If documentation becomes outdated or degraded relative to the actual code, delete it.
+
+*思考は英語で、ユーザーへの質問や回答は日本語で。*

@@ -48,16 +48,6 @@ luaur's own test suite validates the VM; pillar's job is to validate the *host b
 - Run a representative subset of luaur's conformance scripts (`crates/luaur-conformance`) inside pillar's VM configuration to confirm the embedded VM behaves like stock luaur (no host pollution of globals, `require` resolution per [04](04-luau-extensions.md)).
 - Any luaur feature flag pillar enables must be covered here.
 
-## Running
-
-```bash
-cargo test -p pillar-extensions           # extension suite (offline)
-cargo test --workspace --exclude pillar-extensions  # everything else
-cargo test -p pillar-ai parity            # one layer
-```
-
-Full-suite runs that need the upstream checkouts set `PILLAR_UPSTREAM_PI` and `PILLAR_UPSTREAM_LUAUR` to the checkout paths; unset, those tests skip (with a printed skip count, never silently).
-
 ## Coverage expectations
 
 - Every strict-layer item in [02-porting-policy.md](02-porting-policy.md) has at least one parity test.
@@ -65,7 +55,3 @@ Full-suite runs that need the upstream checkouts set `PILLAR_UPSTREAM_PI` and `P
 - Every `// divergence:` comment in the code has a test documenting the divergent behavior.
 - New provider: request-body parity test plus streaming event order test, before the provider is considered ported.
 - New CLI flag: golden file for `--help` plus one behavior test.
-
-## CI
-
-CI runs, on every PR: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace --locked` (offline layers), and the extension corpus type-check. Parity layers that need upstream checkouts run in a scheduled workflow against the pinned revisions.

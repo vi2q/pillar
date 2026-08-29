@@ -44,10 +44,8 @@ Run when a task requires behavior from a newer pi or luaur, or on a scheduled ca
    - Free-layer: decide port or skip; record decisions in the commit message.
    - Update `// divergence:` comments if upstream removed the reason for one.
 4. **Luaur bumps** additionally require: feature-flag review (`luaur-rt` features pillar enables), definition-file re-check against the extension corpus, and conformance rerun.
-5. **Run the full suite.** All layers of [05-testing-parity.md](05-testing-parity.md) green, including parity layers against the new pinned checkout.
+5. Verify the relevant parity layers described in [05-testing-parity.md](05-testing-parity.md), including parity layers against the new pinned checkout.
 6. **Update docs.** If an upstream doc change alters an extension contract (events, payloads, UI methods), update [04-luau-extensions.md](04-luau-extensions.md) in the same sync, in a commit `docs(extensions): track pi <change summary>`.
-
-Sync commits never mix with feature or fix work. A PR contains either sync commits or feature/fix commits, not both.
 
 ## Divergence ledger
 
@@ -61,13 +59,6 @@ Every intentional divergence from upstream carries a `// divergence:` comment in
 | No npm package sharing for extensions | Luau modules have no npm graph; git packages still supported | [04-luau-extensions.md](04-luau-extensions.md) |
 
 New divergences require a row here and a test ([05-testing-parity.md](05-testing-parity.md), "Every `// divergence:` comment has a test").
-
-## Upstream policy changes that affect this repo
-
-Some pi policies do not transfer:
-
-- pi's contributor gate (auto-closed issues/PRs, `lgtm` workflows) is upstream's contributor policy, not pillar's.
-- pi's `AGENTS.md` conversational and git rules inspired this repo's [AGENTS.md](../../AGENTS.md) but are maintained separately; upstream edits do not auto-apply.
 
 ## Deprecation handling
 

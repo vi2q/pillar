@@ -40,11 +40,6 @@ Coding conventions for all workspace crates. Applies to hand-written code; gener
 - Prefer `pub(crate)` by default; widen deliberately.
 - No `pub` fields on types that carry invariants; provide constructors that validate.
 
-## unsafe
-
-- `unsafe` is forbidden in workspace crates. Enforce with `#![forbid(unsafe_code)]` in every crate root.
-- luaur is safe-by-default Rust; if a future dependency needs an unsafe boundary, isolate it in a dedicated `-sys`-style module, gate it behind a feature, document the invariant, and get explicit approval in review. `#![forbid(unsafe_code)]` is lifted only for that module via `#[allow(unsafe_code)]` with a linked justification comment.
-
 ## Dependencies
 
 - Direct dependencies are pinned to exact versions (`cargo` semver `=x.y.z` for anything outside the workspace).
@@ -54,8 +49,6 @@ Coding conventions for all workspace crates. Applies to hand-written code; gener
 
 ## Formatting & lints
 
-- `cargo fmt` is law. CI runs `cargo fmt --all --check`.
-- CI runs `cargo clippy --workspace --all-targets -- -D warnings`.
 - Workspace `Cargo.toml` sets: `edition = "2024"`, `resolver = "3"`, `rust-version = "1.85"` (the minimum supported Rust version), `lto = "fat"`, and `codegen-units = 1` for release (mirroring luaur's release profile).
 
 ## Comments & docs
