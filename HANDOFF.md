@@ -14,15 +14,16 @@ pi v0.84.3 (TypeScript, commit `56700d4`) を Rust に移植する。拡張機�
 | `7217ebf` | pillar-ai: auth基盤 (abort, auth_types, credential_store, models_store, auth_resolve, error) |
 | `83955cf` | chore: workspace を edition 2024 / resolver 3 に更新 (fmt 影響を protocol/telemetry/agent に適用) |
 | 今回 | **feat(ai): Models 本体 + createProvider + models-runtime.test.ts 39ケースの移植完了** (`models.rs`, `auth_context.rs`, `tests/models_runtime_parity.rs` 新規、auth_resolve/types/credential_store/abort の調整を含む) |
-| 今回2 | **feat(ai): プロバイダ層の共有インフラ移植** (transport.rs [FetchFn トレイト + reqwest 既定実装], provider_retry.rs, error_body.rs, provider_env.rs, constrained_sampling.rs, transform_messages.rs, headers.rs, text.rs に sanitize_surrogates)。`tests/api_infra_parity.rs` 27ケース |
+| 今回2 | **feat(ai): プロバイダ層の共有インフラ移植** (transport.rs [FetchFn トレイト + reqwest 既定実装], provider_retry.rs, error_body.rs, provider_env.rs, constrained_sampling.rs, transform_messages.rs, headers.rs, json_parse.rs, text.rs に sanitize_surrogates)。`tests/api_infra_parity.rs` 27ケース |
+| 今回3 | **feat(ai): openai-completions プロバイダ移植** (src/api/{mod,openai_completions,github_copilot_headers,openai_prompt_cache}.rs: stream/stream_simple/convert_messages/convert_tools/build_params/compat 自動検出/SSE パーサ/reasoning_details リプレイ)。`tests/openai_completions_parity.rs` 23ケース |
 
-**pillar-ai 124テスト (core 35 + faux 22 + models-runtime 39 + api-infra 27 + 1) と pillar-agent 11テスト全パス。`cargo fmt --check` / `cargo clippy --workspace --all-targets -- -D warnings` クリーン。**
+**pillar-ai 147テスト (core 35 + faux 22 + models-runtime 39 + api-infra 27 + openai-completions 23 + uuid 1) と pillar-agent 11テスト全パス。`cargo fmt --check` / `cargo clippy --workspace --all-targets -- -D warnings` クリーン。**
 
 上流チェックアウトは `/tmp/upstream/pi`, `/tmp/upstream/luaur` (再作成手順は docs/rules/06)。
 
 ## 未移植 (優先順)
 
-1. **pillar-ai のプロバイダ本体**: 共有インフラ (transport / provider-retry / error-body / constrained-sampling / transform-messages / provider-env / headers) は移植済み。次は pi の `packages/ai/src/api/*` 各プロバイダ: `openai-completions.ts` (1707行) が第一候補。`FetchFn` を注入し、SSE は手前でパース、WebSocket transport は後回し。`openai-responses-shared.ts` (792行) が openai-responses/codex/azure と共通。`models.generated.ts` はジェネレータで再生成、手移植禁止 (docs/rules/01、生成器は pillar-ai/src/bin/generate-models.rs に作る)。
+1. **pillar-ai のプロバイダ残り**: `openai-completions` は移植済み。次は `openai-responses-shared.ts` (792行) と `openai-responses.ts` (376行)、そして `anthropic-messages.ts` (1391行)。`models.generated.ts` はジェネレータで再生成、手移植禁止 (docs/rules/01、生成器は pillar-ai/src/bin/generate-models.rs に作る)。live-API テスト (responseid, xhigh, tool-call-without-result, tool-call-id-normalization e2e) はモック不能なので非移植。
 2. **pillar-agent の残り**: `agent.ts` (592行, Agent クラス/状態管理) 未移植。ループは完成。
 3. **pillar-coding-agent**: 未着手 (最大、61k行)。
 4. **pillar-tui / client / server / session-store**: 未着手。
@@ -85,7 +86,7 @@ pi の Promise セマンティクスでは同じ promise を何度でも await �
 
 ## 次のセッションの最初の一歩
 
-**最初のプロバイダ移植: `openai-completions.ts` (1707行)**。`transport::FetchFn` を介して HTTP、`provider_retry::retry_provider_request` でリト包装、`error_body` でエラー組立、`constrained_sampling` / `transform_messages` を流用。上流テストは `openai-completions*.test.ts` 系 (stream 形状, SSE パース, tool calls, reasoning) をモック FetchFn で再現する。その次は `openai-responses-shared.ts` と `anthropic-messages.ts`。
+**`openai-responses-shared.ts` (792行) + `openai-responses.ts` (376行) の移植**。openai-completions と同じ構成 (FetchFn + provider_retry + error_body + constrained_sampling)。`response.output_item.added` 等の Responses SSE イベント処理と grammar custom tool のストリーミング (constrained-sampling.test.ts の残り2ケース) が含まれる。その次は `anthropic-messages.ts` (1391行)。
 
 ## セッション運用の反省 (継続)
 

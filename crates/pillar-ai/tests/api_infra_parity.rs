@@ -52,6 +52,7 @@ fn make_model() -> Model {
         max_tokens: 16_000,
         sampling_params: None,
         headers: None,
+        compat: None,
     }
 }
 

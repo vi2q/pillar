@@ -56,6 +56,7 @@ fn test_model(provider: &str, id: &str) -> Model {
         max_tokens: 1000,
         sampling_params: None,
         headers: None,
+        compat: None,
     }
 }
 

@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 pub mod abort;
+pub mod api;
 pub mod auth_context;
 pub mod auth_resolve;
 pub mod auth_types;
@@ -21,6 +22,7 @@ pub mod event_stream;
 pub mod faux;
 pub mod hash;
 pub mod headers;
+pub mod json_parse;
 pub mod models;
 pub mod models_store;
 pub mod overflow;

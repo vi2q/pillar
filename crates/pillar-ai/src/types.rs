@@ -260,6 +260,83 @@ pub struct Model {
     pub sampling_params: Option<std::collections::BTreeMap<String, Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub headers: Option<ProviderHeaders>,
+    /// Provider-API compatibility overrides (upstream `Model.compat`, typed
+    /// per api; the completions shape is the first ported variant).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compat: Option<OpenaiCompletionsCompat>,
+}
+
+/// Compatibility settings for the `openai-completions` API
+/// (upstream `OpenAICompletionsCompat`). All fields optional; unset fields
+/// fall back to URL/provider auto-detection.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenaiCompletionsCompat {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_store: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_developer_role: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_reasoning_effort: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_usage_in_streaming: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_finish_reason: Option<bool>,
+    /// "max_completion_tokens" (default) or "max_tokens".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens_field: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requires_tool_result_name: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requires_assistant_after_tool_result: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requires_thinking_as_text: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requires_reasoning_content_on_assistant_messages: Option<bool>,
+    /// "openai" (default), "openrouter", "deepseek", "together", "baseten",
+    /// "zai", "qwen", "chat-template", "qwen-chat-template",
+    /// "string-thinking", "ant-ling".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_format: Option<String>,
+    /// Kwargs sent as `chat_template_kwargs` when `thinkingFormat` is
+    /// `chat-template`; supports `{ "$var": ... }` pi-controlled values.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chat_template_kwargs: Option<std::collections::BTreeMap<String, Value>>,
+    /// Args sent as `chat_template_args` when `thinkingFormat` is `baseten`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chat_template_args: Option<std::collections::BTreeMap<String, Value>>,
+    /// OpenRouter routing preferences sent as the `provider` request field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub open_router_routing: Option<Value>,
+    /// Vercel AI Gateway routing preferences sent as `providerOptions.gateway`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vercel_gateway_routing: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zai_tool_stream: Option<bool>,
+    /// Top-level request field used to cap reasoning tokens:
+    /// "thinking_token_budget", "thinking_budget", or "thinking_budget_tokens".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_token_budget_field: Option<String>,
+    /// Alias for `thinking_token_budget_field: "thinking_token_budget"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_thinking_token_budget: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_strict_mode: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_openai_grammar_tools: Option<bool>,
+    /// "anthropic" applies Anthropic-style `cache_control` markers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_control_format: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub send_session_affinity_headers: Option<bool>,
+    /// "kimi" defers tools mentioned in tool results' `addedToolNames`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deferred_tools_mode: Option<String>,
+    /// "openai" (default) or "openrouter".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_affinity_format: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_long_cache_retention: Option<bool>,
 }
 
 // --- Messages ----------------------------------------------------------
