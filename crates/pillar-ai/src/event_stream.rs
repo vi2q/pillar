@@ -30,7 +30,7 @@ pub struct EventStream<T, R> {
 impl<T, R> EventStream<T, R>
 where
     T: Clone + Send + 'static,
-    R: Send + 'static,
+    R: Clone + Send + 'static,
 {
     pub fn new(is_complete: fn(&T) -> bool, extract_result: fn(&T) -> R) -> Self {
         Self {
@@ -129,13 +129,18 @@ struct ResultFuture<T, R> {
     state: Arc<Mutex<EventStreamState<T, R>>>,
 }
 
-impl<T, R> Future for ResultFuture<T, R> {
+impl<T, R> Future for ResultFuture<T, R>
+where
+    R: Clone,
+{
     type Output = R;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut state = self.state.lock().expect("event stream lock");
-        if let Some(slot) = state.final_result.take() {
-            return Poll::Ready(slot.expect("terminal event resolves a result"));
+        // Clone, not take: result() must be callable repeatedly (pi's
+        // Promise semantics — awaiting the same promise twice resolves).
+        if let Some(ready) = state.final_result.as_ref().and_then(Option::as_ref) {
+            return Poll::Ready(ready.clone());
         }
         if state.done {
             // Upstream hangs when end() is called without a result and no
