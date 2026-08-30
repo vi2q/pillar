@@ -18,7 +18,7 @@ pi v0.84.3 (TypeScript, commit `56700d4`) を Rust に移植する。拡張機�
 | 今回3 | **feat(ai): openai-completions プロバイダ移植** (src/api/{mod,openai_completions,github_copilot_headers,openai_prompt_cache}.rs: stream/stream_simple/convert_messages/convert_tools/build_params/compat 自動検出/SSE パーサ/reasoning_details リプレイ)。`tests/openai_completions_parity.rs` 23ケース |
 | 今回4 | **feat(ai): openai-responses プロバイダ移植** (src/api/{openai_responses,openai_responses_shared}.rs + deferred_tools.rs: processResponsesStream / convert_responses_messages / convert_responses_tools / grammar custom_tool_call ストリーミング / service-tier pricing)。`tests/openai_responses_parity.rs` 14ケース。**ModelCompat union 化** (Model.compat を per-API untagged enum に、Box 包装; AnthropicMessagesCompat 追加) |
 
-**pillar-ai 175テスト (core 35 + faux 22 + models-runtime 39 + api-infra 27 + openai-completions 23 + openai-responses 14 + uuid 1) と pillar-agent 11テスト全パス。`cargo fmt --check` / `cargo clippy --workspace --all-targets -- -D warnings` クリーン。**
+**pillar-ai 187テスト (core 35 + faux 22 + models-runtime 39 + api-infra 27 + openai-completions 23 + openai-responses 14 + anthropic-messages 26 + uuid 1) と pillar-agent 11テスト全パス。`cargo fmt --check` / `cargo clippy --workspace --all-targets -- -D warnings` クリーン。**
 
 上流チェックアウトは `/tmp/upstream/pi`, `/tmp/upstream/luaur` (再作成手順は docs/rules/06)。
 
@@ -81,6 +81,10 @@ pi の Promise セマンティクスでは同じ promise を何度でも await �
 
 `processResponsesStream` は **Done/Error イベントを push しない** (上流呼び出し側が push する)。Rust テストで直接呼ぶときは、drive 完了後に `stream.end(None)` を呼ばないと EventIter が `done=false` のまま Pending で永遠に待つ。assert は `output.stop_reason` (finalize_response が書き込む) で行う。
 
+### 19. repair_json の制御文字分岐で index が進まない (修正済み: 576c6fe)
+
+repair_json の in_string 内で `repaired.push(if ... { continue } else { c })` と書くと continue が `index += 1` を飛ばして無限ループする。if 文に分けて index を進めてから continue。テストは生の不正JSONを SSE data 行に流す形でしか露出しない (serde_json::from_str で先に弾かないこと)。
+
 ### 18. ModelCompat union 化 (Box 包装)
 
 `Model.compat` を per-API untagged enum `ModelCompat` にした。Box 包装 (clippy large-enum-difference)。使用側は `match model.compat.as_ref() { Some(ModelCompat::OpenaiCompletions(c)) => c, _ => return detected }` パターン。serde untagged なので JSON からは各 API 形がそのまま読める。テスト側は `ModelCompat::OpenaiCompletions(Box::new(...))` か `.into()`。
@@ -95,7 +99,7 @@ pi の Promise セマンティクスでは同じ promise を何度でも await �
 
 ## 次のセッションの最初の一歩
 
-**`anthropic-messages.ts` (1391行) の移植**。基盤は src/api/anthropic_messages.rs に既にある (SSE デコーダ, convert_messages/convert_tools/map_stop_reason/get_anthropic_compat, Claude Code stealth 名, normalize_tool_call_id)。残り: (1) stream/stream_simple エントリ (tokio::spawn + run_stream, openai_completions.rs:570 のパターン), (2) processAnthropicStream (message_start/content_block_*/message_delta ループ, index→block 検索, signature_delta, message_stop 前の early-exit エラー), (3) buildParams (OAuth Claude Code identity, beta headers, adaptive/budget thinking, fallbacks), (4) Anthropic SSE デコーダのストリーム統合 (SseDataEvents とは別に event:/data: 2行形式をパースする必要あり — openai の SseDataEvents は data: 行しか見ない), (5) `Model.compat` は ModelCompat union 化済み (Box 包装; get_compat のマッチで `Some(ModelCompat::OpenaiCompletions(compat)) => compat` パターン)。テストは tests/anthropic_messages_parity.rs に新規。
+**anthropic-messages の仕上げ**: 変換層/SSEデコーダ/buildParams/イベントプロセッサ/26テストは済み (src/api/anthropic_messages.rs, tests/anthropic_messages_parity.rs)。残りは (1) `stream()`/`stream_simple()` エントリ (tokio::spawn + run_stream + FetchFn 呼び出し、openai_responses.rs:176 のパターン。URL は `{base_url}/v1/messages` 相当の上流 SDK baseURL 規約を確認), (2) 生バイトストリームから `decode_sse_chunk`/`finish_sse_body` を回す async ストリームアダプタ, (3) stream_simple の thinkingBudget 計算 (simple_options.rs の adjust_max_tokens_for_thinking を使用), (4) `request was aborted`/`stream ended before message_stop` エラーのストリーム側注入。その後 pillar-agent (agent.ts 592行)。
 
 ## セッション運用の反省 (継続)
 
