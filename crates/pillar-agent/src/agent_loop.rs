@@ -67,13 +67,21 @@ fn now_millis() -> u64 {
 }
 
 /// Start an agent loop with new prompt messages.
+///
+/// `stream_fn` may be `None` for legacy callers (upstream omits the argument
+/// entirely); the configured default stream function is used as fallback.
 pub fn agent_loop(
     prompts: Vec<AgentMessage>,
     context: AgentContext,
     config: AgentLoopConfig,
     signal: Option<AbortSignal>,
-    stream_fn: StreamFn,
+    stream_fn: Option<StreamFn>,
 ) -> AgentStream {
+    // Upstream resolves `streamFn ?? getDefaultStreamFn()` when the async run
+    // body starts. The Rust port resolves before spawning so a missing
+    // fallback fails fast instead of leaving the returned stream pending
+    // forever (divergence: error timing only).
+    let stream_fn = resolve_stream_fn(stream_fn);
     let stream = create_agent_stream();
     let stream_for_run = stream.clone_stream();
 
@@ -94,11 +102,12 @@ pub fn agent_loop(
 
 /// Continue an agent loop from the current context without a new message.
 /// The last context message must convert to a `user` or `toolResult`.
+/// `stream_fn` may be `None` for legacy callers; see [`agent_loop`].
 pub fn agent_loop_continue(
     context: AgentContext,
     config: AgentLoopConfig,
     signal: Option<AbortSignal>,
-    stream_fn: StreamFn,
+    stream_fn: Option<StreamFn>,
 ) -> Result<AgentStream, LoopInitError> {
     if context.messages.is_empty() {
         return Err(LoopInitError(
@@ -111,6 +120,9 @@ pub fn agent_loop_continue(
         ));
     }
 
+    // Upstream resolves the fallback inside runAgentLoopContinue, after the
+    // synchronous context validation above.
+    let stream_fn = resolve_stream_fn(stream_fn);
     let stream = create_agent_stream();
     let stream_for_run = stream.clone_stream();
 
@@ -132,6 +144,15 @@ pub fn agent_loop_continue(
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
 pub struct LoopInitError(pub String);
+
+/// Upstream `streamFn ?? getDefaultStreamFn()` at the `runLoop` call sites.
+fn resolve_stream_fn(stream_fn: Option<StreamFn>) -> StreamFn {
+    stream_fn.unwrap_or_else(|| {
+        crate::stream_fn::get_default_stream_fn().expect(
+            "No default stream function configured. Pass streamFn explicitly or call setDefaultStreamFn().",
+        )
+    })
+}
 
 fn create_agent_stream() -> AgentStream {
     EventStream::new(

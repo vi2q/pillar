@@ -244,7 +244,7 @@ pub struct Agent {
 
     pub convert_to_llm: Arc<ConvertToLlmFn>,
     pub transform_context: Option<Arc<TransformContextFn>>,
-    pub stream_function: StreamFn,
+    pub stream_function: Option<StreamFn>,
     pub get_api_key: Option<Arc<GetApiKeyFn>>,
     pub on_payload: Option<pillar_ai::api::OnPayloadFn>,
     pub on_response: Option<pillar_ai::api::OnResponseFn>,
@@ -319,13 +319,10 @@ impl Agent {
             pending_tool_calls: BTreeSet::new(),
             error_message: None,
         };
-        // Older compiled consumers may omit stream_fn even though the current
-        // API requires it; fall back to the process-wide default (upstream
-        // `runtimeOptions.streamFn ?? getDefaultStreamFn()`).
-        let stream_function = options.stream_fn.take().unwrap_or_else(|| {
-            crate::stream_fn::get_default_stream_fn()
-                .expect("No default stream function configured. Pass streamFn explicitly or call setDefaultStreamFn().")
-        });
+        // Upstream resolves `streamFn ?? getDefaultStreamFn()` inside the
+        // Agent constructor; the loop entry points apply the same fallback
+        // for their own legacy callers.
+        let stream_function = options.stream_fn.take();
         Self {
             state: Arc::new(Mutex::new(state)),
             listeners: Arc::new(Mutex::new(Vec::new())),
