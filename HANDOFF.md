@@ -17,15 +17,16 @@ pi v0.84.3 (TypeScript, commit `56700d4`) を Rust に移植する。拡張機�
 | 今回2 | **feat(ai): プロバイダ層の共有インフラ移植** (transport.rs [FetchFn トレイト + reqwest 既定実装], provider_retry.rs, error_body.rs, provider_env.rs, constrained_sampling.rs, transform_messages.rs, headers.rs, json_parse.rs, text.rs に sanitize_surrogates)。`tests/api_infra_parity.rs` 27ケース |
 | 今回3 | **feat(ai): openai-completions プロバイダ移植** (src/api/{mod,openai_completions,github_copilot_headers,openai_prompt_cache}.rs: stream/stream_simple/convert_messages/convert_tools/build_params/compat 自動検出/SSE パーサ/reasoning_details リプレイ)。`tests/openai_completions_parity.rs` 23ケース |
 | 今回4 | **feat(ai): openai-responses プロバイダ移植** (src/api/{openai_responses,openai_responses_shared}.rs + deferred_tools.rs: processResponsesStream / convert_responses_messages / convert_responses_tools / grammar custom_tool_call ストリーミング / service-tier pricing)。`tests/openai_responses_parity.rs` 14ケース。**ModelCompat union 化** (Model.compat を per-API untagged enum に、Box 包装; AnthropicMessagesCompat 追加) |
+| 今回5 | **feat(agent): Agent クラス移植 (agent.ts)** (`agent.rs` 新規: 状態スナップショット/ミューテータ, steering/follow-up キュー [既定 one-at-a-time], subscribe [リスナーは登録順に await、activity signal 付き], abort/waitForIdle/reset, prompt [text\|message\|batch] と continue_run — 上流エラー文言を Result エラーで再現)。`stream_fn.rs` 新規 (setDefaultStreamFn グローバル フォールバック)。`agent_loop.rs` 改修: 並列ツールバッチで `tool_execution_end` を完了順に emit (結果は source 順で永続化), onUpdate をバッファリング型 `tool_execution_update` に配線 (settle 後の呼び出しは無視), stream-fn panic を error AssistantMessage に変換 (spawn タスク越しの unwind を防止)。`types.rs`: `ShouldStopAfterTurnContext.context` 追加, AgentLoopConfig に reasoning/thinking_budgets/max_retry_delay_ms, StreamCallOptions に onPayload/onResponse/transport 等を追加, prepare_next_turn の thinking_level を後続リクエストへ反映。`tests/agent_parity.rs` 新規: agent.test.ts 22ケース。**pillar-agent 33テスト (loop 11 + agent 22) 全パス。直列10回 + 並列10回でフレーク無し。fmt/clippy -D warnings クリーン。** |
 
-**pillar-ai 188テスト (core 35 + faux 22 + models-runtime 39 + api-infra 27 + openai-completions 23 + openai-responses 14 + anthropic-messages 27 + uuid 1) と pillar-agent 11テスト全パス。`cargo fmt --check` / `cargo clippy --workspace --all-targets -- -D warnings` クリーン。**
+**pillar-ai 188テスト (core 35 + faux 22 + models-runtime 39 + api-infra 27 + openai-completions 23 + openai-responses 14 + anthropic-messages 27 + uuid 1) と pillar-agent 33テスト (loop 11 + agent 22) 全パス。`cargo fmt --check` / `cargo clippy --workspace --all-targets -- -D warnings` クリーン。**
 
 上流チェックアウトは `/tmp/upstream/pi`, `/tmp/upstream/luaur` (再作成手順は docs/rules/06)。
 
 ## 未移植 (優先順)
 
 1. **pillar-ai のプロバイダ残り**: `openai-completions` は移植済み。次は `openai-responses-shared.ts` (792行) と `openai-responses.ts` (376行)、そして `anthropic-messages.ts` (1391行)。`models.generated.ts` はジェネレータで再生成、手移植禁止 (docs/rules/01、生成器は pillar-ai/src/bin/generate-models.rs に作る)。live-API テスト (responseid, xhigh, tool-call-without-result, tool-call-id-normalization e2e) はモック不能なので非移植。
-2. **pillar-agent の残り**: `agent.ts` (592行, Agent クラス/状態管理) 未移植。ループは完成。
+2. **pillar-agent の残り**: Agent クラス (agent.ts) は移植済み (commit `dd41883`)。残りは `proxy.ts` (370行), `stream-fn.ts` は移植済み, `types.ts` 残り (SteeringQueue 型など軽微), `harness/` (大量 — compaction/messages/session/skills/tools 等), `search/`, `e2e.test.ts` のうちモック可能なもの。
 3. **pillar-coding-agent**: 未着手 (最大、61k行)。
 4. **pillar-tui / client / server / session-store**: 未着手。
 5. **pillar-extensions**: 未着手 (luaur VM 統合)。設計は docs/rules/04 に確定済み。
@@ -97,9 +98,19 @@ repair_json の in_string 内で `repaired.push(if ... { continue } else { c })`
 - `sanitize_surrogates` (text.rs): Rust の String は UTF-8 で unpaired surrogate を保持できないため恒等関数。上流と同じ呼び出し点を維持するための grep-parity 用。
 - `transport.rs`: 上流 `FetchFunction` は WHATWG Response を返すが、Rust は `FetchFn` トレイト + ストリーミング `FetchResponse`。既定実装は `ReqwestFetch` (rustls + gzip + stream)。
 
+### 20. Agent 移植で判明した落とし穴 (今回)
+
+- **spawn タスク内の panic は catch_unwind しないとプロセスを落とす**: `agent_loop` の `tokio::spawn` 内で stream fn が panic すると、JoinHandle を無視しているので panic が外に伝播してテストプロセスごと死ぬ (HANDOFF #3 の「panic が握り潰されている」の逆 — 観測される前に死ぬ)。`stream_assistant_response` で `futures::FutureExt::catch_unwind` + `AssertUnwindSafe` で包み、panic を stopReason "error" + errorMessage の AssistantMessage に変換した (上流 handleRunFailure 相当)。
+- **Agent の待ち合わせ構造**: 上流は `emit()` をループ内で await するが、Rust ループは spawn で stream に push するだけ。Agent は `drive_agent_stream` で EventIter を消費しながら `process_event` (状態 reduce + リスナー await) を同期的に回す。リスナーが完了するまで prompt が返らない保証はこの構造で出している。
+- **ListenerEntry の take/push パターン**: リスナー dispatch 中に再 lock しないよう、`std::mem::take` でリストを抜いてから順に await し、各リスナーを呼び終えたら push し戻す。簡易だが「リスナー内部で subscribe/unsubscribe」も壊れない。
+- **session_id 等の可変フィールドは `Arc<Mutex<Option<String>>>`**: `Agent` は `&self` で使う (tokio::spawn に置くため Arc<Agent>)。setter は内部可変性で。
+- **並列ツールの onUpdate はバッファ → settle 後 drain**: 上流は updateEvents 配列に Promise を積み、`execute` 返却後に `Promise.all` で flush する。tokio::spawn で即配信すると実行順序とイベント順がずれ、late-update テスト (settle 後は無視) も壊れる。sync バッファ + `AtomicBool accepting` で再現。
+- **ツールテストの oneshot::Sender は Fn クロージャに直接 move できない**: `ToolExecuteFn` は `Fn` なので `Arc<Mutex<Option<Sender>>>` に包んで使用時に take する (HANDOFF #13 と同型)。
+- **テストの `let () = tokio::join!(...)` は型注釈エラーになる**: join! はタプルを返すので `tokio::join!(...)` 単独で。
+
 ## 次のセッションの最初の一歩
 
-**anthropic-messages 移植は実質完了** (stream/stream_simple/process/buildParams/SSE/27テスト、mock transport e2e 含む)。残る検証候補: github-copilot-anthropic テスト (Bearer auth + Copilot headers + payload 断言、constructorOpts 相当は captured request で置換), anthropic-eager-tool-input-compat のヘッダー断言 (anthropic-beta)。次の未移植は **pillar-agent の agent.ts (592行, Agent クラス/状態管理)**。models_generated.rs (generate-models ジェネレータ, docs/rules/01) はまだ未作成 — live カタログ依存のため別タスク。
+**Agent クラス移植は完了** (commit `dd41883`)。ループ側も同時に改修済み: 並列ツールの完了順 emit / onUpdate 配線 / panic → error メッセージ変換 / ShouldStopAfterTurnContext.context / prepare_next_turn の thinking_level 反映。未移植のパリティ候補: agent-loop.test.ts の残り (uses the configured default / custom message types via convertToLlm / parallel completion-order 断言の詳細一致), e2e.test.ts (モック可能部分のみ)。次の大きい塊は **pillar-agent の harness/** (compaction/messages/session/skills/tools — coding-agent が依存するので先に) か **proxy.ts**。models_generated.rs (generate-models ジェネレータ, docs/rules/01) はまだ未作成 — live カタログ依存のため別タスク。
 
 ## セッション運用の反省 (継続)
 
