@@ -24,6 +24,23 @@ pi v0.84.3 (TypeScript, commit `56700d4`) を Rust に移植する。拡張機�
 
 上流チェックアウトは `/tmp/upstream/pi`, `/tmp/upstream/luaur` (再作成手順は docs/rules/06)。
 
+## 全体進捗の目安 (2026-08-29 時点の行数集計)
+
+上流パッケージ規模 (src = テスト以外の .ts, tests = *.test.ts):
+
+| パッケージ | 上流 src | 上流 tests | pillar 状況 |
+| --- | --- | --- | --- |
+| protocol | 1.2k | 0.7k | ✅ 完了 (src 2.5k / tests 1.0k) |
+| telemetry | 0.9k | 0.2k | ✅ 完了 (src 0.7k / tests 0.5k) |
+| ai | 27.7k | 35.1k | 🔶 約4〜5割 (src 14.6k / tests 8.2k。openai-completions / openai-responses / anthropic-messages / 共有インフラ / auth / models 済み。残り: google 系 1.4k、mistral-conversations 0.9k、bedrock-converse 1.3k、openai-codex 1.7k、azure 0.3k、images、providers/* 等) |
+| agent | 12.9k | 8.6k | 🔶 約15% (src 2.9k / tests 3.2k。ループ + Agent クラス + ループテスト23ケース完璧。残り: harness/ 10.1k、proxy 0.4k、search/、e2e) |
+| coding-agent | 78.9k | 50.3k | ❌ 未着手 (最大) |
+| tui | 17.9k | 16.4k | ❌ 未着手 |
+| server / client / session-backends | 6.3k | 4.2k | ❌ 未着手 |
+| evals | 1.3k | 0.5k | ❌ 対象外の可能性 |
+
+**体感 1.5割前後。** ただし偏りがある: 土台層 (protocol / telemetry / ai コア / agent コア) は最難関部 (SSE パーサ・非同期セマンティクス・イベント順序の厳密互換) を含めてほぼ固まっており、235テストで保護済み。残りの約7割は coding-agent (79k) と tui (18k) で、両者とも土台の上に載せる形なので行数比よりは速く進む見込み。**harness/ (agent の 10k行) が coding-agent 着手前の最後の大きな関門。**
+
 ## 未移植 (優先順)
 
 1. **pillar-ai のプロバイダ残り**: `openai-completions` は移植済み。次は `openai-responses-shared.ts` (792行) と `openai-responses.ts` (376行)、そして `anthropic-messages.ts` (1391行)。`models.generated.ts` はジェネレータで再生成、手移植禁止 (docs/rules/01、生成器は pillar-ai/src/bin/generate-models.rs に作る)。live-API テスト (responseid, xhigh, tool-call-without-result, tool-call-id-normalization e2e) はモック不能なので非移植。
