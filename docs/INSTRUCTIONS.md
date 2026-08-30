@@ -18,18 +18,18 @@ pi v0.84.3 (TypeScript, commit `56700d42e`) を Rust に移植する。拡張機
 
 ## 現在の状態 (2026-08-31)
 
-全ワークスペース 438テストがパス。`cargo fmt --check` / `cargo clippy` (クレート毎に `-D warnings`) クリーン。
+全ワークスペース 442テストがパス。`cargo fmt --check` / `cargo clippy` (クレート毎に `-D warnings`) クリーン。
 
 | クレート | テスト | 状況 |
 | --- | --- | --- |
 | pillar-protocol | 49 | ✅ 完了 |
 | pillar-telemetry | 15 | ✅ 完了 |
 | pillar-ai | 188 | 🔶 コア + 全主要プロバイダ済み (core 35 / faux 22 / models-runtime 39 / api-infra 27 / openai-completions 23 / openai-responses 14 / anthropic-messages 27 / uuid 1) |
-| pillar-agent | 186 | 🔶 コアループ + Agent クラス + harness 基盤〜reducer 済み (lib 20 / loop 25 / agent 22 / nodejs-env 25 / utils 10 / skills 8 / messages 13 / session 20 / compaction 15 / reducer 28) |
+| pillar-agent | 190 | 🔶 コアループ + Agent クラス + harness 基盤〜agent-harness スキャフォールド済み (lib 20 / loop 25 / agent 22 / nodejs-env 25 / utils 10 / skills 8 / messages 13 / session 20 / compaction 15 / reducer 28 / agent-harness-scaffold 4) |
 | pillar-coding-agent / tui / client / server / session-store | — | ❌ 未着手 |
 | pillar-extensions | — | ❌ 未着手 (luaur VM 統合)。設計は docs/rules/04 に確定済み |
 
-移植済みの主な到達点: agent ループ (agent-loop.test.ts 23ケース完全パリティ), Agent クラス, harness 基盤 (types/truncate/system-prompt/events/prompt-templates/env/shell-output/skills/messages), compaction 本体 + 共通部 + branch-summarization 準備部, session v4 ツリー (types/state/context/memory = InMemory バックエンド), result.ts (TaggedErrorValue), reducer.ts (validateRecordLog/reduceLaneState)。
+移植済みの主な到達点: agent ループ (agent-loop.test.ts 23ケース完全パリティ), Agent クラス, harness 基盤 (types/truncate/system-prompt/events/prompt-templates/env/shell-output/skills/messages), compaction 本体 + 共通部 + branch-summarization 準備部, session v4 ツリー (types/state/context/memory = InMemory バックエンド), result.ts (TaggedErrorValue), reducer.ts (validateRecordLog/reduceLaneState), agent-harness.ts (スキャフォールド: create/設定 getter-setter/未実装操作の明示拒否)。
 
 ## 全体進捗の目安 (2026-08-31 時点の行数集計)
 
@@ -40,18 +40,18 @@ pi v0.84.3 (TypeScript, commit `56700d42e`) を Rust に移植する。拡張機
 | protocol | 1.2k | 0.7k | ✅ 完了 (src 2.5k / tests 1.0k) |
 | telemetry | 0.9k | 0.2k | ✅ 完了 (src 0.7k / tests 0.5k) |
 | ai | 27.7k | 35.1k | 🔶 約5割 (src 14.6k / tests 8.2k。残り: google 系 1.4k、mistral-conversations 0.9k、bedrock-converse 1.3k、openai-codex 1.7k、azure 0.3k、images、providers/* 等) |
-| agent | 12.9k | 8.6k | 🔶 約82% (src 11.0k / tests 8.6k。残り: agent-harness 508 / telemetry 615 / tools 1203 / jsonl 848 / proxy 370 + branch-summarization の session 依存部、search/、e2e のうちモック可能なもの。reducer 667 / result 63 済み) |
+| agent | 12.9k | 8.6k | 🔶 約85% (src 11.5k / tests 8.8k。残り: telemetry 615 / tools 1203 / jsonl 848 / proxy 370 + branch-summarization の session 依存部、search/、e2e のうちモック可能なもの。reducer 667 / result 63 / agent-harness 508 済み) |
 | coding-agent | 78.9k | 50.3k | ❌ 未着手 (最大) |
 | tui | 17.9k | 16.4k | ❌ 未着手 |
 | server / client / session-backends | 6.3k | 4.2k | ❌ 未着手 |
 | evals | 1.3k | 0.5k | ❌ 対象外の可能性 |
 
-**体感 2割強。** 土台層 (protocol / telemetry / ai コア / agent コア) は最難関部 (SSE パーサ・非同期セマンティクス・イベント順序の厳密互換) を含めて固まっており、438テストで保護済み。残り約7割は coding-agent (79k) と tui (18k) で、両者とも土台の上に載せる形なので行数比よりは速く進む見込み。
+**体感 2割強。** 土台層 (protocol / telemetry / ai コア / agent コア) は最難関部 (SSE パーサ・非同期セマンティクス・イベント順序の厳密互換) を含めて固まっており、442テストで保護済み。残り約7割は coding-agent (79k) と tui (18k) で、両者とも土台の上に載せる形なので行数比よりは速く進む見込み。
 
 ## 次の作業キュー
 
-1. **harness 中核の移植の続き** (上流 `packages/agent/src/harness/`)。パリティテスト源は上流 `test/harness/` の agent-harness-scaffold.test.ts / telemetry.test.ts / tools.test.ts (622行)。
-   `agent-harness.ts` (508行) → `tools/` (1203行) → `telemetry.ts` (615行) → `session/jsonl/` (848行, JsonlSessionRepo) → `proxy.ts` (370行) → branch-summarization の session 依存部 (collectEntriesForBranchSummary / generateBranchSummary) の順。result.ts / reducer.ts は移植済み (`10fd5e4`)。
+1. **harness 中核の移植の続き** (上流 `packages/agent/src/harness/`)。パリティテスト源は上流 `test/harness/` の telemetry.test.ts / tools.test.ts (622行)。
+   `tools/` (1203行) → `telemetry.ts` (615行) → `session/jsonl/` (848行, JsonlSessionRepo) → `proxy.ts` (370行) → branch-summarization の session 依存部 (collectEntriesForBranchSummary / generateBranchSummary) の順。result.ts / reducer.ts / agent-harness.ts (スキャフォールド) は移植済み (`10fd5e4`, `294ce78`)。agent-harness の操作本体 (prompt/compact/resume/watch 等) は tools/jsonl 等の依存先が揃ってから。
 2. **pillar-ai のプロバイダ残り**: google 系 → mistral-conversations → bedrock-converse → openai-codex → azure → images → providers/*。`models.generated.ts` はジェネレータで再生成、手移植禁止 (docs/rules/01、生成器は pillar-ai/src/bin/generate-models.rs に作る)。live-API テスト (responseid, xhigh, tool-call-without-result, tool-call-id-normalization e2e) はモック不能なので非移植。
 3. **agent の残り**: `search/`、`e2e.test.ts` のうちモック可能なもの。models_generated.rs (generate-models ジェネレータ) は live カタログ依存のため別タスク。
 4. **pillar-coding-agent**: 未着手 (最大、61k行)。
@@ -116,6 +116,8 @@ pi v0.84.3 (TypeScript, commit `56700d42e`) を Rust に移植する。拡張機
 - **同名型の二重定義に注意** (#36) — `ProvisionedEntry` は `session/types.rs` (serde版、`kind` フィールド付き) と `session/memory.rs` (storage版、id+payload のみ) に分かれており、それぞれ別の imports になる。reducer 等の新規モジュールは serde版を使い、テストの構築も `payload.kind()` から `kind` を導出する。
 - **pure 関数の defensive clone は借用+出力クローンで置換** (#37) — 上流 `reduceLaneState` は `structuredClone` で入力保護しているが、Rust では入力を `&` で受け出力でクローンすれば同じ保証になる。ただし上流テストの「入力を mutate/alias しない」断言はそのまま `PartialEq` 比較で再現可能 (`LaneReductionInput` に `PartialEq` derive が必要)。
 - **上流の `NEGATIVE_INFINITY` 歩行は `Option<u64>` で表現** (#38) — overflow recovery 検出の `seq > newestConsumedInputSequence` は「消費メッセージが無ければ常に true」が正。`u64::MAX` 等の sentinel を使うと逆意味になるので `Option` + `is_none_or` を使う。
+- **テストでの `expect_err` は `Debug` を要求する** (#39) — `Result<T, E>::expect_err` は `T: Debug` を要求する。`AgentHarness` のような非 `Debug` 型を Ok 側に持つ結果は `match` で `Ok(_) => panic!()` にするか、エラー型だけを返すクロージャで検証する。
+- **`'static` クロージャは借用を取れない** (#40) — `Vec<(&str, Box<dyn Fn() -> ...>)>` 型注釈はクロージャが外部参照を借用すると lifetime エラーになる。`Box<dyn Fn() -> ... + '_>` と借用 lifetime を明示する。
 
 ## セッション運用の反省 (継続)
 
