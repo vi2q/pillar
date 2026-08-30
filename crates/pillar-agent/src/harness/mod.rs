@@ -13,6 +13,7 @@
 //! concrete enum variants on `crate::types::AgentMessage` (see
 //! `messages.rs`).
 
+pub mod agent_harness;
 pub mod compaction;
 pub mod env;
 pub mod events;
