@@ -20,12 +20,18 @@ pub use agent::{
     Agent, AgentBusyError, AgentOptions, AgentState, ContinueError, ListenerFuture, ResetError,
 };
 pub use agent_loop::{AgentEventSink, AgentStream, agent_loop, agent_loop_continue};
+pub use harness::messages::{
+    BRANCH_SUMMARY_PREFIX, BRANCH_SUMMARY_SUFFIX, COMPACTION_SUMMARY_PREFIX,
+    COMPACTION_SUMMARY_SUFFIX, bash_execution_to_text, convert_to_llm as harness_convert_to_llm,
+    create_branch_summary_message, create_compaction_summary_message, create_custom_message,
+};
 pub use stream_fn::{get_default_stream_fn, set_default_stream_fn};
 pub use types::thinking::AgentThinkingLevel;
 pub use types::{
     AfterToolCallContext, AfterToolCallResult, AgentContext, AgentEvent, AgentLoopConfig,
     AgentLoopTurnUpdate, AgentMessage, AgentTool, AgentToolCall, AgentToolResult,
-    AgentToolUpdateCallback, BeforeToolCallContext, BeforeToolCallResult, FauxModelRef,
-    PrepareNextFuture, QueueMode, ShouldStopAfterTurnContext, StopFuture, StreamCallOptions,
-    StreamFn, ToolExecuteError, ToolExecutionMode,
+    AgentToolUpdateCallback, BashExecutionMessage, BeforeToolCallContext, BeforeToolCallResult,
+    BranchSummaryMessage, CompactionSummaryMessage, CustomMessage, FauxModelRef, PrepareNextFuture,
+    QueueMode, ShouldStopAfterTurnContext, StopFuture, StreamCallOptions, StreamFn,
+    ToolExecuteError, ToolExecutionMode,
 };

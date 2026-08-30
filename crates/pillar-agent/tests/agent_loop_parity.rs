@@ -628,7 +628,7 @@ async fn should_inject_queued_messages_after_all_tool_calls_complete() {
     let event_sequence: Vec<String> = events
         .iter()
         .filter_map(|event| match event {
-            AgentEvent::MessageStart { message } => match message.as_message() {
+            AgentEvent::MessageStart { message } => match message.as_base_message() {
                 Message::ToolResult(result) => Some(format!("tool:{}", result.tool_call_id)),
                 Message::User {
                     content: pillar_ai::types::UserContent::Text(text),
@@ -897,7 +897,7 @@ async fn tool_error_becomes_an_error_result_and_the_loop_continues() {
     }
     let tool_result = messages.iter().find(|m| m.role_name() == "toolResult");
     assert!(tool_result.is_some());
-    match tool_result.map(|m| m.as_message()) {
+    match tool_result.map(|m| m.as_base_message()) {
         Some(Message::ToolResult(result)) => {
             assert!(result.is_error);
             match &result.content[0] {
@@ -998,18 +998,11 @@ async fn should_handle_custom_message_types_via_convert_to_llm() {
             // Filter out the custom role, convert the rest.
             let filtered: Vec<Message> = messages
                 .iter()
-                .map(|m| m.as_message())
+                .filter_map(|m| m.as_message().cloned())
                 .filter(|m| match m {
                     Message::ToolResult(result) => result.tool_name != "notification",
                     _ => true,
                 })
-                .filter(|m| {
-                    matches!(
-                        m,
-                        Message::User { .. } | Message::Assistant(_) | Message::ToolResult(_)
-                    )
-                })
-                .cloned()
                 .collect();
             *converted_for_hook.lock().unwrap() = filtered.clone();
             filtered
@@ -1336,7 +1329,7 @@ async fn should_force_sequential_execution_when_a_tool_has_execution_mode_sequen
     let tool_result_ids: Vec<String> = events
         .iter()
         .filter_map(|event| match event {
-            AgentEvent::MessageEnd { message } => match message.as_message() {
+            AgentEvent::MessageEnd { message } => match message.as_base_message() {
                 Message::ToolResult(result) => Some(result.tool_call_id.clone()),
                 _ => None,
             },
@@ -1613,7 +1606,7 @@ async fn should_emit_tool_execution_end_in_completion_order_but_persist_tool_res
     let tool_result_ids: Vec<String> = events
         .iter()
         .filter_map(|event| match event {
-            AgentEvent::MessageEnd { message } => match message.as_message() {
+            AgentEvent::MessageEnd { message } => match message.as_base_message() {
                 Message::ToolResult(result) => Some(result.tool_call_id.clone()),
                 _ => None,
             },
@@ -1729,7 +1722,7 @@ async fn should_stop_after_a_tool_batch_when_every_tool_result_sets_terminate_tr
         .filter(|e| e.kind() == "message_end")
         .filter(|e| match e {
             AgentEvent::MessageEnd { message } => {
-                matches!(message.as_message(), Message::Assistant(_))
+                matches!(message.as_base_message(), Message::Assistant(_))
             }
             _ => false,
         })
@@ -1807,7 +1800,7 @@ async fn should_stop_after_a_blocked_tool_call_when_before_tool_call_sets_termin
     assert_eq!(executed.load(Ordering::SeqCst), 0);
     let tool_result = messages
         .iter()
-        .find_map(|m| match m.as_message() {
+        .find_map(|m| match m.as_base_message() {
             Message::ToolResult(result) => Some(result.clone()),
             _ => None,
         })
@@ -2033,7 +2026,7 @@ async fn should_allow_after_tool_call_to_mark_a_tool_batch_as_terminating() {
         .filter(|e| e.kind() == "message_end")
         .filter(|e| match e {
             AgentEvent::MessageEnd { message } => {
-                matches!(message.as_message(), Message::Assistant(_))
+                matches!(message.as_base_message(), Message::Assistant(_))
             }
             _ => false,
         })
@@ -2059,7 +2052,7 @@ async fn should_allow_custom_message_types_as_last_message_caller_responsibility
             // Convert custom to user message.
             messages
                 .iter()
-                .map(|m| match m.as_message() {
+                .map(|m| match m.as_base_message() {
                     Message::ToolResult(result) if result.tool_name == "notification" => {
                         Message::User {
                             content: pillar_ai::types::UserContent::Text(

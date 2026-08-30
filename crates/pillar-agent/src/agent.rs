@@ -29,8 +29,7 @@ pub use crate::types::QueueMode;
 fn default_convert_to_llm(messages: &[AgentMessage]) -> Vec<Message> {
     messages
         .iter()
-        .filter(|message| matches!(message.role_name(), "user" | "assistant" | "toolResult"))
-        .map(|message| message.as_message().clone())
+        .filter_map(|message| message.as_message().cloned())
         .collect()
 }
 

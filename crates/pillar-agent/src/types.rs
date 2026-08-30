@@ -4,14 +4,16 @@
 //! configuration hooks, and the agent event vocabulary.
 //!
 //! divergence: `CustomAgentMessages` declaration merging has no Rust
-//! equivalent; `AgentMessage` is the fixed `Message` enum. Custom apps
-//! wrap it at a higher layer. The typebox schema validation surfaces as
-//! JSON-Schema validation over `serde_json::Value`.
+//! equivalent; the four harness custom messages (harness/messages.ts) are
+//! folded into the `AgentMessage` enum as `Custom` variants. The typebox
+//! schema validation surfaces as JSON-Schema validation over
+//! `serde_json::Value`.
 
 use std::collections::BTreeSet;
 use std::future::Future;
 use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use pillar_ai::types::{
@@ -271,12 +273,74 @@ pub struct AgentContext {
     pub tools: Vec<AgentTool>,
 }
 
-/// Agent transcript entries: LLM messages.
-/// divergence: pi extends this via `CustomAgentMessages` declaration
-/// merging; the Rust port keeps the base union and apps wrap it.
+/// Agent transcript entries: LLM messages + harness custom messages.
+/// divergence: pi extends this union via `CustomAgentMessages` declaration
+/// merging; the Rust port folds the four harness custom messages
+/// (harness/messages.ts) into the enum as `Custom` variants.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AgentMessage {
     Message(Message),
+    /// Upstream `BashExecutionMessage` (role "bashExecution").
+    BashExecution(Box<BashExecutionMessage>),
+    /// Upstream `CustomMessage` (role "custom").
+    Custom(Box<CustomMessage>),
+    /// Upstream `BranchSummaryMessage` (role "branchSummary").
+    BranchSummary(Box<BranchSummaryMessage>),
+    /// Upstream `CompactionSummaryMessage` (role "compactionSummary").
+    CompactionSummary(Box<CompactionSummaryMessage>),
+}
+
+/// Upstream `BashExecutionMessage`: one shell command run by the harness.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BashExecutionMessage {
+    pub command: String,
+    pub output: String,
+    pub exit_code: Option<i32>,
+    pub cancelled: bool,
+    pub truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub full_output_path: Option<String>,
+    /// Unix timestamp in milliseconds.
+    pub timestamp: u64,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub exclude_from_context: bool,
+}
+
+/// Upstream `CustomMessage<T>`: an application-defined UI message.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomMessage {
+    pub custom_type: String,
+    /// Bare string or content blocks (upstream `string | (TextContent | ImageContent)[]`).
+    pub content: pillar_ai::types::UserContent,
+    pub display: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<Value>,
+    /// Unix timestamp in milliseconds.
+    pub timestamp: u64,
+}
+
+/// Upstream `BranchSummaryMessage`: summary of a branch the conversation
+/// returned from.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchSummaryMessage {
+    pub summary: String,
+    pub from_id: String,
+    /// Unix timestamp in milliseconds.
+    pub timestamp: u64,
+}
+
+/// Upstream `CompactionSummaryMessage`: summary replacing compacted
+/// history.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompactionSummaryMessage {
+    pub summary: String,
+    pub tokens_before: u64,
+    /// Unix timestamp in milliseconds.
+    pub timestamp: u64,
 }
 
 impl AgentMessage {
@@ -287,13 +351,29 @@ impl AgentMessage {
                 Message::Assistant(_) => "assistant",
                 Message::ToolResult(_) => "toolResult",
             },
+            AgentMessage::BashExecution(_) => "bashExecution",
+            AgentMessage::Custom(_) => "custom",
+            AgentMessage::BranchSummary(_) => "branchSummary",
+            AgentMessage::CompactionSummary(_) => "compactionSummary",
         }
     }
 
-    pub fn as_message(&self) -> &Message {
+    /// The LLM-compatible message, if this entry is one (upstream narrows
+    /// by role).
+    pub fn as_message(&self) -> Option<&Message> {
         match self {
-            AgentMessage::Message(message) => message,
+            AgentMessage::Message(message) => Some(message),
+            _ => None,
         }
+    }
+
+    /// The LLM-compatible message; panics for custom entries. Kept for
+    /// existing call sites that only handle base messages — migrate to
+    /// [`as_message`](Self::as_message).
+    #[track_caller]
+    pub fn as_base_message(&self) -> &Message {
+        self.as_message()
+            .unwrap_or_else(|| panic!("as_message() on custom agent message {}", self.role_name()))
     }
 }
 
@@ -567,7 +647,10 @@ impl AgentLoopConfig {
     /// Identity converter pass-through (upstream test helper parity).
     pub fn identity_converter() -> Arc<ConvertToLlmFn> {
         Arc::new(|messages: &[AgentMessage]| {
-            messages.iter().map(|m| m.as_message().clone()).collect()
+            messages
+                .iter()
+                .filter_map(|m| m.as_message().cloned())
+                .collect()
         })
     }
 

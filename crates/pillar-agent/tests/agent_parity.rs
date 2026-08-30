@@ -263,7 +263,7 @@ async fn emits_full_lifecycle_events_for_thrown_run_failures() {
     );
     let state = agent.state();
     let last = state.messages.last().expect("last message").clone();
-    match last.as_message() {
+    match last.as_base_message() {
         Message::Assistant(assistant) => {
             assert_eq!(assistant.stop_reason, StopReason::Error);
             assert_eq!(
@@ -767,13 +767,15 @@ async fn continue_should_process_queued_follow_up_messages_after_an_assistant_tu
     agent.continue_run().await.expect("continue");
 
     let messages = agent.state().messages;
-    let has_queued_follow_up = messages.iter().any(|message| match message.as_message() {
-        Message::User {
-            content: pillar_ai::types::UserContent::Text(text),
-            ..
-        } => text == "Queued follow-up",
-        _ => false,
-    });
+    let has_queued_follow_up = messages
+        .iter()
+        .any(|message| match message.as_base_message() {
+            Message::User {
+                content: pillar_ai::types::UserContent::Text(text),
+                ..
+            } => text == "Queued follow-up",
+            _ => false,
+        });
     assert!(has_queued_follow_up);
     assert_eq!(messages.last().map(|m| m.role_name()), Some("assistant"));
 }
