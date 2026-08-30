@@ -14,6 +14,7 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 pillar-ai = { path = "../pillar-ai" }
+globset = "0.4.19"
 
 [dev-dependencies]
 tokio = { version = "1.47", features = ["rt", "macros", "time"] }
