@@ -1,14 +1,16 @@
-//! Port of packages/ai/src/api/anthropic-messages.ts (pi v0.84.3) —
-//! conversion & raw-SSE layer. The stream entry points (stream/streamSimple/
-//! buildParams/processAnthropicStream) land in a follow-up change.
+//! Port of packages/ai/src/api/anthropic-messages.ts (pi v0.84.3).
+//!
+//! divergence: upstream talks to the Anthropic SDK client; the Rust port
+//! performs requests via `FetchFn` and decodes raw SSE itself.
 
 use std::collections::BTreeSet;
 
 use serde_json::{Map, Value, json};
 
+use crate::event_stream::assistant_message_event_stream;
 use crate::types::{
     AssistantMessage, CacheRetention, Content, Context, Message, Model, StopReason, Tool,
-    ToolResultMessage,
+    ToolResultMessage, Usage,
 };
 
 // --- Compat --------------------------------------------------------------
@@ -1662,4 +1664,378 @@ pub fn process_anthropic_events(
         process_anthropic_event(event, output, &mut state, stream, &mut usage_model, &ctx)?;
     }
     Ok(())
+}
+
+// --- Stream entry points -------------------------------------------------
+
+/// Resolves the auth surface for a request: explicit API key, header-owned
+/// auth, or OAuth. Upstream asserts before streaming (streamSimple) or in
+/// the stream task (stream).
+fn resolve_auth(
+    model: &Model,
+    api_key: Option<&str>,
+    headers: Option<&crate::types::ProviderHeaders>,
+) -> Result<(), String> {
+    assert_request_auth(&model.provider, api_key, headers)
+}
+
+/// Upstream `stream()` — returns an event stream; the request runs on a
+/// spawned task against the default or injected transport.
+pub fn stream(
+    model: Model,
+    context: Context,
+    options: Option<AnthropicOptions>,
+) -> crate::event_stream::AssistantMessageEventStream {
+    let stream = assistant_message_event_stream();
+    let task_stream = stream.clone_stream();
+    tokio::spawn(run_stream(
+        model,
+        context,
+        options.unwrap_or_default(),
+        task_stream,
+    ));
+    stream
+}
+
+fn default_fetch() -> crate::transport::SharedFetchFn {
+    std::sync::Arc::new(
+        crate::transport::ReqwestFetch::new()
+            .unwrap_or_else(|error| panic!("default transport unavailable: {error}")),
+    )
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn fresh_output(model: &Model) -> AssistantMessage {
+    AssistantMessage {
+        content: Vec::new(),
+        api: model.api.clone(),
+        provider: model.provider.clone(),
+        model: model.id.clone(),
+        response_model: None,
+        response_id: None,
+        diagnostics: Vec::new(),
+        usage: Usage::default(),
+        stop_reason: StopReason::Pending,
+        deferred: None,
+        error_message: None,
+        raw_stop_reason: None,
+        end_turn: None,
+        timestamp: now_ms(),
+    }
+}
+
+fn fail_stream(
+    output: &mut AssistantMessage,
+    stream: &crate::event_stream::AssistantMessageEventStream,
+    error: String,
+    aborted: bool,
+) {
+    output.stop_reason = if aborted {
+        StopReason::Aborted
+    } else {
+        StopReason::Error
+    };
+    output.error_message = Some(error);
+    stream.push(crate::types::AssistantMessageEvent::Error {
+        reason: output.stop_reason,
+        error: output.clone(),
+    });
+    stream.end(Some(output.clone()));
+}
+
+async fn run_stream(
+    model: Model,
+    context: Context,
+    options: AnthropicOptions,
+    stream: crate::event_stream::AssistantMessageEventStream,
+) {
+    let mut output = fresh_output(&model);
+
+    let result = run_stream_inner(&model, &context, &options, &mut output, &stream).await;
+    if let Err(error) = result {
+        let aborted = options
+            .signal
+            .as_ref()
+            .is_some_and(|signal| signal.is_aborted());
+        fail_stream(&mut output, &stream, error, aborted);
+    }
+}
+
+type RunResult = Result<(), String>;
+
+async fn run_stream_inner(
+    model: &Model,
+    context: &Context,
+    options: &AnthropicOptions,
+    output: &mut AssistantMessage,
+    stream: &crate::event_stream::AssistantMessageEventStream,
+) -> RunResult {
+    resolve_auth(model, options.api_key.as_deref(), options.headers.as_ref())?;
+
+    let is_oauth = options.api_key.as_deref().is_some_and(is_oauth_token);
+    let has_images =
+        crate::api::github_copilot_headers::has_copilot_vision_input(&context.messages);
+    let dynamic_headers = (model.provider == "github-copilot").then(|| {
+        crate::api::github_copilot_headers::build_copilot_dynamic_headers(
+            &context.messages,
+            has_images,
+        )
+    });
+    let identity = create_client_identity(
+        model,
+        CreateClientIdentityOptions {
+            api_key: options.api_key.as_deref(),
+            interleaved_thinking: options.interleaved_thinking.unwrap_or(true),
+            use_fine_grained_tool_streaming_beta: should_use_fine_grained_tool_streaming_beta(
+                model, context,
+            ),
+            use_server_side_fallback_beta: should_use_server_side_fallback_beta(model),
+            options_headers: options.headers.as_ref(),
+            dynamic_headers: dynamic_headers.as_deref(),
+            session_id: options.session_id.as_deref(),
+        },
+    );
+
+    let mut params = build_params(model, context, is_oauth, options);
+    if let Some(on_payload) = &options.on_payload {
+        if let Some(next_params) = on_payload(model, params.clone()).await {
+            params = next_params;
+        }
+    }
+
+    let fetch = options.fetch.clone().unwrap_or_else(default_fetch);
+    let request = crate::transport::FetchRequest {
+        method: "POST".to_string(),
+        url: format!("{}/v1/messages", model.base_url.trim_end_matches('/')),
+        headers: {
+            let mut headers = identity.default_headers;
+            if !headers.iter().any(|(name, _)| name == "Content-Type") {
+                headers.push(("Content-Type".to_string(), "application/json".to_string()));
+            }
+            headers
+        },
+        body: Some(
+            serde_json::to_vec(&params)
+                .map_err(|error| format!("failed to serialize request body: {error}"))?,
+        ),
+    };
+
+    let fetch_for_retry = std::sync::Arc::clone(&fetch);
+    let request_for_retry = request;
+    let signal = options.signal.clone();
+    let timeout_ms = options.timeout_ms;
+    let response = crate::provider_retry::retry_provider_request(
+        || {
+            let fetch = std::sync::Arc::clone(&fetch_for_retry);
+            let request = request_for_retry.clone();
+            let signal = signal.clone();
+            async move {
+                crate::api::fetch_json_stream(&fetch, request, signal.as_ref(), timeout_ms).await
+            }
+        },
+        crate::provider_retry::ProviderRetryOptions {
+            max_retries: options.max_retries,
+            max_retry_delay_ms: options.max_retry_delay_ms,
+            signal: options.signal.clone(),
+        },
+    )
+    .await
+    .map_err(|error| crate::api::format_stream_error(&error))?;
+
+    if let Some(on_response) = &options.on_response {
+        on_response(
+            crate::api::ProviderResponseInfo {
+                status: response.status,
+                headers: response.headers.clone(),
+            },
+            model,
+        )
+        .await;
+    }
+
+    stream.push(crate::types::AssistantMessageEvent::Start {
+        partial: output.clone(),
+    });
+
+    let sse_events = decode_fetch_response(response, options.signal.as_ref()).await?;
+    let events = iterate_anthropic_events(&sse_events)?;
+
+    let mut state = StreamState::new();
+    let mut usage_model = model.clone();
+    let ctx = ProcessEventContext {
+        model,
+        is_oauth,
+        context_tools: Some(&context.tools),
+    };
+    for event in &events {
+        process_anthropic_event(event, output, &mut state, stream, &mut usage_model, &ctx)?;
+    }
+
+    if options
+        .signal
+        .as_ref()
+        .is_some_and(|signal| signal.is_aborted())
+    {
+        return Err("Request was aborted".to_string());
+    }
+    if output.stop_reason == StopReason::Pending {
+        return Err("Anthropic stream ended without a stop reason".to_string());
+    }
+    if output.stop_reason == StopReason::Aborted || output.stop_reason == StopReason::Error {
+        return Err(output
+            .error_message
+            .clone()
+            .unwrap_or_else(|| "An unknown error occurred".to_string()));
+    }
+
+    stream.push(crate::types::AssistantMessageEvent::Done {
+        reason: output.stop_reason,
+        message: output.clone(),
+    });
+    stream.end(Some(output.clone()));
+    Ok(())
+}
+
+/// Reads the fetch response body and decodes it into raw SSE events,
+/// surfacing an `error` SSE event's data as the failure (upstream
+/// `iterateSseMessages` + `iterateAnthropicEvents` streaming behavior).
+async fn decode_fetch_response(
+    response: crate::transport::FetchResponse,
+    signal: Option<&crate::AbortSignal>,
+) -> Result<Vec<ServerSentEvent>, String> {
+    use futures::StreamExt;
+
+    let mut state = SseDecoderState::default();
+    let mut buffer = String::new();
+    let mut events: Vec<ServerSentEvent> = Vec::new();
+    let byte_stream = response.body;
+    tokio::pin!(byte_stream);
+
+    loop {
+        if signal.is_some_and(|signal| signal.is_aborted()) {
+            return Err("Request was aborted".to_string());
+        }
+        let chunk = match byte_stream.next().await {
+            Some(Ok(chunk)) => chunk,
+            Some(Err(error)) => return Err(error.to_string()),
+            None => break,
+        };
+        let text = String::from_utf8_lossy(&chunk);
+        events.extend(decode_sse_chunk(&text, &mut state, &mut buffer));
+    }
+    events.extend(finish_sse_body(&mut state, &mut buffer));
+
+    // An `error` SSE event fails the stream with its data as the message.
+    if let Some(error_event) = events
+        .iter()
+        .find(|event| event.event.as_deref() == Some("error"))
+    {
+        return Err(error_event.data.clone());
+    }
+    Ok(events)
+}
+
+/// Upstream `streamSimple()`: maps reasoning levels onto the full options
+/// shape, then delegates to [`stream`].
+pub fn stream_simple(
+    model: Model,
+    context: Context,
+    options: Option<AnthropicSimpleStreamOptions>,
+) -> crate::event_stream::AssistantMessageEventStream {
+    let options = options.unwrap_or_default();
+    if let Err(error) = resolve_auth(&model, options.api_key.as_deref(), options.headers.as_ref()) {
+        let stream = assistant_message_event_stream();
+        let mut message = fresh_output(&model);
+        message.stop_reason = StopReason::Error;
+        message.error_message = Some(error);
+        stream.push(crate::types::AssistantMessageEvent::Error {
+            reason: StopReason::Error,
+            error: message.clone(),
+        });
+        stream.end(Some(message));
+        return stream;
+    }
+
+    let base_max_tokens = options.max_tokens.unwrap_or(model.max_tokens);
+    let base_max_tokens = crate::simple_options::clamp_max_tokens_to_context(
+        model.context_window,
+        &context,
+        base_max_tokens,
+    );
+    let mut anthropic_options = AnthropicOptions {
+        signal: options.signal,
+        api_key: options.api_key,
+        fetch: options.fetch,
+        env: options.env,
+        on_payload: options.on_payload,
+        on_response: options.on_response,
+        headers: options.headers,
+        timeout_ms: options.timeout_ms,
+        max_retries: options.max_retries,
+        max_retry_delay_ms: options.max_retry_delay_ms,
+        temperature: options.temperature,
+        max_tokens: Some(base_max_tokens),
+        cache_retention: options.cache_retention,
+        session_id: options.session_id,
+        metadata: options.metadata,
+        tool_choice: options.tool_choice,
+        ..Default::default()
+    };
+
+    match options.reasoning {
+        None => {
+            anthropic_options.thinking_enabled = Some(false);
+        }
+        Some(reasoning) => {
+            let clamped =
+                crate::models::clamp_thinking_level(&model, to_model_thinking_level(reasoning));
+            if clamped == crate::types::ModelThinkingLevel::Off {
+                anthropic_options.thinking_enabled = Some(false);
+            } else if force_adaptive_thinking(&model) {
+                anthropic_options.thinking_enabled = Some(true);
+                anthropic_options.effort =
+                    Some(map_thinking_level_to_effort(&model, options.reasoning));
+            } else {
+                // Undefined means the caller did not request an output cap;
+                // let the helper use the model cap.
+                let (adjusted_max_tokens, thinking_budget) =
+                    crate::simple_options::adjust_max_tokens_for_thinking(
+                        options.max_tokens,
+                        model.max_tokens,
+                        reasoning,
+                        options.thinking_budgets,
+                    );
+                let max_tokens = crate::simple_options::clamp_max_tokens_to_context(
+                    model.context_window,
+                    &context,
+                    adjusted_max_tokens,
+                );
+                anthropic_options.max_tokens = Some(max_tokens);
+                anthropic_options.thinking_enabled = Some(true);
+                anthropic_options.thinking_budget_tokens = Some(std::cmp::min(
+                    thinking_budget,
+                    max_tokens.saturating_sub(crate::simple_options::MIN_ANSWER_TOKENS),
+                ));
+            }
+        }
+    }
+
+    stream(model, context, Some(anthropic_options))
+}
+
+fn to_model_thinking_level(level: crate::types::ThinkingLevel) -> crate::types::ModelThinkingLevel {
+    match level {
+        crate::types::ThinkingLevel::Minimal => crate::types::ModelThinkingLevel::Minimal,
+        crate::types::ThinkingLevel::Low => crate::types::ModelThinkingLevel::Low,
+        crate::types::ThinkingLevel::Medium => crate::types::ModelThinkingLevel::Medium,
+        crate::types::ThinkingLevel::High => crate::types::ModelThinkingLevel::High,
+        crate::types::ThinkingLevel::Xhigh => crate::types::ModelThinkingLevel::Xhigh,
+        crate::types::ThinkingLevel::Max => crate::types::ModelThinkingLevel::Max,
+    }
 }

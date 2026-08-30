@@ -1070,3 +1070,101 @@ fn batches_consecutive_tool_results_with_reference_displacement() {
     assert_eq!(content[1]["type"], json!("text"));
     assert_eq!(content[1]["text"], json!("loaded"));
 }
+
+// --- stream() e2e over a mock transport ----------------------------------
+
+use pillar_ai::transport::{FetchFn, FetchRequest, FetchResponse};
+
+type CapturedRequests = std::sync::Arc<tokio::sync::Mutex<Vec<FetchRequest>>>;
+
+/// Transport answering with a canned Anthropic SSE body and recording the
+/// request (headers + JSON body) for assertions.
+struct MockAnthropicSse {
+    body: String,
+    status: u16,
+    captured: CapturedRequests,
+}
+
+impl MockAnthropicSse {
+    fn new(body: String) -> (Self, CapturedRequests) {
+        let captured: CapturedRequests = std::sync::Arc::default();
+        (
+            Self {
+                body,
+                status: 200,
+                captured: std::sync::Arc::clone(&captured),
+            },
+            captured,
+        )
+    }
+}
+
+#[async_trait::async_trait]
+impl FetchFn for MockAnthropicSse {
+    async fn fetch(
+        &self,
+        request: FetchRequest,
+    ) -> Result<FetchResponse, pillar_ai::error::AiError> {
+        self.captured.lock().await.push(request);
+        let chunks: Vec<Result<Vec<u8>, pillar_ai::error::AiError>> =
+            vec![Ok(self.body.clone().into_bytes()), Ok(Vec::new())];
+        Ok(FetchResponse {
+            status: self.status,
+            headers: vec![("content-type".to_string(), "text/event-stream".to_string())],
+            body: Box::pin(futures::stream::iter(chunks)),
+        })
+    }
+}
+
+fn sse_body_of(events: &[(String, Value)]) -> String {
+    let mut body = String::new();
+    for (event, data) in events {
+        body.push_str(&format!("event: {event}\ndata: {data}\n\n"));
+    }
+    body
+}
+
+#[tokio::test]
+async fn streams_over_mock_transport_and_sends_expected_request() {
+    let model = base_model();
+    let body = sse_body_of(&text_block_events("Hello"));
+    let (mock, captured) = MockAnthropicSse::new(body);
+
+    let s = pillar_ai::api::anthropic_messages::stream(
+        model.clone(),
+        hello_context(),
+        Some(AnthropicOptions {
+            api_key: Some("test-key".to_string()),
+            fetch: Some(std::sync::Arc::new(mock)),
+            ..Default::default()
+        }),
+    );
+    let _events = pillar_ai::event_stream::collect_events(&s).await;
+    let result = s.result().await;
+
+    assert_eq!(
+        result.stop_reason,
+        StopReason::Stop,
+        "{:?}",
+        result.error_message
+    );
+    assert_eq!(result.content, vec![Content::text("Hello")]);
+
+    let requests = captured.lock().await;
+    assert_eq!(requests.len(), 1);
+    let request = &requests[0];
+    assert_eq!(request.method, "POST");
+    assert_eq!(request.url, "https://api.anthropic.com/v1/messages");
+    assert!(
+        request
+            .headers
+            .iter()
+            .any(|(name, value)| name == "x-api-key" && value == "test-key"),
+        "headers: {:?}",
+        request.headers
+    );
+    let sent: Value = serde_json::from_slice(request.body.as_deref().expect("body")).expect("json");
+    assert_eq!(sent["model"], json!("claude-haiku-4-5"));
+    assert_eq!(sent["stream"], json!(true));
+    assert_eq!(sent["max_tokens"], json!(model.max_tokens));
+}
