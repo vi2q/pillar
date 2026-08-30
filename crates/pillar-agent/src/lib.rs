@@ -9,15 +9,22 @@
 #![forbid(unsafe_code)]
 
 pub mod abort;
+pub mod agent;
 pub mod agent_loop;
+pub mod stream_fn;
 pub mod types;
 
 pub use abort::AbortSignal;
+pub use agent::{
+    Agent, AgentBusyError, AgentOptions, AgentState, ContinueError, ListenerFuture, ResetError,
+};
 pub use agent_loop::{AgentEventSink, AgentStream, agent_loop, agent_loop_continue};
+pub use stream_fn::{get_default_stream_fn, set_default_stream_fn};
 pub use types::thinking::AgentThinkingLevel;
 pub use types::{
     AfterToolCallContext, AfterToolCallResult, AgentContext, AgentEvent, AgentLoopConfig,
     AgentLoopTurnUpdate, AgentMessage, AgentTool, AgentToolCall, AgentToolResult,
-    AgentToolUpdateCallback, BeforeToolCallContext, BeforeToolCallResult, FauxModelRef, QueueMode,
-    ShouldStopAfterTurnContext, StreamCallOptions, StreamFn, ToolExecuteError, ToolExecutionMode,
+    AgentToolUpdateCallback, BeforeToolCallContext, BeforeToolCallResult, FauxModelRef,
+    PrepareNextFuture, QueueMode, ShouldStopAfterTurnContext, StopFuture, StreamCallOptions,
+    StreamFn, ToolExecuteError, ToolExecutionMode,
 };

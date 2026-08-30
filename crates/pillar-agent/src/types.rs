@@ -33,12 +33,26 @@ pub struct StreamFn {
 
 type StreamFnInner = dyn Fn(Context, Option<StreamCallOptions>) -> StreamFuture + Send + Sync;
 
-/// Options passed across the stream-fn boundary: the simple stream options
-/// plus the caller's abort signal.
-#[derive(Debug, Clone, Default)]
+/// Options passed across the stream-fn boundary. Mirrors the upstream
+/// `AgentLoopConfig extends SimpleStreamOptions` spread plus the caller's
+/// abort signal: `BaseStreamOptions` fields the loop threads through, and
+/// the simple-level additions the Agent configures.
+#[derive(Clone, Default)]
 pub struct StreamCallOptions {
     pub simple: SimpleStreamOptionsLike,
     pub abort: Option<crate::abort::AbortSignal>,
+    /// Upstream `onPayload`, forwarded to the provider layer.
+    pub on_payload: Option<pillar_ai::api::OnPayloadFn>,
+    /// Upstream `onResponse`, forwarded to the provider layer.
+    pub on_response: Option<pillar_ai::api::OnResponseFn>,
+    /// Preferred transport for providers that support multiple transports.
+    pub transport: Option<pillar_ai::types::Transport>,
+    /// Custom per-level thinking token budgets.
+    pub thinking_budgets: Option<pillar_ai::types::ThinkingBudgets>,
+    /// Optional cap for provider-requested retry delays.
+    pub max_retry_delay_ms: Option<u64>,
+    /// Session identifier forwarded to providers for cache-aware backends.
+    pub session_id: Option<String>,
 }
 
 pub type StreamFuture =
@@ -214,6 +228,16 @@ pub type GetApiKeyFn = dyn Fn(&str) -> ApiKeyFuture + Send + Sync;
 pub type ShouldStopFn = dyn Fn(&ShouldStopAfterTurnContext) -> StopFuture + Send + Sync;
 /// Prepare-next-turn closure type.
 pub type PrepareNextFn = dyn Fn(&ShouldStopAfterTurnContext) -> PrepareNextFuture + Send + Sync;
+/// Stop-after-turn closure type carrying the active run's abort signal
+/// (upstream `AgentOptions.shouldStopAfterTurn(context, signal?)`).
+pub type ShouldStopWithSignalFn = dyn Fn(&ShouldStopAfterTurnContext, Option<crate::abort::AbortSignal>) -> StopFuture
+    + Send
+    + Sync;
+/// Prepare-next-turn closure type carrying the active run's abort signal
+/// (upstream `AgentOptions.prepareNextTurn(signal?)` variants).
+pub type PrepareNextWithSignalFn = dyn Fn(&ShouldStopAfterTurnContext, Option<crate::abort::AbortSignal>) -> PrepareNextFuture
+    + Send
+    + Sync;
 /// Message-poller closure type.
 pub type MessagesFn = dyn Fn() -> MessagesFuture + Send + Sync;
 /// Before-tool-call closure type.
@@ -376,6 +400,9 @@ pub struct ShouldStopAfterTurnContext {
     pub message: AssistantMessage,
     /// Tool result messages passed to the preceding `turn_end`.
     pub tool_results: Vec<ToolResultMessage>,
+    /// Current agent context after the turn's assistant message and tool
+    /// results have been appended.
+    pub context: AgentContext,
     /// Messages this loop invocation returns if it exits here.
     pub new_messages: Vec<AgentMessage>,
 }
@@ -409,6 +436,24 @@ pub struct FauxModelRef {
 }
 
 impl FauxModelRef {
+    /// Upstream `DEFAULT_MODEL` placeholder used when no model is configured.
+    pub fn unknown() -> Self {
+        Self {
+            id: "unknown".into(),
+            name: "unknown".into(),
+            api: "unknown".into(),
+            provider: "unknown".into(),
+            base_url: String::new(),
+            reasoning: false,
+            input: Vec::new(),
+            cost: pillar_ai::types::UsageCost::default(),
+            context_window: 0,
+            max_tokens: 0,
+        }
+    }
+}
+
+impl FauxModelRef {
     pub fn from_faux(model: &pillar_ai::faux::FauxModel) -> Self {
         Self {
             id: model.id.clone(),
@@ -427,9 +472,30 @@ impl FauxModelRef {
 
 /// Loop configuration hooks. Closures are stored as boxed trait objects;
 /// each mirrors an upstream optional hook. `None` = hook absent.
+impl std::fmt::Debug for StreamCallOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StreamCallOptions")
+            .field("simple", &self.simple)
+            .field("abort", &self.abort)
+            .field("transport", &self.transport)
+            .field("thinking_budgets", &self.thinking_budgets)
+            .field("max_retry_delay_ms", &self.max_retry_delay_ms)
+            .field("session_id", &self.session_id)
+            .finish()
+    }
+}
+
 #[derive(Clone)]
 pub struct AgentLoopConfig {
     pub model: Option<FauxModelRef>,
+    /// Requested reasoning level for future turns (`None` = off/absent).
+    /// Authoritative over `stream_options.reasoning`; prepared by the Agent
+    /// from its thinking level and updated by `prepare_next_turn` results.
+    pub reasoning: Option<pillar_ai::types::ThinkingLevel>,
+    /// Custom per-level thinking token budgets forwarded to the stream.
+    pub thinking_budgets: Option<pillar_ai::types::ThinkingBudgets>,
+    /// Optional cap for provider-requested retry delays.
+    pub max_retry_delay_ms: Option<u64>,
     /// Converts `AgentMessage[]` to LLM-compatible `Message[]` before each
     /// LLM call. Must not panic; return a safe fallback instead.
     pub convert_to_llm: Arc<ConvertToLlmFn>,
@@ -453,6 +519,12 @@ pub struct AgentLoopConfig {
     pub after_tool_call: Option<Arc<AfterToolFn>>,
     /// Base stream options forwarded with each request.
     pub stream_options: SimpleStreamOptionsLike,
+    /// Upstream `onPayload`, forwarded through stream call options.
+    pub on_payload: Option<pillar_ai::api::OnPayloadFn>,
+    /// Upstream `onResponse`, forwarded through stream call options.
+    pub on_response: Option<pillar_ai::api::OnResponseFn>,
+    /// Preferred transport forwarded through stream call options.
+    pub transport: Option<pillar_ai::types::Transport>,
 }
 
 pub type TransformFuture = std::pin::Pin<Box<dyn Future<Output = Vec<AgentMessage>> + Send>>;
@@ -470,6 +542,9 @@ impl Default for AgentLoopConfig {
     fn default() -> Self {
         Self {
             model: None,
+            reasoning: None,
+            thinking_budgets: None,
+            max_retry_delay_ms: None,
             convert_to_llm: Self::identity_converter(),
             transform_context: None,
             get_api_key: None,
@@ -481,6 +556,9 @@ impl Default for AgentLoopConfig {
             before_tool_call: None,
             after_tool_call: None,
             stream_options: Default::default(),
+            on_payload: None,
+            on_response: None,
+            transport: None,
         }
     }
 }
@@ -509,6 +587,8 @@ impl std::fmt::Debug for AgentLoopConfig {
 
 /// Thinking-level vocabulary used by loop state ("off" included).
 pub mod thinking {
+    use pillar_ai::types::ThinkingLevel;
+
     /// Agent-level thinking level including "off".
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
     pub enum AgentThinkingLevel {
@@ -532,6 +612,20 @@ pub mod thinking {
                 AgentThinkingLevel::High => "high",
                 AgentThinkingLevel::Xhigh => "xhigh",
                 AgentThinkingLevel::Max => "max",
+            }
+        }
+
+        /// Upstream mapping: "off" maps to `undefined` on the loop config;
+        /// every other level maps to the provider-level thinking level.
+        pub fn to_thinking_level(self) -> Option<ThinkingLevel> {
+            match self {
+                AgentThinkingLevel::Off => None,
+                AgentThinkingLevel::Minimal => Some(ThinkingLevel::Minimal),
+                AgentThinkingLevel::Low => Some(ThinkingLevel::Low),
+                AgentThinkingLevel::Medium => Some(ThinkingLevel::Medium),
+                AgentThinkingLevel::High => Some(ThinkingLevel::High),
+                AgentThinkingLevel::Xhigh => Some(ThinkingLevel::Xhigh),
+                AgentThinkingLevel::Max => Some(ThinkingLevel::Max),
             }
         }
     }

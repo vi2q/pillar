@@ -228,6 +228,11 @@ async fn run_loop(
                         if let Some(next_model) = update.model {
                             config.model = Some(next_model);
                         }
+                        // Upstream maps "off" to undefined and leaves the
+                        // previous level in place when the update omits it.
+                        if let Some(next_thinking) = update.thinking_level {
+                            config.reasoning = next_thinking.to_thinking_level();
+                        }
                     }
                 }
                 // Preparation can be long-running; pick up steering queued
@@ -317,6 +322,7 @@ async fn run_loop(
             last_completed_turn = Some(ShouldStopAfterTurnContext {
                 message: message.clone(),
                 tool_results: tool_results.clone(),
+                context: current_context.clone(),
                 new_messages: new_messages.clone(),
             });
 
@@ -399,6 +405,9 @@ async fn stream_assistant_response(
 
     // Resolve API key (important for expiring tokens).
     let mut call_options = config.stream_options.clone();
+    if call_options.reasoning.is_none() {
+        call_options.reasoning = config.reasoning;
+    }
     if let Some(get_key) = &config.get_api_key {
         if let Some(model) = &config.model {
             if let Some(key) = get_key(&model.provider).await {
@@ -407,16 +416,36 @@ async fn stream_assistant_response(
         }
     }
 
-    let response = stream_fn
-        .call(
-            llm_context,
-            Some(StreamCallOptions {
-                simple: call_options,
-                abort: signal,
-            }),
-        )
-        .await;
-
+    // Upstream awaits `streamFunction(...)` inside runLoop; a throw becomes
+    // a run failure handled by Agent.handleRunFailure. StreamFn futures that
+    // panic surface here: convert the panic into the same error-message
+    // contract (stopReason "error" + errorMessage) instead of unwinding
+    // through the spawned loop task.
+    let response = std::panic::AssertUnwindSafe(stream_fn.call(
+        llm_context,
+        Some(StreamCallOptions {
+            session_id: call_options.session_id.clone(),
+            simple: call_options,
+            abort: signal,
+            on_payload: config.on_payload.clone(),
+            on_response: config.on_response.clone(),
+            transport: config.transport,
+            thinking_budgets: config.thinking_budgets,
+            max_retry_delay_ms: config.max_retry_delay_ms,
+        }),
+    ));
+    let response = match futures::FutureExt::catch_unwind(response).await {
+        Ok(stream) => stream,
+        Err(panic) => {
+            let message_text = panic_message(&panic);
+            let stream = pillar_ai::event_stream::assistant_message_event_stream();
+            stream.push(AssistantMessageEvent::Error {
+                reason: StopReason::Error,
+                error: create_error_assistant_message(message_text),
+            });
+            stream
+        }
+    };
     let mut partial_added = false;
 
     {
@@ -651,7 +680,10 @@ async fn execute_tool_calls_parallel(
     emit: &AgentEventSink,
 ) -> ExecutedToolCallBatch {
     // Phase 1: prepare sequentially, emitting start events in source order.
+    // Immediate outcomes are finalized (end event emitted) inline like
+    // upstream; prepared calls continue as concurrent futures.
     let mut pending: Vec<(AgentToolCall, Preparation)> = Vec::new();
+    let mut immediate_ends: Vec<FinalizedToolCall> = Vec::new();
     for tool_call in tool_calls {
         emit.emit(AgentEvent::ToolExecutionStart {
             tool_call_id: tool_call.id.clone(),
@@ -668,65 +700,60 @@ async fn execute_tool_calls_parallel(
             signal.clone(),
         )
         .await;
-        let aborted = signal.as_ref().map(|s| s.is_aborted()).unwrap_or(false);
-        pending.push((tool_call, preparation));
-        if aborted {
+        match preparation {
+            Preparation::Immediate { result, is_error } => {
+                let finalized = FinalizedToolCall {
+                    tool_call: tool_call.clone(),
+                    result,
+                    is_error,
+                };
+                emit_tool_execution_end(&finalized, emit).await;
+                immediate_ends.push(finalized);
+            }
+            Preparation::Prepared { tool, args } => {
+                pending.push((tool_call, Preparation::Prepared { tool, args }));
+            }
+        }
+        if signal.as_ref().map(|s| s.is_aborted()).unwrap_or(false) {
             break;
         }
     }
 
-    // Phase 2: execute concurrently; `tool_execution_end` fires in
-    // completion order, results are reported in assistant source order.
-    let mut handles = Vec::new();
+    // Phase 2: execute concurrently. Each future emits its own
+    // `tool_execution_end` on completion (upstream: the awaited per-tool
+    // async entry emits end in completion order).
+    let mut futures = Vec::new();
     for (tool_call, preparation) in pending {
+        let Preparation::Prepared { tool, args } = preparation else {
+            unreachable!("pending entries are always prepared");
+        };
+        let assistant_message = assistant_message.clone();
+        let config = config.clone();
+        let current_context = current_context.clone();
         let signal = signal.clone();
-        match preparation {
-            Preparation::Immediate { result, is_error } => handles.push(tokio::spawn(async move {
-                FinalizedToolCall {
-                    tool_call,
-                    result,
-                    is_error,
-                }
-            })),
-            Preparation::Prepared { tool, args } => {
-                let assistant_message = assistant_message.clone();
-                let config = config.clone();
-                let current_context = current_context.clone();
-                handles.push(tokio::spawn(async move {
-                    // The emit sink is not Send across spawn boundaries;
-                    // end events for spawned tools are emitted after join.
-                    let executed =
-                        execute_prepared_tool_call_detached(&tool_call, &tool, args, signal).await;
-                    finalize_executed_tool_call(
-                        &current_context,
-                        &assistant_message,
-                        &tool_call,
-                        executed,
-                        &config,
-                        None,
-                    )
-                    .await
-                }))
-            }
-        }
+        let emit = emit.clone();
+        futures.push(async move {
+            let executed =
+                execute_prepared_tool_call(&tool_call, &tool, args, signal.clone(), &emit).await;
+            let finalized = finalize_executed_tool_call(
+                &current_context,
+                &assistant_message,
+                &tool_call,
+                executed,
+                &config,
+                signal,
+            )
+            .await;
+            emit_tool_execution_end(&finalized, &emit).await;
+            finalized
+        });
     }
+    let mut ordered: Vec<FinalizedToolCall> = immediate_ends;
+    let completed = futures::future::join_all(futures).await;
+    // Report results in assistant source order; end events already fired in
+    // completion order inside each future.
+    ordered.extend(completed);
 
-    let mut ordered: Vec<FinalizedToolCall> = Vec::new();
-    for handle in handles {
-        ordered.push(handle.await.unwrap_or_else(|panic| FinalizedToolCall {
-            tool_call: AgentToolCall {
-                id: String::new(),
-                name: String::new(),
-                arguments: serde_json::Value::Null,
-            },
-            result: create_error_tool_result(format!("Tool task failed: {panic}")),
-            is_error: true,
-        }));
-    }
-
-    for finalized in &ordered {
-        emit_tool_execution_end(finalized, emit).await;
-    }
     let mut messages: Vec<ToolResultMessage> = Vec::new();
     for finalized in &ordered {
         let tool_result_message = create_tool_result_message(finalized);
@@ -868,40 +895,56 @@ async fn execute_prepared_tool_call(
     tool: &crate::types::AgentTool,
     args: serde_json::Value,
     signal: Option<AbortSignal>,
-    _emit: &AgentEventSink,
+    emit: &AgentEventSink,
 ) -> FinalizedToolCall {
+    // Upstream buffers `tool_execution_update` emissions while the tool runs
+    // and awaits them after it settles; calls after that are ignored
+    // (`acceptingUpdates`). Mirror that with a sync buffer + post-settlement
+    // drain so updates are ordered and never lost mid-run.
+    let accepting = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let buffered: Arc<std::sync::Mutex<Vec<AgentEvent>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
     let update_sink: crate::types::AgentToolUpdateCallback = {
         let tool_call = tool_call.clone();
+        let buffered = Arc::clone(&buffered);
+        let accepting = Arc::clone(&accepting);
         Arc::new(move |partial_result| {
-            // Emissions for updates happen inline; the sink is `Fn` here, so
-            // updates are buffered through the event channel by the caller's
-            // task-local queue in the sequential path.
-            let _ = (&tool_call, &partial_result);
+            if !accepting.load(std::sync::atomic::Ordering::SeqCst) {
+                return;
+            }
+            buffered
+                .lock()
+                .expect("update buffer lock")
+                .push(AgentEvent::ToolExecutionUpdate {
+                    tool_call_id: tool_call.id.clone(),
+                    tool_name: tool_call.name.clone(),
+                    args: tool_call.arguments.clone(),
+                    partial_result: serde_json::json!({
+                        "content": partial_result.content,
+                        "details": partial_result.details,
+                    }),
+                });
         })
     };
-    let _ = &update_sink;
 
-    match (tool.execute)(tool_call.id.clone(), args.clone(), signal, None).await {
-        Ok(result) => FinalizedToolCall {
-            tool_call: tool_call.clone(),
-            result,
-            is_error: false,
-        },
-        Err(error) => FinalizedToolCall {
-            tool_call: tool_call.clone(),
-            result: create_error_tool_result(error.0),
-            is_error: true,
-        },
+    let outcome = (tool.execute)(
+        tool_call.id.clone(),
+        args.clone(),
+        signal,
+        Some(update_sink),
+    )
+    .await;
+    accepting.store(false, std::sync::atomic::Ordering::SeqCst);
+    // Drain buffered updates (upstream `await Promise.all(updateEvents)`).
+    // Drop the guard before awaiting each emission: a held MutexGuard across
+    // await makes the future non-Send.
+    let pending_updates: Vec<AgentEvent> =
+        std::mem::take(&mut *buffered.lock().expect("update buffer lock"));
+    for event in pending_updates {
+        emit.emit(event).await;
     }
-}
 
-async fn execute_prepared_tool_call_detached(
-    tool_call: &AgentToolCall,
-    tool: &crate::types::AgentTool,
-    args: serde_json::Value,
-    signal: Option<AbortSignal>,
-) -> FinalizedToolCall {
-    match (tool.execute)(tool_call.id.clone(), args.clone(), signal, None).await {
+    match outcome {
         Ok(result) => FinalizedToolCall {
             tool_call: tool_call.clone(),
             result,
@@ -1024,4 +1067,38 @@ use std::future::Future;
 /// Factory for the default event stream used by embedded stream fns.
 pub fn create_assistant_stream() -> pillar_ai::AssistantMessageEventStream {
     assistant_message_event_stream()
+}
+
+/// Extract a message from a panic payload (upstream `error.message` /
+/// `String(error)` in handleRunFailure).
+fn panic_message(panic: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(text) = panic.downcast_ref::<&str>() {
+        (*text).to_owned()
+    } else if let Some(text) = panic.downcast_ref::<String>() {
+        text.clone()
+    } else {
+        "Unknown panic".to_owned()
+    }
+}
+
+/// Build the failure assistant message produced by a thrown stream fn
+/// (upstream handleRunFailure's message shape minus the lifecycle events,
+/// which the loop itself emits).
+fn create_error_assistant_message(message: String) -> AssistantMessage {
+    AssistantMessage {
+        content: vec![Content::text("")],
+        api: "unknown".into(),
+        provider: "unknown".into(),
+        model: "unknown".into(),
+        response_model: None,
+        usage: pillar_ai::types::Usage::default(),
+        stop_reason: StopReason::Error,
+        deferred: None,
+        error_message: Some(message),
+        response_id: None,
+        diagnostics: Vec::new(),
+        raw_stop_reason: None,
+        end_turn: None,
+        timestamp: now_millis(),
+    }
 }
