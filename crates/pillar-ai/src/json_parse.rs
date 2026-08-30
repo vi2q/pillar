@@ -90,16 +90,16 @@ pub fn repair_json(json: &str) -> String {
             continue;
         }
 
-        repaired.push(if is_control_character(c) {
+        if is_control_character(c) {
             // escape_control_character returns "\\X" sequences of 2 chars;
             // push them individually.
             for esc in escape_control_character(c).chars() {
                 repaired.push(esc);
             }
+            index += 1;
             continue;
-        } else {
-            c
-        });
+        }
+        repaired.push(c);
         index += 1;
     }
 

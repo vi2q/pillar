@@ -188,7 +188,7 @@ pub fn map_thinking_level_to_effort(
             .thinking_level_map
             .as_ref()
             .and_then(|map| map.get(&key))
-            .and_then(|mapped| mapped.as_ref().map(Clone::clone))
+            .and_then(|mapped| mapped.clone())
     });
     if let Some(mapped) = mapped {
         return mapped;
@@ -224,16 +224,29 @@ pub struct ClientIdentity {
 /// Upstream `createClient`: resolve Bearer vs API-key auth, beta features,
 /// and default headers. The Rust port performs requests via `FetchFn`, so
 /// this returns identity data rather than an SDK client.
+pub struct CreateClientIdentityOptions<'a> {
+    pub api_key: Option<&'a str>,
+    pub interleaved_thinking: bool,
+    pub use_fine_grained_tool_streaming_beta: bool,
+    pub use_server_side_fallback_beta: bool,
+    pub options_headers: Option<&'a crate::types::ProviderHeaders>,
+    pub dynamic_headers: Option<&'a [(String, String)]>,
+    pub session_id: Option<&'a str>,
+}
+
 pub fn create_client_identity(
     model: &Model,
-    api_key: Option<&str>,
-    interleaved_thinking: bool,
-    use_fine_grained_tool_streaming_beta: bool,
-    use_server_side_fallback_beta: bool,
-    options_headers: Option<&crate::types::ProviderHeaders>,
-    dynamic_headers: Option<&[(String, String)]>,
-    session_id: Option<&str>,
+    options: CreateClientIdentityOptions<'_>,
 ) -> ClientIdentity {
+    let CreateClientIdentityOptions {
+        api_key,
+        interleaved_thinking,
+        use_fine_grained_tool_streaming_beta,
+        use_server_side_fallback_beta,
+        options_headers,
+        dynamic_headers,
+        session_id,
+    } = options;
     // Adaptive thinking models have interleaved thinking built in, so skip
     // the beta header.
     let needs_interleaved_beta = interleaved_thinking && !force_adaptive_thinking(model);
@@ -1308,16 +1321,25 @@ impl StreamState {
 
 /// Port of upstream processAnthropicStream's event loop body: apply one
 /// Anthropic stream event to `output` and emit events on `stream`.
+struct ProcessEventContext<'a> {
+    model: &'a Model,
+    is_oauth: bool,
+    context_tools: Option<&'a [Tool]>,
+}
+
 fn process_anthropic_event(
     event: &Value,
     output: &mut AssistantMessage,
     state: &mut StreamState,
     stream: &crate::event_stream::AssistantMessageEventStream,
     usage_model: &mut Model,
-    model: &Model,
-    is_oauth: bool,
-    context_tools: Option<&[Tool]>,
+    ctx: &ProcessEventContext<'_>,
 ) -> Result<(), String> {
+    let ProcessEventContext {
+        model,
+        is_oauth,
+        context_tools,
+    } = *ctx;
     let event_type = event["type"].as_str().unwrap_or("");
     match event_type {
         "message_start" => {
@@ -1631,17 +1653,13 @@ pub fn process_anthropic_events(
 ) -> Result<(), String> {
     let mut state = StreamState::new();
     let mut usage_model = model.clone();
+    let ctx = ProcessEventContext {
+        model,
+        is_oauth,
+        context_tools: Some(&context.tools),
+    };
     for event in &events {
-        process_anthropic_event(
-            event,
-            output,
-            &mut state,
-            stream,
-            &mut usage_model,
-            model,
-            is_oauth,
-            Some(&context.tools),
-        )?;
+        process_anthropic_event(event, output, &mut state, stream, &mut usage_model, &ctx)?;
     }
     Ok(())
 }
