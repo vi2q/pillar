@@ -16,22 +16,22 @@ pi v0.84.3 (TypeScript, commit `56700d42e`) を Rust に移植する。拡張機
 
 上流チェックアウトは `/tmp/upstream/pi`, `/tmp/upstream/luaur`。無ければピン commit で再クローンする (docs/rules/06)。
 
-## 現在の状態 (2026-08-30)
+## 現在の状態 (2026-08-31)
 
-全ワークスペース 410テストがパス。`cargo fmt --check` / `cargo clippy --workspace --all-targets -- -D warnings` クリーン。
+全ワークスペース 438テストがパス。`cargo fmt --check` / `cargo clippy` (クレート毎に `-D warnings`) クリーン。
 
 | クレート | テスト | 状況 |
 | --- | --- | --- |
 | pillar-protocol | 49 | ✅ 完了 |
 | pillar-telemetry | 15 | ✅ 完了 |
 | pillar-ai | 188 | 🔶 コア + 全主要プロバイダ済み (core 35 / faux 22 / models-runtime 39 / api-infra 27 / openai-completions 23 / openai-responses 14 / anthropic-messages 27 / uuid 1) |
-| pillar-agent | 158 | 🔶 コアループ + Agent クラス + harness 基盤〜compaction/session 済み (lib 20 / loop 25 / agent 22 / nodejs-env 25 / utils 10 / skills 8 / messages 13 / session 20 / compaction 15) |
+| pillar-agent | 186 | 🔶 コアループ + Agent クラス + harness 基盤〜reducer 済み (lib 20 / loop 25 / agent 22 / nodejs-env 25 / utils 10 / skills 8 / messages 13 / session 20 / compaction 15 / reducer 28) |
 | pillar-coding-agent / tui / client / server / session-store | — | ❌ 未着手 |
 | pillar-extensions | — | ❌ 未着手 (luaur VM 統合)。設計は docs/rules/04 に確定済み |
 
-移植済みの主な到達点: agent ループ (agent-loop.test.ts 23ケース完全パリティ), Agent クラス, harness 基盤 (types/truncate/system-prompt/events/prompt-templates/env/shell-output/skills/messages), compaction 本体 + 共通部 + branch-summarization 準備部, session v4 ツリー (types/state/context/memory = InMemory バックエンド)。
+移植済みの主な到達点: agent ループ (agent-loop.test.ts 23ケース完全パリティ), Agent クラス, harness 基盤 (types/truncate/system-prompt/events/prompt-templates/env/shell-output/skills/messages), compaction 本体 + 共通部 + branch-summarization 準備部, session v4 ツリー (types/state/context/memory = InMemory バックエンド), result.ts (TaggedErrorValue), reducer.ts (validateRecordLog/reduceLaneState)。
 
-## 全体進捗の目安 (2026-08-30 時点の行数集計)
+## 全体進捗の目安 (2026-08-31 時点の行数集計)
 
 上流パッケージ規模 (src = テスト以外の .ts, tests = *.test.ts):
 
@@ -40,18 +40,18 @@ pi v0.84.3 (TypeScript, commit `56700d42e`) を Rust に移植する。拡張機
 | protocol | 1.2k | 0.7k | ✅ 完了 (src 2.5k / tests 1.0k) |
 | telemetry | 0.9k | 0.2k | ✅ 完了 (src 0.7k / tests 0.5k) |
 | ai | 27.7k | 35.1k | 🔶 約5割 (src 14.6k / tests 8.2k。残り: google 系 1.4k、mistral-conversations 0.9k、bedrock-converse 1.3k、openai-codex 1.7k、azure 0.3k、images、providers/* 等) |
-| agent | 12.9k | 8.6k | 🔶 約78% (src 10.0k / tests 6.4k。残り: harness 中核 約4.3k = reducer 667 / agent-harness 508 / telemetry 615 / tools 1203 / jsonl 848 / proxy 370 / result 63 + branch-summarization の session 依存部、search/、e2e のうちモック可能なもの) |
+| agent | 12.9k | 8.6k | 🔶 約82% (src 11.0k / tests 8.6k。残り: agent-harness 508 / telemetry 615 / tools 1203 / jsonl 848 / proxy 370 + branch-summarization の session 依存部、search/、e2e のうちモック可能なもの。reducer 667 / result 63 済み) |
 | coding-agent | 78.9k | 50.3k | ❌ 未着手 (最大) |
 | tui | 17.9k | 16.4k | ❌ 未着手 |
 | server / client / session-backends | 6.3k | 4.2k | ❌ 未着手 |
 | evals | 1.3k | 0.5k | ❌ 対象外の可能性 |
 
-**体感 2割前後。** 土台層 (protocol / telemetry / ai コア / agent コア) は最難関部 (SSE パーサ・非同期セマンティクス・イベント順序の厳密互換) を含めて固まっており、410テストで保護済み。残り約7割は coding-agent (79k) と tui (18k) で、両者とも土台の上に載せる形なので行数比よりは速く進む見込み。
+**体感 2割強。** 土台層 (protocol / telemetry / ai コア / agent コア) は最難関部 (SSE パーサ・非同期セマンティクス・イベント順序の厳密互換) を含めて固まっており、438テストで保護済み。残り約7割は coding-agent (79k) と tui (18k) で、両者とも土台の上に載せる形なので行数比よりは速く進む見込み。
 
 ## 次の作業キュー
 
-1. **harness 中核の移植** (上流 `packages/agent/src/harness/`)。パリティテスト源は上流 `test/harness/` の reducer.test.ts (1127行) / compaction.test.ts (697行) / tools.test.ts (622行)。
-   `result.ts` (63行) → `reducer.ts` (667行) → `agent-harness.ts` (508行) → `tools/` (1203行) → `telemetry.ts` (615行) → `session/jsonl/` (848行, JsonlSessionRepo) → `proxy.ts` (370行) → branch-summarization の session 依存部 (collectEntriesForBranchSummary / generateBranchSummary) の順。
+1. **harness 中核の移植の続き** (上流 `packages/agent/src/harness/`)。パリティテスト源は上流 `test/harness/` の agent-harness-scaffold.test.ts / telemetry.test.ts / tools.test.ts (622行)。
+   `agent-harness.ts` (508行) → `tools/` (1203行) → `telemetry.ts` (615行) → `session/jsonl/` (848行, JsonlSessionRepo) → `proxy.ts` (370行) → branch-summarization の session 依存部 (collectEntriesForBranchSummary / generateBranchSummary) の順。result.ts / reducer.ts は移植済み (`10fd5e4`)。
 2. **pillar-ai のプロバイダ残り**: google 系 → mistral-conversations → bedrock-converse → openai-codex → azure → images → providers/*。`models.generated.ts` はジェネレータで再生成、手移植禁止 (docs/rules/01、生成器は pillar-ai/src/bin/generate-models.rs に作る)。live-API テスト (responseid, xhigh, tool-call-without-result, tool-call-id-normalization e2e) はモック不能なので非移植。
 3. **agent の残り**: `search/`、`e2e.test.ts` のうちモック可能なもの。models_generated.rs (generate-models ジェネレータ) は live カタログ依存のため別タスク。
 4. **pillar-coding-agent**: 未着手 (最大、61k行)。
@@ -90,11 +90,11 @@ pi v0.84.3 (TypeScript, commit `56700d42e`) を Rust に移植する。拡張機
 - **Responses SSE → AssistantMessageEventStream の契約** (#21, 旧 #17) — `processResponsesStream` は **Done/Error イベントを push しない** (上流呼び出し側が push する)。Rust テストで直接呼ぶときは、drive 完了後に `stream.end(None)` を呼ばないと EventIter が `done=false` のまま Pending で永遠に待つ。assert は `output.stop_reason` (finalize_response が書き込む) で行う。
 - **ModelCompat union 化 (Box 包装)** (#22, 旧 #18) — `Model.compat` を per-API untagged enum `ModelCompat` にした。Box 包装 (clippy large-enum-difference)。使用側は `match model.compat.as_ref() { Some(ModelCompat::OpenaiCompletions(c)) => c, _ => return detected }` パターン。serde untagged なので JSON からは各 API 形がそのまま読める。テスト側は `ModelCompat::OpenaiCompletions(Box::new(...))` か `.into()`。
 - **プロバイダ層の意図的な divergence** (#23, 旧 #16) —
-    - `error_body.rs`: 上流は SDK エラーオブジェクトのフィールドを掘る (Mistral/openai/genai/Bedrock 形, pipe スニッフィング, class instance 判定)。Rust に SDK オブジェクトは無いので `normalize_provider_error(message, status, body)` が transport から受け取る形。`format_provider_error` / truncation は厳密互換。`provider-error-body-passthrough/regression.test.ts` は SDK レベルなので非移植。
-    - `provider_retry.rs`: `retry-after` は数値のみパース (HTTP-date は指数バックオフにフォールバック)。jitter は fastrand。
-    - `provider_env.rs`: Bun サンドボックスの /proc フォールバックは非移植。
-    - `sanitize_surrogates` (text.rs): Rust の String は UTF-8 で unpaired surrogate を保持できないため恒等関数。上流と同じ呼び出し点を維持するための grep-parity 用。
-    - `transport.rs`: 上流 `FetchFunction` は WHATWG Response を返すが、Rust は `FetchFn` トレイト + ストリーミング `FetchResponse`。既定実装は `ReqwestFetch` (rustls + gzip + stream)。
+  - `error_body.rs`: 上流は SDK エラーオブジェクトのフィールドを掘る (Mistral/openai/genai/Bedrock 形, pipe スニッフィング, class instance 判定)。Rust に SDK オブジェクトは無いので `normalize_provider_error(message, status, body)` が transport から受け取る形。`format_provider_error` / truncation は厳密互換。`provider-error-body-passthrough/regression.test.ts` は SDK レベルなので非移植。
+  - `provider_retry.rs`: `retry-after` は数値のみパース (HTTP-date は指数バックオフにフォールバック)。jitter は fastrand。
+  - `provider_env.rs`: Bun サンドボックスの /proc フォールバックは非移植。
+  - `sanitize_surrogates` (text.rs): Rust の String は UTF-8 で unpaired surrogate を保持できないため恒等関数。上流と同じ呼び出し点を維持するための grep-parity 用。
+  - `transport.rs`: 上流 `FetchFunction` は WHATWG Response を返すが、Rust は `FetchFn` トレイト + ストリーミング `FetchResponse`。既定実装は `ReqwestFetch` (rustls + gzip + stream)。
 
 ### ツール・デバッグ運用
 
@@ -112,6 +112,10 @@ pi v0.84.3 (TypeScript, commit `56700d42e`) を Rust に移植する。拡張機
 - **上流の `yaml.parse` が throw する入力を再現する** (#32, 旧 #22) — `[invalid` のような未終了フロー構文はフラットパーサでは有効なスカラーになってしまう。`[`/`{` で始まり対応閉じがない値を `malformed` フラグにして、declared skill (SKILL.md) のみ `parse_failed` 診断、root .md は無視 — という上流挙動を再現した。python yaml で期待挙動を事前確認すると速い。
 - **globset の gitignore 相似処理** (#33, 旧 #22) — スラッシュを含まないパターンは basename マッチ (`literal_separator(false)`)、`dir/` 付きは候補の前方一致も見る。upstream `ignore` クレートの完全互換ではないので、複雑な ignore パターンが出てきたら `ignore` クレートへの置換を検討。
 - **session 移植の構造判断** (#34, 旧 #22) — 上流 `Entry` 判別ユニオンは「storage 割当エンベロープ (type/id/seq/parentId/timestamp) + `#[serde(flatten)]` payload enum」に分離。`findOpenOperations` の最新順は lane ごとの挿入順 Vec + id マップの二重管理で再現。Usage が unsigned のため上流の負の adjustment 記録はゼロ差分になり統計断言を調整 (divergence 記録)。repo の `share()` は `Arc` 内部共有ハンドルで同一 state を返す。clippy module_inception 回避のため session.rs 空スタブは削除し memory.rs に統合。
+- **閉じた enum が上流の string 検証を吸収する** (#35) — reducer 移植で、上流が string で `compactionReason` の不正値検証 (`"manual"|"threshold"|"overflow"` 以外) をしている箇所は、Rust 側の enum 化で「存在検査」に縮む。divergence コメントをコードに残すこと。`ThinkingLevel` の未知文字列も同様に既定値へのフォールバックで表現。
+- **同名型の二重定義に注意** (#36) — `ProvisionedEntry` は `session/types.rs` (serde版、`kind` フィールド付き) と `session/memory.rs` (storage版、id+payload のみ) に分かれており、それぞれ別の imports になる。reducer 等の新規モジュールは serde版を使い、テストの構築も `payload.kind()` から `kind` を導出する。
+- **pure 関数の defensive clone は借用+出力クローンで置換** (#37) — 上流 `reduceLaneState` は `structuredClone` で入力保護しているが、Rust では入力を `&` で受け出力でクローンすれば同じ保証になる。ただし上流テストの「入力を mutate/alias しない」断言はそのまま `PartialEq` 比較で再現可能 (`LaneReductionInput` に `PartialEq` derive が必要)。
+- **上流の `NEGATIVE_INFINITY` 歩行は `Option<u64>` で表現** (#38) — overflow recovery 検出の `seq > newestConsumedInputSequence` は「消費メッセージが無ければ常に true」が正。`u64::MAX` 等の sentinel を使うと逆意味になるので `Option` + `is_none_or` を使う。
 
 ## セッション運用の反省 (継続)
 
