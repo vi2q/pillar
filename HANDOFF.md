@@ -18,7 +18,7 @@ pi v0.84.3 (TypeScript, commit `56700d4`) を Rust に移植する。拡張機�
 | 今回3 | **feat(ai): openai-completions プロバイダ移植** (src/api/{mod,openai_completions,github_copilot_headers,openai_prompt_cache}.rs: stream/stream_simple/convert_messages/convert_tools/build_params/compat 自動検出/SSE パーサ/reasoning_details リプレイ)。`tests/openai_completions_parity.rs` 23ケース |
 | 今回4 | **feat(ai): openai-responses プロバイダ移植** (src/api/{openai_responses,openai_responses_shared}.rs + deferred_tools.rs: processResponsesStream / convert_responses_messages / convert_responses_tools / grammar custom_tool_call ストリーミング / service-tier pricing)。`tests/openai_responses_parity.rs` 14ケース。**ModelCompat union 化** (Model.compat を per-API untagged enum に、Box 包装; AnthropicMessagesCompat 追加) |
 
-**pillar-ai 187テスト (core 35 + faux 22 + models-runtime 39 + api-infra 27 + openai-completions 23 + openai-responses 14 + anthropic-messages 26 + uuid 1) と pillar-agent 11テスト全パス。`cargo fmt --check` / `cargo clippy --workspace --all-targets -- -D warnings` クリーン。**
+**pillar-ai 188テスト (core 35 + faux 22 + models-runtime 39 + api-infra 27 + openai-completions 23 + openai-responses 14 + anthropic-messages 27 + uuid 1) と pillar-agent 11テスト全パス。`cargo fmt --check` / `cargo clippy --workspace --all-targets -- -D warnings` クリーン。**
 
 上流チェックアウトは `/tmp/upstream/pi`, `/tmp/upstream/luaur` (再作成手順は docs/rules/06)。
 
@@ -99,7 +99,7 @@ repair_json の in_string 内で `repaired.push(if ... { continue } else { c })`
 
 ## 次のセッションの最初の一歩
 
-**anthropic-messages の仕上げ**: 変換層/SSEデコーダ/buildParams/イベントプロセッサ/26テストは済み (src/api/anthropic_messages.rs, tests/anthropic_messages_parity.rs)。残りは (1) `stream()`/`stream_simple()` エントリ (tokio::spawn + run_stream + FetchFn 呼び出し、openai_responses.rs:176 のパターン。URL は `{base_url}/v1/messages` 相当の上流 SDK baseURL 規約を確認), (2) 生バイトストリームから `decode_sse_chunk`/`finish_sse_body` を回す async ストリームアダプタ, (3) stream_simple の thinkingBudget 計算 (simple_options.rs の adjust_max_tokens_for_thinking を使用), (4) `request was aborted`/`stream ended before message_stop` エラーのストリーム側注入。その後 pillar-agent (agent.ts 592行)。
+**anthropic-messages 移植は実質完了** (stream/stream_simple/process/buildParams/SSE/27テスト、mock transport e2e 含む)。残る検証候補: github-copilot-anthropic テスト (Bearer auth + Copilot headers + payload 断言、constructorOpts 相当は captured request で置換), anthropic-eager-tool-input-compat のヘッダー断言 (anthropic-beta)。次の未移植は **pillar-agent の agent.ts (592行, Agent クラス/状態管理)**。models_generated.rs (generate-models ジェネレータ, docs/rules/01) はまだ未作成 — live カタログ依存のため別タスク。
 
 ## セッション運用の反省 (継続)
 
