@@ -13,6 +13,7 @@
 //! concrete enum variants on `crate::types::AgentMessage` (see
 //! `messages.rs`).
 
+pub mod env;
 pub mod events;
 pub mod prompt_templates;
 pub mod system_prompt;

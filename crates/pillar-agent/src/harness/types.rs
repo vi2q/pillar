@@ -182,10 +182,13 @@ pub struct ShellExecOptions {
     /// Environment variables for the command. Values override inherited
     /// defaults when `inherit_env` is true.
     pub env: Vec<(String, String)>,
-    /// Whether to inherit the environment's default variables. Default true.
-    pub inherit_env: bool,
+    /// Whether to inherit the environment's default variables. Default true
+    /// (upstream `inheritEnv ?? true`).
+    pub inherit_env: Option<bool>,
     /// Timeout in seconds. `None` = no timeout.
     pub timeout: Option<f64>,
+    /// Abort signal used to terminate the command. `None` = no abort.
+    pub abort_signal: Option<crate::abort::AbortSignal>,
     /// Called with stdout chunks as they are produced.
     pub on_stdout: Option<StreamCallback>,
     /// Called with stderr chunks as they are produced.
