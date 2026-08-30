@@ -18,6 +18,7 @@ pub mod env;
 pub mod events;
 pub mod messages;
 pub mod prompt_templates;
+pub mod session;
 pub mod skills;
 pub mod system_prompt;
 pub mod types;

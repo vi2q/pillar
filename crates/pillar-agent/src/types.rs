@@ -277,7 +277,8 @@ pub struct AgentContext {
 /// divergence: pi extends this union via `CustomAgentMessages` declaration
 /// merging; the Rust port folds the four harness custom messages
 /// (harness/messages.ts) into the enum as `Custom` variants.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
 pub enum AgentMessage {
     Message(Message),
     /// Upstream `BashExecutionMessage` (role "bashExecution").
