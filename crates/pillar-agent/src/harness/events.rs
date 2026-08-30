@@ -175,7 +175,7 @@ impl HarnessEventBus {
     /// Create a watch that buffers events from now on and captures a
     /// snapshot atomically (no event gap).
     ///
-    /// HANDOFF #1: the bus lock must NOT be held while the snapshot
+    /// docs/INSTRUCTIONS.md #1: the bus lock must NOT be held while the snapshot
     /// callback runs — upstream captures can emit re-entrantly, and the
     /// port's `emit` re-locks. Registration happens under the lock, then
     /// the lock is dropped before capture; concurrent emissions between
