@@ -2589,8 +2589,9 @@ pub fn get_compat(model: &Model) -> ResolvedCompat {
             || is_ant_ling),
     };
 
-    let Some(compat) = &model.compat else {
-        return detected;
+    let compat = match model.compat.as_ref() {
+        Some(crate::types::ModelCompat::OpenaiCompletions(compat)) => compat,
+        _ => return detected,
     };
 
     ResolvedCompat {

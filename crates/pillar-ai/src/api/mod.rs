@@ -4,6 +4,7 @@
 //! request JSON directly and send it through [`crate::transport::FetchFn`],
 //! with the SSE framing parsed locally.
 
+pub mod anthropic_messages;
 pub mod github_copilot_headers;
 pub mod openai_completions;
 pub mod openai_prompt_cache;

@@ -437,10 +437,13 @@ async fn emits_empty_tools_for_tool_history() {
 #[tokio::test]
 async fn applies_anthropic_cache_control_markers() {
     let model = Model {
-        compat: Some(pillar_ai::types::OpenaiCompletionsCompat {
-            cache_control_format: Some("anthropic".to_string()),
-            ..Default::default()
-        }),
+        compat: Some(pillar_ai::types::ModelCompat::OpenaiCompletions(
+            pillar_ai::types::OpenaiCompletionsCompat {
+                cache_control_format: Some("anthropic".to_string()),
+                ..Default::default()
+            }
+            .into(),
+        )),
         ..base_model()
     };
     let chunks = vec![finish_chunk("stop")];

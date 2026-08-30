@@ -263,7 +263,17 @@ pub struct Model {
     /// Provider-API compatibility overrides (upstream `Model.compat`, typed
     /// per api; the completions shape is the first ported variant).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub compat: Option<OpenaiCompletionsCompat>,
+    pub compat: Option<ModelCompat>,
+}
+
+/// Per-API compat payload (upstream `Model<TApi>["compat"]` union).
+/// Boxed variants: payloads are large option structs, models are few.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ModelCompat {
+    OpenaiCompletions(Box<OpenaiCompletionsCompat>),
+    OpenaiResponses(Box<OpenaiResponsesCompat>),
+    AnthropicMessages(Box<AnthropicMessagesCompat>),
 }
 
 /// Compatibility settings for the `openai-completions` API
@@ -361,6 +371,60 @@ pub struct OpenaiResponsesCompat {
     pub supports_tool_search: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub supports_explicit_prompt_cache_mode: Option<bool>,
+}
+
+/// Compatibility settings for the `anthropic-messages` API (upstream
+/// `AnthropicMessagesCompat`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnthropicMessagesCompat {
+    /// Per-tool `eager_input_streaming` accepted (default true; when false
+    /// the legacy fine-grained-tool-streaming beta header is sent instead).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_eager_tool_input_streaming: Option<bool>,
+    /// Anthropic long cache retention (`cache_control.ttl: "1h"`) supported.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_long_cache_retention: Option<bool>,
+    /// Send `x-session-affinity` header from `options.sessionId`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub send_session_affinity_headers: Option<bool>,
+    /// Anthropic-style `cache_control` markers on tool definitions accepted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_cache_control_on_tools: Option<bool>,
+    /// Anthropic `temperature` request field accepted (Opus 4.7+ rejects
+    /// non-default values).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_temperature: Option<bool>,
+    /// Force adaptive thinking (`thinking.type: "adaptive"` +
+    /// `output_config.effort`) regardless of the model id.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub force_adaptive_thinking: Option<bool>,
+    /// Replay empty thinking signatures as `signature: ""` instead of
+    /// converting thinking to text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allow_empty_signature: Option<bool>,
+    /// Anthropic strict tool schemas supported.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_strict_tools: Option<bool>,
+    /// Models Anthropic accepts in `fallbacks` for server-side refusal
+    /// fallback, with local pricing metadata for returned fallback responses.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allowed_fallback_models: Option<Vec<AnthropicAllowedFallbackModel>>,
+    /// Deferred tools loaded by `tool_reference` blocks in tool results
+    /// supported (default true for first-party Anthropic models except
+    /// Haiku and models older than Claude 4.5).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_tool_references: Option<bool>,
+}
+
+/// Entry of `AnthropicMessagesCompat.allowedFallbackModels`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnthropicAllowedFallbackModel {
+    pub provider: String,
+    pub model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost: Option<ModelCost>,
 }
 
 // --- Messages ----------------------------------------------------------
