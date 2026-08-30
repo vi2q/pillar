@@ -178,7 +178,7 @@ fn build_progress(
 /// [`ExecutionEnv`](crate::harness::types::ExecutionEnv) (FileSystem +
 /// Shell) because the spill file is written through the filesystem.
 pub async fn execute_shell_with_capture(
-    env: &(impl Shell + FileSystem),
+    env: &(impl Shell + FileSystem + ?Sized),
     command: &str,
     options: Option<ShellCaptureOptions>,
 ) -> Result<ShellCaptureResult, ExecutionError> {
