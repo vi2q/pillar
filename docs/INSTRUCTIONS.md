@@ -25,7 +25,7 @@ pi v0.84.3 (TypeScript, commit `56700d42e`) を Rust に移植する。拡張機
 | pillar-protocol | 49 | ✅ 完了 |
 | pillar-telemetry | 15 | ✅ 完了 |
 | pillar-ai | 188 | 🔶 コア + 全主要プロバイダ済み (core 35 / faux 22 / models-runtime 39 / api-infra 27 / openai-completions 23 / openai-responses 14 / anthropic-messages 27 / uuid 1) |
-| pillar-agent | 232 | 🔶 コアループ + Agent クラス + harness 基盤〜tools 済み (lib 32 / loop 25 / agent 22 / nodejs-env 25 / utils 10 / skills 8 / messages 13 / session 20 / compaction 15 / reducer 28 / agent-harness-scaffold 4 / tools-parity 21) |
+| pillar-agent | 232 | 🔶 コアループ + Agent クラス + harness 基盤〜tools + telemetry 済み (lib 32 / loop 25 / agent 22 / nodejs-env 25 / utils 10 / skills 8 / messages 13 / session 20 / compaction 15 / reducer 28 / agent-harness-scaffold 4 / tools-parity 21) |
 | pillar-coding-agent / tui / client / server / session-store | — | ❌ 未着手 |
 | pillar-extensions | — | ❌ 未着手 (luaur VM 統合)。設計は docs/rules/04 に確定済み |
 
@@ -40,7 +40,7 @@ pi v0.84.3 (TypeScript, commit `56700d42e`) を Rust に移植する。拡張機
 | protocol | 1.2k | 0.7k | ✅ 完了 (src 2.5k / tests 1.0k) |
 | telemetry | 0.9k | 0.2k | ✅ 完了 (src 0.7k / tests 0.5k) |
 | ai | 27.7k | 35.1k | 🔶 約5割 (src 14.6k / tests 8.2k。残り: google 系 1.4k、mistral-conversations 0.9k、bedrock-converse 1.3k、openai-codex 1.7k、azure 0.3k、images、providers/* 等) |
-| agent | 12.9k | 8.6k | 🔶 約92% (src 12.7k / tests 10.0k。残り: telemetry 615 / jsonl 848 / proxy 370 + branch-summarization の session 依存部、search/、e2e のうちモック可能なもの。reducer / result / agent-harness / tools 1203 済み) |
+| agent | 12.9k | 8.6k | 🔶 約93% (src 13.3k / tests 10.0k。残り: jsonl 848 / proxy 370 + branch-summarization の session 依存部、search/、e2e のうちモック可能なもの。reducer / result / agent-harness / tools 1203 / telemetry 615 済み) |
 | coding-agent | 78.9k | 50.3k | ❌ 未着手 (最大) |
 | tui | 17.9k | 16.4k | ❌ 未着手 |
 | server / client / session-backends | 6.3k | 4.2k | ❌ 未着手 |
@@ -51,7 +51,7 @@ pi v0.84.3 (TypeScript, commit `56700d42e`) を Rust に移植する。拡張機
 ## 次の作業キュー
 
 1. **harness 中核の移植の続き** (上流 `packages/agent/src/harness/`)。パリティテスト源は上流 `test/harness/` の telemetry.test.ts。
-   `telemetry.ts` (615行) → `session/jsonl/` (848行, JsonlSessionRepo) → `proxy.ts` (370行) → branch-summarization の session 依存部 (collectEntriesForBranchSummary / generateBranchSummary) の順。result.ts / reducer.ts / agent-harness.ts (スキャフォールド) / tools/ (1203行) は移植済み (`10fd5e4`, `294ce78`, `1579680`)。agent-harness の操作本体 (prompt/compact/resume/watch 等) は telemetry/jsonl 等の依存先が揃ってから。
+   `session/jsonl/` (848行, JsonlSessionRepo) → `proxy.ts` (370行) → branch-summarization の session 依存部 (collectEntriesForBranchSummary / generateBranchSummary) の順。result.ts / reducer.ts / agent-harness.ts (スキャフォールド) / tools/ (1203行) / telemetry.ts (615行) は移植済み。agent-harness の操作本体 (prompt/compact/resume/watch 等) は jsonl/proxy 等の依存先が揃ってから。
 2. **pillar-ai のプロバイダ残り**: google 系 → mistral-conversations → bedrock-converse → openai-codex → azure → images → providers/*。`models.generated.ts` はジェネレータで再生成、手移植禁止 (docs/rules/01、生成器は pillar-ai/src/bin/generate-models.rs に作る)。live-API テスト (responseid, xhigh, tool-call-without-result, tool-call-id-normalization e2e) はモック不能なので非移植。
 3. **agent の残り**: `search/`、`e2e.test.ts` のうちモック可能なもの。models_generated.rs (generate-models ジェネレータ) は live カタログ依存のため別タスク。
 4. **pillar-coding-agent**: 未着手 (最大、61k行)。
