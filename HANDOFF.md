@@ -16,8 +16,9 @@ pi v0.84.3 (TypeScript, commit `56700d4`) を Rust に移植する。拡張機�
 | 今回 | **feat(ai): Models 本体 + createProvider + models-runtime.test.ts 39ケースの移植完了** (`models.rs`, `auth_context.rs`, `tests/models_runtime_parity.rs` 新規、auth_resolve/types/credential_store/abort の調整を含む) |
 | 今回2 | **feat(ai): プロバイダ層の共有インフラ移植** (transport.rs [FetchFn トレイト + reqwest 既定実装], provider_retry.rs, error_body.rs, provider_env.rs, constrained_sampling.rs, transform_messages.rs, headers.rs, json_parse.rs, text.rs に sanitize_surrogates)。`tests/api_infra_parity.rs` 27ケース |
 | 今回3 | **feat(ai): openai-completions プロバイダ移植** (src/api/{mod,openai_completions,github_copilot_headers,openai_prompt_cache}.rs: stream/stream_simple/convert_messages/convert_tools/build_params/compat 自動検出/SSE パーサ/reasoning_details リプレイ)。`tests/openai_completions_parity.rs` 23ケース |
+| 今回4 | **feat(ai): openai-responses プロバイダ移植** (src/api/{openai_responses,openai_responses_shared}.rs + deferred_tools.rs: processResponsesStream / convert_responses_messages / convert_responses_tools / grammar custom_tool_call ストリーミング / service-tier pricing)。`tests/openai_responses_parity.rs` 14ケース。**ModelCompat union 化** (Model.compat を per-API untagged enum に、Box 包装; AnthropicMessagesCompat 追加) |
 
-**pillar-ai 147テスト (core 35 + faux 22 + models-runtime 39 + api-infra 27 + openai-completions 23 + uuid 1) と pillar-agent 11テスト全パス。`cargo fmt --check` / `cargo clippy --workspace --all-targets -- -D warnings` クリーン。**
+**pillar-ai 175テスト (core 35 + faux 22 + models-runtime 39 + api-infra 27 + openai-completions 23 + openai-responses 14 + uuid 1) と pillar-agent 11テスト全パス。`cargo fmt --check` / `cargo clippy --workspace --all-targets -- -D warnings` クリーン。**
 
 上流チェックアウトは `/tmp/upstream/pi`, `/tmp/upstream/luaur` (再作成手順は docs/rules/06)。
 
@@ -76,6 +77,14 @@ pi の Promise セマンティクスでは同じ promise を何度でも await �
 
 `serde_json::Value` のオブジェクトは既定で BTreeMap (key ソート)。上流の Map 挿入順に依存する出力 (constrained-sampling の strict 変換が生成する `required` 配列など) は順序が変わる。 providers は配列順に意味がないので控えめに寄せる方針。workspace で `preserve_order` feature を有効化するのは CBOR パリティへの影響が読めないため今回は見送り。
 
+### 17. Responses SSE → AssistantMessageEventStream の契約
+
+`processResponsesStream` は **Done/Error イベントを push しない** (上流呼び出し側が push する)。Rust テストで直接呼ぶときは、drive 完了後に `stream.end(None)` を呼ばないと EventIter が `done=false` のまま Pending で永遠に待つ。assert は `output.stop_reason` (finalize_response が書き込む) で行う。
+
+### 18. ModelCompat union 化 (Box 包装)
+
+`Model.compat` を per-API untagged enum `ModelCompat` にした。Box 包装 (clippy large-enum-difference)。使用側は `match model.compat.as_ref() { Some(ModelCompat::OpenaiCompletions(c)) => c, _ => return detected }` パターン。serde untagged なので JSON からは各 API 形がそのまま読める。テスト側は `ModelCompat::OpenaiCompletions(Box::new(...))` か `.into()`。
+
 ### 16. プロバイダ層の意図的な divergence (今回確定)
 
 - `error_body.rs`: 上流は SDK エラーオブジェクトのフィールドを掘る (Mistral/openai/genai/Bedrock 形, pipe スニッフィング, class instance 判定)。Rust に SDK オブジェクトは無いので `normalize_provider_error(message, status, body)` が transport から受け取る形。`format_provider_error` / truncation は厳密互換。`provider-error-body-passthrough/regression.test.ts` は SDK レベルなので非移植。
@@ -86,7 +95,7 @@ pi の Promise セマンティクスでは同じ promise を何度でも await �
 
 ## 次のセッションの最初の一歩
 
-**`openai-responses-shared.ts` (792行) + `openai-responses.ts` (376行) の移植**。openai-completions と同じ構成 (FetchFn + provider_retry + error_body + constrained_sampling)。`response.output_item.added` 等の Responses SSE イベント処理と grammar custom tool のストリーミング (constrained-sampling.test.ts の残り2ケース) が含まれる。その次は `anthropic-messages.ts` (1391行)。
+**`anthropic-messages.ts` (1391行) の移植**。基盤は src/api/anthropic_messages.rs に既にある (SSE デコーダ, convert_messages/convert_tools/map_stop_reason/get_anthropic_compat, Claude Code stealth 名, normalize_tool_call_id)。残り: (1) stream/stream_simple エントリ (tokio::spawn + run_stream, openai_completions.rs:570 のパターン), (2) processAnthropicStream (message_start/content_block_*/message_delta ループ, index→block 検索, signature_delta, message_stop 前の early-exit エラー), (3) buildParams (OAuth Claude Code identity, beta headers, adaptive/budget thinking, fallbacks), (4) Anthropic SSE デコーダのストリーム統合 (SseDataEvents とは別に event:/data: 2行形式をパースする必要あり — openai の SseDataEvents は data: 行しか見ない), (5) `Model.compat` は ModelCompat union 化済み (Box 包装; get_compat のマッチで `Some(ModelCompat::OpenaiCompletions(compat)) => compat` パターン)。テストは tests/anthropic_messages_parity.rs に新規。
 
 ## セッション運用の反省 (継続)
 
