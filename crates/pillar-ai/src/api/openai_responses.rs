@@ -149,12 +149,10 @@ pub fn get_compat(model: &Model) -> ResolvedResponsesCompat {
 /// Read the responses-shaped compat fields off the model's compat JSON
 /// (upstream: `model.compat as OpenAIResponsesCompat`).
 fn responses_compat_of(model: &Model) -> crate::types::OpenaiResponsesCompat {
-    model
-        .compat
-        .as_ref()
-        .and_then(|compat| serde_json::to_value(compat).ok())
-        .and_then(|value| serde_json::from_value(value).ok())
-        .unwrap_or_default()
+    match model.compat.as_ref() {
+        Some(crate::types::ModelCompat::OpenaiResponses(compat)) => (**compat).clone(),
+        _ => crate::types::OpenaiResponsesCompat::default(),
+    }
 }
 
 fn get_prompt_cache_retention(
