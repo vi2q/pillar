@@ -1,4 +1,4 @@
-# 引き継ぎ指示書 (2026-08-29, 7th update)
+# 引き継ぎ指示書 (2026-08-29, 8th update)
 
 次のセッションで作業を続ける人/エージェント向けの引き継ぎ。規範は `AGENTS.md` と `docs/rules/` の方。ここには「現状」と「今回判明した落とし穴」を書く。
 
@@ -18,9 +18,10 @@ pi v0.84.3 (TypeScript, commit `56700d4`) を Rust に移植する。拡張機�
 | 今回3 | **feat(ai): openai-completions プロバイダ移植** (src/api/{mod,openai_completions,github_copilot_headers,openai_prompt_cache}.rs: stream/stream_simple/convert_messages/convert_tools/build_params/compat 自動検出/SSE パーサ/reasoning_details リプレイ)。`tests/openai_completions_parity.rs` 23ケース |
 | 今回4 | **feat(ai): openai-responses プロバイダ移植** (src/api/{openai_responses,openai_responses_shared}.rs + deferred_tools.rs: processResponsesStream / convert_responses_messages / convert_responses_tools / grammar custom_tool_call ストリーミング / service-tier pricing)。`tests/openai_responses_parity.rs` 14ケース。**ModelCompat union 化** (Model.compat を per-API untagged enum に、Box 包装; AnthropicMessagesCompat 追加) |
 | 今回5 | **feat(agent): Agent クラス移植 (agent.ts)** (`agent.rs` 新規: 状態スナップショット/ミューテータ, steering/follow-up キュー [既定 one-at-a-time], subscribe [リスナーは登録順に await、activity signal 付き], abort/waitForIdle/reset, prompt [text\|message\|batch] と continue_run — 上流エラー文言を Result エラーで再現)。`stream_fn.rs` 新規 (setDefaultStreamFn グローバル フォールバック)。`agent_loop.rs` 改修: 並列ツールバッチで `tool_execution_end` を完了順に emit (結果は source 順で永続化), onUpdate をバッファリング型 `tool_execution_update` に配線 (settle 後の呼び出しは無視), stream-fn panic を error AssistantMessage に変換 (spawn タスク越しの unwind を防止)。`types.rs`: `ShouldStopAfterTurnContext.context` 追加, AgentLoopConfig に reasoning/thinking_budgets/max_retry_delay_ms, StreamCallOptions に onPayload/onResponse/transport 等を追加, prepare_next_turn の thinking_level を後続リクエストへ反映。`tests/agent_parity.rs` 新規: agent.test.ts 22ケース。 |
-| 今回6 | **feat(agent): agent-loop.test.ts パリティ網羅完了 (23ケース)** (`93f5b9c`)。残り13ケースを移植: shouldStopAfterTurn 完全断言版 (steeringPolls=1/followUpPolls=0/12イベント完全一致), カスタムメッセージ convertToLlm 2件, prepareNextTurn スナップショット (2ターン目の systemPrompt 置換検証), prepareArguments (editツール強制変換), executionMode sequential/parallel 強制3件, tool_execution_end 完了順 vs source順永続化, terminate=true 4件 (全結果/blocked call/mixed batch/afterToolCall)。**実装変更**: `agent_loop`/`agent_loop_continue` が `Option<StreamFn>` を受け `streamFn ?? getDefaultStreamFn()` フォールバックを解決 (agent_loop_continue は文脈検証後に解決 = 上流順), `Agent.stream_function` も Option 化。**pillar-agent 47テスト (loop 25 + agent 22) 全パス。直列10回フレーク無し。** |
+| 今回6 | **feat(agent): agent-loop.test.ts パリティ網羅完了 (23ケース)** (`93f5b9c`)。残り13ケースを移植: shouldStopAfterTurn 完全断言版 (steeringPolls=1/followUpPolls=0/12イベント完全一致), カスタムメッセージ convertToLlm 2件, prepareNextTurn スナップショット (2ターン目の systemPrompt 置換検証), prepareArguments (editツール強制変換), executionMode sequential/parallel 強制3件, tool_execution_end 完了順 vs source順永続化, terminate=true 4件 (全結果/blocked call/mixed batch/afterToolCall)。**実装変更**: `agent_loop`/`agent_loop_continue` が `Option<StreamFn>` を受け `streamFn ?? getDefaultStreamFn()` フォールバックを解決 (agent_loop_continue は文脈検証後に解決 = 上流順), `Agent.stream_function` も Option 化。 |
+| 今回7 | **feat(agent): harness 基盤移植** (`712560b`, `a1f5d7d`, `95f65e4`)。`harness/types.rs` (Skill/PromptTemplate/FileInfo/FileError+ExecutionError [安定コード]/FileSystem/Shell/ExecutionEnv トレイト — 上流 Result<T,E> は std Result に map), `harness/utils/truncate.rs` (truncateHead/Tail [UTF-8バイト制限・部分行対応]/formatSize/truncateLine), `harness/system_prompt.rs` (formatSkillsForSystemPrompt XML+エスケープ), `harness/events.rs` (HarnessEventBus: 型フィルタ直接リスナー + バッファリングwatch), `harness/prompt_templates.rs` (frontmatter/first-line description/parseCommandArgs/substituteArgs [$1/${@:N}/${@:N:L}/$ARGUMENTS/$@]), `harness/env/mod.rs` (**StdFsExecutionEnv** = NodeExecutionEnv 移植: symlink非追従 fs 操作/remove force/timeout+abort でプロセスグループ kill/env レイヤリング [shellEnv → overrides、inherit_env=Some(false) は env_clear]/stdout+stderr ストリーミングコールバック), `harness/utils/shell_output.rs` (executeShellWithCapture: sanitize/バイト会計/tail切り詰め/spillファイル — divergence: 完全出力後の切り詰め計算、チャンク進捗コールバックは将来のストリーミング改修時に)。テスト: system-prompt 3 + events 2 + truncate 10 (fuzz含む) + nodejs-env 25 + utils 10。**pillar-agent 95テスト (lib 13 + loop 25 + agent 22 + nodejs-env 25 + utils 10) 全パス。** |
 
-**pillar-ai 188テスト (core 35 + faux 22 + models-runtime 39 + api-infra 27 + openai-completions 23 + openai-responses 14 + anthropic-messages 27 + uuid 1) と pillar-agent 47テスト (loop 25 + agent 22) 全パス。`cargo fmt --check` / `cargo clippy --workspace --all-targets -- -D warnings` クリーン。**
+**pillar-ai 188テスト (core 35 + faux 22 + models-runtime 39 + api-infra 27 + openai-completions 23 + openai-responses 14 + anthropic-messages 27 + uuid 1) と pillar-agent 95テスト (lib 13 + loop 25 + agent 22 + nodejs-env 25 + utils 10) 全パス。`cargo fmt --check` / `cargo clippy --workspace --all-targets -- -D warnings` クリーン。**
 
 上流チェックアウトは `/tmp/upstream/pi`, `/tmp/upstream/luaur` (再作成手順は docs/rules/06)。
 
@@ -44,7 +45,7 @@ pi v0.84.3 (TypeScript, commit `56700d4`) を Rust に移植する。拡張機�
 ## 未移植 (優先順)
 
 1. **pillar-ai のプロバイダ残り**: `openai-completions` は移植済み。次は `openai-responses-shared.ts` (792行) と `openai-responses.ts` (376行)、そして `anthropic-messages.ts` (1391行)。`models.generated.ts` はジェネレータで再生成、手移植禁止 (docs/rules/01、生成器は pillar-ai/src/bin/generate-models.rs に作る)。live-API テスト (responseid, xhigh, tool-call-without-result, tool-call-id-normalization e2e) はモック不能なので非移植。
-2. **pillar-agent の残り**: Agent クラス (agent.ts) と agent-loop.test.ts 23ケースは移植済み (`dd41883`, `93f5b9c`)。残りは `proxy.ts` (370行), `types.ts` 残り (SteeringQueue 型など軽微), `harness/` (大量 — compaction/messages/session/skills/tools 等), `search/`, `e2e.test.ts` のうちモック可能なもの。
+2. **pillar-agent の残り**: Agent クラス (agent.ts)、agent-loop.test.ts 23ケース、harness 基盤 (types/truncate/system-prompt/events/prompt-templates/env/shell-output) は移植済み (`dd41883`, `93f5b9c`, `712560b`, `a1f5d7d`, `95f65e4`)。残りは `proxy.ts` (370行), `harness/` の中核 (compaction 848行/reducer 667行/telemetry 615行/agent-harness 508行/session 738行/tools 935行/messages 168行/skills 386行), `search/`, `e2e.test.ts` のうちモック可能なもの。
 3. **pillar-coding-agent**: 未着手 (最大、61k行)。
 4. **pillar-tui / client / server / session-store**: 未着手。
 5. **pillar-extensions**: 未着手 (luaur VM 統合)。設計は docs/rules/04 に確定済み。
@@ -134,11 +135,20 @@ repair_json の in_string 内で `repaired.push(if ... { continue } else { c })`
 - **上流テストの llmCalls カウントは message_end(assistant) の個数で代用**: Rust の stream fn はループ内で直接呼ばれないため呼び出し回数を直接観測できない。AtomicU32 をカウンタにして stream fn クロージャ内で fetch_add するのが素直 (今回の prepareNextTurn テスト)。
 - **閉じた `AgentMessage` union でのカスタムメッセージテスト**: `CustomAgentMessages` は移植対象外 (divergence 済)。toolResult をスタンドインにし、converter が toolName=="notification" でフィルタ/マップする形で上流の挙動 (convertToLlm でのフィルタ/変換) を検証できる。
 
+### 22. harness/env 移植で判明した落とし穴 (今回)
+
+- **tokio Command は親 env を継承する**: 上流 `getShellEnv` の `{...process.env, ...baseEnv, ...extraEnv}` は「マージ結果」を返すが、Rust で `cmd.env(k,v)` を重ねるだけだと `inherit_env: false` でも親 env が残る。`inherit_env: Some(false)` のときは `cmd.env_clear()` を呼んでからマージ結果を適用する (デバッグに時間を食った: `ShellExecOptions::default()` の `inherit_env: bool` が false 既定だったのが原因。最終的に `Option<bool>` + `unwrap_or(true)` にして上流 `?? true` と揃えた)。
+- **同一トレイトメソッド名の曖昧呼び出し**: `ExecutionEnv = FileSystem + Shell` で両者が `cleanup()` を持つと `env.cleanup()` が曖昧になる。呼び出し側は `FileSystem::cleanup(&env)` と明示する。
+- **`select!` で future を再利用する今後のdrain**: pipe読み取りを `&mut` 借用で future に組み込むと select! の落としていない branch 側から借用が残り E0499。読み取りは `tokio::spawn` の独立タスク + `Arc<Mutex<Vec<u8>>>` バッファにして、select! は child.wait のみを対象にするのが素直。
+- **pi agent ハーネス自体が `PI_SESSION_FILE` 等を注入する**: このリポジトリの開発環境 (pi の bash ツール) は `PI_SESSION_FILE`/`PI_CODING_AGENT`/`PI_SESSION_ID` を環境にセットする。env レイヤリングのテストはこの値が混入する前提で書く (上流テストも同一の変数名を使うので、期待値は上流テストのリテラル通りで正しい — テスト側の期待値を環境に合わせて変えないこと)。
+- **edition 2024 で `std::env::set_var/remove_var` は unsafe**: テストでも `unsafe { }` で囲む。
+- **`.err().expect()` は clippy err_expect で落ちる**: `.expect_err()` を使う。
+
 ## 次のセッションの最初の一歩
 
-**agent-loop.test.ts の全ケース (23) の移植完了** (commit `93f5b9c`)。pillar-agent は 47テスト (loop 25 + agent 22)。
+**harness 基盤 (types/truncate/system-prompt/events/prompt-templates/env/shell-output) 完了** (`712560b`, `a1f5d7d`, `95f65e4`)。pillar-agent は 95テスト。
 
-次の大きい塊は **pillar-agent の harness/** (compaction/messages/session/skills/tools — coding-agent が依存するので先に。上流 `test/harness/` に reducer 1127行・compaction 697行・tools 622行・nodejs-env 551行のテストがある) か **proxy.ts** (370行 + proxy.test.ts)。e2e.test.ts のモック可能部分も候補。models_generated.rs (generate-models ジェネレータ, docs/rules/01) はまだ未作成 — live カタログ依存のため別タスク。
+次の大きい塊は **harness の中核**: `skills.ts` (386行, ignore マッチング — globset/ignore クレートが cargo キャッシュにある) + `messages.ts` (168行, カスタムメッセージ4種 — 閉じた union への変種追加を伴う設計判断あり) → `compaction/` (848+132+280行) → `reducer.ts` (667行) → `session/` (738行) → `tools/` (935行) → `agent-harness.ts` (508行) の順が依存順。上流 `test/harness/` の reducer 1127行・compaction 697行・tools 622行がパリティテスト源。models_generated.rs (generate-models ジェネレータ, docs/rules/01) は未作成 — live カタログ依存のため別タスク。
 
 ## セッション運用の反省 (継続)
 
