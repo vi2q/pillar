@@ -7,6 +7,8 @@
 pub mod github_copilot_headers;
 pub mod openai_completions;
 pub mod openai_prompt_cache;
+pub mod openai_responses;
+pub mod openai_responses_shared;
 
 use std::sync::Arc;
 

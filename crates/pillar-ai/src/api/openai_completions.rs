@@ -468,7 +468,7 @@ fn append_openai_reasoning_detail(details: &mut Vec<ReasoningDetail>, detail: Re
 /// Yields `data:` payloads from an SSE byte stream (upstream: the SDK's
 /// stream decoder). Handles CRLF, multi-line data, comments, and flushes a
 /// final unterminated event.
-pub(crate) struct SseDataEvents {
+pub struct SseDataEvents {
     byte_stream: crate::transport::ByteStream,
     buffer: Vec<u8>,
     finished: bool,
@@ -2785,4 +2785,56 @@ pub fn stream_simple(
     };
 
     stream(model, context, Some(completions_options))
+}
+
+/// Wraps [`SseDataEvents`] to yield parsed JSON chunk values, stopping at
+/// the `data: [DONE]` sentinel. Shared by the OpenAI-family adapters.
+pub struct SseJsonEvents {
+    inner: SseDataEvents,
+    done: bool,
+}
+
+impl SseJsonEvents {
+    pub fn new(inner: SseDataEvents) -> Self {
+        Self { inner, done: false }
+    }
+}
+
+impl futures::Stream for SseJsonEvents {
+    type Item = Result<Value, AiError>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        if self.done {
+            return std::task::Poll::Ready(None);
+        }
+        loop {
+            match std::pin::Pin::new(&mut self.inner).poll_next(cx) {
+                std::task::Poll::Ready(Some(Ok(payload))) => {
+                    if payload.trim() == "[DONE]" {
+                        self.done = true;
+                        return std::task::Poll::Ready(None);
+                    }
+                    if payload.trim().is_empty() {
+                        continue;
+                    }
+                    match serde_json::from_str::<Value>(&payload) {
+                        Ok(value) => return std::task::Poll::Ready(Some(Ok(value))),
+                        Err(error) => {
+                            return std::task::Poll::Ready(Some(Err(AiError::Other(format!(
+                                "invalid SSE chunk JSON: {error}"
+                            )))));
+                        }
+                    }
+                }
+                std::task::Poll::Ready(Some(Err(error))) => {
+                    return std::task::Poll::Ready(Some(Err(error)));
+                }
+                std::task::Poll::Ready(None) => return std::task::Poll::Ready(None),
+                std::task::Poll::Pending => return std::task::Poll::Pending,
+            }
+        }
+    }
 }

@@ -339,6 +339,30 @@ pub struct OpenaiCompletionsCompat {
     pub supports_long_cache_retention: Option<bool>,
 }
 
+/// Compatibility settings for the `openai-responses` API (upstream
+/// `OpenAIResponsesCompat`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenaiResponsesCompat {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_developer_role: Option<bool>,
+    /// "openai" (default) or "openrouter"; empty means auto-detect.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_affinity_format: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_long_cache_retention: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_strict_mode: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_openai_grammar_tools: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_additional_tools: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_tool_search: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_explicit_prompt_cache_mode: Option<bool>,
+}
+
 // --- Messages ----------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

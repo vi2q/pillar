@@ -14,6 +14,7 @@ pub mod auth_resolve;
 pub mod auth_types;
 pub mod constrained_sampling;
 pub mod credential_store;
+pub mod deferred_tools;
 pub mod diagnostics;
 pub mod error;
 pub mod error_body;
