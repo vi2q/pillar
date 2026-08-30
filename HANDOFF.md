@@ -45,7 +45,7 @@ pi v0.84.3 (TypeScript, commit `56700d4`) を Rust に移植する。拡張機�
 ## 未移植 (優先順)
 
 1. **pillar-ai のプロバイダ残り**: `openai-completions` は移植済み。次は `openai-responses-shared.ts` (792行) と `openai-responses.ts` (376行)、そして `anthropic-messages.ts` (1391行)。`models.generated.ts` はジェネレータで再生成、手移植禁止 (docs/rules/01、生成器は pillar-ai/src/bin/generate-models.rs に作る)。live-API テスト (responseid, xhigh, tool-call-without-result, tool-call-id-normalization e2e) はモック不能なので非移植。
-2. **pillar-agent の残り**: Agent クラス (agent.ts)、agent-loop.test.ts 23ケース、harness 基盤 + skills は移植済み (`dd41883`, `93f5b9c`, `712560b`, `a1f5d7d`, `95f65e4`, `d5087a8`)。残りは `proxy.ts` (370行), `harness/` の中核 (compaction 848行/reducer 667行/telemetry 615行/agent-harness 508行/session 738行/tools 935行/messages 168行), `search/`, `e2e.test.ts` のうちモック可能なもの。
+2. **pillar-agent の残り**: Agent クラス、agent-loop.test.ts 23ケース、harness 基盤 (types/env/messages/skills/compaction共通部/branch-summarization準備部) は移植済み (〜`9d70fa8`)。残りは `proxy.ts` (370行), `harness/` の中核 (compaction 本体 848行/reducer 667行/telemetry 615行/agent-harness 508行/session 738行 [session があると collectEntriesForBranchSummary/generateBranchSummary も移植可]/tools 935行), `search/`, `e2e.test.ts` のうちモック可能なもの。
 3. **pillar-coding-agent**: 未着手 (最大、61k行)。
 4. **pillar-tui / client / server / session-store**: 未着手。
 5. **pillar-extensions**: 未着手 (luaur VM 統合)。設計は docs/rules/04 に確定済み。
@@ -151,7 +151,7 @@ repair_json の in_string 内で `repaired.push(if ... { continue } else { c })`
 
 **harness 基盤 + skills 完了** (`712560b`, `a1f5d7d`, `95f65e4`, `d5087a8`)。pillar-agent は 103テスト。
 
-次の大きい塊は **harness の中核**: `messages.ts` (168行, カスタムメッセージ4種 [bashExecution/custom/branchSummary/compactionSummary] — 閉じた union への変種追加を伴う設計判断あり。convertToLlm の prefix/suffix 定数もここ) → `compaction/` (848+132+280行) → `reducer.ts` (667行) → `session/` (738行) → `tools/` (935行) → `agent-harness.ts` (508行) の順が依存順。上流 `test/harness/` の reducer 1127行・compaction 697行・tools 622行がパリティテスト源。models_generated.rs (generate-models ジェネレータ, docs/rules/01) は未作成 — live カタログ依存のため別タスク。
+次の大きい塊は **harness の中核**: `session/` (738行 — types 393行/state 344行/session 299行/memory 192行/context 100行 — これがあると compaction 本体・branch summarization 完結形・reducer が移植できる) → `compaction/compaction.ts` 本体 (848行) → `reducer.ts` (667行) → `tools/` (935行) → `agent-harness.ts` (508行) → `telemetry.ts` (615行) → `proxy.ts` (370行) の順が依存順。上流 `test/harness/` の reducer 1127行・compaction 697行・tools 622行がパリティテスト源。models_generated.rs (generate-models ジェネレータ, docs/rules/01) は未作成 — live カタログ依存のため別タスク。
 
 ## セッション運用の反省 (継続)
 
