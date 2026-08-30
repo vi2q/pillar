@@ -64,7 +64,7 @@ fn derive_session_context_state(
                     model_id: model_id.clone(),
                 });
             }
-            EntryPayload::Message { message } => {
+            EntryPayload::Message { message, .. } => {
                 if let Some(pillar_ai::types::Message::Assistant(assistant)) = message.as_message()
                 {
                     model = Some(SessionModelRef {
@@ -125,7 +125,7 @@ pub fn session_entry_to_context_messages(
     options: &SessionContextBuildOptions,
 ) -> Vec<AgentMessage> {
     match &entry.payload {
-        EntryPayload::Message { message } => {
+        EntryPayload::Message { message, .. } => {
             // Deferred assistant handles are placeholders; they carry no
             // context until the deferred fetch resolves.
             if let Some(pillar_ai::types::Message::Assistant(assistant)) = message.as_message() {

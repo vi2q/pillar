@@ -318,7 +318,10 @@ impl Session {
         let entry = self.commit_entry(
             ProvisionedEntry {
                 id: (self.id_generator)(),
-                payload: EntryPayload::Message { message },
+                payload: EntryPayload::Message {
+                    message,
+                    terminate: false,
+                },
             },
             lane,
         )?;

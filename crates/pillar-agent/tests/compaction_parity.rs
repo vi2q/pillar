@@ -74,7 +74,10 @@ fn message_entry(message: AgentMessage, parent_id: Option<&str>, seq: u64) -> En
         seq,
         parent_id: parent_id.map(str::to_owned),
         timestamp: 1,
-        payload: EntryPayload::Message { message },
+        payload: EntryPayload::Message {
+            message,
+            terminate: false,
+        },
     }
 }
 

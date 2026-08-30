@@ -75,6 +75,7 @@ fn starts_at_the_latest_compaction_and_materializes_its_retained_tail() {
             1,
             EntryPayload::Message {
                 message: user_message("old"),
+                terminate: false,
             },
         ),
         entry(
@@ -116,6 +117,7 @@ fn starts_at_the_latest_compaction_and_materializes_its_retained_tail() {
             5,
             EntryPayload::Message {
                 message: user_message("tail"),
+                terminate: false,
             },
         ),
     ];
@@ -146,6 +148,7 @@ fn applies_caller_transforms_after_the_compaction_boundary() {
             1,
             EntryPayload::Message {
                 message: user_message("old"),
+                terminate: false,
             },
         ),
         entry(
@@ -180,6 +183,7 @@ fn applies_caller_transforms_after_the_compaction_boundary() {
             4,
             EntryPayload::Message {
                 message: user_message("tail"),
+                terminate: false,
             },
         ),
     ];
@@ -232,6 +236,7 @@ fn projects_custom_entries_and_omits_deferred_assistant_handles() {
             1,
             EntryPayload::Message {
                 message: user_message("hello"),
+                terminate: false,
             },
         ),
         entry(
@@ -241,6 +246,7 @@ fn projects_custom_entries_and_omits_deferred_assistant_handles() {
             2,
             EntryPayload::Message {
                 message: AgentMessage::Message(Message::Assistant(Box::new(deferred_assistant))),
+                terminate: false,
             },
         ),
         entry(
@@ -339,6 +345,7 @@ fn append_message_entry(session: &Session, id: &str, text: &str) -> Entry {
                 id: id.to_owned(),
                 payload: EntryPayload::Message {
                     message: user_message(text),
+                    terminate: false,
                 },
             },
             "main",
@@ -525,6 +532,7 @@ fn isolates_lanes_while_sharing_the_tree() {
                 id: "thread-child".to_owned(),
                 payload: EntryPayload::Message {
                     message: user_message("thread"),
+                    terminate: false,
                 },
             },
             "thread",
@@ -634,6 +642,7 @@ fn supports_bounded_filtered_and_cursor_based_queries() {
                 id: "tail".to_owned(),
                 payload: EntryPayload::Message {
                     message: assistant_message("tail"),
+                    terminate: false,
                 },
             },
             "main",
@@ -804,6 +813,7 @@ fn keeps_latest_value_facts_and_computes_ledger_statistics_across_lanes() {
                 id: "user".to_owned(),
                 payload: EntryPayload::Message {
                     message: user_message("question"),
+                    terminate: false,
                 },
             },
             "main",
@@ -815,6 +825,7 @@ fn keeps_latest_value_facts_and_computes_ledger_statistics_across_lanes() {
                 id: "assistant".to_owned(),
                 payload: EntryPayload::Message {
                     message: AgentMessage::Message(Message::Assistant(Box::new(assistant.clone()))),
+                    terminate: false,
                 },
             },
             "main",
@@ -979,6 +990,7 @@ fn forks_one_branch_with_selected_facts_and_no_records() {
                 id: "shared".to_owned(),
                 payload: EntryPayload::Message {
                     message: assistant_message("shared"),
+                    terminate: false,
                 },
             },
             "main",
@@ -991,6 +1003,7 @@ fn forks_one_branch_with_selected_facts_and_no_records() {
                 id: "thread-child".to_owned(),
                 payload: EntryPayload::Message {
                     message: user_message("thread"),
+                    terminate: false,
                 },
             },
             "thread",

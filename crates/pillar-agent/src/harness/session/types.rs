@@ -91,7 +91,13 @@ pub struct Entry {
 #[serde(tag = "type")]
 pub enum EntryPayload {
     #[serde(rename = "message")]
-    Message { message: AgentMessage },
+    Message {
+        message: AgentMessage,
+        /// Upstream `MessageEntry.terminate`: set on a persisted terminal
+        /// toolResult to stop the restored run after this turn.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        terminate: bool,
+    },
     #[serde(rename = "model_change")]
     ModelChange { provider: String, model_id: String },
     #[serde(rename = "thinking_level_change")]
@@ -136,6 +142,23 @@ impl EntryPayload {
             EntryPayload::Compaction { .. } => "compaction",
             EntryPayload::BranchSummary { .. } => "branch_summary",
             EntryPayload::Custom { .. } => "custom",
+        }
+    }
+}
+
+/// Record kind string for a payload variant (upstream `record.type`).
+impl RecordPayload {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            RecordPayload::OperationStarted { .. } => "operation_started",
+            RecordPayload::AbortRequested { .. } => "abort_requested",
+            RecordPayload::OperationFinished { .. } => "operation_finished",
+            RecordPayload::StepAttempt { .. } => "step_attempt",
+            RecordPayload::ToolStarted { .. } => "tool_started",
+            RecordPayload::QueueEnqueued { .. } => "queue_enqueued",
+            RecordPayload::QueueCancelled { .. } => "queue_cancelled",
+            RecordPayload::WriteDeferred { .. } => "write_deferred",
+            RecordPayload::UsageRecord { .. } => "usage",
         }
     }
 }

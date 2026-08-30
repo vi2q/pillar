@@ -101,7 +101,7 @@ fn get_assistant_usage(message: &AgentMessage) -> Option<&Usage> {
 /// `getLastAssistantUsage`).
 pub fn get_last_assistant_usage(entries: &[Entry]) -> Option<&Usage> {
     for entry in entries.iter().rev() {
-        if let EntryPayload::Message { message } = &entry.payload {
+        if let EntryPayload::Message { message, .. } = &entry.payload {
             if let Some(usage) = get_assistant_usage(message) {
                 return Some(usage);
             }
@@ -194,7 +194,7 @@ fn find_valid_cut_points(entries: &[Entry], start_index: usize, end_index: usize
             // Upstream cut points: message roles user/bashExecution/custom/
             // branchSummary/compactionSummary/assistant (toolResult
             // excluded), plus branch_summary entries.
-            EntryPayload::Message { message } => {
+            EntryPayload::Message { message, .. } => {
                 if !matches!(message.role_name(), "toolResult") {
                     cut_points.push(i);
                 }
@@ -219,7 +219,7 @@ pub fn find_turn_start_index(
         if entry.kind == "branch_summary" {
             return Some(i);
         }
-        if let EntryPayload::Message { message } = &entry.payload {
+        if let EntryPayload::Message { message, .. } = &entry.payload {
             if message_role_is_turn_start(message) {
                 return Some(i);
             }
@@ -253,7 +253,7 @@ pub fn find_cut_point(
 
     for i in (start_index..end_index).rev() {
         let entry = &entries[i];
-        let EntryPayload::Message { message } = &entry.payload else {
+        let EntryPayload::Message { message, .. } = &entry.payload else {
             continue;
         };
         accumulated_tokens += estimate_tokens(message);
@@ -279,7 +279,7 @@ pub fn find_cut_point(
     let cut_entry = &entries[cut_index];
     let is_user_message = matches!(
         &cut_entry.payload,
-        EntryPayload::Message { message } if message.role_name() == "user"
+        EntryPayload::Message { message, .. } if message.role_name() == "user"
     );
     let turn_start_index = if is_user_message {
         None
@@ -351,7 +351,7 @@ pub fn combine_usage(first: &Usage, second: &Usage) -> Usage {
 pub fn get_message_from_entry_for_compaction(entry: &Entry) -> Option<AgentMessage> {
     match &entry.payload {
         EntryPayload::Compaction { .. } => None,
-        EntryPayload::Message { message } => {
+        EntryPayload::Message { message, .. } => {
             // Upstream drops toolResult messages from summarization input
             // (they are represented via the assistant tool calls).
             if message.role_name() == "toolResult" {
@@ -430,6 +430,7 @@ pub fn prepare_compaction(
                         .unwrap_or(prev_compaction.timestamp),
                     payload: EntryPayload::Message {
                         message: message.clone(),
+                        terminate: false,
                     },
                 });
             }
