@@ -18,7 +18,7 @@ pi v0.84.3 (TypeScript, commit `56700d42e`) を Rust に移植する。拡張機
 
 ## 現在の状態 (2026-08-31)
 
-全ワークスペース 538テストがパス (protocol 49 / telemetry 15 / ai 188 / agent 286)。`cargo fmt --check` / `cargo clippy` (クレート毎に `-D warnings`) クリーン。harness session の jsonl バックエンド (types/codec/storage/repo, 848行) 済み (91a03b0 + f20fe8e) に加え、**jsonl パリティテスト 3スイート完了** (jsonl_codec_parity 14 / jsonl_storage_parity 5 / jsonl_conformance_parity 30)。その過程で重大バグ2件を修正 (エンベロープ+flatten payload の二重 `type` タグ #45、`block_in_place` が current_thread ランタイムで panic #47)、repo に destination 予約 (upstream claimCreateDestination 相当, #46) と `with_clock` 注入を追加。proxy.ts 済み (6ed4f6c)。branch-summarization の session 依存部済み (545b655)。**search/ 済み (187bcf2)**: SessionSearch 契約 + スキャン実装 (scanning.ts 176行) + search.test.ts 4ケース移植。AsyncIterable → lazy BoxStream、素の Error throw → SearchError enum、metadata 汎用 → SessionMetadata に縮小。
+全ワークスペース 548テストがパス (protocol 49 / telemetry 15 / ai 188 / agent 296)。`cargo fmt --check` / `cargo clippy` (クレート毎に `-D warnings`) クリーン。harness session の jsonl バックエンド (types/codec/storage/repo, 848行) 済み (91a03b0 + f20fe8e) に加え、**jsonl パリティテスト 3スイート完了** (jsonl_codec_parity 14 / jsonl_storage_parity 5 / jsonl_conformance_parity 30)。その過程で重大バグ2件を修正 (エンベロープ+flatten payload の二重 `type` タグ #45、`block_in_place` が current_thread ランタイムで panic #47)、repo に destination 予約 (upstream claimCreateDestination 相当, #46) と `with_clock` 注入を追加。proxy.ts 済み (6ed4f6c)。branch-summarization の session 依存部済み (545b655)。search/ 済み (187bcf2)。**e2e.test.ts 済み (e1c55c1, 10ケース)**: faux プロバイダ経由の Agent 統合テスト + Agent.continue() 検証 — registerFauxProvider+streamSimple は StreamFn 経由の FauxCore::stream に直結、AbortSignal→faux SharedAbort は転送タスクでブリッジ。
 
 移植メモ (jsonl): `FileSystem` は RPITIT で dyn 非対応のため `JsonlSessionStorage<FT: FileSystem + ?Sized>` / `JsonlSessionRepo<F: FileSystem + 'static>` はジェネリクスで受ける (docs/INSTRUCTIONS.md #41)。書き込みは `SessionStorage` トレイトの sync メソッド内で `spawn_blocking` + インライン current_thread ランタイムにより append を駆動し、state mutex で直列化 (#47)。torn-tail 修復は `publishFileAtomically` (tmp + rename) を再現。
 
@@ -27,7 +27,7 @@ pi v0.84.3 (TypeScript, commit `56700d42e`) を Rust に移植する。拡張機
 | pillar-protocol | 49 | ✅ 完了 |
 | pillar-telemetry | 15 | ✅ 完了 |
 | pillar-ai | 188 | 🔶 コア + 全主要プロバイダ済み (core 35 / faux 22 / models-runtime 39 / api-infra 27 / openai-completions 23 / openai-responses 14 / anthropic-messages 27 / uuid 1) |
-| pillar-agent | 286 | 🔶 コアループ + Agent クラス + harness 基盤〜tools + telemetry + session jsonl バックエンド + jsonl パリティテスト + proxy + search 済み (lib 32 / loop 25 / agent 22 / nodejs-env 25 / utils 10 / skills 8 / messages 13 / session 20 / compaction 15 / reducer 28 / agent-harness-scaffold 4 / tools-parity 21 / proxy 1 / jsonl codec 14 / jsonl storage 5 / jsonl conformance 30 / search 4) |
+| pillar-agent | 296 | ✅ コアループ + Agent クラス + harness 基盤〜tools + telemetry + session jsonl バックエンド + jsonl パリティテスト + proxy + search + e2e 済み (lib 32 / loop 25 / agent 22 / nodejs-env 25 / utils 10 / skills 8 / messages 13 / session 20 / compaction 15 / reducer 28 / agent-harness-scaffold 4 / tools-parity 21 / proxy 1 / jsonl codec 14 / jsonl storage 5 / jsonl conformance 30 / search 4 / e2e 10) |
 | pillar-coding-agent / tui / client / server / session-store | — | ❌ 未着手 |
 | pillar-extensions | — | ❌ 未着手 (luaur VM 統合)。設計は docs/rules/04 に確定済み |
 
@@ -42,7 +42,7 @@ pi v0.84.3 (TypeScript, commit `56700d42e`) を Rust に移植する。拡張機
 | protocol | 1.2k | 0.7k | ✅ 完了 (src 2.5k / tests 1.0k) |
 | telemetry | 0.9k | 0.2k | ✅ 完了 (src 0.7k / tests 0.5k) |
 | ai | 27.7k | 35.1k | 🔶 約5割 (src 14.6k / tests 8.2k。残り: google 系 1.4k、mistral-conversations 0.9k、bedrock-converse 1.3k、openai-codex 1.7k、azure 0.3k、images、providers/* 等) |
-| agent | 12.9k | 8.6k | 🔶 約99% (src 15.7k / tests 10.2k。残り: e2e のうちモック可能なもの。search 208行 / reducer / result / agent-harness / tools 1203 / telemetry 615 / session jsonl 848 / proxy 370 / branch-summarization 済み) |
+| agent | 12.9k | 8.6k | ✅ ほぼ完了 (src 15.7k / tests 10.6k。残り: live-API 依存の e2e・models_generated.rs のみ。search 208行 / e2e 415行 / reducer / result / agent-harness / tools 1203 / telemetry 615 / session jsonl 848 / proxy 370 / branch-summarization 済み) |
 | coding-agent | 78.9k | 50.3k | ❌ 未着手 (最大) |
 | tui | 17.9k | 16.4k | ❌ 未着手 |
 | server / client / session-backends | 6.3k | 4.2k | ❌ 未着手 |
@@ -52,9 +52,9 @@ pi v0.84.3 (TypeScript, commit `56700d42e`) を Rust に移植する。拡張機
 
 ## 次の作業キュー
 
-1. **agent の残り**: search/ は**完了** (187bcf2)。→ 次: e2e.test.ts のうちモック可能なもの。result.ts / reducer.ts / agent-harness.ts (スキャフォールド) / tools/ (1203行) / telemetry.ts (615行) / session/jsonl/ (848行) / proxy.ts (370行) / branch-summarization / search/ は移植済み。agent-harness の操作本体 (prompt/compact/resume/watch 等) の依存先は揃ったので次は着手可能。models_generated.rs (generate-models ジェネレータ) は live カタログ依存のため別タスク。
+1. **agent の残り**: search/ (187bcf2) / e2e のモック可能部 (e1c55c1) は**完了**。残りは live-API 依存の e2e (responseid, xhigh, tool-call-without-result, tool-call-id-normalization — 非移植) と models_generated.rs (generate-models ジェネレータ, live カタログ依存) のみで、**agent クレートは実質完了**。agent-harness の操作本体 (prompt/compact/resume/watch 等) の依存先は揃ったので次は着手可能。→ 次: pillar-ai のプロバイダ残り または pillar-coding-agent 着手。
 2. **pillar-ai のプロバイダ残り**: google 系 → mistral-conversations → bedrock-converse → openai-codex → azure → images → providers/*。`models.generated.ts` はジェネレータで再生成、手移植禁止 (docs/rules/01、生成器は pillar-ai/src/bin/generate-models.rs に作る)。live-API テスト (responseid, xhigh, tool-call-without-result, tool-call-id-normalization e2e) はモック不能なので非移植。
-3. **agent の残り**: e2e.test.ts のうちモック可能なもの。models_generated.rs (generate-models ジェネレータ) は live カタログ依存のため別タスク。
+3. **pillar-coding-agent**: 未着手 (最大、61k行)。
 4. **pillar-coding-agent**: 未着手 (最大、61k行)。
 5. **pillar-tui / client / server / session-store**: 未着手。
 6. **pillar-extensions**: luaur VM 統合。設計は docs/rules/04。
@@ -127,6 +127,7 @@ pi v0.84.3 (TypeScript, commit `56700d42e`) を Rust に移植する。拡張機
 - **同一 destination の create/fork 競合はプロセス内予約で防ぐ** (#46) — タイムスタンプ入りファイル名でも、async の存在チェックと発行の間に別 call が割り込むと同じ `{cwd, id}` のセッションが2つ publish され得る (upstream `claimCreateDestination` のコメント参照)。Rust では `Mutex<HashSet<String>>` + Drop で reservation を解放する RAII ガードにした (upstream try/finally 相当)。テストで同時実行を見たい場合は `tokio::join!` で2つの create を起動し成功1/失敗1 (already_exists) を断言する。時刻に依存するテストは repo を `with_clock` で固定時計にする。
 - **sync 関数から async FS を呼ぶなら spawn_blocking+inline runtime** (#47) — `SessionStorage` トレイトは sync なので async `FileSystem::append_file` を呼ぶにはランタイム介入が必要。`block_in_place` は `#[tokio::test]` (current_thread flavor) で panic、`Handle::block_on` はランタイム内で「Cannot start a runtime from within a runtime」で panic。動くのは `Handle::spawn_blocking` でブロッキングプールに渡し、その中で `Builder::new_current_thread().enable_all().build()` したインラインランタイムで future を駆動する方法。ランタイム外の呼び出し元は std::fs にフォールバック。順序保証は state mutex が担う (upstream promise チェーン相当)。この制約のため `SessionStorage for JsonlSessionStorage` は `F: FileSystem + 'static` を要求する。
 - **AsyncIterable の移植は lazy BoxStream で、ソース未来は poll まで解決しない** (#48) — search 移植で判明。upstream の async generator は最初の pull まで本体が走らない。Rust で素直に `BoxStream` を返すクロージャにすると呼び出し時に未来が生成されるだけで poll は遅延するが、クロージャ内で即 `boxed()` した future を `poll_unpin` する列挙状態 (Pending → Ready(stream) → Dynamic に差し替え) を明示的に持つ必要がある。また upstream の `throwIfAborted` は「各 readable 到着後」「各 entry 到着後」に走るので、ストリーム poll 内の対応する位置で `is_aborted()` を見る。素の Error throw (`AbortError` / `Duplicate sessionId`) は enum 化 (SearchError) が自然。
+- **abort signal の型が層ごとに違うときは転送タスクでブリッジ** (#49) — e2e 移植で判明。pillar-agent の `AbortSignal` (waker ベース) と pillar-ai faux の `SharedAbort` (AtomicBool) は別型。`StreamFn` クロージャ内で `tokio::spawn(async move { signal.aborted().await; shared.abort(); })` の転送タスクを1本起動すれば両者を繋げられる。faux 側はチャンク毎に `is_aborted()` を見るのでポーリング間の遅延は許容。upstream は両者が同一の `AbortSignal` なのでこの層は存在しない (移植時のみの糊)。
 
 ## セッション運用の反省 (継続)
 
