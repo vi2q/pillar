@@ -44,9 +44,8 @@ fn assistant_message(text: &str) -> AgentMessage {
     )))
 }
 
-fn entry(kind: &str, id: &str, parent_id: Option<&str>, seq: u64, payload: EntryPayload) -> Entry {
+fn entry(id: &str, parent_id: Option<&str>, seq: u64, payload: EntryPayload) -> Entry {
     Entry {
-        kind: kind.to_owned(),
         id: id.to_owned(),
         seq,
         parent_id: parent_id.map(str::to_owned),
@@ -69,7 +68,6 @@ fn expect_code(error: SessionError, code: SessionErrorCode) {
 fn starts_at_the_latest_compaction_and_materializes_its_retained_tail() {
     let entries = vec![
         entry(
-            "message",
             "old",
             None,
             1,
@@ -79,7 +77,6 @@ fn starts_at_the_latest_compaction_and_materializes_its_retained_tail() {
             },
         ),
         entry(
-            "compaction",
             "compact",
             Some("old"),
             2,
@@ -92,7 +89,6 @@ fn starts_at_the_latest_compaction_and_materializes_its_retained_tail() {
             },
         ),
         entry(
-            "model_change",
             "model",
             Some("compact"),
             3,
@@ -102,7 +98,6 @@ fn starts_at_the_latest_compaction_and_materializes_its_retained_tail() {
             },
         ),
         entry(
-            "thinking_level_change",
             "thinking",
             Some("model"),
             4,
@@ -111,7 +106,6 @@ fn starts_at_the_latest_compaction_and_materializes_its_retained_tail() {
             },
         ),
         entry(
-            "message",
             "tail",
             Some("thinking"),
             5,
@@ -142,7 +136,6 @@ fn starts_at_the_latest_compaction_and_materializes_its_retained_tail() {
 fn applies_caller_transforms_after_the_compaction_boundary() {
     let entries = vec![
         entry(
-            "message",
             "old",
             None,
             1,
@@ -152,7 +145,6 @@ fn applies_caller_transforms_after_the_compaction_boundary() {
             },
         ),
         entry(
-            "compaction",
             "compact",
             Some("old"),
             2,
@@ -165,7 +157,6 @@ fn applies_caller_transforms_after_the_compaction_boundary() {
             },
         ),
         entry(
-            "branch_summary",
             "branch",
             Some("compact"),
             3,
@@ -177,7 +168,6 @@ fn applies_caller_transforms_after_the_compaction_boundary() {
             },
         ),
         entry(
-            "message",
             "tail",
             Some("branch"),
             4,
@@ -192,7 +182,7 @@ fn applies_caller_transforms_after_the_compaction_boundary() {
     options.entry_transforms.push(Arc::new(|entries: &[Entry]| {
         entries
             .iter()
-            .filter(|candidate| candidate.kind != "compaction")
+            .filter(|candidate| candidate.kind() != "compaction")
             .cloned()
             .collect()
     }));
@@ -230,7 +220,6 @@ fn projects_custom_entries_and_omits_deferred_assistant_handles() {
     deferred_assistant.usage = Default::default();
     let entries = vec![
         entry(
-            "message",
             "user",
             None,
             1,
@@ -240,7 +229,6 @@ fn projects_custom_entries_and_omits_deferred_assistant_handles() {
             },
         ),
         entry(
-            "message",
             "deferred",
             Some("user"),
             2,
@@ -250,7 +238,6 @@ fn projects_custom_entries_and_omits_deferred_assistant_handles() {
             },
         ),
         entry(
-            "custom",
             "custom",
             Some("deferred"),
             3,

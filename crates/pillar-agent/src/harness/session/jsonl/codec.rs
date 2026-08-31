@@ -214,15 +214,15 @@ fn parse_entry_mutation(value: &Value, seq: u64) -> Result<SessionMutation, Json
 
     // Rebuild the entry from the raw object minus the envelope fields the
     // storage layer assigns (upstream strips kind/lane and spreads the
-    // rest). serde deserializes the payload from the same flattened shape.
+    // rest). The payload deserializes from the flattened shape, which
+    // carries the `type` discriminant.
     let mut raw = obj.clone();
     raw.remove("kind");
     raw.remove("lane");
     raw.insert("id".to_owned(), Value::String(id));
-    raw.insert("type".to_owned(), Value::String(kind.clone()));
     raw.insert(
         "parentId".to_owned(),
-        parent_id.clone().map(Value::String).unwrap_or(Value::Null),
+        parent_id.map(Value::String).unwrap_or(Value::Null),
     );
     raw.insert("seq".to_owned(), Value::from(seq));
     raw.insert("timestamp".to_owned(), Value::from(timestamp));
@@ -230,13 +230,7 @@ fn parse_entry_mutation(value: &Value, seq: u64) -> Result<SessionMutation, Json
     let entry: Entry = serde_json::from_value(Value::Object(raw))
         .map_err(|error| JsonlDecodeError::schema(error.to_string()))?;
 
-    Ok(match lane {
-        Some(lane) => SessionMutation::Entry {
-            lane: Some(lane),
-            entry,
-        },
-        None => SessionMutation::Entry { lane: None, entry },
-    })
+    Ok(SessionMutation::Entry { lane, entry })
 }
 
 fn parse_record_mutation(value: &Value, seq: u64) -> Result<SessionMutation, JsonlDecodeError> {
@@ -274,7 +268,6 @@ fn parse_record_mutation(value: &Value, seq: u64) -> Result<SessionMutation, Jso
     raw.remove("kind");
     raw.insert("id".to_owned(), Value::String(id));
     raw.insert("lane".to_owned(), Value::String(lane));
-    raw.insert("type".to_owned(), Value::String(kind));
     raw.insert("seq".to_owned(), Value::from(seq));
     raw.insert("timestamp".to_owned(), Value::from(timestamp));
 
@@ -411,7 +404,6 @@ pub fn encode_mutation(mutation: &SessionMutation) -> String {
 /// `encode_mutation` (helper for callers that hold payloads directly).
 pub fn entry_from_payload(id: String, payload: EntryPayload) -> Entry {
     Entry {
-        kind: payload.kind().to_owned(),
         id,
         seq: 0,
         parent_id: None,
@@ -424,7 +416,6 @@ pub fn entry_from_payload(id: String, payload: EntryPayload) -> Entry {
 /// `encode_mutation` (helper for callers that hold payloads directly).
 pub fn record_from_payload(id: String, lane: String, payload: RecordPayload) -> LaneRecord {
     LaneRecord {
-        kind: payload.kind().to_owned(),
         id,
         seq: 0,
         lane,

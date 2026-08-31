@@ -436,7 +436,6 @@ mod tests {
 
     fn message_entry(id: &str, parent: Option<&str>, message: AgentMessage) -> Entry {
         Entry {
-            kind: "message".to_owned(),
             id: id.to_owned(),
             seq: 0,
             parent_id: parent.map(str::to_owned),
@@ -481,7 +480,6 @@ mod tests {
             "modifiedFiles": ["/edited.ts"],
         });
         let entry = Entry {
-            kind: "branch_summary".to_owned(),
             id: "bs".to_owned(),
             seq: 0,
             parent_id: None,
@@ -524,7 +522,6 @@ mod tests {
             "modifiedFiles": [],
         });
         let entry = Entry {
-            kind: "branch_summary".to_owned(),
             id: "bs".to_owned(),
             seq: 0,
             parent_id: None,

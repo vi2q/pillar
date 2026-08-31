@@ -319,7 +319,7 @@ impl SessionState {
         if query.order == Some(EntryOrder::OldestFirst) {
             for entry in path.iter().rev() {
                 let reached_bound = Some(&entry.id) == bounds.stop_at_id.as_ref()
-                    || Some(entry.kind.as_str()) == bounds.stop_at_kind.as_deref();
+                    || Some(entry.kind()) == bounds.stop_at_kind.as_deref();
                 if self.matches_entry_query(entry, query) {
                     results.push(entry.clone());
                 }
@@ -441,7 +441,7 @@ impl SessionState {
                             format!("Fork target is not a message entry: {selected_entry_id}"),
                         ));
                     };
-                    if entry.kind != "message" {
+                    if entry.kind() != "message" {
                         return Err(SessionError::new(
                             SessionErrorCode::InvalidForkTarget,
                             format!("Fork target is not a message entry: {selected_entry_id}"),
@@ -481,7 +481,7 @@ impl SessionState {
 
         let mut mutations = Vec::new();
         let mut sequence = 1u64;
-        for mut source_entry in copied_entries.clone() {
+        for mut source_entry in copied_entries.iter().cloned() {
             source_entry.seq = sequence;
             sequence += 1;
             mutations.push(SessionMutation::Entry {
@@ -544,7 +544,7 @@ impl SessionState {
             }
             visited.insert(current.id.clone());
             let stop = Some(&current.id) == bounds.stop_at_id.as_ref()
-                || Some(current.kind.as_str()) == bounds.stop_at_kind.as_deref()
+                || Some(current.kind()) == bounds.stop_at_kind.as_deref()
                 || current.parent_id.is_none();
             path.push(current.clone());
             if stop {
@@ -562,7 +562,11 @@ impl SessionState {
     }
 
     fn matches_entry_query(&self, entry: &Entry, query: &EntryQuery) -> bool {
-        if query.kind.as_deref().is_some_and(|kind| entry.kind != kind) {
+        if query
+            .kind
+            .as_deref()
+            .is_some_and(|kind| entry.kind() != kind)
+        {
             return false;
         }
         if query
@@ -602,7 +606,7 @@ impl SessionState {
         if query
             .kind
             .as_deref()
-            .is_some_and(|kind| record.kind != kind)
+            .is_some_and(|kind| record.kind() != kind)
         {
             return false;
         }

@@ -481,13 +481,13 @@ fn validate_attempt_result(
         "compaction" => validate_result_entry(
             entries_by_id,
             result_entry_id,
-            |entry| entry.kind == "compaction",
+            |entry| entry.kind() == "compaction",
             "compaction result",
         ),
         "branch_summary" => validate_result_entry(
             entries_by_id,
             result_entry_id,
-            |entry| entry.kind == "branch_summary",
+            |entry| entry.kind() == "branch_summary",
             "branch-summary result",
         ),
         _ => Ok(()),
@@ -621,7 +621,7 @@ fn validate_operation_result(
         } => validate_result_entry(
             entries_by_id,
             result_entry_id,
-            |entry| entry.kind == "compaction",
+            |entry| entry.kind() == "compaction",
             "manual compaction",
         ),
         OperationIntent::Navigation {
@@ -631,7 +631,7 @@ fn validate_operation_result(
                 return validate_result_entry(
                     entries_by_id,
                     summary_entry_id,
-                    |entry| entry.kind == "branch_summary",
+                    |entry| entry.kind() == "branch_summary",
                     "navigation summary",
                 );
             }
@@ -877,7 +877,7 @@ fn derive_newest_own(entry: Option<&Entry>) -> Option<NewestOwnEntry> {
     let EntryPayload::Message { message, .. } = &entry.payload else {
         return Some(NewestOwnEntry {
             entry_id: entry.id.clone(),
-            kind: entry.kind.clone(),
+            kind: entry.kind().to_owned(),
             role: None,
             stop_reason: None,
         });
@@ -888,7 +888,7 @@ fn derive_newest_own(entry: Option<&Entry>) -> Option<NewestOwnEntry> {
     };
     Some(NewestOwnEntry {
         entry_id: entry.id.clone(),
-        kind: entry.kind.clone(),
+        kind: entry.kind().to_owned(),
         role: Some(message.role_name().to_owned()),
         stop_reason,
     })

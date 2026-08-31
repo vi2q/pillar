@@ -216,7 +216,7 @@ pub fn find_turn_start_index(
     let mut i = entry_index;
     loop {
         let entry = entries.get(i)?;
-        if entry.kind == "branch_summary" {
+        if entry.kind() == "branch_summary" {
             return Some(i);
         }
         if let EntryPayload::Message { message, .. } = &entry.payload {
@@ -390,13 +390,13 @@ pub fn prepare_compaction(
     path_entries: &[Entry],
     settings: CompactionSettings,
 ) -> Result<Option<CompactionPreparation>, CompactionError> {
-    if path_entries.is_empty() || path_entries.last().unwrap().kind == "compaction" {
+    if path_entries.is_empty() || path_entries.last().unwrap().kind() == "compaction" {
         return Ok(None);
     }
 
     let mut prev_compaction_index: Option<usize> = None;
     for (i, entry) in path_entries.iter().enumerate().rev() {
-        if entry.kind == "compaction" {
+        if entry.kind() == "compaction" {
             prev_compaction_index = Some(i);
             break;
         }
@@ -416,7 +416,6 @@ pub fn prepare_compaction(
             let mut virtual_retained_entries: Vec<Entry> = Vec::new();
             for (index, message) in retained_tail.iter().enumerate() {
                 virtual_retained_entries.push(Entry {
-                    kind: "message".to_owned(),
                     id: format!("{}:retained:{}", prev_compaction.id, index),
                     seq: prev_compaction.seq,
                     parent_id: Some(if index == 0 {

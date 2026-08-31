@@ -123,7 +123,6 @@ fn message_target(id: &str, message: AgentMessage) -> ProvisionedEntry {
 
 fn provisioned_from_payload(id: &str, payload: EntryPayload) -> ProvisionedEntry {
     ProvisionedEntry {
-        kind: payload.kind().to_owned(),
         id: id.to_owned(),
         payload,
     }
@@ -131,16 +130,6 @@ fn provisioned_from_payload(id: &str, payload: EntryPayload) -> ProvisionedEntry
 
 fn persisted_entry(target: &ProvisionedEntry, seq: u64, parent_id: Option<&str>) -> Entry {
     Entry {
-        kind: match &target.payload {
-            EntryPayload::Message { .. } => "message",
-            EntryPayload::ModelChange { .. } => "model_change",
-            EntryPayload::ThinkingLevelChange { .. } => "thinking_level_change",
-            EntryPayload::ActiveToolsChange { .. } => "active_tools_change",
-            EntryPayload::Compaction { .. } => "compaction",
-            EntryPayload::BranchSummary { .. } => "branch_summary",
-            EntryPayload::Custom { .. } => "custom",
-        }
-        .to_owned(),
         id: target.id.clone(),
         seq,
         parent_id: parent_id.map(str::to_owned),
@@ -155,8 +144,8 @@ fn persisted_message(id: &str, message: AgentMessage, seq: u64, parent_id: Optio
 }
 
 fn record(kind: &str, id: &str, seq: u64, payload: RecordPayload) -> LaneRecord {
+    let _ = kind;
     LaneRecord {
-        kind: kind.to_owned(),
         id: id.to_owned(),
         seq,
         lane: "main".to_owned(),
@@ -365,7 +354,6 @@ fn usage_record(
 
 fn compaction_entry(id: &str, seq: u64) -> Entry {
     Entry {
-        kind: "compaction".to_owned(),
         id: id.to_owned(),
         seq,
         parent_id: None,
@@ -382,7 +370,6 @@ fn compaction_entry(id: &str, seq: u64) -> Entry {
 
 fn branch_summary_entry(id: &str, seq: u64) -> Entry {
     Entry {
-        kind: "branch_summary".to_owned(),
         id: id.to_owned(),
         seq,
         parent_id: Some("target".to_owned()),
@@ -1313,7 +1300,6 @@ fn reduces_an_idle_lane_to_pending_next_run_input_and_default_configuration() {
 fn folds_persisted_configuration_over_copied_defaults_in_sequence() {
     let configuration_entries = vec![
         Entry {
-            kind: "model_change".to_owned(),
             id: "model-change".to_owned(),
             seq: 1,
             parent_id: None,
@@ -1324,7 +1310,6 @@ fn folds_persisted_configuration_over_copied_defaults_in_sequence() {
             },
         },
         Entry {
-            kind: "thinking_level_change".to_owned(),
             id: "thinking-change".to_owned(),
             seq: 2,
             parent_id: Some("model-change".to_owned()),
@@ -1334,7 +1319,6 @@ fn folds_persisted_configuration_over_copied_defaults_in_sequence() {
             },
         },
         Entry {
-            kind: "active_tools_change".to_owned(),
             id: "tools-change".to_owned(),
             seq: 3,
             parent_id: Some("thinking-change".to_owned()),
@@ -1390,7 +1374,6 @@ fn applies_committed_operation_owned_configuration_after_the_anchor() {
         message
     };
     let tools = Entry {
-        kind: "active_tools_change".to_owned(),
         id: "operation-tools".to_owned(),
         seq: 3,
         parent_id: Some("assistant-config".to_owned()),

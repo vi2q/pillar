@@ -61,15 +61,11 @@ impl SessionError {
     }
 }
 
-/// Storage-assigned entry envelope: `type` discriminant plus the id chain
-/// (upstream `EntryBase`).
+/// Storage-assigned entry envelope: id chain plus payload. The entry
+/// discriminant lives inside `payload` (upstream `EntryBase` flattened
+/// into the same JSON object).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Entry {
-    /// Upstream entry discriminant (`message`, `model_change`,
-    /// `thinking_level_change`, `active_tools_change`, `compaction`,
-    /// `branch_summary`, `custom`).
-    #[serde(rename = "type")]
-    pub kind: String,
     pub id: String,
     /// Shared sequence; read-side, storage-assigned.
     #[serde(default)]
@@ -85,10 +81,17 @@ pub struct Entry {
     pub payload: EntryPayload,
 }
 
+impl Entry {
+    /// Upstream `Entry.type` discriminant.
+    pub fn kind(&self) -> &'static str {
+        self.payload.kind()
+    }
+}
+
 /// Typed entry payloads (upstream `MessageEntry` etc. minus the base
 /// fields).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type")]
+#[serde(tag = "type", rename_all_fields = "camelCase")]
 pub enum EntryPayload {
     #[serde(rename = "message")]
     Message {
@@ -166,8 +169,6 @@ impl RecordPayload {
 /// Storage-assigned record envelope (upstream `RecordBase`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LaneRecord {
-    #[serde(rename = "type")]
-    pub kind: String,
     pub id: String,
     #[serde(default)]
     pub seq: u64,
@@ -179,9 +180,16 @@ pub struct LaneRecord {
     pub payload: RecordPayload,
 }
 
+impl LaneRecord {
+    /// Upstream `LaneRecord.type` discriminant.
+    pub fn kind(&self) -> &'static str {
+        self.payload.kind()
+    }
+}
+
 /// Typed record payloads (upstream operation/step/queue/usage records).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type")]
+#[serde(tag = "type", rename_all_fields = "camelCase")]
 pub enum RecordPayload {
     #[serde(rename = "operation_started")]
     OperationStarted {
@@ -261,7 +269,7 @@ pub enum RecordPayload {
 
 /// Operation intent payloads (upstream `OperationStartedRecord.intent`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind")]
+#[serde(tag = "kind", rename_all_fields = "camelCase")]
 pub enum OperationIntent {
     #[serde(rename = "run")]
     Run {
@@ -322,8 +330,6 @@ pub struct RecordError {
 /// parentId/seq/timestamp.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProvisionedEntry {
-    #[serde(rename = "type")]
-    pub kind: String,
     pub id: String,
     #[serde(flatten)]
     pub payload: EntryPayload,

@@ -69,7 +69,6 @@ fn assistant_message_with(text: &str, usage: Usage) -> AgentMessage {
 
 fn message_entry(message: AgentMessage, parent_id: Option<&str>, seq: u64) -> Entry {
     Entry {
-        kind: "message".to_owned(),
         id: format!("entry-{seq}"),
         seq,
         parent_id: parent_id.map(str::to_owned),
@@ -88,7 +87,6 @@ fn compaction_entry(
     retained_tail: Vec<AgentMessage>,
 ) -> Entry {
     Entry {
-        kind: "compaction".to_owned(),
         id: format!("entry-{seq}"),
         seq,
         parent_id: parent_id.map(str::to_owned),
@@ -105,7 +103,6 @@ fn compaction_entry(
 
 fn thinking_entry(level: &str, parent_id: Option<&str>, seq: u64) -> Entry {
     Entry {
-        kind: "thinking_level_change".to_owned(),
         id: format!("entry-{seq}"),
         seq,
         parent_id: parent_id.map(str::to_owned),
@@ -118,7 +115,6 @@ fn thinking_entry(level: &str, parent_id: Option<&str>, seq: u64) -> Entry {
 
 fn model_change_entry(provider: &str, model_id: &str, parent_id: Option<&str>, seq: u64) -> Entry {
     Entry {
-        kind: "model_change".to_owned(),
         id: format!("entry-{seq}"),
         seq,
         parent_id: parent_id.map(str::to_owned),
@@ -132,7 +128,6 @@ fn model_change_entry(provider: &str, model_id: &str, parent_id: Option<&str>, s
 
 fn branch_summary_entry(from_id: &str, summary: &str, parent_id: Option<&str>, seq: u64) -> Entry {
     Entry {
-        kind: "branch_summary".to_owned(),
         id: format!("entry-{seq}"),
         seq,
         parent_id: parent_id.map(str::to_owned),
@@ -223,7 +218,7 @@ fn finds_a_cut_point_based_on_token_differences() {
     }
 
     let result = find_cut_point(&entries, 0, entries.len(), 2500);
-    assert_eq!(entries[result.first_kept_entry_index].kind, "message");
+    assert_eq!(entries[result.first_kept_entry_index].kind(), "message");
 }
 
 /// upstream test: "covers cut-point and turn-start edge cases"

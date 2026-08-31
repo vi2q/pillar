@@ -484,7 +484,6 @@ impl SessionStorage for InMemorySessionStorage {
         let parent_id = state.require_lane(lane)?;
         state.validate_unused_id(&new_entry.id)?;
         let entry = Entry {
-            kind: new_entry.payload.kind().to_owned(),
             id: new_entry.id,
             seq: state.next_sequence(),
             parent_id,
@@ -520,7 +519,6 @@ impl SessionStorage for InMemorySessionStorage {
             ));
         }
         let record = LaneRecord {
-            kind: record_kind_str(&new_record.payload),
             id: new_record.id,
             seq: state.next_sequence(),
             lane: new_record.lane,
@@ -593,20 +591,6 @@ impl SessionStorage for InMemorySessionStorage {
 
     fn get_stats(&self) -> Result<SessionStats, SessionError> {
         Ok(*self.lock().get_stats())
-    }
-}
-
-fn record_kind_str(payload: &RecordPayload) -> String {
-    match payload {
-        RecordPayload::OperationStarted { .. } => "operation_started".to_owned(),
-        RecordPayload::AbortRequested { .. } => "abort_requested".to_owned(),
-        RecordPayload::OperationFinished { .. } => "operation_finished".to_owned(),
-        RecordPayload::StepAttempt { .. } => "step_attempt".to_owned(),
-        RecordPayload::ToolStarted { .. } => "tool_started".to_owned(),
-        RecordPayload::QueueEnqueued { .. } => "queue_enqueued".to_owned(),
-        RecordPayload::QueueCancelled { .. } => "queue_cancelled".to_owned(),
-        RecordPayload::WriteDeferred { .. } => "write_deferred".to_owned(),
-        RecordPayload::UsageRecord { .. } => "usage".to_owned(),
     }
 }
 

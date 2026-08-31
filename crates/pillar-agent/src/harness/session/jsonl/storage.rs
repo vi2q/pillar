@@ -286,7 +286,6 @@ impl<F: FileSystem + ?Sized> SessionStorage for JsonlSessionStorage<F> {
         let parent_id = state.require_lane(lane)?;
         state.validate_unused_id(&new_entry.id)?;
         let entry = Entry {
-            kind: new_entry.payload.kind().to_owned(),
             id: new_entry.id,
             seq: state.next_sequence(),
             parent_id,
@@ -323,7 +322,6 @@ impl<F: FileSystem + ?Sized> SessionStorage for JsonlSessionStorage<F> {
             )));
         }
         let record = LaneRecord {
-            kind: new_record.payload.kind().to_owned(),
             id: new_record.id,
             seq: state.next_sequence(),
             lane: new_record.lane,
