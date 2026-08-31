@@ -3,10 +3,10 @@
 
 use std::sync::{Arc, Mutex};
 
-use super::super::memory::SessionStorage;
 use super::super::memory::ProvisionedRecord;
-use super::super::types::ProvisionedEntry;
+use super::super::memory::SessionStorage;
 use super::super::state::{SessionMutation, SessionState};
+use super::super::types::ProvisionedEntry;
 use super::super::types::{
     BranchBounds, Entry, EntryQuery, LanePointer, LaneRecord, LogItem, LogOptions, RecordQuery,
     SessionError, SessionErrorCode, SessionMetadata, SessionStats,

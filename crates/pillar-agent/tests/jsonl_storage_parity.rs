@@ -15,8 +15,8 @@ use pillar_agent::harness::session::types::{
 use pillar_agent::harness::types::{FileError, FileErrorCode};
 use pillar_agent::types::AgentMessage;
 use pillar_ai::types::{Content, Message, Usage, UsageCost, UserContent};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn temp_dir(label: &str) -> String {
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -75,7 +75,10 @@ fn create_options(id: &str, cwd: &str) -> JsonlSessionCreateOptions {
 
 async fn reopen(root: &str, session: &Session) -> Session {
     let metadata: JsonlSessionMetadata = list_first_metadata(root, session).await;
-    create_repository(root).open(&metadata).await.expect("reopen")
+    create_repository(root)
+        .open(&metadata)
+        .await
+        .expect("reopen")
 }
 
 async fn list_first_metadata(_root: &str, session: &Session) -> JsonlSessionMetadata {
@@ -102,7 +105,10 @@ fn provisioned(id: &str, custom_type: &str, data: Option<serde_json::Value>) -> 
 async fn round_trips_every_entry_type_and_bounded_branch_queries() {
     let root = temp_dir("entries");
     let repo = create_repository(&root);
-    let session = repo.create(&create_options("entries", &root)).await.unwrap();
+    let session = repo
+        .create(&create_options("entries", &root))
+        .await
+        .unwrap();
 
     let mut committed_ids: Vec<String> = Vec::new();
     committed_ids.push(
@@ -233,7 +239,13 @@ async fn round_trips_every_entry_type_and_bounded_branch_queries() {
     ] {
         committed_ids.push(
             session
-                .append_entry(ProvisionedEntry { id: id.to_owned(), payload }, "main")
+                .append_entry(
+                    ProvisionedEntry {
+                        id: id.to_owned(),
+                        payload,
+                    },
+                    "main",
+                )
                 .unwrap()
                 .id,
         );
@@ -248,7 +260,10 @@ async fn round_trips_every_entry_type_and_bounded_branch_queries() {
         })
         .unwrap();
     assert_eq!(
-        restored_entries.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
+        restored_entries
+            .iter()
+            .map(|e| e.id.as_str())
+            .collect::<Vec<_>>(),
         committed_ids
     );
 
@@ -257,7 +272,10 @@ async fn round_trips_every_entry_type_and_bounded_branch_queries() {
         .find_entries_on_branch_from(&committed_ids[8], Some("compaction"))
         .unwrap();
     assert_eq!(
-        branch_entries.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
+        branch_entries
+            .iter()
+            .map(|e| e.id.as_str())
+            .collect::<Vec<_>>(),
         vec!["custom", "branch-summary", "compaction"]
     );
 
@@ -282,7 +300,10 @@ async fn round_trips_every_entry_type_and_bounded_branch_queries() {
             ..Default::default()
         })
         .unwrap();
-    assert_eq!(notes.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), vec!["custom"]);
+    assert_eq!(
+        notes.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
+        vec!["custom"]
+    );
 
     let stats = restored.get_stats().unwrap();
     assert_eq!(stats.message_count, 3);
@@ -295,10 +316,11 @@ async fn round_trips_every_entry_type_and_bounded_branch_queries() {
     let custom = restored.get_entry("custom").unwrap().unwrap();
     let mutated = {
         let mut clone = custom.clone();
-        if let EntryPayload::Custom { data, .. } = &mut clone.payload {
-            if let Some(data) = data {
-                data["nested"]["value"] = serde_json::json!(99);
-            }
+        if let EntryPayload::Custom {
+            data: Some(data), ..
+        } = &mut clone.payload
+        {
+            data["nested"]["value"] = serde_json::json!(99);
         }
         clone
     };
@@ -312,30 +334,31 @@ async fn round_trips_every_entry_type_and_bounded_branch_queries() {
 // --- "round trips every record type, recovery projection, and ledger
 // statistics" ---------------------------------------------------------------
 
-fn usage_record(
-    id: &str,
-    lane: &str,
-    cause: &str,
-    run_id: Option<&str>,
-    entry_id: Option<&str>,
+struct UsageRecordSpec {
+    id: &'static str,
+    cause: &'static str,
+    run_id: Option<&'static str>,
+    entry_id: Option<&'static str>,
     attempt: Option<u32>,
-    tool_call_id: Option<&str>,
-    stop_reason: Option<&str>,
+    tool_call_id: Option<&'static str>,
+    stop_reason: Option<&'static str>,
     details: Option<serde_json::Value>,
     multiplier: u64,
-) -> ProvisionedRecord {
+}
+
+fn usage_record(lane: &str, spec: UsageRecordSpec) -> ProvisionedRecord {
     ProvisionedRecord {
-        id: id.to_owned(),
+        id: spec.id.to_owned(),
         lane: lane.to_owned(),
         payload: RecordPayload::UsageRecord {
-            usage: usage(multiplier),
-            cause: cause.to_owned(),
-            run_id: run_id.map(str::to_owned),
-            entry_id: entry_id.map(str::to_owned),
-            attempt,
-            tool_call_id: tool_call_id.map(str::to_owned),
-            stop_reason: stop_reason.map(str::to_owned),
-            details,
+            usage: usage(spec.multiplier),
+            cause: spec.cause.to_owned(),
+            run_id: spec.run_id.map(str::to_owned),
+            entry_id: spec.entry_id.map(str::to_owned),
+            attempt: spec.attempt,
+            tool_call_id: spec.tool_call_id.map(str::to_owned),
+            stop_reason: spec.stop_reason.map(str::to_owned),
+            details: spec.details,
         },
     }
 }
@@ -346,7 +369,10 @@ fn usage_record(
 async fn round_trips_every_record_type_recovery_projection_and_ledger_statistics() {
     let root = temp_dir("records");
     let repo = create_repository(&root);
-    let session = repo.create(&create_options("records", &root)).await.unwrap();
+    let session = repo
+        .create(&create_options("records", &root))
+        .await
+        .unwrap();
     session.append_custom_entry("anchor", None).unwrap();
 
     let mut records: Vec<LaneRecord> = Vec::new();
@@ -365,13 +391,15 @@ async fn round_trips_every_record_type_recovery_projection_and_ledger_statistics
                 source_leaf_id: Some("anchor".to_owned()),
                 intent: OperationIntent::Run {
                     original_prompt: vec![user_message("prompt")],
-                    initial_messages: vec![pillar_agent::harness::session::types::ProvisionedEntry {
-                        id: "initial".to_owned(),
-                        payload: EntryPayload::Message {
-                            message: user_message("initial"),
-                            terminate: false,
+                    initial_messages: vec![
+                        pillar_agent::harness::session::types::ProvisionedEntry {
+                            id: "initial".to_owned(),
+                            payload: EntryPayload::Message {
+                                message: user_message("initial"),
+                                terminate: false,
+                            },
                         },
-                    }],
+                    ],
                     system_prompt_override: Some("system".to_owned()),
                     resume_data: Some(serde_json::json!({ "extension": { "version": 1 } })),
                 },
@@ -398,7 +426,11 @@ async fn round_trips_every_record_type_recovery_projection_and_ledger_statistics
             payload: RecordPayload::QueueEnqueued {
                 queue: "followUp".to_owned(),
                 run_id: Some("run".to_owned()),
-                target: provisioned("follow-up-message", "note", Some(user_message_json("follow up"))),
+                target: provisioned(
+                    "follow-up-message",
+                    "note",
+                    Some(user_message_json("follow up")),
+                ),
             },
         },
     );
@@ -450,23 +482,88 @@ async fn round_trips_every_record_type_recovery_projection_and_ledger_statistics
     );
     append(
         &session,
-        usage_record("assistant-usage", "main", "assistant", Some("run"), Some("assistant-result"), Some(1), None, Some("stop"), None, 1),
+        usage_record(
+            "main",
+            UsageRecordSpec {
+                id: "assistant-usage",
+                cause: "assistant",
+                run_id: Some("run"),
+                entry_id: Some("assistant-result"),
+                attempt: Some(1),
+                tool_call_id: None,
+                stop_reason: Some("stop"),
+                details: None,
+                multiplier: 1,
+            },
+        ),
     );
     append(
         &session,
-        usage_record("deferred-usage", "main", "deferred_fetch", Some("run"), Some("deferred-result"), Some(1), None, Some("deferred"), None, 2),
+        usage_record(
+            "main",
+            UsageRecordSpec {
+                id: "deferred-usage",
+                cause: "deferred_fetch",
+                run_id: Some("run"),
+                entry_id: Some("deferred-result"),
+                attempt: Some(1),
+                tool_call_id: None,
+                stop_reason: Some("deferred"),
+                details: None,
+                multiplier: 2,
+            },
+        ),
     );
     append(
         &session,
-        usage_record("tool-usage", "main", "tool", Some("run"), Some("tool-result"), None, Some("call-1"), None, None, 3),
+        usage_record(
+            "main",
+            UsageRecordSpec {
+                id: "tool-usage",
+                cause: "tool",
+                run_id: Some("run"),
+                entry_id: Some("tool-result"),
+                attempt: None,
+                tool_call_id: Some("call-1"),
+                stop_reason: None,
+                details: None,
+                multiplier: 3,
+            },
+        ),
     );
     append(
         &session,
-        usage_record("hook-usage", "main", "hook", Some("run"), Some("hook-result"), None, None, None, None, 4),
+        usage_record(
+            "main",
+            UsageRecordSpec {
+                id: "hook-usage",
+                cause: "hook",
+                run_id: Some("run"),
+                entry_id: Some("hook-result"),
+                attempt: None,
+                tool_call_id: None,
+                stop_reason: None,
+                details: None,
+                multiplier: 4,
+            },
+        ),
     );
     append(
         &session,
-        usage_record("adjustment", "main", "adjustment", None, None, None, None, None, Some(serde_json::json!({ "reason": "correction" })), 5),
+        usage_record(
+            "main",
+            UsageRecordSpec {
+                id: "adjustment",
+                cause: "adjustment",
+                run_id: None,
+                entry_id: None,
+                attempt: None,
+                tool_call_id: None,
+                stop_reason: None,
+                details: Some(serde_json::json!({ "reason": "correction" })),
+                multiplier: 5,
+            },
+        ),
     );
     append(
         &session,
@@ -595,7 +692,10 @@ async fn round_trips_every_record_type_recovery_projection_and_ledger_statistics
         })
         .unwrap();
     assert_eq!(
-        restored_records.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+        restored_records
+            .iter()
+            .map(|r| r.id.as_str())
+            .collect::<Vec<_>>(),
         records.iter().map(|r| r.id.as_str()).collect::<Vec<_>>()
     );
 
@@ -622,7 +722,10 @@ async fn round_trips_every_record_type_recovery_projection_and_ledger_statistics
         })
         .unwrap();
     assert_eq!(
-        compaction_records.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+        compaction_records
+            .iter()
+            .map(|r| r.id.as_str())
+            .collect::<Vec<_>>(),
         vec!["compaction", "compaction-attempt", "compaction-finished"]
     );
 
@@ -636,7 +739,10 @@ async fn round_trips_every_record_type_recovery_projection_and_ledger_statistics
         })
         .unwrap();
     assert_eq!(
-        usage_after.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+        usage_after
+            .iter()
+            .map(|r| r.id.as_str())
+            .collect::<Vec<_>>(),
         vec!["adjustment", "hook-usage"]
     );
 
@@ -670,7 +776,9 @@ async fn round_trips_every_record_type_recovery_projection_and_ledger_statistics
     {
         let mut clone = started.clone();
         if let RecordPayload::OperationStarted {
-            intent: OperationIntent::Run { original_prompt, .. },
+            intent: OperationIntent::Run {
+                original_prompt, ..
+            },
             ..
         } = &mut clone.payload
         {
@@ -701,7 +809,10 @@ fn user_message_json(text: &str) -> serde_json::Value {
 async fn persists_concurrent_cross_lane_writes_in_shared_sequence_order() {
     let root = temp_dir("concurrent");
     let repo = create_repository(&root);
-    let session = repo.create(&create_options("concurrent", &root)).await.unwrap();
+    let session = repo
+        .create(&create_options("concurrent", &root))
+        .await
+        .unwrap();
     let root_entry = session
         .append_entry(provisioned("root", "root", None), "main")
         .unwrap();
@@ -711,7 +822,11 @@ async fn persists_concurrent_cross_lane_writes_in_shared_sequence_order() {
     let mut handles = Vec::new();
     for id in ["main-1", "thread-1", "main-2", "thread-2"] {
         let session = Arc::clone(&session);
-        let lane = if id.starts_with("main") { "main" } else { "thread" };
+        let lane = if id.starts_with("main") {
+            "main"
+        } else {
+            "thread"
+        };
         let id = id.to_owned();
         handles.push(std::thread::spawn(move || {
             session
@@ -721,10 +836,8 @@ async fn persists_concurrent_cross_lane_writes_in_shared_sequence_order() {
     }
     let entries: Vec<pillar_agent::harness::session::types::Entry> =
         handles.into_iter().map(|h| h.join().unwrap()).collect();
-    let mut commit_order: Vec<(u64, String)> = entries
-        .iter()
-        .map(|e| (e.seq, e.id.clone()))
-        .collect();
+    let mut commit_order: Vec<(u64, String)> =
+        entries.iter().map(|e| (e.seq, e.id.clone())).collect();
     commit_order.sort_by_key(|(seq, _)| *seq);
     let commit_ids: Vec<String> = commit_order.into_iter().map(|(_, id)| id).collect();
 
@@ -748,10 +861,7 @@ async fn persists_concurrent_cross_lane_writes_in_shared_sequence_order() {
             .collect::<Vec<_>>(),
         commit_ids
     );
-    let seqs: std::collections::BTreeSet<u64> = concurrent_entries
-        .iter()
-        .map(|e| e.seq)
-        .collect();
+    let seqs: std::collections::BTreeSet<u64> = concurrent_entries.iter().map(|e| e.seq).collect();
     assert_eq!(seqs.len(), entries.len());
     let all_seqs: Vec<u64> = log.iter().map(|item| item.seq()).collect();
     assert_eq!(all_seqs, vec![1, 2, 3, 4, 5, 6]);
@@ -767,9 +877,12 @@ async fn persists_concurrent_cross_lane_writes_in_shared_sequence_order() {
 async fn rejects_non_json_payloads_without_changing_the_durable_prefix() {
     let root = temp_dir("validation");
     let repo = create_repository(&root);
-    let session = repo.create(&create_options("validation", &root)).await.unwrap();
+    let session = repo
+        .create(&create_options("validation", &root))
+        .await
+        .unwrap();
     let metadata = list_first_metadata(&root, &session).await;
-    let prefix = std::fs::read_to_string(&metadata.path).unwrap();
+    let _prefix = std::fs::read_to_string(&metadata.path).unwrap();
     // Anchor entry so the rejected record below collides with a used id.
     session
         .append_entry(provisioned("anchor", "anchor", None), "main")
@@ -808,7 +921,10 @@ async fn rejects_non_json_payloads_without_changing_the_durable_prefix() {
     let restored = reopen(&root, &session).await;
     assert_eq!(restored.get_log(&Default::default()).unwrap().len(), 1);
     let valid = restored
-        .append_entry(provisioned("valid", "note", Some(serde_json::json!({ "value": 1 }))), "main")
+        .append_entry(
+            provisioned("valid", "note", Some(serde_json::json!({ "value": 1 }))),
+            "main",
+        )
         .unwrap();
     assert_eq!(valid.seq, 2);
     let verified = reopen(&root, &restored).await;
@@ -877,7 +993,10 @@ impl pillar_agent::harness::types::FileSystem for FailingAppendEnv {
         self.inner.rename_file(source_path, destination_path).await
     }
 
-    async fn file_info(&self, path: &str) -> Result<pillar_agent::harness::types::FileInfo, FileError> {
+    async fn file_info(
+        &self,
+        path: &str,
+    ) -> Result<pillar_agent::harness::types::FileInfo, FileError> {
         self.inner.file_info(path).await
     }
 
@@ -935,9 +1054,7 @@ async fn does_not_advance_state_or_poison_the_write_queue_after_an_append_failur
         .await
         .unwrap();
 
-    let error = session
-        .append_custom_entry("rejected", None)
-        .unwrap_err();
+    let error = session.append_custom_entry("rejected", None).unwrap_err();
     assert_eq!(
         error.code,
         pillar_agent::harness::session::types::SessionErrorCode::Storage

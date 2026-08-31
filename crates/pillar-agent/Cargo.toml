@@ -18,3 +18,4 @@ globset = "0.4.19"
 
 [dev-dependencies]
 tokio = { version = "1.47", features = ["rt", "macros", "time"] }
+filetime = "0.2"

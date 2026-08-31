@@ -1,12 +1,14 @@
 //! Port of packages/agent/test/harness/session/jsonl-codec.test.ts
 //! (pi v0.84.3) — JSONL v4 header/mutation encode/decode parity.
 
-use pillar_agent::harness::session::jsonl::codec::{encode_header, encode_mutation, parse_header, parse_mutation};
-use pillar_agent::harness::session::jsonl::types::JsonlV4Header;
 use pillar_agent::harness::session::jsonl::codec::JsonlDecodeKind;
+use pillar_agent::harness::session::jsonl::codec::{
+    encode_header, encode_mutation, parse_header, parse_mutation,
+};
+use pillar_agent::harness::session::jsonl::types::JsonlV4Header;
 use pillar_agent::harness::session::state::{SessionMutation, SessionState};
 use pillar_agent::harness::session::types::{
-    Entry, EntryPayload, LaneRecord, LogItem, OperationIntent, RecordPayload, ProvisionedEntry,
+    Entry, EntryPayload, LaneRecord, LogItem, OperationIntent, ProvisionedEntry, RecordPayload,
 };
 use pillar_agent::types::AgentMessage;
 use pillar_ai::types::{Content, Message, UserContent};
@@ -59,7 +61,9 @@ fn format_mutation(mutation: &SessionMutation) -> String {
         SessionMutation::Entry { lane, entry } => {
             format!("entry|{lane:?}|{}", serde_json::to_string(entry).unwrap())
         }
-        SessionMutation::Record { record } => format!("record|{}", serde_json::to_string(record).unwrap()),
+        SessionMutation::Record { record } => {
+            format!("record|{}", serde_json::to_string(record).unwrap())
+        }
         SessionMutation::Lane { seq, lane, leaf_id } => format!("lane|{seq}|{lane}|{leaf_id:?}"),
         SessionMutation::Name { seq, name } => format!("name|{seq}|{name:?}"),
         SessionMutation::Label {
@@ -238,10 +242,12 @@ fn round_trips_fact_lines_including_cleared_values() {
 #[test]
 fn rejects_malformed_entry_and_record_lines() {
     // A custom entry without customType.
-    assert!(parse_mutation(
-        r#"{"kind":"entry","type":"custom","id":"entry","parentId":null,"seq":1,"timestamp":1}"#
-    )
-    .is_err());
+    assert!(
+        parse_mutation(
+            r#"{"kind":"entry","type":"custom","id":"entry","parentId":null,"seq":1,"timestamp":1}"#
+        )
+        .is_err()
+    );
     // An operation_started record without intent.
     assert!(parse_mutation(
         r#"{"kind":"record","type":"operation_started","id":"run","lane":"main","seq":1,"timestamp":1,"sourceLeafId":null}"#
@@ -353,11 +359,18 @@ fn record_lines_use_camel_case_fields() {
     assert_eq!(value["replay"], "safe");
 
     let parsed = parse_mutation(encoded.trim_end()).expect("parses");
-    let SessionMutation::Record { record: parsed_record } = parsed else {
+    let SessionMutation::Record {
+        record: parsed_record,
+    } = parsed
+    else {
         panic!("expected record");
     };
     match parsed_record.payload {
-        RecordPayload::ToolStarted { run_id, tool_call_id, .. } => {
+        RecordPayload::ToolStarted {
+            run_id,
+            tool_call_id,
+            ..
+        } => {
             assert_eq!(run_id, "run-1");
             assert_eq!(tool_call_id, "call-1");
         }
