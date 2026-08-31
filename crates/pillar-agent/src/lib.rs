@@ -13,6 +13,7 @@ pub mod agent;
 pub mod agent_loop;
 pub mod harness;
 pub mod proxy;
+pub mod search;
 pub mod stream_fn;
 pub mod types;
 
@@ -25,6 +26,11 @@ pub use harness::messages::{
     BRANCH_SUMMARY_PREFIX, BRANCH_SUMMARY_SUFFIX, COMPACTION_SUMMARY_PREFIX,
     COMPACTION_SUMMARY_SUFFIX, bash_execution_to_text, convert_to_llm as harness_convert_to_llm,
     create_branch_summary_message, create_compaction_summary_message, create_custom_message,
+};
+pub use search::{
+    ScanningReadableSource, ScanningSessionSearch, ScanningSessionSearchHit,
+    ScanningSessionSearchOptions, SearchError, SessionSearch, SessionSearchHit,
+    SessionSearchOptions,
 };
 pub use stream_fn::{get_default_stream_fn, set_default_stream_fn};
 pub use types::thinking::AgentThinkingLevel;
