@@ -20,6 +20,8 @@ pi v0.84.3 (TypeScript, commit `56700d42e`) を Rust に移植する。拡張機
 
 全ワークスペース 484テストがパス。`cargo fmt --check` / `cargo clippy` (クレート毎に `-D warnings`) クリーン。harness session の jsonl バックエンド (types/codec/storage/repo, 848行) を移植済み (commit 91a03b0 + f20fe8e)。パリティテスト (jsonl-codec / jsonl-storage / jsonl.test.ts 相当) はまだ未作成 — 次のセッションで追加推奨。
 
+移植メモ (jsonl): `FileSystem` は RPITIT で dyn 非対応のため `JsonlSessionStorage<FT: FileSystem + ?Sized>` / `JsonlSessionRepo<F: FileSystem + 'static>` はジェネリクスで受ける (docs/INSTRUCTIONS.md #41)。書き込みは `SessionStorage` トレイトの sync メソッド内で `tokio::task::block_in_place` + `Handle::block_on` により append を直列化 (upstream の promise チェーン `this.tail` 相当)。torn-tail 修復は `publishFileAtomically` (tmp + rename) を再現。
+
 | クレート | テスト | 状況 |
 | --- | --- | --- |
 | pillar-protocol | 49 | ✅ 完了 |
