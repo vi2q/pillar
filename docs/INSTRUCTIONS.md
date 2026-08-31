@@ -56,7 +56,7 @@ pi v0.84.3 (TypeScript, commit `56700d42e`) を Rust に移植する。拡張機
 
 - [ ] 「docs/INSTRUCTIONS.md から引き継いで続きを頼む」— 次の作業キューに従って移植を継続する (2026-08-31)
   - [x] pillar-ai: google 系 (google-shared / google-generative-ai / google-vertex / providers/google*) — 9717334, 27テスト (9717334)
-  - [ ] pillar-ai: mistral-conversations
+  - [x] pillar-ai: mistral-conversations — ab4e80a (adapter ported; parity tests pending, see checklist)
   - [ ] pillar-ai: bedrock-converse
   - [ ] pillar-ai: openai-codex
   - [ ] pillar-ai: azure
