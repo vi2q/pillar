@@ -105,9 +105,16 @@ pub fn merge_request_headers(
     model_headers: Option<&ProviderHeaders>,
     options_headers: Option<&ProviderHeaders>,
 ) -> Vec<(String, String)> {
+    // HTTP header names are case-insensitive (upstream uses the WHATWG
+    // Headers API); match overrides case-insensitively so an
+    // `"Authorization": null` override suppresses a model-level
+    // `"Authorization"` header.
     let mut headers: Vec<(String, String)> = Vec::new();
     let set_or_replace = |headers: &mut Vec<(String, String)>, name: String, value: String| {
-        if let Some(slot) = headers.iter_mut().find(|(existing, _)| *existing == name) {
+        if let Some(slot) = headers
+            .iter_mut()
+            .find(|(existing, _)| existing.eq_ignore_ascii_case(&name))
+        {
             slot.1 = value;
         } else {
             headers.push((name, value));
@@ -122,7 +129,7 @@ pub fn merge_request_headers(
             if let Some(value) = value {
                 set_or_replace(&mut headers, name.clone(), value.clone());
             } else {
-                headers.retain(|(existing, _)| existing != name);
+                headers.retain(|(existing, _)| !existing.eq_ignore_ascii_case(name));
             }
         }
     }
@@ -131,7 +138,7 @@ pub fn merge_request_headers(
             if let Some(value) = value {
                 set_or_replace(&mut headers, name.clone(), value.clone());
             } else {
-                headers.retain(|(existing, _)| existing != name);
+                headers.retain(|(existing, _)| !existing.eq_ignore_ascii_case(name));
             }
         }
     }

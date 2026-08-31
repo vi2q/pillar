@@ -580,7 +580,7 @@ async fn read_guarded(
         Some(ms) => {
             match tokio::time::timeout(std::time::Duration::from_millis(ms), &mut raced).await {
                 Ok(result) => result,
-                Err(_) => Err("Request timed out".to_string()),
+                Err(_) => Err("Mistral request timed out".to_string()),
             }
         }
         None => raced.await,
@@ -1246,8 +1246,14 @@ fn finish_current_block(
     current_text: &str,
     current_thinking: &str,
 ) {
+    // Upstream mutates the block objects in place; the port accumulates into
+    // local buffers, so flush the accumulated text back into the output block
+    // before emitting the end event.
     match kind {
         Some(BlockKind::Text) => {
+            if let Some(Content::Text { text, .. }) = output.content.last_mut() {
+                *text = current_text.to_string();
+            }
             stream.push(AssistantMessageEvent::TextEnd {
                 content_index: block_index(output),
                 content: current_text.to_string(),
@@ -1255,6 +1261,9 @@ fn finish_current_block(
             });
         }
         Some(BlockKind::Thinking) => {
+            if let Some(Content::Thinking { thinking, .. }) = output.content.last_mut() {
+                *thinking = current_thinking.to_string();
+            }
             stream.push(AssistantMessageEvent::ThinkingEnd {
                 content_index: block_index(output),
                 content: current_thinking.to_string(),
