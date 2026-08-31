@@ -18,7 +18,7 @@ pi v0.84.3 (TypeScript, commit `56700d42e`) を Rust に移植する。拡張機
 
 ## 現在の状態 (2026-08-31)
 
-全ワークスペース 484テストがパス。`cargo fmt --check` / `cargo clippy` (クレート毎に `-D warnings`) クリーン。harness session の jsonl バックエンド (types/codec/storage/repo, 848行) を移植済み (commit 91a03b0)。パリティテスト (jsonl-codec / jsonl-storage / jsonl.test.ts 相当) はまだ未作成 — 次のセッションで追加推奨。
+全ワークスペース 484テストがパス。`cargo fmt --check` / `cargo clippy` (クレート毎に `-D warnings`) クリーン。harness session の jsonl バックエンド (types/codec/storage/repo, 848行) を移植済み (commit 91a03b0 + f20fe8e)。パリティテスト (jsonl-codec / jsonl-storage / jsonl.test.ts 相当) はまだ未作成 — 次のセッションで追加推奨。
 
 | クレート | テスト | 状況 |
 | --- | --- | --- |
