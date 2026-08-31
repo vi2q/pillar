@@ -18,7 +18,7 @@ pi v0.84.3 (TypeScript, commit `56700d42e`) を Rust に移植する。拡張機
 
 ## 現在の状態 (2026-08-31)
 
-全ワークスペース 485テストがパス。`cargo fmt --check` / `cargo clippy` (クレート毎に `-D warnings`) クリーン。harness session の jsonl バックエンド (types/codec/storage/repo, 848行) を移植済み (commit 91a03b0 + f20fe8e)。パリティテスト (jsonl-codec / jsonl-storage / jsonl.test.ts 相当) はまだ未作成 — 次のセッションで追加推奨。proxy.ts も移植済み (commit 6ed4f6c, proxy_parity 1ケース)。
+全ワークスペース 485テストがパス。`cargo fmt --check` / `cargo clippy` (クレート毎に `-D warnings`) クリーン。harness session の jsonl バックエンド (types/codec/storage/repo, 848行) を移植済み (commit 91a03b0 + f20fe8e)。パリティテスト (jsonl-codec / jsonl-storage / jsonl.test.ts 相当) はまだ未作成 — 次のセッションで追加推奨。proxy.ts も移植済み (commit 6ed4f6c, proxy_parity 1ケース)。branch-summarization の session 依存部 (collectEntriesForBranchSummary / generateBranchSummary / prepareBranchEntries) も移植済み (commit 545b655)。
 
 移植メモ (jsonl): `FileSystem` は RPITIT で dyn 非対応のため `JsonlSessionStorage<FT: FileSystem + ?Sized>` / `JsonlSessionRepo<F: FileSystem + 'static>` はジェネリクスで受ける (docs/INSTRUCTIONS.md #41)。書き込みは `SessionStorage` トレイトの sync メソッド内で `tokio::task::block_in_place` + `Handle::block_on` により append を直列化 (upstream の promise チェーン `this.tail` 相当)。torn-tail 修復は `publishFileAtomically` (tmp + rename) を再現。
 
@@ -42,7 +42,7 @@ pi v0.84.3 (TypeScript, commit `56700d42e`) を Rust に移植する。拡張機
 | protocol | 1.2k | 0.7k | ✅ 完了 (src 2.5k / tests 1.0k) |
 | telemetry | 0.9k | 0.2k | ✅ 完了 (src 0.7k / tests 0.5k) |
 | ai | 27.7k | 35.1k | 🔶 約5割 (src 14.6k / tests 8.2k。残り: google 系 1.4k、mistral-conversations 0.9k、bedrock-converse 1.3k、openai-codex 1.7k、azure 0.3k、images、providers/* 等) |
-| agent | 12.9k | 8.6k | 🔶 約98% (src 15.1k / tests 10.2k。残り: branch-summarization の session 依存部、search/、e2e のうちモック可能なもの、jsonl パリティテスト未作成。reducer / result / agent-harness / tools 1203 / telemetry 615 / session jsonl 848 / proxy 370 済み) |
+| agent | 12.9k | 8.6k | 🔶 約99% (src 15.5k / tests 10.2k。残り: search/、e2e のうちモック可能なもの、jsonl パリティテスト未作成。reducer / result / agent-harness / tools 1203 / telemetry 615 / session jsonl 848 / proxy 370 / branch-summarization 済み) |
 | coding-agent | 78.9k | 50.3k | ❌ 未着手 (最大) |
 | tui | 17.9k | 16.4k | ❌ 未着手 |
 | server / client / session-backends | 6.3k | 4.2k | ❌ 未着手 |
@@ -52,8 +52,7 @@ pi v0.84.3 (TypeScript, commit `56700d42e`) を Rust に移植する。拡張機
 
 ## 次の作業キュー
 
-1. **harness 中核の移植の続き** (上流 `packages/agent/src/harness/`)。パリティテスト源は上流 `test/harness/` の telemetry.test.ts。
-   branch-summarization の session 依存部 (collectEntriesForBranchSummary / generateBranchSummary) → jsonl パリティテスト (上流 jsonl-codec.test.ts / jsonl-storage.test.ts / jsonl.test.ts, 計1445行) の順。result.ts / reducer.ts / agent-harness.ts (スキャフォールド) / tools/ (1203行) / telemetry.ts (615行) / session/jsonl/ (848行, commit 91a03b0) / proxy.ts (370行, commit 6ed4f6c) は移植済み。agent-harness の操作本体 (prompt/compact/resume/watch 等) は依存先が揃ってから。
+1. **agent の残り**: jsonl パリティテスト (上流 jsonl-codec.test.ts / jsonl-storage.test.ts / jsonl.test.ts, 計1445行) → `search/` → e2e のうちモック可能なもの。result.ts / reducer.ts / agent-harness.ts (スキャフォールド) / tools/ (1203行) / telemetry.ts (615行) / session/jsonl/ (848行, commit 91a03b0) / proxy.ts (370行, commit 6ed4f6c) / branch-summarization (commit 545b655) は移植済み。agent-harness の操作本体 (prompt/compact/resume/watch 等) の依存先は揃ったので次は着手可能。models_generated.rs (generate-models ジェネレータ) は live カタログ依存のため別タスク。
 2. **pillar-ai のプロバイダ残り**: google 系 → mistral-conversations → bedrock-converse → openai-codex → azure → images → providers/*。`models.generated.ts` はジェネレータで再生成、手移植禁止 (docs/rules/01、生成器は pillar-ai/src/bin/generate-models.rs に作る)。live-API テスト (responseid, xhigh, tool-call-without-result, tool-call-id-normalization e2e) はモック不能なので非移植。
 3. **agent の残り**: `search/`、`e2e.test.ts` のうちモック可能なもの。models_generated.rs (generate-models ジェネレータ) は live カタログ依存のため別タスク。
 4. **pillar-coding-agent**: 未着手 (最大、61k行)。
