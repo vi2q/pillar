@@ -14,7 +14,7 @@
 
 use std::collections::BTreeMap;
 
-use pillar_telemetry::{AttributeValue, SpanHandle, SpanOptions, SpanStatus, TelemetryContext};
+use pillar_telemetry::{SpanHandle, SpanOptions, SpanStarter, SpanStatus, TelemetryContext};
 use serde::Serialize;
 
 /// Upstream `TelemetryAttributeDefinition` (the subset the schemas use).
@@ -143,7 +143,12 @@ pub fn ai_telemetry_schema() -> TelemetrySchemaDefinition {
         TelemetryAttributeDefinition {
             kind: "string",
             required: true,
-            values: Some(&["stream", "fetch_deferred", "cancel_deferred", "generate_images"]),
+            values: Some(&[
+                "stream",
+                "fetch_deferred",
+                "cancel_deferred",
+                "generate_images",
+            ]),
             cardinality: None,
             sensitive: false,
             description: "Logical provider operation",
@@ -370,31 +375,32 @@ pub fn harness_telemetry_schema() -> TelemetrySchemaDefinition {
         start
     };
 
-    let operation_error_attributes = |mut end: BTreeMap<&'static str, TelemetryAttributeDefinition>| {
-        end.insert(
-            "pi.error.code",
-            TelemetryAttributeDefinition {
-                kind: "string",
-                required: false,
-                values: None,
-                cardinality: Some("low"),
-                sensitive: false,
-                description: "Stable operation error code",
-            },
-        );
-        end.insert(
-            "pi.error.type",
-            TelemetryAttributeDefinition {
-                kind: "string",
-                required: false,
-                values: None,
-                cardinality: Some("low"),
-                sensitive: false,
-                description: "Low-cardinality operation error class",
-            },
-        );
-        end
-    };
+    let operation_error_attributes =
+        |mut end: BTreeMap<&'static str, TelemetryAttributeDefinition>| {
+            end.insert(
+                "pi.error.code",
+                TelemetryAttributeDefinition {
+                    kind: "string",
+                    required: false,
+                    values: None,
+                    cardinality: Some("low"),
+                    sensitive: false,
+                    description: "Stable operation error code",
+                },
+            );
+            end.insert(
+                "pi.error.type",
+                TelemetryAttributeDefinition {
+                    kind: "string",
+                    required: false,
+                    values: None,
+                    cardinality: Some("low"),
+                    sensitive: false,
+                    description: "Low-cardinality operation error class",
+                },
+            );
+            end
+        };
 
     let mut spans = BTreeMap::new();
 
@@ -427,7 +433,10 @@ pub fn harness_telemetry_schema() -> TelemetrySchemaDefinition {
         TelemetrySpanDefinition {
             description: "One admitted in-process manual compaction invocation",
             parents: TelemetryParentDefinition::RootOrExternal,
-            start_attributes: operation_start_attributes("Compaction operation kind", &["compaction"]),
+            start_attributes: operation_start_attributes(
+                "Compaction operation kind",
+                &["compaction"],
+            ),
             end_attributes: operation_error_attributes(BTreeMap::from([(
                 "pi.operation.outcome",
                 TelemetryAttributeDefinition {
@@ -451,7 +460,10 @@ pub fn harness_telemetry_schema() -> TelemetrySchemaDefinition {
         TelemetrySpanDefinition {
             description: "One admitted in-process navigation invocation",
             parents: TelemetryParentDefinition::RootOrExternal,
-            start_attributes: operation_start_attributes("Navigation operation kind", &["navigation"]),
+            start_attributes: operation_start_attributes(
+                "Navigation operation kind",
+                &["navigation"],
+            ),
             end_attributes: operation_error_attributes(BTreeMap::from([(
                 "pi.operation.outcome",
                 TelemetryAttributeDefinition {
@@ -637,7 +649,14 @@ pub fn harness_telemetry_schema() -> TelemetrySchemaDefinition {
                 TelemetryAttributeDefinition {
                     kind: "string",
                     required: false,
-                    values: Some(&["succeeded", "retry", "failed", "aborted", "deferred", "overflow"]),
+                    values: Some(&[
+                        "succeeded",
+                        "retry",
+                        "failed",
+                        "aborted",
+                        "deferred",
+                        "overflow",
+                    ]),
                     cardinality: None,
                     sensitive: false,
                     description: "Attempt outcome",
@@ -719,7 +738,9 @@ pub fn harness_telemetry_schema() -> TelemetrySchemaDefinition {
                 ),
                 (
                     "pi.tool.recovery",
-                    TelemetryAttributeDefinition::required_bool("Whether this is recovery execution"),
+                    TelemetryAttributeDefinition::required_bool(
+                        "Whether this is recovery execution",
+                    ),
                 ),
             ]),
             end_attributes: BTreeMap::from([(
@@ -924,7 +945,10 @@ pub fn harness_telemetry_schema() -> TelemetrySchemaDefinition {
             ]),
             end_attributes: BTreeMap::from([(
                 "pi.session.seq",
-                TelemetryAttributeDefinition::number(false, "Committed session sequence when exposed"),
+                TelemetryAttributeDefinition::number(
+                    false,
+                    "Committed session sequence when exposed",
+                ),
             )]),
             status: TelemetrySpanStatus {
                 default: "ok",
@@ -939,6 +963,119 @@ pub fn harness_telemetry_schema() -> TelemetrySchemaDefinition {
 /// Upstream `AGENT_TELEMETRY_SCHEMAS`.
 pub fn agent_telemetry_schemas() -> Vec<TelemetrySchemaDefinition> {
     vec![ai_telemetry_schema(), harness_telemetry_schema()]
+}
+
+// --- Markdown documentation renderer (upstream
+// scripts/generate-telemetry-docs.ts) -----------------------------------
+
+fn escape_cell(value: &str) -> String {
+    value.replace('|', "\\|").replace('\n', " ")
+}
+
+fn allowed_values(definition: &TelemetryAttributeDefinition) -> String {
+    definition.values.unwrap_or(&[]).join(", ")
+}
+
+fn attribute_notes(definition: &TelemetryAttributeDefinition) -> String {
+    let mut notes = Vec::new();
+    if let Some(cardinality) = definition.cardinality {
+        notes.push(format!("{cardinality} cardinality"));
+    }
+    if definition.sensitive {
+        notes.push("sensitive".to_owned());
+    }
+    notes.join(", ")
+}
+
+fn parent_description(parent: &TelemetryParentDefinition) -> String {
+    match parent {
+        TelemetryParentDefinition::Any => "root or any caller span".to_owned(),
+        TelemetryParentDefinition::RootOrExternal => {
+            "root or caller-owned external span".to_owned()
+        }
+        TelemetryParentDefinition::Spans { spans } => spans
+            .iter()
+            .map(|span| format!("`{span}`"))
+            .collect::<Vec<_>>()
+            .join(", "),
+    }
+}
+
+fn render_schema(schema: &TelemetrySchemaDefinition, title: &str, lines: &mut Vec<String>) {
+    lines.push(format!("## {title}"));
+    lines.push(String::new());
+    lines.push(format!("Schema version: {}", schema.version));
+    lines.push(String::new());
+    for (span_name, span) in &schema.spans {
+        lines.push(format!("### `{span_name}`"));
+        lines.push(String::new());
+        lines.push(span.description.to_owned());
+        lines.push(String::new());
+        lines.push(format!("- Parents: {}", parent_description(&span.parents)));
+        lines.push(format!("- Default status: `{}`", span.status.default));
+        lines.push(format!("- Error when: {}", span.status.error_when));
+        lines.push(String::new());
+        lines.push("#### Start attributes".to_owned());
+        lines.push(String::new());
+        lines.push("| Name | Type | Required | Values | Notes | Description |".to_owned());
+        lines.push("|---|---|---:|---|---|---|".to_owned());
+        for (name, definition) in &span.start_attributes {
+            lines.push(format!(
+                "| `{name}` | `{}` | {} | {} | {} | {} |",
+                definition.kind,
+                if definition.required { "yes" } else { "no" },
+                escape_cell(&allowed_values(definition)),
+                escape_cell(&attribute_notes(definition)),
+                escape_cell(definition.description),
+            ));
+        }
+        if span.start_attributes.is_empty() {
+            lines.push("| _none_ | | | | | |".to_owned());
+        }
+        lines.push(String::new());
+        lines.push("#### End attributes".to_owned());
+        lines.push(String::new());
+        lines.push("All end attributes are optional completion enrichment.".to_owned());
+        lines.push(String::new());
+        lines.push("| Name | Type | Values | Notes | Description |".to_owned());
+        lines.push("|---|---|---|---|---|".to_owned());
+        for (name, definition) in &span.end_attributes {
+            lines.push(format!(
+                "| `{name}` | `{}` | {} | {} | {} |",
+                definition.kind,
+                escape_cell(&allowed_values(definition)),
+                escape_cell(&attribute_notes(definition)),
+                escape_cell(definition.description),
+            ));
+        }
+        if span.end_attributes.is_empty() {
+            lines.push("| _none_ | | | | |".to_owned());
+        }
+        lines.push(String::new());
+        lines.push("#### Events".to_owned());
+        lines.push(String::new());
+        lines.push("No declared span events.".to_owned());
+        lines.push(String::new());
+    }
+}
+
+/// Upstream `renderAgentTelemetrySchemaMarkdown`: the checked-in
+/// `docs/telemetry-schema.md` reference.
+pub fn render_agent_telemetry_schema_markdown() -> String {
+    let mut lines = vec![
+        "# Pi Agent Telemetry Schemas".to_owned(),
+        String::new(),
+        "<!-- Generated by generate-telemetry-docs.ts. Do not edit manually. -->".to_owned(),
+        String::new(),
+    ];
+    render_schema(&ai_telemetry_schema(), "AI request schema", &mut lines);
+    render_schema(&harness_telemetry_schema(), "Harness schema", &mut lines);
+    let mut rendered = lines.join("\n");
+    while rendered.ends_with(['\n', ' ']) {
+        rendered.pop();
+    }
+    rendered.push('\n');
+    rendered
 }
 
 // --- Typed span starters ---------------------------------------------------
@@ -1043,13 +1180,22 @@ impl AiSpanEndAttributes {
         for (key, value) in [
             ("pi.ai.usage.input_tokens", self.usage_input_tokens),
             ("pi.ai.usage.output_tokens", self.usage_output_tokens),
-            ("pi.ai.usage.cache_read_tokens", self.usage_cache_read_tokens),
-            ("pi.ai.usage.cache_write_tokens", self.usage_cache_write_tokens),
+            (
+                "pi.ai.usage.cache_read_tokens",
+                self.usage_cache_read_tokens,
+            ),
+            (
+                "pi.ai.usage.cache_write_tokens",
+                self.usage_cache_write_tokens,
+            ),
             ("pi.ai.usage.reasoning_tokens", self.usage_reasoning_tokens),
             ("pi.ai.usage.total_tokens", self.usage_total_tokens),
             ("pi.ai.usage.cost", self.usage_cost),
             ("pi.ai.stream.chunk_count", self.stream_chunk_count),
-            ("pi.ai.stream.time_to_first_chunk_ms", self.stream_time_to_first_chunk_ms),
+            (
+                "pi.ai.stream.time_to_first_chunk_ms",
+                self.stream_time_to_first_chunk_ms,
+            ),
         ] {
             if let Some(value) = value {
                 attributes.insert(key.to_owned(), value.into());
@@ -1062,17 +1208,8 @@ impl AiSpanEndAttributes {
     }
 }
 
-/// Upstream `startAiSpan`: run `callback` inside a `pi.ai.request` span.
-pub async fn start_ai_span<T, F, Fut>(
-    telemetry_context: &dyn TelemetryContext,
-    attributes: AiSpanStartAttributes,
-    callback: F,
-) -> T
-where
-    T: Send + 'static,
-    F: FnOnce(SpanHandle) -> Fut + Send + 'static,
-    Fut: std::future::Future<Output = T> + Send + 'static,
-{
+/// Build the `pi.ai.request` span options from typed attributes.
+fn ai_span_options(attributes: AiSpanStartAttributes) -> SpanOptions {
     let AiSpanStartAttributes {
         operation,
         provider,
@@ -1090,9 +1227,375 @@ where
     if let Some(deferred) = deferred {
         options = options.with_attribute("pi.ai.deferred", deferred);
     }
+    options
+}
+
+/// Upstream `startAiSpan`: run `callback` inside a `pi.ai.request` span.
+pub async fn start_ai_span<T, F, Fut, C>(
+    telemetry_context: &C,
+    attributes: AiSpanStartAttributes,
+    callback: F,
+) -> T
+where
+    T: Send + 'static,
+    C: TelemetryContext,
+    F: FnOnce(SpanHandle) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = T> + Send + 'static,
+{
+    telemetry_context
+        .start_span(ai_span_options(attributes), |span, _starter| async move {
+            callback(span).await
+        })
+        .await
+}
+
+/// Upstream `startChildSpan` for `pi.ai.request`: nest under the span
+/// whose callback received the [`SpanStarter`].
+pub async fn start_ai_span_on<T, F, Fut>(
+    starter: &SpanStarter,
+    attributes: AiSpanStartAttributes,
+    callback: F,
+) -> T
+where
+    T: Send + 'static,
+    F: FnOnce(SpanHandle) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = T> + Send + 'static,
+{
     let _ = std::marker::PhantomData::<fn() -> SpanStatus>;
-    telemetry_context.start_span(options, |span| async move { callback(span).await }).await
+    starter
+        .start_span(ai_span_options(attributes), |span, _starter| async move {
+            callback(span).await
+        })
+        .await
+}
+
+/// Harness operation kind for operation spans (upstream the literal
+/// `pi.operation.kind` value; each span accepts one kind).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HarnessOperationKind {
+    Run,
+    Compaction,
+    Navigation,
+}
+
+impl HarnessOperationKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Run => "run",
+            Self::Compaction => "compaction",
+            Self::Navigation => "navigation",
+        }
+    }
+}
+
+/// Operation-span start attributes shared by run/compaction/navigation
+/// (upstream `HarnessSpanStartAttributes` over the operation spans).
+#[derive(Debug, Clone, PartialEq)]
+pub struct HarnessOperationStartAttributes {
+    pub session_id: String,
+    pub lane_name: String,
+    pub operation_id: String,
+    pub recovery: bool,
+    pub kind: HarnessOperationKind,
+}
+
+/// End attribute enrichment for operation spans (upstream
+/// `HarnessSpanEndAttributes`): outcome plus optional error details.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct HarnessOperationEndAttributes {
+    /// `pi.operation.outcome` — the per-span literal vocabulary
+    /// (run: completed/aborted/failed/suspended;
+    /// compaction/navigation: completed/declined/aborted/failed) is
+    /// enforced by the caller.
+    pub outcome: Option<String>,
+    pub error_code: Option<String>,
+    pub error_type: Option<String>,
+}
+
+impl HarnessOperationEndAttributes {
+    /// Merge into the span handle (upstream `span.setAttributes({...})`).
+    pub fn set_on(&self, span: &SpanHandle) {
+        let mut attributes = BTreeMap::new();
+        if let Some(value) = &self.outcome {
+            attributes.insert("pi.operation.outcome".to_owned(), value.as_str().into());
+        }
+        if let Some(value) = &self.error_code {
+            attributes.insert("pi.error.code".to_owned(), value.as_str().into());
+        }
+        if let Some(value) = &self.error_type {
+            attributes.insert("pi.error.type".to_owned(), value.as_str().into());
+        }
+        span.set_attributes(attributes);
+    }
+}
+
+fn operation_start_options(
+    span_name: &'static str,
+    attributes: HarnessOperationStartAttributes,
+) -> SpanOptions {
+    SpanOptions::new(span_name)
+        .with_attribute("pi.session.id", attributes.session_id.as_str())
+        .with_attribute("pi.lane.name", attributes.lane_name.as_str())
+        .with_attribute("pi.operation.id", attributes.operation_id.as_str())
+        .with_attribute("pi.operation.recovery", attributes.recovery)
+        .with_attribute("pi.operation.kind", attributes.kind.as_str())
+}
+
+/// Upstream `startHarnessSpan` over `pi.harness.run`.
+pub async fn start_harness_run_span<T, F, Fut, C>(
+    telemetry_context: &C,
+    attributes: HarnessOperationStartAttributes,
+    callback: F,
+) -> T
+where
+    T: Send + 'static,
+    C: TelemetryContext,
+    F: FnOnce(SpanHandle, SpanStarter) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = T> + Send + 'static,
+{
+    debug_assert_eq!(attributes.kind, HarnessOperationKind::Run);
+    let options = operation_start_options("pi.harness.run", attributes);
+    telemetry_context.start_span(options, callback).await
+}
+
+/// Upstream `startHarnessSpan` over `pi.harness.compaction`.
+pub async fn start_harness_compaction_span<T, F, Fut, C>(
+    telemetry_context: &C,
+    attributes: HarnessOperationStartAttributes,
+    callback: F,
+) -> T
+where
+    T: Send + 'static,
+    C: TelemetryContext,
+    F: FnOnce(SpanHandle) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = T> + Send + 'static,
+{
+    debug_assert_eq!(attributes.kind, HarnessOperationKind::Compaction);
+    let options = operation_start_options("pi.harness.compaction", attributes);
+    telemetry_context
+        .start_span(
+            options,
+            |span, _starter| async move { callback(span).await },
+        )
+        .await
+}
+
+/// Upstream `startHarnessSpan` over `pi.harness.navigation`.
+pub async fn start_harness_navigation_span<T, F, Fut, C>(
+    telemetry_context: &C,
+    attributes: HarnessOperationStartAttributes,
+    callback: F,
+) -> T
+where
+    T: Send + 'static,
+    C: TelemetryContext,
+    F: FnOnce(SpanHandle) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = T> + Send + 'static,
+{
+    debug_assert_eq!(attributes.kind, HarnessOperationKind::Navigation);
+    let options = operation_start_options("pi.harness.navigation", attributes);
+    telemetry_context
+        .start_span(
+            options,
+            |span, _starter| async move { callback(span).await },
+        )
+        .await
 }
 
 #[allow(dead_code)] // phantom-marker witness for the status vocabulary
 fn _status_witness(_: std::marker::PhantomData<fn() -> SpanStatus>) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pillar_telemetry::{
+        AttributeValue, InMemoryTelemetryContext, NoopTelemetryContext, SpanStatus,
+    };
+
+    /// upstream test: "serializes both schemas and generates the
+    /// checked-in reference"
+    #[test]
+    fn serializes_both_schemas_and_generates_the_checked_in_reference() {
+        let ai = ai_telemetry_schema();
+        let harness = harness_telemetry_schema();
+        assert!(serde_json::to_string(&ai).is_ok());
+        assert!(serde_json::to_string(&harness).is_ok());
+        assert_eq!(agent_telemetry_schemas(), vec![ai.clone(), harness.clone()]);
+        // Upstream asserts the schema's insertion order; the port stores
+        // spans in a BTreeMap, so compare as a sorted set instead
+        // (docs/INSTRUCTIONS.md #19 — serde_json/BTreeMap ordering).
+        let mut harness_span_names: Vec<&str> = harness.spans.keys().copied().collect();
+        harness_span_names.sort_unstable();
+        assert_eq!(
+            harness_span_names,
+            vec![
+                "pi.harness.checkpoint",
+                "pi.harness.compaction",
+                "pi.harness.event_handler",
+                "pi.harness.hook",
+                "pi.harness.navigation",
+                "pi.harness.run",
+                "pi.harness.sleep",
+                "pi.harness.step",
+                "pi.harness.tool",
+                "pi.harness.turn",
+                "pi.session.write",
+            ]
+        );
+        // The renderer produces the full markdown document (upstream
+        // compares it byte-for-byte against the checked-in docs file; the
+        // port generates on demand).
+        let markdown = render_agent_telemetry_schema_markdown();
+        assert!(markdown.starts_with("# Pi Agent Telemetry Schemas\n"));
+        assert!(markdown.contains("## AI request schema"));
+        assert!(markdown.contains("## Harness schema"));
+        assert!(markdown.contains("### `pi.ai.request`"));
+        assert!(markdown.contains("### `pi.harness.run`"));
+        assert!(markdown.ends_with('\n'));
+    }
+
+    /// upstream test: "starts AI-request and harness spans through one
+    /// composed typed starter" (the composed starter is the typed
+    /// attribute structs here; span nesting and attribute flow verified
+    /// against the in-memory context).
+    #[tokio::test]
+    async fn starts_ai_request_and_harness_spans() {
+        let telemetry_context = InMemoryTelemetryContext::new();
+        start_harness_run_span(
+            &telemetry_context,
+            HarnessOperationStartAttributes {
+                session_id: "session".to_owned(),
+                lane_name: "main".to_owned(),
+                operation_id: "operation".to_owned(),
+                recovery: false,
+                kind: HarnessOperationKind::Run,
+            },
+            |step_span, _step_starter| async move {
+                step_span.set_attributes(BTreeMap::from([(
+                    "pi.operation.outcome".to_owned(),
+                    "succeeded".into(),
+                )]));
+                step_span
+                    .start_child(
+                        ai_span_options(AiSpanStartAttributes {
+                            operation: AiOperation::Stream,
+                            provider: "provider".to_owned(),
+                            model: "model".to_owned(),
+                            api: "api".to_owned(),
+                            streaming: true,
+                            deferred: None,
+                        }),
+                        |request_span, _request_starter| async move {
+                            AiSpanEndAttributes {
+                                response_stop_reason: Some(AiResponseStopReason::Stop),
+                                ..AiSpanEndAttributes::default()
+                            }
+                            .set_on(&request_span);
+                        },
+                    )
+                    .await;
+            },
+        )
+        .await;
+
+        let spans = telemetry_context.get_spans();
+        assert_eq!(spans.len(), 2);
+        let run = &spans[0];
+        assert_eq!(run.name, "pi.harness.run");
+        assert_eq!(
+            run.attributes.get("pi.operation.kind").unwrap(),
+            &AttributeValue::String("run".to_owned())
+        );
+        assert_eq!(
+            run.attributes.get("pi.operation.outcome").unwrap(),
+            &AttributeValue::String("succeeded".to_owned())
+        );
+        let request = &spans[1];
+        assert_eq!(request.name, "pi.ai.request");
+        assert_eq!(
+            request.attributes.get("pi.ai.operation").unwrap(),
+            &AttributeValue::String("stream".to_owned())
+        );
+        assert_eq!(
+            request
+                .attributes
+                .get("pi.ai.response.stop_reason")
+                .unwrap(),
+            &AttributeValue::String("stop".to_owned())
+        );
+        assert_eq!(request.parent_id, Some(run.id));
+    }
+
+    /// upstream tests: "infers exact AI start and optional end attributes"
+    /// and "infers per-span harness literals and optional completion
+    /// enrichment". The compile-time type-level checks map to the typed
+    /// attribute structs and enum vocabularies; the runtime portion runs
+    /// spans through the noop context.
+    #[tokio::test]
+    async fn infers_exact_typed_attribute_vocabularies() {
+        let telemetry_context = NoopTelemetryContext;
+        start_ai_span(
+            &telemetry_context,
+            AiSpanStartAttributes {
+                operation: AiOperation::Stream,
+                provider: "provider".to_owned(),
+                model: "model".to_owned(),
+                api: "api".to_owned(),
+                streaming: true,
+                deferred: None,
+            },
+            |span| async move {
+                AiSpanEndAttributes {
+                    response_stop_reason: Some(AiResponseStopReason::ToolUse),
+                    ..AiSpanEndAttributes::default()
+                }
+                .set_on(&span);
+            },
+        )
+        .await;
+
+        start_harness_run_span(
+            &telemetry_context,
+            HarnessOperationStartAttributes {
+                session_id: "session".to_owned(),
+                lane_name: "main".to_owned(),
+                operation_id: "operation".to_owned(),
+                recovery: false,
+                kind: HarnessOperationKind::Run,
+            },
+            |span, _span_starter| async move {
+                HarnessOperationEndAttributes {
+                    outcome: Some("completed".to_owned()),
+                    ..HarnessOperationEndAttributes::default()
+                }
+                .set_on(&span);
+            },
+        )
+        .await;
+
+        // Vocabulary witnesses: the enums round-trip the upstream literal
+        // sets.
+        assert_eq!(AiOperation::FetchDeferred.as_str(), "fetch_deferred");
+        assert_eq!(AiOperation::CancelDeferred.as_str(), "cancel_deferred");
+        assert_eq!(AiOperation::GenerateImages.as_str(), "generate_images");
+        assert_eq!(AiResponseStopReason::ToolUse.as_str(), "tool_use");
+        assert_eq!(HarnessOperationKind::Compaction.as_str(), "compaction");
+        assert_eq!(HarnessOperationKind::Navigation.as_str(), "navigation");
+        // Span status stays the schema default (noop context never fails).
+        let recorded = InMemoryTelemetryContext::new();
+        start_ai_span(
+            &recorded,
+            AiSpanStartAttributes {
+                operation: AiOperation::Stream,
+                provider: "p".to_owned(),
+                model: "m".to_owned(),
+                api: "a".to_owned(),
+                streaming: false,
+                deferred: None,
+            },
+            |_span| async move {},
+        )
+        .await;
+        assert_eq!(recorded.get_spans()[0].status, SpanStatus::Ok);
+    }
+}

@@ -697,6 +697,7 @@ dependencies = [
  "futures",
  "globset",
  "pillar-ai",
+ "pillar-telemetry",
  "serde",
  "serde_json",
  "thiserror",
