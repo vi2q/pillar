@@ -6,6 +6,7 @@
 //! `SessionStorage` trait object, and backends implement the trait.
 
 pub mod context;
+pub mod jsonl;
 pub mod memory;
 // The upstream `session.ts` facade lives in `memory.rs` (see the module
 // comment there); `session.rs` is an empty re-export stub kept for layout
