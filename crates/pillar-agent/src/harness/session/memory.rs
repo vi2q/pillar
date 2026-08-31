@@ -54,15 +54,23 @@ pub trait SessionStorage: Send + Sync {
     fn get_label(&self, id: &str) -> Result<Option<String>, SessionError>;
     fn set_label(&self, id: &str, label: Option<String>) -> Result<(), SessionError>;
     fn get_stats(&self) -> Result<SessionStats, SessionError>;
+
+    /// Backend metadata in its own (rich) shape, serialized. Upstream's
+    /// `SessionStorage<TMetadata>` is generic; the port keeps the trait
+    /// object-friendly and passes the rich shape through JSON.
+    fn metadata_json(&self) -> serde_json::Value {
+        match self.get_metadata() {
+            Ok(metadata) => serde_json::to_value(metadata).unwrap_or(serde_json::Value::Null),
+            Err(_) => serde_json::Value::Null,
+        }
+    }
 }
 
-/// Entry with storage-assigned fields omitted (upstream `ProvisionedEntry`
-/// shape threaded through the storage boundary).
-#[derive(Debug, Clone, PartialEq)]
-pub struct ProvisionedEntry {
-    pub id: String,
-    pub payload: EntryPayload,
-}
+/// Re-exported so callers see one `ProvisionedEntry` (upstream
+/// `ProvisionedEntry<T>` is shared between the session facade and storage;
+/// the serde form in `types.rs` is the single definition, docs/INSTRUCTIONS.md
+/// #36 previously tracked the split).
+pub use super::types::ProvisionedEntry;
 
 /// Record with storage-assigned fields omitted (upstream `NewRecord`).
 #[derive(Debug, Clone, PartialEq)]
@@ -196,6 +204,32 @@ impl Session {
         let mut query = query.clone();
         query.limit = Some(1);
         Ok(self.storage.find_entries(&query)?.into_iter().next())
+    }
+
+    /// Branch query with an explicit start entry (upstream passes `start`
+    /// inside the query object).
+    pub fn find_entries_on_branch_from(
+        &self,
+        start: &str,
+        stop_at_kind: Option<&str>,
+    ) -> Result<Vec<Entry>, SessionError> {
+        let query = EntryQuery {
+            start: Some(start.to_owned()),
+            ..Default::default()
+        };
+        let bounds = BranchBounds {
+            stop_at_kind: stop_at_kind.map(str::to_owned),
+            stop_at_id: None,
+        };
+        self.query_branch_entries("main", &query, &bounds)
+    }
+
+    /// Backend-specific metadata as JSON (tests and callers that need the
+    /// rich metadata shape, e.g. `JsonlSessionMetadata`). Upstream `Session`
+    /// is generic over the metadata type; the port narrows to `SessionMetadata`
+    /// on the trait and exposes the raw shape through this escape hatch.
+    pub fn metadata_json(&self) -> serde_json::Value {
+        self.storage.metadata_json()
     }
 
     pub fn find_entries_on_branch(

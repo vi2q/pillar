@@ -125,6 +125,7 @@ pi v0.84.3 (TypeScript, commit `56700d42e`) を Rust に移植する。拡張機
 - **オフセット系は1-indexed変換を忘れない** (#43) — read ツールの `offset` は upstream が `offset - 1` で 0-indexed に変換する。素通しすると 1 行ずれる (今回溶けたパターン: 一部のテストは通るが期待行がズレる)。
 - **キューの順序テストはタイミング依存になりがち** (#44) — spawn 直後の2タスクの登録順は保証されない。upstream と同じ意味論 (先に登録した方が先に走る) を検証するなら、片方の開始を確実に観測してから次を投げる (Notify か十分な sleep)。フレークしたら連続10回。
 - **同一 destination の create/fork 競合はプロセス内予約で防ぐ** (#46) — タイムスタンプ入りファイル名でも、async の存在チェックと発行の間に別 call が割り込むと同じ `{cwd, id}` のセッションが2つ publish され得る (upstream `claimCreateDestination` のコメント参照)。Rust では `Mutex<HashSet<String>>` + Drop で reservation を解放する RAII ガードにした (upstream try/finally 相当)。テストで同時実行を見たい場合は `tokio::join!` で2つの create を起動し成功1/失敗1 (already_exists) を断言する。時刻に依存するテストは repo を `with_clock` で固定時計にする。
+- **sync 関数から async FS を呼ぶなら spawn_blocking+inline runtime** (#47) — `SessionStorage` トレイトは sync なので async `FileSystem::append_file` を呼ぶにはランタイム介入が必要。`block_in_place` は `#[tokio::test]` (current_thread flavor) で panic、`Handle::block_on` はランタイム内で「Cannot start a runtime from within a runtime」で panic。動くのは `Handle::spawn_blocking` でブロッキングプールに渡し、その中で `Builder::new_current_thread().enable_all().build()` したインラインランタイムで future を駆動する方法。ランタイム外の呼び出し元は std::fs にフォールバック。順序保証は state mutex が担う (upstream promise チェーン相当)。この制約のため `SessionStorage for JsonlSessionStorage` は `F: FileSystem + 'static` を要求する。
 
 ## セッション運用の反省 (継続)
 

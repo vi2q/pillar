@@ -35,6 +35,7 @@ pub struct JsonlSessionMetadata {
     #[serde(rename = "modifiedAt")]
     pub modified_at: u64,
     /// 3 or 4 (upstream `sourceFormat: 3 | 4`).
+    #[serde(rename = "sourceFormat")]
     pub source_format: u8,
     /// Present only when a v3 parent path could not be resolved to a
     /// session id.

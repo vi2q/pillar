@@ -4,7 +4,8 @@
 use std::sync::{Arc, Mutex};
 
 use super::super::memory::SessionStorage;
-use super::super::memory::{ProvisionedEntry, ProvisionedRecord};
+use super::super::memory::ProvisionedRecord;
+use super::super::types::ProvisionedEntry;
 use super::super::state::{SessionMutation, SessionState};
 use super::super::types::{
     BranchBounds, Entry, EntryQuery, LanePointer, LaneRecord, LogItem, LogOptions, RecordQuery,
@@ -243,6 +244,10 @@ pub fn metadata_from_header(
 }
 
 impl<F: FileSystem + 'static> SessionStorage for JsonlSessionStorage<F> {
+    fn metadata_json(&self) -> serde_json::Value {
+        serde_json::to_value(&self.metadata).unwrap_or(serde_json::Value::Null)
+    }
+
     fn get_metadata(&self) -> Result<SessionMetadata, SessionError> {
         Ok(SessionMetadata {
             id: self.metadata.id.clone(),
