@@ -6,6 +6,8 @@
 
 pub mod anthropic_messages;
 pub mod github_copilot_headers;
+pub mod google_generative_ai;
+pub mod google_shared;
 pub mod openai_completions;
 pub mod openai_prompt_cache;
 pub mod openai_responses;
