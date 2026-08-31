@@ -18,7 +18,7 @@ pi v0.84.3 (TypeScript, commit `56700d42e`) を Rust に移植する。拡張機
 
 ## 現在の状態 (2026-08-31)
 
-全ワークスペース 551テストがパス (protocol 49 / telemetry 15 / ai 188 / agent 299)。`cargo fmt --check` / `cargo clippy` (クレート毎に `-D warnings`) クリーン。harness session の jsonl バックエンド (types/codec/storage/repo, 848行) 済み (91a03b0 + f20fe8e) に加え、**jsonl パリティテスト 3スイート完了** (jsonl_codec_parity 14 / jsonl_storage_parity 5 / jsonl_conformance_parity 30)。その過程で重大バグ2件を修正 (エンベロープ+flatten payload の二重 `type` タグ #45、`block_in_place` が current_thread ランタイムで panic #47)、repo に destination 予約 (upstream claimCreateDestination 相当, #46) と `with_clock` 注入を追加。proxy.ts 済み (6ed4f6c)。branch-summarization の session 依存部済み (545b655) + branch-summarization.test.ts 2ケース (6efd9b0)。search/ 済み (187bcf2)。e2e.test.ts 済み (e1c55c1, 10ケース)。**telemetry.ts スパン開始部完了 (fa2fe02)**: start_harness_run/compaction/navigation_span + render_agent_telemetry_schema_markdown + telemetry.test.ts 3ケース (スパン名断言は BTreeMap 順序のためソート比較, #19)。pillar-telemetry 依存を pillar-agent に追加 (upstream packages/agent は pi-telemetry に依存)。
+全ワークスペース 578テストがパス (protocol 49 / telemetry 15 / ai 215 / agent 299)。`cargo fmt --check` / `cargo clippy` (クレート毎に `-D warnings`) クリーン。harness session の jsonl バックエンド (types/codec/storage/repo, 848行) 済み (91a03b0 + f20fe8e) に加え、**jsonl パリティテスト 3スイート完了** (jsonl_codec_parity 14 / jsonl_storage_parity 5 / jsonl_conformance_parity 30)。その過程で重大バグ2件を修正 (エンベロープ+flatten payload の二重 `type` タグ #45、`block_in_place` が current_thread ランタイムで panic #47)、repo に destination 予約 (upstream claimCreateDestination 相当, #46) と `with_clock` 注入を追加。proxy.ts 済み (6ed4f6c)。branch-summarization の session 依存部済み (545b655) + branch-summarization.test.ts 2ケース (6efd9b0)。search/ 済み (187bcf2)。e2e.test.ts 済み (e1c55c1, 10ケース)。**telemetry.ts スパン開始部完了 (fa2fe02)**: start_harness_run/compaction/navigation_span + render_agent_telemetry_schema_markdown + telemetry.test.ts 3ケース (スパン名断言は BTreeMap 順序のためソート比較, #19)。pillar-telemetry 依存を pillar-agent に追加 (upstream packages/agent は pi-telemetry に依存)。
 
 移植メモ (jsonl): `FileSystem` は RPITIT で dyn 非対応のため `JsonlSessionStorage<FT: FileSystem + ?Sized>` / `JsonlSessionRepo<F: FileSystem + 'static>` はジェネリクスで受ける (docs/INSTRUCTIONS.md #41)。書き込みは `SessionStorage` トレイトの sync メソッド内で `spawn_blocking` + インライン current_thread ランタイムにより append を駆動し、state mutex で直列化 (#47)。torn-tail 修復は `publishFileAtomically` (tmp + rename) を再現。
 
@@ -26,7 +26,7 @@ pi v0.84.3 (TypeScript, commit `56700d42e`) を Rust に移植する。拡張機
 | --- | --- | --- |
 | pillar-protocol | 49 | ✅ 完了 |
 | pillar-telemetry | 15 | ✅ 完了 |
-| pillar-ai | 188 | 🔶 コア + 全主要プロバイダ済み (core 35 / faux 22 / models-runtime 39 / api-infra 27 / openai-completions 23 / openai-responses 14 / anthropic-messages 27 / uuid 1) |
+| pillar-ai | 215 | 🔶 コア + 全主要プロバイダ済み (core 35 / faux 22 / models-runtime 39 / api-infra 27 / openai-completions 23 / openai-responses 14 / anthropic-messages 27 / uuid 1 / **google-shared 27**) |
 | pillar-agent | 299 | ✅ コアループ + Agent クラス + harness 基盤〜tools + telemetry + session jsonl バックエンド + jsonl パリティテスト + proxy + search + e2e 済み (lib 46 / loop 25 / agent 22 / nodejs-env 25 / utils 10 / skills 8 / messages 13 / session 20 / compaction 15 / reducer 28 / agent-harness-scaffold 4 / tools-parity 21 / proxy 1 / jsonl codec 14 / jsonl storage 5 / jsonl conformance 30 / search 4 / e2e 10) |
 | pillar-coding-agent / tui / client / server / session-store | — | ❌ 未着手 |
 | pillar-extensions | — | ❌ 未着手 (luaur VM 統合)。設計は docs/rules/04 に確定済み |
@@ -55,7 +55,7 @@ pi v0.84.3 (TypeScript, commit `56700d42e`) を Rust に移植する。拡張機
 ユーザー指示を記録し、進捗に合わせて更新する。
 
 - [ ] 「docs/INSTRUCTIONS.md から引き継いで続きを頼む」— 次の作業キューに従って移植を継続する (2026-08-31)
-  - [ ] pillar-ai: google 系 (google-shared / google-generative-ai / google-vertex / providers/google*)
+  - [x] pillar-ai: google 系 (google-shared / google-generative-ai / google-vertex / providers/google*) — 9717334, 27テスト (9717334)
   - [ ] pillar-ai: mistral-conversations
   - [ ] pillar-ai: bedrock-converse
   - [ ] pillar-ai: openai-codex
