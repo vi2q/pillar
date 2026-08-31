@@ -213,8 +213,8 @@ async fn run_stream_inner(
         body: Some(body),
     };
 
-    // Upstream uses a 60s default timeout signal combined with the caller's
-    // signal; the transport layer applies timeout_ms (default 60s here).
+    // Upstream combines the caller signal with AbortSignal.timeout (60s
+    // default) — both the fetch and the body read abort with it.
     let timeout_ms = Some(options.timeout_ms.unwrap_or(60_000));
 
     let response =
@@ -237,7 +237,7 @@ async fn run_stream_inner(
         partial: output.clone(),
     });
 
-    let events = read_mistral_events(response, options.signal.as_ref()).await?;
+    let events = read_mistral_events(response, options.signal.as_ref(), timeout_ms).await?;
 
     consume_chat_stream(model, output, stream, &events)?;
 
@@ -486,25 +486,25 @@ fn remap_property(record: &mut Map<String, Value>, source: &str, target: &str) {
 async fn read_mistral_events(
     response: crate::transport::FetchResponse,
     signal: Option<&crate::AbortSignal>,
+    timeout_ms: Option<u64>,
 ) -> Result<Vec<Value>, String> {
     use futures::StreamExt;
 
-    let byte_stream = response.body;
-    tokio::pin!(byte_stream);
-
-    let mut buffer = Vec::<u8>::new();
+    let mut byte_stream = response.body;
+    let mut buffer: Vec<u8> = Vec::new();
     let mut events: Vec<Value> = Vec::new();
     let mut done = false;
 
     loop {
-        if signal.is_some_and(|signal| signal.is_aborted()) {
-            return Err("Request was aborted".to_string());
-        }
-        let chunk = match byte_stream.next().await {
-            Some(Ok(chunk)) => chunk,
-            Some(Err(error)) => return Err(error.to_string()),
-            None => break,
+        let chunk = {
+            let read_fut = byte_stream.next();
+            tokio::pin!(read_fut);
+            match read_guarded(&mut read_fut, signal, timeout_ms).await {
+                Ok(chunk) => chunk,
+                Err(error) => return Err(error),
+            }
         };
+        let Some(chunk) = chunk else { break };
         buffer.extend_from_slice(&chunk);
 
         loop {
@@ -542,16 +542,76 @@ async fn read_mistral_events(
     Ok(events)
 }
 
+/// Read one body chunk with abort + timeout guards (upstream passes the
+/// combined signal to fetch, so the body read aborts with it).
+/// divergence: the timeout here is per-chunk (resets on each received
+/// chunk) rather than whole-request.
+async fn read_guarded(
+    read_fut: &mut (
+             impl std::future::Future<Output = Option<Result<Vec<u8>, crate::error::AiError>>> + Unpin
+         ),
+    signal: Option<&crate::AbortSignal>,
+    timeout_ms: Option<u64>,
+) -> Result<Option<Vec<u8>>, String> {
+    let abort_fut = async {
+        match signal {
+            Some(s) => {
+                let _ = s.aborted_or_pending().await;
+            }
+            None => std::future::pending::<()>().await,
+        }
+    };
+    tokio::pin!(abort_fut);
+
+    let raced = async {
+        tokio::select! {
+            biased;
+            _ = &mut abort_fut => Err("Request was aborted".to_string()),
+            chunk = read_fut => match chunk {
+                Some(Ok(c)) => Ok(Some(c)),
+                Some(Err(e)) => Err(e.to_string()),
+                None => Ok(None),
+            },
+        }
+    };
+    tokio::pin!(raced);
+
+    match timeout_ms {
+        Some(ms) => {
+            match tokio::time::timeout(std::time::Duration::from_millis(ms), &mut raced).await {
+                Ok(result) => result,
+                Err(_) => Err("Request timed out".to_string()),
+            }
+        }
+        None => raced.await,
+    }
+}
+
 /// Find the next SSE boundary (mixed \r\n / \r / \n pairs), returning
 /// (index, length) of the delimiter.
 fn find_mistral_event_boundary(buffer: &[u8]) -> Option<(usize, usize)> {
-    let text = String::from_utf8_lossy(buffer);
-    let best: Option<(usize, usize)> = [
-        "\r\n\r\n", "\r\n\r", "\r\n\n", "\r\r\n", "\n\r\n", "\r\r", "\n\r", "\n\n",
-    ]
-    .iter()
-    .filter_map(|sep| text.find(sep).map(|i| (i, sep.len())))
-    .min_by_key(|(i, _)| *i);
+    // Byte-level search: the buffer may end mid-UTF8-sequence, so scanning
+    // via String::from_utf8_lossy can shift indices (the replacement char is
+    // 3 bytes vs the original 1-4). The delimiters are all ASCII, so byte
+    // search is safe and exact.
+    let mut best: Option<(usize, usize)> = None;
+    for sep in [
+        b"\r\n\r\n".as_slice(),
+        b"\r\n\r".as_slice(),
+        b"\r\n\n".as_slice(),
+        b"\r\r\n".as_slice(),
+        b"\n\r\n".as_slice(),
+        b"\r\r".as_slice(),
+        b"\n\r".as_slice(),
+        b"\n\n".as_slice(),
+    ] {
+        if let Some(i) = buffer.windows(sep.len()).position(|w| w == sep) {
+            match best {
+                Some((bi, _)) if bi <= i => {}
+                _ => best = Some((i, sep.len())),
+            }
+        }
+    }
     best
 }
 
@@ -915,6 +975,8 @@ fn consume_chat_stream(
             None => continue,
         };
 
+        // Upstream: `if (choice.finish_reason)` — null/absent is falsy and
+        // does NOT set the stop reason (the stream may continue).
         if let Some(finish_reason) = choice.get("finish_reason") {
             if !finish_reason.is_null() {
                 if let Some(reason) = finish_reason.as_str() {
@@ -925,13 +987,6 @@ fn consume_chat_stream(
                         output.error_message = Some(err);
                     }
                 }
-            } else {
-                // finish_reason: null means the stream is done (upstream maps
-                // null to "stop") — but only treat it as terminal at the end;
-                // upstream sets it immediately.
-                output.raw_stop_reason = Some("null".to_string());
-                let mapped = map_chat_stop_reason(None);
-                output.stop_reason = mapped.0;
             }
         }
 
