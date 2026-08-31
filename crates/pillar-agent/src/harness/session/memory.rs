@@ -344,7 +344,7 @@ impl Session {
         self.storage.find_entries_on_branch(&start, query, bounds)
     }
 
-    fn append_message_to_lane(
+    pub fn append_message_to_lane(
         &self,
         lane: &str,
         message: AgentMessage,

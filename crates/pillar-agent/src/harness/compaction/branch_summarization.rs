@@ -410,7 +410,8 @@ fn now_millis() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::session::types::{Entry, EntryPayload};
+    use crate::harness::session::memory::InMemorySessionStorage;
+    use crate::harness::session::types::{Entry, EntryPayload, SessionMetadata};
     use crate::types::BashExecutionMessage;
     use pillar_ai::types::Message;
 
@@ -537,5 +538,69 @@ mod tests {
         let finished = finish_branch_summary("## Goal\nstuff", &prep);
         assert!(finished.starts_with(BRANCH_SUMMARY_PREAMBLE));
         assert!(finished.contains("<read-files>\n/r.ts\n</read-files>"));
+    }
+
+    // --- branch-summarization.test.ts ------------------------------------
+
+    fn test_session() -> Session {
+        Session::new(Box::new(InMemorySessionStorage::new(SessionMetadata {
+            id: "session".to_owned(),
+            created_at: 1,
+            parent_session_id: None,
+        })))
+    }
+
+    /// upstream test: "collects the abandoned side of a branch in
+    /// chronological order"
+    #[test]
+    fn collects_the_abandoned_side_of_a_branch_in_chronological_order() {
+        let session = test_session();
+        let root_id = session
+            .append_message(user_message("root"))
+            .expect("append root");
+        let common_id = session
+            .append_message(user_message("common"))
+            .expect("append common");
+        let abandoned_1 = session
+            .append_message(user_message("abandoned 1"))
+            .expect("append abandoned 1");
+        let abandoned_2 = session
+            .append_message(user_message("abandoned 2"))
+            .expect("append abandoned 2");
+        session
+            .create_lane("target", Some(&common_id))
+            .expect("create lane");
+        let target_id = session
+            .append_message_to_lane("target", user_message("target"))
+            .expect("append target");
+
+        let result = collect_entries_for_branch_summary(&session, Some(&abandoned_2), &target_id)
+            .expect("collect");
+        assert_eq!(
+            result.common_ancestor_id.as_deref(),
+            Some(common_id.as_str())
+        );
+        assert_eq!(
+            result
+                .entries
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![abandoned_1.as_str(), abandoned_2.as_str()]
+        );
+        assert!(!result.entries.iter().any(|entry| entry.id == root_id));
+    }
+
+    /// upstream test: "returns no entries when there was no previous leaf"
+    #[test]
+    fn returns_no_entries_when_there_was_no_previous_leaf() {
+        let session = test_session();
+        let target_id = session
+            .append_message(user_message("target"))
+            .expect("append target");
+        let result =
+            collect_entries_for_branch_summary(&session, None, &target_id).expect("collect");
+        assert!(result.entries.is_empty());
+        assert_eq!(result.common_ancestor_id, None);
     }
 }
