@@ -1,7 +1,8 @@
 //! Port of packages/agent/src/harness/session/jsonl/repo.ts (pi v0.84.3) —
 //! create/open/list/delete/fork over cwd-encoded JSONL session files.
 
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 
 use pillar_ai::uuid::uuidv7;
 
@@ -14,6 +15,16 @@ use super::types::{
     JsonlSessionRepoOptions, JsonlV4Header,
 };
 use crate::harness::types::FileSystem;
+
+/// Wall-clock milliseconds provider (upstream tests fake `Date`; the port
+/// injects the clock instead).
+pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
+
+#[derive(Clone)]
+struct CreateDestination {
+    id: String,
+    cwd: String,
+}
 
 const SESSION_ID_PATTERN_STRICT: bool = true;
 
@@ -78,10 +89,50 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
+/// Held create/fork reservation for one logical destination (upstream
+/// `claimCreateDestination` try/finally). The key is removed on drop so
+/// failed creations release the reservation (upstream `finally`).
+struct DestinationReservation<'a> {
+    reservations: &'a Mutex<HashSet<String>>,
+    key: String,
+}
+
+impl<'a> DestinationReservation<'a> {
+    fn acquire(
+        reservations: &'a Mutex<HashSet<String>>,
+        destination: &CreateDestination,
+    ) -> Result<Self, SessionError> {
+        let key = format!("{}\0{}", destination.cwd, destination.id);
+        let mut guard = reservations.lock().expect("create destinations lock");
+        if !guard.insert(key.clone()) {
+            return Err(SessionError::new(
+                SessionErrorCode::AlreadyExists,
+                format!("Session already exists: {}", destination.id),
+            ));
+        }
+        Ok(Self { reservations, key })
+    }
+}
+
+impl Drop for DestinationReservation<'_> {
+    fn drop(&mut self) {
+        self.reservations
+            .lock()
+            .expect("create destinations lock")
+            .remove(&self.key);
+    }
+}
+
 /// JSONL session repository (upstream `JsonlSessionRepo`).
 pub struct JsonlSessionRepo<F: FileSystem + ?Sized> {
     fs: Arc<F>,
     sessions_root_input: String,
+    /// Same-process create/fork reservations per logical destination
+    /// (upstream `activeCreateDestinations`). The durable filename includes
+    /// a timestamp, so the async existence check alone can let two
+    /// concurrent calls both decide the same `{cwd, id}` is free.
+    active_create_destinations: Mutex<HashSet<String>>,
+    clock: Clock,
 }
 
 impl<F: FileSystem + 'static> JsonlSessionRepo<F> {
@@ -92,7 +143,15 @@ impl<F: FileSystem + 'static> JsonlSessionRepo<F> {
         Self {
             fs: options.fs,
             sessions_root_input: options.sessions_root,
+            active_create_destinations: Mutex::new(HashSet::new()),
+            clock: Arc::new(now_millis),
         }
+    }
+
+    /// Override the wall clock (upstream tests fake `Date.now`).
+    pub fn with_clock(mut self, clock: Clock) -> Self {
+        self.clock = clock;
+        self
     }
 
     fn sessions_root(&self) -> &str {
@@ -236,7 +295,9 @@ impl<F: FileSystem + 'static> JsonlSessionRepo<F> {
         &self,
         options: &JsonlSessionCreateOptions,
     ) -> Result<Session, SessionError> {
-        let (header, path) = self.prepare_create(options).await?;
+        let destination = self.resolve_create_destination(options).await?;
+        let _reservation = self.claim_destination_guard(&destination)?;
+        let (header, path) = self.prepare_create(&destination, options).await?;
         let storage = JsonlSessionStorage::<F>::create(self.fs.clone(), &path, &header).await?;
         Ok(Session::new(Box::new(storage)))
     }
@@ -255,9 +316,21 @@ impl<F: FileSystem + 'static> JsonlSessionRepo<F> {
                 .parent_session_id
                 .unwrap_or_else(|| source.id.clone()),
         );
-        let (header, path) = self.prepare_create(&create_options).await?;
+        let destination = self.resolve_create_destination(&create_options).await?;
+        let _reservation = self.claim_destination_guard(&destination)?;
+        let (header, path) = self.prepare_create(&destination, &create_options).await?;
         let storage = source_storage.fork(&path, &header, fork_options).await?;
         Ok(Session::new(Box::new(storage)))
+    }
+
+    /// Prevent same-process create/fork races for one logical destination
+    /// (upstream `claimCreateDestination`). The reservation set lives on the
+    /// repo; the guard removes the key when dropped.
+    fn claim_destination_guard<'a>(
+        &'a self,
+        destination: &'a CreateDestination,
+    ) -> Result<DestinationReservation<'a>, SessionError> {
+        DestinationReservation::acquire(&self.active_create_destinations, destination)
     }
 
     /// Delete a session file (upstream `delete`).
@@ -273,42 +346,14 @@ impl<F: FileSystem + 'static> JsonlSessionRepo<F> {
             })
     }
 
-    async fn prepare_create(
+    async fn resolve_create_destination(
         &self,
         options: &JsonlSessionCreateOptions,
-    ) -> Result<(JsonlV4Header, String), SessionError> {
+    ) -> Result<CreateDestination, SessionError> {
         let id = options.id.clone().unwrap_or_else(uuidv7);
         validate_session_id(&id)?;
         let cwd = self.absolute(&options.cwd).await?;
-
-        if self.session_id_exists(&id, &cwd).await? {
-            return Err(SessionError::new(
-                SessionErrorCode::AlreadyExists,
-                format!("Session already exists: {id}"),
-            ));
-        }
-
-        let created_at = now_millis();
-        let directory = self.session_directory_sync(self.sessions_root(), &cwd);
-        let path = self
-            .join(&[&directory, &session_file_name(created_at, &id)])
-            .await?;
-
-        let header = JsonlV4Header {
-            kind: "header".to_owned(),
-            version: 4,
-            id,
-            created_at,
-            cwd,
-            parent_session_id: options.parent_session_id.clone(),
-            legacy_parent_session_path: None,
-            metadata: options.metadata.clone(),
-        };
-        self.fs
-            .create_dir(&directory, true)
-            .await
-            .map_err(|error| SessionError::new(SessionErrorCode::Storage, error.to_string()))?;
-        Ok((header, path))
+        Ok(CreateDestination { id, cwd })
     }
 
     async fn session_id_exists(&self, id: &str, cwd: &str) -> Result<bool, SessionError> {
@@ -326,6 +371,42 @@ impl<F: FileSystem + 'static> JsonlSessionRepo<F> {
             !matches!(entry.kind, crate::harness::types::FileKind::Directory)
                 && entry.name.ends_with(&suffix)
         }))
+    }
+
+    async fn prepare_create(
+        &self,
+        destination: &CreateDestination,
+        options: &JsonlSessionCreateOptions,
+    ) -> Result<(JsonlV4Header, String), SessionError> {
+        let CreateDestination { id, cwd } = destination;
+        if self.session_id_exists(id, cwd).await? {
+            return Err(SessionError::new(
+                SessionErrorCode::AlreadyExists,
+                format!("Session already exists: {id}"),
+            ));
+        }
+
+        let created_at = (self.clock)();
+        let directory = self.session_directory_sync(self.sessions_root(), cwd);
+        let path = self
+            .join(&[&directory, &session_file_name(created_at, id)])
+            .await?;
+
+        let header = JsonlV4Header {
+            kind: "header".to_owned(),
+            version: 4,
+            id: id.clone(),
+            created_at,
+            cwd: cwd.clone(),
+            parent_session_id: options.parent_session_id.clone(),
+            legacy_parent_session_path: None,
+            metadata: options.metadata.clone(),
+        };
+        self.fs
+            .create_dir(&directory, true)
+            .await
+            .map_err(|error| SessionError::new(SessionErrorCode::Storage, error.to_string()))?;
+        Ok((header, path))
     }
 }
 
