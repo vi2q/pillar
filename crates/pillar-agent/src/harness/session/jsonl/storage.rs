@@ -242,7 +242,7 @@ pub fn metadata_from_header(
     }
 }
 
-impl<F: FileSystem + ?Sized> SessionStorage for JsonlSessionStorage<F> {
+impl<F: FileSystem + 'static> SessionStorage for JsonlSessionStorage<F> {
     fn get_metadata(&self) -> Result<SessionMetadata, SessionError> {
         Ok(SessionMetadata {
             id: self.metadata.id.clone(),
@@ -405,38 +405,60 @@ impl<F: FileSystem + ?Sized> SessionStorage for JsonlSessionStorage<F> {
     }
 }
 
-impl<FT: FileSystem + ?Sized> JsonlSessionStorage<FT> {
+impl<FT: FileSystem + 'static> JsonlSessionStorage<FT> {
     /// Synchronous append used by the `SessionStorage` trait methods. The
-    /// upstream port's async file API is awaited through the blocking
-    /// runtime handle here because the trait is sync (see the divergence
-    /// note in `memory.rs`).
+    /// upstream storage chains every write through a promise queue; the
+    /// port serializes on the state mutex (callers hold `lock_state()`)
+    /// and runs the async FS call on the blocking pool via
+    /// `Handle::spawn_blocking` driven by an inline current-thread runtime,
+    /// which works from both multi-thread and current-thread runtimes
+    /// (including `#[tokio::test]`). A std fallback covers callers outside
+    /// any runtime. Requires `FT: 'static`-compatible bounds (i.e. a sized
+    /// owned FS), hence the dedicated impl block.
     fn append_mutation_blocking(&self, mutation: &SessionMutation) -> Result<(), SessionError> {
         let encoded = encode_mutation(mutation);
-        let fs = self.fs.clone();
         let path = self.metadata.path.clone();
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::try_current()
-                .ok()
-                .map(|handle| handle.block_on(fs.append_file(&path, encoded.as_bytes())))
-                .unwrap_or_else(|| {
-                    // No runtime: fall back to std fs semantics via a tiny
-                    // inline append.
-                    std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(&path)
-                        .and_then(|mut file| {
-                            std::io::Write::write_all(&mut file, encoded.as_bytes())
-                        })
-                        .map_err(|error| {
-                            crate::harness::types::FileError::new(
+        let result = match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                let fs = self.fs.clone();
+                let task_path = path.clone();
+                let task_encoded = encoded.clone();
+                futures::executor::block_on(handle.spawn_blocking(move || {
+                    let append =
+                        async move { fs.append_file(&task_path, task_encoded.as_bytes()).await };
+                    tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .map(|runtime| runtime.block_on(append))
+                        .unwrap_or_else(|error| {
+                            Err(crate::harness::types::FileError::new(
                                 crate::harness::types::FileErrorCode::Unknown,
-                                error.to_string(),
+                                format!("Failed to build append runtime: {error}"),
                                 None,
-                            )
+                            ))
                         })
+                }))
+                .unwrap_or_else(|error| {
+                    Err(crate::harness::types::FileError::new(
+                        crate::harness::types::FileErrorCode::Unknown,
+                        format!("Failed to join append task: {error}"),
+                        None,
+                    ))
                 })
-        })
-        .map_err(|error| storage_err(format!("Failed to append session {path}: {error}")))
+            }
+            Err(_) => std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .and_then(|mut file| std::io::Write::write_all(&mut file, encoded.as_bytes()))
+                .map_err(|error| {
+                    crate::harness::types::FileError::new(
+                        crate::harness::types::FileErrorCode::Unknown,
+                        error.to_string(),
+                        None,
+                    )
+                }),
+        };
+        result.map_err(|error| storage_err(format!("Failed to append session {path}: {error}")))
     }
 }

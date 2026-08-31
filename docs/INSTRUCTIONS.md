@@ -120,10 +120,11 @@ pi v0.84.3 (TypeScript, commit `56700d42e`) を Rust に移植する。拡張機
 - **テストでの `expect_err` は `Debug` を要求する** (#39) — `Result<T, E>::expect_err` は `T: Debug` を要求する。`AgentHarness` のような非 `Debug` 型を Ok 側に持つ結果は `match` で `Ok(_) => panic!()` にするか、エラー型だけを返すクロージャで検証する。
 - **`'static` クロージャは借用を取れない** (#40) — `Vec<(&str, Box<dyn Fn() -> ...>)>` 型注釈はクロージャが外部参照を借用すると lifetime エラーになる。`Box<dyn Fn() -> ... + '_>` と借用 lifetime を明示する。
 - **エンベロープ+flatten payload の二重 `type` タグ** (#45, 修正済み: 19e5663) — `Entry`/`LaneRecord`/`ProvisionedEntry` はエンベロープ構造体に `#[serde(rename="type")] kind` を持ちつつ `#[serde(flatten)]` payload (内部 `#[serde(tag="type")]` enum) を flatten すると、シリアライズ結果に `type` が2つ出て逆シリアルは必ず失敗する (「duplicate field type」)。serde_json の flatten は重複キーをマージしない。エンベロープ側の kind フィールドを廃止し `kind()` メソッド (payload.kind() 委譲) にするのが正。同じく payload enum に `rename_all_fields="camelCase"` を忘れると upstream ワイヤ形式 (`customType`/`runId`) とずれる。flatten 構造の serde パスは構築時に1回ラウンドトリップ試験を書くこと (既存のメモリテストだけでは露出しない)。
-- **RPITIT の async fn は `(方法) impl Future` シグネチャ** (#41) — `ExecutionEnv` (`impl Future` メソッド) は `&dyn ExecutionEnv` にできない。ツールは `<E: ExecutionEnv + ?Sized>` ジェネリクスで受け、内部可変性は `Arc<StdFsExecutionEnv>` 等で共有する。
+- **RPITIT トレイトは dyn 非対応** (#41) — `ExecutionEnv` (`impl Future` メソッド) は `&dyn ExecutionEnv` にできない。ツールは `<E: ExecutionEnv + ?Sized>` ジェネリクスで受け、内部可変性は `Arc<StdFsExecutionEnv>` 等で共有する。
 - **upstream の擬似 promise キューは「登録区間内でロック取得」で置換** (#42) — `withFileMutationQueue` は registration promise の中で currentQueue に chained する。Rust では registration ロック内で `queue.lock().await` まで進め、ガードを持ったまま区間を抜けることで同じ順序保証になる。ガードを区間の外で取るとスケジューリング次第で逆転する。
 - **オフセット系は1-indexed変換を忘れない** (#43) — read ツールの `offset` は upstream が `offset - 1` で 0-indexed に変換する。素通しすると 1 行ずれる (今回溶けたパターン: 一部のテストは通るが期待行がズレる)。
 - **キューの順序テストはタイミング依存になりがち** (#44) — spawn 直後の2タスクの登録順は保証されない。upstream と同じ意味論 (先に登録した方が先に走る) を検証するなら、片方の開始を確実に観測してから次を投げる (Notify か十分な sleep)。フレークしたら連続10回。
+- **同一 destination の create/fork 競合はプロセス内予約で防ぐ** (#46) — タイムスタンプ入りファイル名でも、async の存在チェックと発行の間に別 call が割り込むと同じ `{cwd, id}` のセッションが2つ publish され得る (upstream `claimCreateDestination` のコメント参照)。Rust では `Mutex<HashSet<String>>` + Drop で reservation を解放する RAII ガードにした (upstream try/finally 相当)。テストで同時実行を見たい場合は `tokio::join!` で2つの create を起動し成功1/失敗1 (already_exists) を断言する。時刻に依存するテストは repo を `with_clock` で固定時計にする。
 
 ## セッション運用の反省 (継続)
 
