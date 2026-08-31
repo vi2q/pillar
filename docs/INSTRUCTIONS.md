@@ -18,16 +18,16 @@ pi v0.84.3 (TypeScript, commit `56700d42e`) を Rust に移植する。拡張機
 
 ## 現在の状態 (2026-08-31)
 
-全ワークスペース 485テストがパス。`cargo fmt --check` / `cargo clippy` (クレート毎に `-D warnings`) クリーン。harness session の jsonl バックエンド (types/codec/storage/repo, 848行) を移植済み (commit 91a03b0 + f20fe8e)。パリティテスト (jsonl-codec / jsonl-storage / jsonl.test.ts 相当) はまだ未作成 — 次のセッションで追加推奨。proxy.ts も移植済み (commit 6ed4f6c, proxy_parity 1ケース)。branch-summarization の session 依存部 (collectEntriesForBranchSummary / generateBranchSummary / prepareBranchEntries) も移植済み (commit 545b655)。
+全ワークスペース 537テストがパス (protocol 49 / telemetry 15 / ai 188 / agent 285)。`cargo fmt --check` / `cargo clippy` (クレート毎に `-D warnings`) クリーン。harness session の jsonl バックエンド (types/codec/storage/repo, 848行) 済み (91a03b0 + f20fe8e) に加え、**jsonl パリティテスト 3スイート完了** (jsonl_codec_parity 14 / jsonl_storage_parity 5 / jsonl_conformance_parity 30)。その過程で重大バグ2件を修正 (エンベロープ+flatten payload の二重 `type` タグ #45、`block_in_place` が current_thread ランタイムで panic #47)、repo に destination 予約 (upstream claimCreateDestination 相当, #46) と `with_clock` 注入を追加。proxy.ts 済み (6ed4f6c)。branch-summarization の session 依存部済み (545b655)。
 
-移植メモ (jsonl): `FileSystem` は RPITIT で dyn 非対応のため `JsonlSessionStorage<FT: FileSystem + ?Sized>` / `JsonlSessionRepo<F: FileSystem + 'static>` はジェネリクスで受ける (docs/INSTRUCTIONS.md #41)。書き込みは `SessionStorage` トレイトの sync メソッド内で `tokio::task::block_in_place` + `Handle::block_on` により append を直列化 (upstream の promise チェーン `this.tail` 相当)。torn-tail 修復は `publishFileAtomically` (tmp + rename) を再現。
+移植メモ (jsonl): `FileSystem` は RPITIT で dyn 非対応のため `JsonlSessionStorage<FT: FileSystem + ?Sized>` / `JsonlSessionRepo<F: FileSystem + 'static>` はジェネリクスで受ける (docs/INSTRUCTIONS.md #41)。書き込みは `SessionStorage` トレイトの sync メソッド内で `spawn_blocking` + インライン current_thread ランタイムにより append を駆動し、state mutex で直列化 (#47)。torn-tail 修復は `publishFileAtomically` (tmp + rename) を再現。
 
 | クレート | テスト | 状況 |
 | --- | --- | --- |
 | pillar-protocol | 49 | ✅ 完了 |
 | pillar-telemetry | 15 | ✅ 完了 |
 | pillar-ai | 188 | 🔶 コア + 全主要プロバイダ済み (core 35 / faux 22 / models-runtime 39 / api-infra 27 / openai-completions 23 / openai-responses 14 / anthropic-messages 27 / uuid 1) |
-| pillar-agent | 233 | 🔶 コアループ + Agent クラス + harness 基盤〜tools + telemetry + session jsonl バックエンド + proxy 済み (lib 32 / loop 25 / agent 22 / nodejs-env 25 / utils 10 / skills 8 / messages 13 / session 20 / compaction 15 / reducer 28 / agent-harness-scaffold 4 / tools-parity 21 / proxy 1) |
+| pillar-agent | 285 | 🔶 コアループ + Agent クラス + harness 基盤〜tools + telemetry + session jsonl バックエンド + jsonl パリティテスト + proxy 済み (lib 32 / loop 25 / agent 22 / nodejs-env 25 / utils 10 / skills 8 / messages 13 / session 20 / compaction 15 / reducer 28 / agent-harness-scaffold 4 / tools-parity 21 / proxy 1 / jsonl codec 14 / jsonl storage 5 / jsonl conformance 30) |
 | pillar-coding-agent / tui / client / server / session-store | — | ❌ 未着手 |
 | pillar-extensions | — | ❌ 未着手 (luaur VM 統合)。設計は docs/rules/04 に確定済み |
 
@@ -48,11 +48,11 @@ pi v0.84.3 (TypeScript, commit `56700d42e`) を Rust に移植する。拡張機
 | server / client / session-backends | 6.3k | 4.2k | ❌ 未着手 |
 | evals | 1.3k | 0.5k | ❌ 対象外の可能性 |
 
-**体感 2割強。** 土台層 (protocol / telemetry / ai コア / agent コア) は最難関部 (SSE パーサ・非同期セマンティクス・イベント順序の厳密互換) を含めて固まっており、484テストで保護済み。残り約7割は coding-agent (79k) と tui (18k) で、両者とも土台の上に載せる形なので行数比よりは速く進む見込み。
+**体感 2割強。** 土台層 (protocol / telemetry / ai コア / agent コア) は最難関部 (SSE パーサ・非同期セマンティクス・イベント順序の厳密互換) を含めて固まっており、537テストで保護済み。残り約7割は coding-agent (79k) と tui (18k) で、両者とも土台の上に載せる形なので行数比よりは速く進む見込み。
 
 ## 次の作業キュー
 
-1. **agent の残り**: jsonl パリティテスト (上流 jsonl-codec.test.ts / jsonl-storage.test.ts / jsonl.test.ts, 計1445行) → `search/` → e2e のうちモック可能なもの。**← 作業中 (2026-08-31)。着手前に重大な実装バグを発見: `Entry`/`LaneRecord`/`ProvisionedEntry` がエンベロープの `type` と flatten payload 内部タグ `type` を二重に出力し、serde 逆関数が不可能 (deserialize は "duplicate field type" / "missing field type" で必ず失敗)。つまり jsonl バックエンドは entry/record 行を実質読み書きできない。payload enum にも camelCase rename が無く upstream ワイヤ形式 (`customType`/`runId` 等) と不一致。修正方針: エンベロープ構造体から `kind` フィールドを削除し `kind()` アクセサ (payload.kind() 委譲) に置換、payload/intent enum に `rename_all_fields = "camelCase"` を付与。影響は jsonl 以外に in-memory backend / codec ヘルパ / reducer / compaction / branch_summarization の構築箇所。**result.ts / reducer.ts / agent-harness.ts (スキャフォールド) / tools/ (1203行) / telemetry.ts (615行) / session/jsonl/ (848行, commit 91a03b0) / proxy.ts (370行, commit 6ed4f6c) / branch-summarization (commit 545b655) は移植済み。agent-harness の操作本体 (prompt/compact/resume/watch 等) の依存先は揃ったので次は着手可能。models_generated.rs (generate-models ジェネレータ) は live カタログ依存のため別タスク。
+1. **agent の残り**: jsonl パリティテストは**完了** (2026-08-31: codec 14 / storage 5 / conformance 30 ケース追加、修正コミット 19e5663 / 970d73c / cc262bd)。→ 次: `search/` → e2e のうちモック可能なもの。result.ts / reducer.ts / agent-harness.ts (スキャフォールド) / tools/ (1203行) / telemetry.ts (615行) / session/jsonl/ (848行) / proxy.ts (370行) / branch-summarization は移植済み。agent-harness の操作本体 (prompt/compact/resume/watch 等) の依存先は揃ったので次は着手可能。models_generated.rs (generate-models ジェネレータ) は live カタログ依存のため別タスク。
 2. **pillar-ai のプロバイダ残り**: google 系 → mistral-conversations → bedrock-converse → openai-codex → azure → images → providers/*。`models.generated.ts` はジェネレータで再生成、手移植禁止 (docs/rules/01、生成器は pillar-ai/src/bin/generate-models.rs に作る)。live-API テスト (responseid, xhigh, tool-call-without-result, tool-call-id-normalization e2e) はモック不能なので非移植。
 3. **agent の残り**: `search/`、`e2e.test.ts` のうちモック可能なもの。models_generated.rs (generate-models ジェネレータ) は live カタログ依存のため別タスク。
 4. **pillar-coding-agent**: 未着手 (最大、61k行)。
