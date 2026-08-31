@@ -50,14 +50,26 @@ pi v0.84.3 (TypeScript, commit `56700d42e`) を Rust に移植する。拡張機
 
 **体感 2割強。** 土台層 (protocol / telemetry / ai コア / agent コア) は最難関部 (SSE パーサ・非同期セマンティクス・イベント順序の厳密互換) を含めて固まっており、537テストで保護済み。残り約7割は coding-agent (79k) と tui (18k) で、両者とも土台の上に載せる形なので行数比よりは速く進む見込み。
 
+## 作業指示チェックリスト
+
+ユーザー指示を記録し、進捗に合わせて更新する。
+
+- [ ] 「docs/INSTRUCTIONS.md から引き継いで続きを頼む」— 次の作業キューに従って移植を継続する (2026-08-31)
+  - [ ] pillar-ai: google 系 (google-shared / google-generative-ai / google-vertex / providers/google*)
+  - [ ] pillar-ai: mistral-conversations
+  - [ ] pillar-ai: bedrock-converse
+  - [ ] pillar-ai: openai-codex
+  - [ ] pillar-ai: azure
+  - [ ] pillar-ai: images
+  - [ ] pillar-ai: providers/*
+
 ## 次の作業キュー
 
 1. **agent の残り**: search/ (187bcf2) / e2e のモック可能部 (e1c55c1) は**完了**。残りは live-API 依存の e2e (responseid, xhigh, tool-call-without-result, tool-call-id-normalization — 非移植) と models_generated.rs (generate-models ジェネレータ, live カタログ依存) のみで、**agent クレートは実質完了**。agent-harness の操作本体 (prompt/compact/resume/watch 等) の依存先は揃ったので次は着手可能。→ 次: pillar-ai のプロバイダ残り または pillar-coding-agent 着手。
 2. **pillar-ai のプロバイダ残り**: google 系 → mistral-conversations → bedrock-converse → openai-codex → azure → images → providers/*。`models.generated.ts` はジェネレータで再生成、手移植禁止 (docs/rules/01、生成器は pillar-ai/src/bin/generate-models.rs に作る)。live-API テスト (responseid, xhigh, tool-call-without-result, tool-call-id-normalization e2e) はモック不能なので非移植。
 3. **pillar-coding-agent**: 未着手 (最大、61k行)。
-4. **pillar-coding-agent**: 未着手 (最大、61k行)。
-5. **pillar-tui / client / server / session-store**: 未着手。
-6. **pillar-extensions**: luaur VM 統合。設計は docs/rules/04。
+4. **pillar-tui / client / server / session-store**: 未着手。
+5. **pillar-extensions**: luaur VM 統合。設計は docs/rules/04。
 
 ## 移植の落とし穴
 
