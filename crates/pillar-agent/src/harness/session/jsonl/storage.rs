@@ -183,7 +183,6 @@ impl<FT: FileSystem + ?Sized> JsonlSessionStorage<FT> {
 }
 
 /// Sized-generic wrapper so `?Sized` storage can stage a fork file.
-/// Sized-generic wrapper so `?Sized` storage types can stage fork files.
 fn staged_create<FT: FileSystem + ?Sized>(
     fs: Arc<FT>,
     path: &str,
