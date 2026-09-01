@@ -36,6 +36,16 @@ const OPENAI_TOOL_CALL_PROVIDERS: [&str; 3] = ["openai", "openai-codex", "openco
 /// OpenAI Responses rejects max_output_tokens below 16.
 const OPENAI_RESPONSES_MIN_OUTPUT_TOKENS: u64 = 16;
 
+/// Map a ThinkingLevel to its model-level enum (used by azure adapter).
+pub(crate) fn to_model_thinking_level_pub(level: ThinkingLevel) -> ModelThinkingLevel {
+    to_model_thinking_level(level)
+}
+
+/// Shared default transport (used by azure adapter).
+pub(crate) fn default_fetch_shared() -> crate::transport::SharedFetchFn {
+    default_fetch()
+}
+
 // --- Options -------------------------------------------------------------
 
 /// Upstream `OpenAIResponsesOptions`.
@@ -148,7 +158,7 @@ pub fn get_compat(model: &Model) -> ResolvedResponsesCompat {
 
 /// Read the responses-shaped compat fields off the model's compat JSON
 /// (upstream: `model.compat as OpenAIResponsesCompat`).
-fn responses_compat_of(model: &Model) -> crate::types::OpenaiResponsesCompat {
+pub(crate) fn responses_compat_of(model: &Model) -> crate::types::OpenaiResponsesCompat {
     match model.compat.as_ref() {
         Some(crate::types::ModelCompat::OpenaiResponses(compat)) => (**compat).clone(),
         _ => crate::types::OpenaiResponsesCompat::default(),
