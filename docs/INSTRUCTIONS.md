@@ -18,7 +18,7 @@ pi v0.84.3 (TypeScript, commit `56700d42e`) を Rust に移植する。拡張機
 
 ## 現在の状態 (2026-09-01)
 
-全ワークスペース 598テストがパス (protocol 49 / telemetry 15 / ai 235 / agent 299)。`cargo fmt --check` / `cargo clippy` (クレート毎に `-D warnings`) クリーン。**google 系 API 完了 (9717334)**: google-shared.rs (convertMessages/convertTools/thought signature/thinking level map) + google-generative-ai.rs (mldev wire, x-goog-api-key, SSE) + google-vertex.rs (ADC/API-key URL builder, v1 pin) + 27テスト。**mistral-conversations.rs 済み (ab4e80a + 300d7f9)**: stream/streamSimple, wire remap (camelCase→snake_case), 9文字 tool call ID 正規化 (shortHash), SSE パーサ (境界はバイト検索 #53), guarded body read。harness session の jsonl バックエンド (types/codec/storage/repo, 848行) 済み (91a03b0 + f20fe8e) に加え、**jsonl パリティテスト 3スイート完了** (jsonl_codec_parity 14 / jsonl_storage_parity 5 / jsonl_conformance_parity 30)。その過程で重大バグ2件を修正 (エンベロープ+flatten payload の二重 `type` タグ #45、`block_in_place` が current_thread ランタイムで panic #47)、repo に destination 予約 (upstream claimCreateDestination 相当, #46) と `with_clock` 注入を追加。proxy.ts 済み (6ed4f6c)。branch-summarization の session 依存部済み (545b655) + branch-summarization.test.ts 2ケース (6efd9b0)。search/ 済み (187bcf2)。e2e.test.ts 済み (e1c55c1, 10ケース)。**telemetry.ts スパン開始部完了 (fa2fe02)**: start_harness_run/compaction/navigation_span + render_agent_telemetry_schema_markdown + telemetry.test.ts 3ケース (スパン名断言は BTreeMap 順序のためソート比較, #19)。pillar-telemetry 依存を pillar-agent に追加 (upstream packages/agent は pi-telemetry に依存)。
+全ワークスペース 638テストがパス (protocol 49 / telemetry 15 / ai 275 / agent 299)。`cargo fmt --check` / `cargo clippy` (クレート毎に `-D warnings`) クリーン。**bedrock-converse 完了 (未コミット)**: bedrock_converse_stream.rs (2.3k行, AWS SDK不使用 — FetchFn + 生HTTP + AWS eventstream バイナリフレーミングデコーダ #54) + bedrock_converse_stream_parity.rs 40テスト全パス (bedrock-convert-messages / endpoint-resolution / credentials / thinking-payload / raw-stop-reason / error-metadata / response-headers / redacted-reasoning / models placeholder)。テスト修正過程で判明した落とし穴: テストヘルパーの `assistant_message()` が model ID を base_model にハードコードすると `transform_messages` の `isSameModel` 判定が true になり tool call ID 正規化・redacted thinking 保持が発火しない (#58)、struct update 構文のデフォルト上書き (#57)、ambient AWS_PROFILE は process env 制御が必要 (#55)。**google 系 API 完了 (9717334)**: google-shared.rs (convertMessages/convertTools/thought signature/thinking level map) + google-generative-ai.rs (mldev wire, x-goog-api-key, SSE) + google-vertex.rs (ADC/API-key URL builder, v1 pin) + 27テスト。**mistral-conversations.rs 済み (ab4e80a + 300d7f9)**: stream/streamSimple, wire remap (camelCase→snake_case), 9文字 tool call ID 正規化 (shortHash), SSE パーサ (境界はバイト検索 #53), guarded body read。harness session の jsonl バックエンド (types/codec/storage/repo, 848行) 済み (91a03b0 + f20fe8e) に加え、**jsonl パリティテスト 3スイート完了** (jsonl_codec_parity 14 / jsonl_storage_parity 5 / jsonl_conformance_parity 30)。その過程で重大バグ2件を修正 (エンベロープ+flatten payload の二重 `type` タグ #45、`block_in_place` が current_thread ランタイムで panic #47)、repo に destination 予約 (upstream claimCreateDestination 相当, #46) と `with_clock` 注入を追加。proxy.ts 済み (6ed4f6c)。branch-summarization の session 依存部済み (545b655) + branch-summarization.test.ts 2ケース (6efd9b0)。search/ 済み (187bcf2)。e2e.test.ts 済み (e1c55c1, 10ケース)。**telemetry.ts スパン開始部完了 (fa2fe02)**: start_harness_run/compaction/navigation_span + render_agent_telemetry_schema_markdown + telemetry.test.ts 3ケース (スパン名断言は BTreeMap 順序のためソート比較, #19)。pillar-telemetry 依存を pillar-agent に追加 (upstream packages/agent は pi-telemetry に依存)。
 
 移植メモ (jsonl): `FileSystem` は RPITIT で dyn 非対応のため `JsonlSessionStorage<FT: FileSystem + ?Sized>` / `JsonlSessionRepo<F: FileSystem + 'static>` はジェネリクスで受ける (docs/INSTRUCTIONS.md #41)。書き込みは `SessionStorage` トレイトの sync メソッド内で `spawn_blocking` + インライン current_thread ランタイムにより append を駆動し、state mutex で直列化 (#47)。torn-tail 修復は `publishFileAtomically` (tmp + rename) を再現。
 
@@ -26,7 +26,7 @@ pi v0.84.3 (TypeScript, commit `56700d42e`) を Rust に移植する。拡張機
 | --- | --- | --- |
 | pillar-protocol | 49 | ✅ 完了 |
 | pillar-telemetry | 15 | ✅ 完了 |
-| pillar-ai | 235 | 🔶 コア + 全主要プロバイダ済み (core 35 / faux 22 / models-runtime 39 / api-infra 27 / openai-completions 23 / openai-responses 14 / anthropic-messages 27 / uuid 1 / google-shared 27 / mistral 20) |
+| pillar-ai | 275 | 🔶 コア + 全主要プロバイダ済み (core 35 / faux 22 / models-runtime 39 / api-infra 27 / openai-completions 23 / openai-responses 14 / anthropic-messages 27 / uuid 1 / google-shared 27 / mistral 20 / bedrock 40) |
 | pillar-agent | 299 | ✅ コアループ + Agent クラス + harness 基盤〜tools + telemetry + session jsonl バックエンド + jsonl パリティテスト + proxy + search + e2e 済み (lib 46 / loop 25 / agent 22 / nodejs-env 25 / utils 10 / skills 8 / messages 13 / session 20 / compaction 15 / reducer 28 / agent-harness-scaffold 4 / tools-parity 21 / proxy 1 / jsonl codec 14 / jsonl storage 5 / jsonl conformance 30 / search 4 / e2e 10) |
 | pillar-coding-agent / tui / client / server / session-store | — | ❌ 未着手 |
 | pillar-extensions | — | ❌ 未着手 (luaur VM 統合)。設計は docs/rules/04 に確定済み |
@@ -41,7 +41,7 @@ pi v0.84.3 (TypeScript, commit `56700d42e`) を Rust に移植する。拡張機
 | --- | --- | --- | --- |
 | protocol | 1.2k | 0.7k | ✅ 完了 (src 2.5k / tests 1.0k) |
 | telemetry | 0.9k | 0.2k | ✅ 完了 (src 0.7k / tests 0.5k) |
-| ai | 27.7k | 35.1k | 🔶 約5割 (src 14.6k / tests 8.2k。残り: google 系 1.4k、mistral-conversations 0.9k、bedrock-converse 1.3k、openai-codex 1.7k、azure 0.3k、images、providers/* 等) |
+| ai | 27.7k | 35.1k | 🔶 約6割 (src 15.9k / tests 9.6k。残り: openai-codex 1.7k、azure 0.3k、images、providers/* 等) |
 | agent | 12.9k | 8.6k | ✅ ほぼ完了 (src 16.2k / tests 10.6k。残り: live-API 依存の e2e・models_generated.rs のみ。search 208行 / e2e 415行 / telemetry.ts 615行 + docs renderer 117行 / reducer / result / agent-harness / tools 1203 / session jsonl 848 / proxy 370 / branch-summarization 済み) |
 | coding-agent | 78.9k | 50.3k | ❌ 未着手 (最大) |
 | tui | 17.9k | 16.4k | ❌ 未着手 |
@@ -57,7 +57,7 @@ pi v0.84.3 (TypeScript, commit `56700d42e`) を Rust に移植する。拡張機
 - [ ] 「docs/INSTRUCTIONS.md から引き継いで続きを頼む」— 次の作業キューに従って移植を継続する (2026-08-31)
   - [x] pillar-ai: google 系 (google-shared / google-generative-ai / google-vertex / providers/google*) — 9717334, 27テスト (9717334)
   - [x] pillar-ai: mistral-conversations — ab4e80a + 870fca8 (adapter + 20 parity tests)
-  - [ ] pillar-ai: bedrock-converse
+  - [x] pillar-ai: bedrock-converse — アダプタ完成 + パリティテスト 40ケース全パス (2026-09-01)。AWS SDK 未使用, FetchFn + 生 HTTP + AWS eventstream (vnd.amazon.eventstream) バイナリフレーミングデコーダで構築 (google-vertex #52 同型 divergence: SigV4 サインクリック対策なし, bearer token / skip-auth 経路のみ自己完結)。初期6失敗はすべてテスト側のバグだった: ヘルパーの model ハードコード (#58), struct update のデフォルト上書き (#57), ambient profile の process env 制御 (#55), capture_payload の cache_retention 強制 — 実装の修正は不要だった。clippy: ptr_arg/type_complexity/未使用ヘルパー整理済み
   - [ ] pillar-ai: openai-codex
   - [ ] pillar-ai: azure
   - [ ] pillar-ai: images
@@ -144,7 +144,14 @@ pi v0.84.3 (TypeScript, commit `56700d42e`) を Rust に移植する。拡張機
 - **Mistral SSE: `finish_reason: null` není stop reason a boundary hledej v bajtech** (#53) — mistral-conversations 移植で判明。上流 `if (choice.finish_reason)` は null/欠落を falsy としてスキップする (ストリームは継続)。null を「stop」として即時確定させると、途中チャンクで stop に落ちて後続データが無視される。また SSE 境界の検索はバイト列で行うこと — `String::from_utf8_lossy` はマルチバイト UTF-8 がチャンク境界で分断されると置換文字 (3バイト) に展開され、元のバイト列とインデックスがずれて `buffer.drain` が壊れる。区切り文字はすべて ASCII なのでバイト検索が安全。abort/timeout は fetch だけでなく body 読み取りにも掛ける (upstream `AbortSignal.any([signal, timeout])` 相当)。
 - **Google 系の ADC パスはトークン発行まで移植しない** (#52) — google-vertex 移植で判明。上流は google-auth-library が ADC ファイルから OAuth2 JWT→access token 交換を行うが、Rust ポートはトークン発行まで実装しない。ADC パス (`~/.config/gcloud/application_default_credentials.json`) の存在確認 (`adc_credentials_available`) までを実装し、実際の Bearer トークンは呼び出し側が headers で渡す前提。API-key パス (Vertex Express) だけが完全に自己完結。
 
-## セッション運用の反省 (継続)
+- **Bedrock eventstream はバイナリフレーム、CRC は長さフレーミングで代用** (#54) — bedrock-converse 移植で判明。ConverseStream のレスポンス体は SSE ではなく AWS eventstream 二進プロトコル ([4B total][4B headers-len][4B payload-len][headers][4B headers-CRC][payload][4B msg-CRC])。ヘッダ値型 7 (string) は 2 バイト長プレフィックス付き、他の型 (bool/byte/short/int/long/bytearray/timestamp/guid) は正しいワイアサイズでスキップすること (誤ったサイズは後続フレーム全体を壊す)。exception フレームは `:error-code` ヘッダにモデル化エラーコード。CRC 検証はせず長さフレーミングで信頼 (divergence)。
+- **テストヘルパーの AssistantMessage は model をターゲットモデルに合わせる** (#58) — bedrock-converse パリティテストで判明。`assistant_message()` ヘルパーが `model` フィールドを base_model の ID にハードコードすると、`transform_messages` の `isSameModel` 判定が true になり tool call ID 正規化と redacted thinking 保持が発火しない (両者は cross-model のみ有効)。cross-model 挙動を検証するテストでは `assistant_message_from(&foreign_model, ...)` を使う。逆に same-model 挙動 (redacted reasoning 再生) を検証する場合はターゲットモデルと同じ ID で構築する。
+- **ヘルパーにオプションを押し込むと別テストの前提を壊す** (#59) — bedrock-converse パリティテストで判明。`capture_payload` ヘルパーに `cache_retention: None` を焼き込むと、cache-point 注入を検証するテストが必ず失敗する (ヘルパー経由の全テストに設定が波及する)。ヘルパーは上流の共通前提 (abort + onPayload) だけを固定し、テスト固有の設定 (cache_retention など) は各テスト側で上書きする。ヘルパー変更後は全呼び出しテストを再実行すること。
+- **Bedrock ambient profile 判定は process env のみ。テストは process env を制御する** (#55) — 上流 `Boolean(getProviderEnvValue("AWS_PROFILE"))` は scoped options.env を含まない。options.env の AWS_PROFILE を ambient 判定に混ぜると「scoped profile が endpoint pinning を無効化する」バグになる。テストは `unsafe { std::env::remove_var/set_var }` で process env を制御し、終了時に復元する (#30 同様)。
+- **上流の onPayload キャプチャパターンはコールバックで受ける** (#56) — 上流テストの `capturePayload` は「onPayload コールバック内で payload を取り、abort された request は送信されない」が前提。Rust テストで mock fetch の送信リクエストから payload を読むと「abort 済みなので request が飛ばない」で必ず失敗する。必ずコールバック内で `Arc<Mutex<Option<Value>>>` に格納する。
+- **struct デフォルト値の上書きに注意** (#57) — テストヘルパーで `reasoning: High` を `..options` の**後**に置くと呼び出し側の Xhigh を上書きし「常に high」になる。デフォルト付けは struct 定義の**前**に置き、呼び出し側の値を `..options` で優先させる (Rust struct update 構文は後のフィールドが勝つ)。
+
+## セッション運用の反省 (継継) (継続)
 
 - **「修正した」は必ずテスト実行で確認してから言うこと**。デッドロック調査では「修正→別の箇所でハング」が連鎖した。
 - フレークするテストは連続10回回して固定すること。実例: `rejects_late_publication` は 1/5 でしか落ちなかった (phase 1 が sender を消費する競合)。
