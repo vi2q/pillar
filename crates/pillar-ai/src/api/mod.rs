@@ -16,6 +16,7 @@ pub mod openai_completions;
 pub mod openai_prompt_cache;
 pub mod openai_responses;
 pub mod openai_responses_shared;
+pub mod openrouter_images;
 
 use std::sync::Arc;
 
