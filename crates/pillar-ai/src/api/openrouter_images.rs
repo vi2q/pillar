@@ -89,7 +89,7 @@ pub struct AssistantImages {
 }
 
 /// Upstream `ImagesOptions`.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct ImagesOptions {
     pub signal: Option<AbortSignal>,
     pub api_key: Option<String>,

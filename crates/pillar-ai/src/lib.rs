@@ -23,6 +23,7 @@ pub mod event_stream;
 pub mod faux;
 pub mod hash;
 pub mod headers;
+pub mod images_models;
 pub mod json_parse;
 pub mod models;
 pub mod models_store;
