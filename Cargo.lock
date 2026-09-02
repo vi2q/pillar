@@ -788,6 +788,7 @@ dependencies = [
 name = "pillar-coding-agent"
 version = "0.1.0"
 dependencies = [
+ "globset",
  "pillar-agent",
  "pillar-ai",
  "pillar-protocol",

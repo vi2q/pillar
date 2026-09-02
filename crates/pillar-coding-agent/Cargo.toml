@@ -14,3 +14,4 @@ pillar-tui = { path = "../pillar-tui" }
 serde.workspace = true
 serde_json.workspace = true
 regex = "1.12"
+globset = "0.4.19"
