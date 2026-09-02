@@ -11,7 +11,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Upstream `PercentileCutoffs`.
@@ -29,7 +29,7 @@ pub struct PercentileCutoffs {
 }
 
 /// Upstream `OpenRouterRouting`.
-#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OpenRouterRouting {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -61,7 +61,7 @@ pub struct OpenRouterRouting {
 }
 
 /// Upstream `VercelGatewayRouting`.
-#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct VercelGatewayRouting {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -74,7 +74,7 @@ pub struct VercelGatewayRouting {
 pub type ThinkingLevelMapJson = BTreeMap<String, Option<String>>;
 
 /// Upstream `ChatTemplateKwarg` (scalar or `{$var, omitWhenOff}` variable).
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ChatTemplateKwarg {
     Scalar(Option<ScalarKwarg>),
@@ -89,7 +89,7 @@ pub enum ChatTemplateKwarg {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ScalarKwarg {
     Str(String),
@@ -98,7 +98,7 @@ pub enum ScalarKwarg {
 }
 
 /// Upstream `OpenAICompletionsCompat` (models.json shape).
-#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenaiCompletionsCompatJson {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -148,7 +148,7 @@ pub struct OpenaiCompletionsCompatJson {
 }
 
 /// Upstream `OpenAIResponsesCompat` (models.json shape).
-#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenaiResponsesCompatJson {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -168,7 +168,7 @@ pub struct OpenaiResponsesCompatJson {
 }
 
 /// Upstream `AnthropicMessagesCompat` (models.json shape).
-#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AnthropicMessagesCompatJson {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -435,6 +435,14 @@ pub struct ModelConfig {
 impl ModelConfig {
     /// Load and validate models.json. Missing files produce an empty config;
     /// read/parse/schema failures produce a config with `error` set.
+    /// Construct from a provider map (tests and programmatic config).
+    pub fn from_providers(providers: BTreeMap<String, ModelsJsonProvider>) -> ModelConfig {
+        ModelConfig {
+            providers,
+            error: None,
+        }
+    }
+
     pub fn load(models_json_path: Option<&Path>) -> ModelConfig {
         let Some(path) = models_json_path else {
             return ModelConfig::default();

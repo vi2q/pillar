@@ -38,7 +38,8 @@ macro_rules! adapter_stream_fn {
     };
 }
 
-fn streams_for(api: &str) -> Option<ProviderStreams> {
+/// Streams bundle for one API name (`None` when the api is not ported).
+pub fn streams_for(api: &str) -> Option<ProviderStreams> {
     macro_rules! bundle {
         ($stream:path, $stream_simple:path, $options_ty:ty, $simple_ty:ty) => {
             ProviderStreams {
