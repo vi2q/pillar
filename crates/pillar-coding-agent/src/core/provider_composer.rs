@@ -77,6 +77,8 @@ pub struct AuthStatus {
 /// Where a configured key comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthStatusSource {
+    Stored,
+    Runtime,
     ModelsJsonKey,
     ModelsJsonCommand,
     Environment,
@@ -86,6 +88,8 @@ pub enum AuthStatusSource {
 impl AuthStatusSource {
     pub fn as_str(self) -> &'static str {
         match self {
+            AuthStatusSource::Stored => "stored",
+            AuthStatusSource::Runtime => "runtime",
             AuthStatusSource::ModelsJsonKey => "models_json_key",
             AuthStatusSource::ModelsJsonCommand => "models_json_command",
             AuthStatusSource::Environment => "environment",
@@ -951,11 +955,12 @@ pub fn compose_model_provider(
 ) -> Result<Provider, ComposeError> {
     let config = model_config.get_provider(provider_id);
 
+    let base_models: Vec<Model> = base.map(|b| (b.get_models)()).unwrap_or_default();
     let get_models = {
         let provider_id = provider_id.to_string();
         let config = config.cloned();
         let extension = extension.cloned();
-        let base_models: Vec<Model> = base.map(|b| (b.get_models)()).unwrap_or_default();
+        let base_models = base_models.clone();
         move || {
             let mut models = apply_extension(
                 &provider_id,
@@ -984,7 +989,8 @@ pub fn compose_model_provider(
     };
 
     // Validate eagerly so registration/reload reports structural errors now.
-    get_models();
+    apply_models_json(provider_id, &base_models, config)?;
+    apply_extension(provider_id, &base_models, extension)?;
 
     let base_auth = base.map(|b| b.auth.clone());
     let api_key = compose_api_key_auth(provider_id, base_auth.as_ref(), config, extension);

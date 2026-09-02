@@ -1216,7 +1216,7 @@ impl Models {
 /// Port of upstream `lazyStream`: returns a stream synchronously while
 /// running async setup (auth resolution, provider dispatch) behind it. Setup
 /// failures terminate the stream with an error event.
-fn lazy_stream(
+pub fn lazy_stream(
     model: Model,
     setup: BoxFuture<'static, Result<AssistantMessageEventStream, AiError>>,
 ) -> AssistantMessageEventStream {
@@ -1498,6 +1498,28 @@ pub fn models_are_equal(a: Option<&Model>, b: Option<&Model>) -> bool {
 }
 
 // --- Shared plumbing ------------------------------------------------------
+
+/// Merge a dynamic model overlay over a baseline by id (upstream
+/// `mergeModels` in remote-catalog-provider).
+pub fn merge_models_public(baseline: Vec<Model>, dynamic: Vec<Model>) -> Vec<Model> {
+    let mut merged = baseline;
+    for model in dynamic {
+        match merged.iter_mut().find(|entry| entry.id == model.id) {
+            Some(slot) => *slot = model,
+            None => merged.push(model),
+        }
+    }
+    merged
+}
+
+/// Header merge with case-insensitive replacement (upstream `mergeHeaders`
+/// in coding-agent model-runtime; shared here for reuse).
+pub fn merge_headers_public(
+    base: Option<ProviderHeaders>,
+    override_headers: Option<ProviderHeaders>,
+) -> Option<ProviderHeaders> {
+    merge_headers(base, override_headers)
+}
 
 fn merge_headers(
     base: Option<ProviderHeaders>,
