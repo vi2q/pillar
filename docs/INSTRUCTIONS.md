@@ -77,6 +77,9 @@ pi v0.84.3 (TypeScript, commit `56700d42e`) を Rust に移植する。拡張機
   - 検証: luaur-rt 253 tests / mlua_serde 21 tests (serde feature) / workspace 5725 tests 全パス、fmt クリーン、clippy luaur-rt 内エラーなし
   - [x] Confirm (user): 修正内容の承認 — user-confirmed (2026-09-02)
 
+- [ ] 考察: 今後の独自性としての「Rust製エージェントランタイム + id_effect」の相性と方向性 (2026-09-02)
+  - 移植 (厳密互換) と独自レイヤ (Effect 型実行基盤) の役割分担・移行パスを提示する
+  - Confirm (user): 考察内容の受け入れ判断
 - [ ] 「docs/INSTRUCTIONS.md から引き継いで続きを頼む」— 次の作業キューに従って移植を継続する (2026-08-31)
   - [x] pillar-ai: google 系 (google-shared / google-generative-ai / google-vertex / providers/google*) — 9717334, 27テスト (9717334)
   - [x] pillar-ai: mistral-conversations — ab4e80a + 870fca8 (adapter + 20 parity tests)
