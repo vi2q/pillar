@@ -31,7 +31,7 @@ pub struct ModelAuth {
 /// Stored api-key credential. `env` holds provider-scoped environment/config
 /// values such as Cloudflare account/gateway ids.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(rename_all = "camelCase")]
 pub struct ApiKeyCredential {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
@@ -56,6 +56,7 @@ pub struct OAuthCredential {
 pub enum Credential {
     #[serde(rename = "api_key")]
     ApiKey(ApiKeyCredential),
+    #[serde(rename = "oauth")]
     OAuth(OAuthCredential),
 }
 
