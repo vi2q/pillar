@@ -791,6 +791,7 @@ dependencies = [
  "pillar-agent",
  "pillar-ai",
  "pillar-protocol",
+ "regex",
  "serde",
  "serde_json",
 ]

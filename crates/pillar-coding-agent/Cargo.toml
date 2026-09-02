@@ -12,3 +12,4 @@ pillar-agent = { path = "../pillar-agent" }
 pillar-protocol = { path = "../pillar-protocol" }
 serde.workspace = true
 serde_json.workspace = true
+regex = "1.12"

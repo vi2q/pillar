@@ -3842,7 +3842,7 @@ pub static MODELS: &[ModelCatalog] = &[
             CatalogModel {
                 api: "openai-completions",
                 id: "deepseek/deepseek-chat-v3.1",
-                data: "{\"api\":\"openai-completions\",\"baseUrl\":\"https://openrouter.ai/api/v1\",\"compat\":{\"cacheControlFormat\":null,\"supportsDeveloperRole\":false,\"thinkingFormat\":\"openrouter\"},\"contextWindow\":161000,\"cost\":{\"cacheRead\":0.55,\"cacheWrite\":0.0,\"input\":0.55,\"output\":1.65},\"id\":\"deepseek/deepseek-chat-v3.1\",\"input\":[\"text\"],\"maxTokens\":144900,\"name\":\"DeepSeek: DeepSeek V3.1\",\"provider\":\"openrouter\",\"reasoning\":true}",
+                data: "{\"api\":\"openai-completions\",\"baseUrl\":\"https://openrouter.ai/api/v1\",\"compat\":{\"cacheControlFormat\":null,\"supportsDeveloperRole\":false,\"thinkingFormat\":\"openrouter\"},\"contextWindow\":163840,\"cost\":{\"cacheRead\":0.13,\"cacheWrite\":0.0,\"input\":0.25,\"output\":0.95},\"id\":\"deepseek/deepseek-chat-v3.1\",\"input\":[\"text\"],\"maxTokens\":32768,\"name\":\"DeepSeek: DeepSeek V3.1\",\"provider\":\"openrouter\",\"reasoning\":true}",
             },
             CatalogModel {
                 api: "openai-completions",
@@ -3872,7 +3872,7 @@ pub static MODELS: &[ModelCatalog] = &[
             CatalogModel {
                 api: "openai-completions",
                 id: "deepseek/deepseek-v4-flash",
-                data: "{\"api\":\"openai-completions\",\"baseUrl\":\"https://openrouter.ai/api/v1\",\"compat\":{\"cacheControlFormat\":null,\"requiresReasoningContentOnAssistantMessages\":true,\"supportsDeveloperRole\":false,\"thinkingFormat\":\"openrouter\"},\"contextWindow\":1024000,\"cost\":{\"cacheRead\":0.014336,\"cacheWrite\":0.0,\"input\":0.07168,\"output\":0.14336},\"id\":\"deepseek/deepseek-v4-flash\",\"input\":[\"text\"],\"maxTokens\":384000,\"name\":\"DeepSeek: DeepSeek V4 Flash 0423\",\"provider\":\"openrouter\",\"reasoning\":true,\"thinkingLevelMap\":{\"high\":\"high\",\"low\":null,\"max\":null,\"medium\":null,\"minimal\":null,\"off\":\"none\",\"xhigh\":\"xhigh\"}}",
+                data: "{\"api\":\"openai-completions\",\"baseUrl\":\"https://openrouter.ai/api/v1\",\"compat\":{\"cacheControlFormat\":null,\"requiresReasoningContentOnAssistantMessages\":true,\"supportsDeveloperRole\":false,\"thinkingFormat\":\"openrouter\"},\"contextWindow\":1024000,\"cost\":{\"cacheRead\":0.017721,\"cacheWrite\":0.0,\"input\":0.088606,\"output\":0.177212},\"id\":\"deepseek/deepseek-v4-flash\",\"input\":[\"text\"],\"maxTokens\":384000,\"name\":\"DeepSeek: DeepSeek V4 Flash 0423\",\"provider\":\"openrouter\",\"reasoning\":true,\"thinkingLevelMap\":{\"high\":\"high\",\"low\":null,\"max\":null,\"medium\":null,\"minimal\":null,\"off\":\"none\",\"xhigh\":\"xhigh\"}}",
             },
             CatalogModel {
                 api: "openai-completions",
@@ -3892,12 +3892,12 @@ pub static MODELS: &[ModelCatalog] = &[
             CatalogModel {
                 api: "openai-completions",
                 id: "deepseek/deepseek-v4-pro",
-                data: "{\"api\":\"openai-completions\",\"baseUrl\":\"https://openrouter.ai/api/v1\",\"compat\":{\"cacheControlFormat\":null,\"requiresReasoningContentOnAssistantMessages\":true,\"supportsDeveloperRole\":false,\"thinkingFormat\":\"openrouter\"},\"contextWindow\":1024000,\"cost\":{\"cacheRead\":0.085623,\"cacheWrite\":0.0,\"input\":1.02747,\"output\":2.05494},\"id\":\"deepseek/deepseek-v4-pro\",\"input\":[\"text\"],\"maxTokens\":384000,\"name\":\"DeepSeek: DeepSeek V4 Pro 0423\",\"provider\":\"openrouter\",\"reasoning\":true,\"thinkingLevelMap\":{\"high\":\"high\",\"low\":null,\"max\":null,\"medium\":null,\"minimal\":null,\"off\":\"none\",\"xhigh\":\"xhigh\"}}",
+                data: "{\"api\":\"openai-completions\",\"baseUrl\":\"https://openrouter.ai/api/v1\",\"compat\":{\"cacheControlFormat\":null,\"requiresReasoningContentOnAssistantMessages\":true,\"supportsDeveloperRole\":false,\"thinkingFormat\":\"openrouter\"},\"contextWindow\":1024000,\"cost\":{\"cacheRead\":0.086855,\"cacheWrite\":0.0,\"input\":1.04226,\"output\":2.08452},\"id\":\"deepseek/deepseek-v4-pro\",\"input\":[\"text\"],\"maxTokens\":384000,\"name\":\"DeepSeek: DeepSeek V4 Pro 0423\",\"provider\":\"openrouter\",\"reasoning\":true,\"thinkingLevelMap\":{\"high\":\"high\",\"low\":null,\"max\":null,\"medium\":null,\"minimal\":null,\"off\":\"none\",\"xhigh\":\"xhigh\"}}",
             },
             CatalogModel {
                 api: "openai-completions",
                 id: "deepseek/deepseek-v4-pro-0813",
-                data: "{\"api\":\"openai-completions\",\"baseUrl\":\"https://openrouter.ai/api/v1\",\"compat\":{\"cacheControlFormat\":null,\"requiresReasoningContentOnAssistantMessages\":true,\"supportsDeveloperRole\":false,\"thinkingFormat\":\"openrouter\"},\"contextWindow\":1048576,\"cost\":{\"cacheRead\":0.022,\"cacheWrite\":0.0,\"input\":0.66,\"output\":1.98},\"id\":\"deepseek/deepseek-v4-pro-0813\",\"input\":[\"text\"],\"maxTokens\":384000,\"name\":\"DeepSeek: DeepSeek V4 Pro 0813\",\"provider\":\"openrouter\",\"reasoning\":true,\"thinkingLevelMap\":{\"high\":\"high\",\"low\":null,\"max\":null,\"medium\":null,\"minimal\":null,\"off\":\"none\",\"xhigh\":\"xhigh\"}}",
+                data: "{\"api\":\"openai-completions\",\"baseUrl\":\"https://openrouter.ai/api/v1\",\"compat\":{\"cacheControlFormat\":null,\"requiresReasoningContentOnAssistantMessages\":true,\"supportsDeveloperRole\":false,\"thinkingFormat\":\"openrouter\"},\"contextWindow\":1024000,\"cost\":{\"cacheRead\":0.03718,\"cacheWrite\":0.0,\"input\":1.1154,\"output\":3.3462},\"id\":\"deepseek/deepseek-v4-pro-0813\",\"input\":[\"text\"],\"maxTokens\":384000,\"name\":\"DeepSeek: DeepSeek V4 Pro 0813\",\"provider\":\"openrouter\",\"reasoning\":true,\"thinkingLevelMap\":{\"high\":\"high\",\"low\":null,\"max\":null,\"medium\":null,\"minimal\":null,\"off\":\"none\",\"xhigh\":\"xhigh\"}}",
             },
             CatalogModel {
                 api: "openai-completions",
@@ -4377,7 +4377,7 @@ pub static MODELS: &[ModelCatalog] = &[
             CatalogModel {
                 api: "openai-completions",
                 id: "nvidia/nemotron-3-ultra-550b-a55b",
-                data: "{\"api\":\"openai-completions\",\"baseUrl\":\"https://openrouter.ai/api/v1\",\"compat\":{\"cacheControlFormat\":null,\"supportsDeveloperRole\":false,\"thinkingFormat\":\"openrouter\"},\"contextWindow\":262144,\"cost\":{\"cacheRead\":0.1,\"cacheWrite\":0.0,\"input\":0.5,\"output\":2.2},\"id\":\"nvidia/nemotron-3-ultra-550b-a55b\",\"input\":[\"text\"],\"maxTokens\":16384,\"name\":\"NVIDIA: Nemotron 3 Ultra\",\"provider\":\"openrouter\",\"reasoning\":true,\"thinkingLevelMap\":{\"high\":\"high\",\"low\":null,\"max\":null,\"medium\":\"medium\",\"minimal\":null,\"off\":\"none\",\"xhigh\":null}}",
+                data: "{\"api\":\"openai-completions\",\"baseUrl\":\"https://openrouter.ai/api/v1\",\"compat\":{\"cacheControlFormat\":null,\"supportsDeveloperRole\":false,\"thinkingFormat\":\"openrouter\"},\"contextWindow\":256000,\"cost\":{\"cacheRead\":0.1875,\"cacheWrite\":0.0,\"input\":0.625,\"output\":3.125},\"id\":\"nvidia/nemotron-3-ultra-550b-a55b\",\"input\":[\"text\"],\"maxTokens\":32768,\"name\":\"NVIDIA: Nemotron 3 Ultra\",\"provider\":\"openrouter\",\"reasoning\":true,\"thinkingLevelMap\":{\"high\":\"high\",\"low\":null,\"max\":null,\"medium\":\"medium\",\"minimal\":null,\"off\":\"none\",\"xhigh\":null}}",
             },
             CatalogModel {
                 api: "openai-completions",
@@ -5087,12 +5087,12 @@ pub static MODELS: &[ModelCatalog] = &[
             CatalogModel {
                 api: "openai-completions",
                 id: "qwen/qwen3.8-2.4t-a95b",
-                data: "{\"api\":\"openai-completions\",\"baseUrl\":\"https://openrouter.ai/api/v1\",\"compat\":{\"cacheControlFormat\":null,\"supportsDeveloperRole\":false,\"thinkingFormat\":\"openrouter\"},\"contextWindow\":1000000,\"cost\":{\"cacheRead\":0.25,\"cacheWrite\":0.0,\"input\":2.0,\"output\":6.0},\"id\":\"qwen/qwen3.8-2.4t-a95b\",\"input\":[\"text\"],\"maxTokens\":262144,\"name\":\"Qwen: Qwen3.8 2.4T A95B\",\"provider\":\"openrouter\",\"reasoning\":true,\"thinkingLevelMap\":{\"high\":null,\"low\":\"low\",\"max\":null,\"medium\":\"medium\",\"minimal\":null,\"off\":null,\"xhigh\":\"xhigh\"}}",
+                data: "{\"api\":\"openai-completions\",\"baseUrl\":\"https://openrouter.ai/api/v1\",\"compat\":{\"cacheControlFormat\":null,\"supportsDeveloperRole\":false,\"thinkingFormat\":\"openrouter\"},\"contextWindow\":262144,\"cost\":{\"cacheRead\":0.2,\"cacheWrite\":0.0,\"input\":2.0,\"output\":6.0},\"id\":\"qwen/qwen3.8-2.4t-a95b\",\"input\":[\"text\"],\"maxTokens\":131072,\"name\":\"Qwen: Qwen3.8 2.4T A95B\",\"provider\":\"openrouter\",\"reasoning\":true,\"thinkingLevelMap\":{\"high\":null,\"low\":\"low\",\"max\":null,\"medium\":\"medium\",\"minimal\":null,\"off\":null,\"xhigh\":\"xhigh\"}}",
             },
             CatalogModel {
                 api: "openai-completions",
                 id: "qwen/qwen3.8-2.4t-a95b:batch",
-                data: "{\"api\":\"openai-completions\",\"baseUrl\":\"https://openrouter.ai/api/v1\",\"compat\":{\"cacheControlFormat\":null,\"supportsDeveloperRole\":false,\"thinkingFormat\":\"openrouter\"},\"contextWindow\":1010000,\"cost\":{\"cacheRead\":0.5,\"cacheWrite\":0.0,\"input\":2.5,\"output\":6.25},\"id\":\"qwen/qwen3.8-2.4t-a95b:batch\",\"input\":[\"text\"],\"maxTokens\":909000,\"name\":\"Qwen: Qwen3.8 2.4T A95B (batch)\",\"provider\":\"openrouter\",\"reasoning\":true,\"thinkingLevelMap\":{\"high\":null,\"low\":\"low\",\"max\":null,\"medium\":\"medium\",\"minimal\":null,\"off\":null,\"xhigh\":\"xhigh\"}}",
+                data: "{\"api\":\"openai-completions\",\"baseUrl\":\"https://openrouter.ai/api/v1\",\"compat\":{\"cacheControlFormat\":null,\"supportsDeveloperRole\":false,\"thinkingFormat\":\"openrouter\"},\"contextWindow\":1010000,\"cost\":{\"cacheRead\":0.25,\"cacheWrite\":0.0,\"input\":2.0,\"output\":6.0},\"id\":\"qwen/qwen3.8-2.4t-a95b:batch\",\"input\":[\"text\"],\"maxTokens\":909000,\"name\":\"Qwen: Qwen3.8 2.4T A95B (batch)\",\"provider\":\"openrouter\",\"reasoning\":true,\"thinkingLevelMap\":{\"high\":null,\"low\":\"low\",\"max\":null,\"medium\":\"medium\",\"minimal\":null,\"off\":null,\"xhigh\":\"xhigh\"}}",
             },
             CatalogModel {
                 api: "openai-completions",
@@ -5147,7 +5147,7 @@ pub static MODELS: &[ModelCatalog] = &[
             CatalogModel {
                 api: "openai-completions",
                 id: "tencent/hy3",
-                data: "{\"api\":\"openai-completions\",\"baseUrl\":\"https://openrouter.ai/api/v1\",\"compat\":{\"cacheControlFormat\":null,\"supportsDeveloperRole\":false,\"thinkingFormat\":\"openrouter\"},\"contextWindow\":262144,\"cost\":{\"cacheRead\":0.020625,\"cacheWrite\":0.0,\"input\":0.0825,\"output\":0.33},\"id\":\"tencent/hy3\",\"input\":[\"text\"],\"maxTokens\":128000,\"name\":\"Tencent: Hy3\",\"provider\":\"openrouter\",\"reasoning\":true,\"thinkingLevelMap\":{\"high\":\"high\",\"low\":\"low\",\"max\":null,\"medium\":null,\"minimal\":null,\"off\":\"none\",\"xhigh\":null}}",
+                data: "{\"api\":\"openai-completions\",\"baseUrl\":\"https://openrouter.ai/api/v1\",\"compat\":{\"cacheControlFormat\":null,\"supportsDeveloperRole\":false,\"thinkingFormat\":\"openrouter\"},\"contextWindow\":262144,\"cost\":{\"cacheRead\":0.033,\"cacheWrite\":0.0,\"input\":0.132,\"output\":0.528},\"id\":\"tencent/hy3\",\"input\":[\"text\"],\"maxTokens\":128000,\"name\":\"Tencent: Hy3\",\"provider\":\"openrouter\",\"reasoning\":true,\"thinkingLevelMap\":{\"high\":\"high\",\"low\":\"low\",\"max\":null,\"medium\":null,\"minimal\":null,\"off\":\"none\",\"xhigh\":null}}",
             },
             CatalogModel {
                 api: "openai-completions",
@@ -5292,7 +5292,7 @@ pub static MODELS: &[ModelCatalog] = &[
             CatalogModel {
                 api: "openai-completions",
                 id: "z-ai/glm-5.2",
-                data: "{\"api\":\"openai-completions\",\"baseUrl\":\"https://openrouter.ai/api/v1\",\"compat\":{\"cacheControlFormat\":null,\"supportsDeveloperRole\":false,\"thinkingFormat\":\"openrouter\"},\"contextWindow\":1048576,\"cost\":{\"cacheRead\":0.221,\"cacheWrite\":0.0,\"input\":1.19,\"output\":3.74},\"id\":\"z-ai/glm-5.2\",\"input\":[\"text\"],\"maxTokens\":262144,\"name\":\"Z.ai: GLM 5.2\",\"provider\":\"openrouter\",\"reasoning\":true,\"thinkingLevelMap\":{\"high\":\"high\",\"low\":null,\"max\":null,\"medium\":null,\"minimal\":null,\"off\":\"none\",\"xhigh\":\"xhigh\"}}",
+                data: "{\"api\":\"openai-completions\",\"baseUrl\":\"https://openrouter.ai/api/v1\",\"compat\":{\"cacheControlFormat\":null,\"supportsDeveloperRole\":false,\"thinkingFormat\":\"openrouter\"},\"contextWindow\":1048576,\"cost\":{\"cacheRead\":0.1932,\"cacheWrite\":0.0,\"input\":0.966,\"output\":3.036},\"id\":\"z-ai/glm-5.2\",\"input\":[\"text\"],\"maxTokens\":131072,\"name\":\"Z.ai: GLM 5.2\",\"provider\":\"openrouter\",\"reasoning\":true,\"thinkingLevelMap\":{\"high\":\"high\",\"low\":null,\"max\":null,\"medium\":null,\"minimal\":null,\"off\":\"none\",\"xhigh\":\"xhigh\"}}",
             },
             CatalogModel {
                 api: "openai-completions",
@@ -5342,7 +5342,7 @@ pub static MODELS: &[ModelCatalog] = &[
             CatalogModel {
                 api: "openai-completions",
                 id: "~deepseek/deepseek-v4-flash-latest",
-                data: "{\"api\":\"openai-completions\",\"baseUrl\":\"https://openrouter.ai/api/v1\",\"compat\":{\"cacheControlFormat\":null,\"requiresReasoningContentOnAssistantMessages\":true,\"supportsDeveloperRole\":false,\"thinkingFormat\":\"openrouter\"},\"contextWindow\":1048576,\"cost\":{\"cacheRead\":0.009996,\"cacheWrite\":0.0,\"input\":0.04998,\"output\":0.09996},\"id\":\"~deepseek/deepseek-v4-flash-latest\",\"input\":[\"text\"],\"maxTokens\":131072,\"name\":\"DeepSeek V4 Flash Latest\",\"provider\":\"openrouter\",\"reasoning\":true,\"thinkingLevelMap\":{\"high\":\"high\",\"low\":null,\"max\":null,\"medium\":null,\"minimal\":null,\"off\":\"none\",\"xhigh\":\"xhigh\"}}",
+                data: "{\"api\":\"openai-completions\",\"baseUrl\":\"https://openrouter.ai/api/v1\",\"compat\":{\"cacheControlFormat\":null,\"requiresReasoningContentOnAssistantMessages\":true,\"supportsDeveloperRole\":false,\"thinkingFormat\":\"openrouter\"},\"contextWindow\":1048576,\"cost\":{\"cacheRead\":0.013,\"cacheWrite\":0.0,\"input\":0.05,\"output\":0.16},\"id\":\"~deepseek/deepseek-v4-flash-latest\",\"input\":[\"text\"],\"maxTokens\":393216,\"name\":\"DeepSeek V4 Flash Latest\",\"provider\":\"openrouter\",\"reasoning\":true,\"thinkingLevelMap\":{\"high\":\"high\",\"low\":null,\"max\":null,\"medium\":null,\"minimal\":null,\"off\":\"none\",\"xhigh\":\"xhigh\"}}",
             },
             CatalogModel {
                 api: "openai-completions",

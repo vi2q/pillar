@@ -43,7 +43,7 @@ pi v0.84.3 (TypeScript, commit `56700d42e`) を Rust に移植する。拡張機
 | telemetry | 0.9k | 0.2k | ✅ 完了 (src 0.7k / tests 0.5k) |
 | ai | 27.7k | 35.1k | 🔶 約9割 (src 24.5k / tests 13.2k。残り: provider stream 結線の仕上げ) |
 | agent | 12.9k | 8.6k | ✅ ほぼ完了 (src 16.2k / tests 10.6k。残り: live-API 依存の e2e・models_generated.rs のみ。search 208行 / e2e 415行 / telemetry.ts 615行 + docs renderer 117行 / reducer / result / agent-harness / tools 1203 / session jsonl 848 / proxy 370 / branch-summarization 済み) |
-| coding-agent | 78.9k | 50.3k | 🔶 着手 (system-prompt 済み 16テスト) |
+| coding-agent | 78.9k | 50.3k | 🔶 着手 (system-prompt 済み 16テスト + prompt-templates 済み) |
 | tui | 17.9k | 16.4k | ❌ 未着手 |
 | server / client / session-backends | 6.3k | 4.2k | ❌ 未着手 |
 | evals | 1.3k | 0.5k | ❌ 対象外の可能性 |
@@ -53,6 +53,20 @@ pi v0.84.3 (TypeScript, commit `56700d42e`) を Rust に移植する。拡張機
 ## 作業指示チェックリスト
 
 ユーザー指示を記録し、進捗に合わせて更新する。
+
+- [ ] luaur PR #40 のレビュー反映 (2026-09-02)
+  - [x] PR 本文を現行実装・テスト結果に合わせて更新する (tuple fast path / serde 回帰テスト / 253 tests)
+  - [x] serde 回帰テストの `map_err(|e| e)?` を単純な `?` に整理し、commit `2ae9ea74` を push (2026-09-02)
+  - [x] 検証: 対象 serde 回帰テスト・`cargo fmt -p luaur-rt --check` パス。push 後 CI 6ジョブ全パス
+  - [ ] Confirm (user): PR 上の最終内容の承認 — pending confirmation
+
+- [x] luaur follow-up PR #40 の修正後レビュー (2026-09-02)
+  - [x] commit `37636ee5` 以降の実装・テスト・PR 本文を再確認する (2026-09-02)
+    - 実装: tuple の stack fast path は正しく伝播。3-tuple・nested tuple・戻り値不足を追加プローブして全パス
+    - テスト: Rust→Lua→Rust、mixed tuple、serde/JSON 回帰ケースが追加され、初回指摘は解消
+    - CI: Ubuntu / Windows / macOS / fmt / wasm / clean-check の全ジョブ成功
+    - 残件: PR 本文が更新前のまま。`252 passed`→`253 passed`、serde の「verified manually」→コミット済み回帰テスト、tuple fast path の説明追加が必要。`map_err(|e| e)?` は単純な `?` にできる軽微な nit
+  - [x] Confirm (user): 修正後レビュー結果の承認 — user-confirmed (2026-09-02)
 
 - [ ] luaur follow-up PR #40 のレビュー (2026-09-02) — **指摘4点すべて修正済み・push済み (37636ee5)**
   - [x] PR 本文・実装・PR #37 コメントを確認し、異議と修正文案を提示する (2026-09-02)
@@ -77,9 +91,9 @@ pi v0.84.3 (TypeScript, commit `56700d42e`) を Rust に移植する。拡張機
 - [ ] luaur 上流 PR への返答対応 (2026-09-01)
   - [x] 状況確認: PR #38 (__index meta-method on fieldless userdata) と #39 (Table raw operations の stack slot 予約) はマージ済み、#37 (-0.0 の符号ビット保持) は CHANGES_REQUESTED で保留
   - [x] maintainer レビューの検証: (1) mlua 0.10.5 の `stack_value` は -0.0 を `Value::Integer(0)` に折り畳むため Value 層では 当PRの DEVIATION 記述は誤り、(2) 差分は `is_exact_integer(n) && n != 0.0` のため **plain 0 も Number(0.0) になり serde (deserialize_any → visit_f64) と JSON 形状を壊す** — どちらも指摘通り。真の修正層は f64/f32 の from_stack fast path (luaur の呼び出し経路は exec_raw が一旦 `Vec<Value>` に materialize してから `FromLuaMulti` するので、値を Value 経由で復元する限り -0.0 の符号は失われている)
-  - [ ] 返答ドラフト提示・送信 — 送信済み (2026-09-01)。serde リグレッションの承認 + follow-up PR (#40) の案内をコメントした。https://github.com/pjankiewicz/luaur/pull/37#issuecomment-5502370281
+  - [ ] 返答ドラフト提示・送信 — 送信済み (2026-09-01)。serde リグレッションの承認 + follow-up PR (#40) の案内をコメントした。<https://github.com/pjankiewicz/luaur/pull/37#issuecomment-5502370281>
   - Confirm (user): 返答文の承認 — 承認不要で follow-up 対応の一環としてユーザー指示で送信、内容は PR 作業で実施 (2026-09-01)
-- [x] luaur PR #37 への follow-up PR: f32/f64 の from_stack fast path (2026-09-01) — **PR #40 作成済み** https://github.com/pjankiewicz/luaur/pull/40
+- [x] luaur PR #37 への follow-up PR: f32/f64 の from_stack fast path (2026-09-01) — **PR #40 作成済み** <https://github.com/pjankiewicz/luaur/pull/40>
   - 実装: `FromLua` に `#[doc(hidden)] unsafe fn from_stack(idx, lua)` (default は value_from_stack → from_lua)、`FromLuaMulti` に `from_stack_multi(base, nvals, lua)` (単一値 blanket impl は from_stack に転送)、`f64/f32` が `lua_tonumberx` 直読みを override、`Function::call` / `Lua::exec_raw` の結果回収を `R::from_stack_multi` 経由に変更 (ここで符号が失われていた)。`value_from_stack` の整数正規化は変更せず serde 無傷
   - 検証: luaur-rt 252 tests / workspace 5725 tests 全パス (以前の 22 失敗はバイナリ未ビルドが原因で `cargo build --workspace` 後はパス)、serde regression ケース (Cfg{count:0,idx:0,ratio:0}) --features serde でパス、`cargo fmt --check` クリーン、clippy は luaur-rt 内エラーなし (luaur-common の既存エラーは CI ゲート外)
   - 落とし穴メモ: luaur VM 自体は `-0.0` を保持しており、符号喪失の実体は exec_raw/function.rs が `Value` を経由して戻り値を materialize する箇所にあった。mlua 同様の from_stack フックが正しい修正層。fork (vi2q/luaur) の main は上流に3コミット遅れていたため branch は上流 main ベースで作成
@@ -89,7 +103,7 @@ pi v0.84.3 (TypeScript, commit `56700d42e`) を Rust に移植する。拡張機
 
 1. **agent の残り**: search/ (187bcf2) / e2e のモック可能部 (e1c55c1) は**完了**。残りは live-API 依存の e2e (responseid, xhigh, tool-call-without-result, tool-call-id-normalization — 非移植) と models_generated.rs (generate-models ジェネレータ, live カタログ依存) のみで、**agent クレートは実質完了**。agent-harness の操作本体 (prompt/compact/resume/watch 等) の依存先は揃ったので次は着手可能。→ 次: pillar-ai のプロバイダ残り または pillar-coding-agent 着手。
 2. **pillar-ai**: **完了**。カタログジェネレータ (39 providers / 1371 モデル) + builtin provider 登録 + stream dispatch 結線済み。`cargo run -p pillar-ai --bin generate-models` で `models_generated.rs` を再生成できる。残るは live-API 依存の検証のみ (非移植方針)。→ 次: pillar-coding-agent 着手。
-3. **pillar-coding-agent**: 着手。core/system-prompt.rs 完了 (16テスト)。次の候補: skills のディレクトリ走査 (ignore パターン), prompt-templates, keybindings, model-config → その後 agent-session (3.5k行, 依存多数) と package-manager (2.7k行)。
+3. **pillar-coding-agent**: 着手。core/system-prompt.rs 完了 (16テスト) + core/prompt_templates.rs 完了 — 上流 prompt-templates.ts (285行) を移植: PromptTemplate 構造体 (name/description/argument_hint/content/file_path)、parse_command_args (bash 方式のクォート対応パーサ)、substitute_args ($1/$@/$ARGUMENTS、${N:-default} デフォルト付き、${@:N} と ${@:N:L} bash 式スライス、再帰置換なし — 上流の注記どおり)、load_template_from_file (frontmatter description、無ければ最初の非空行を60文字で切り詰め「...」)、load_templates_from_dir (非再帰 .md スキャン、node_modules スキップは上流の readdir 相当)、load_prompt_templates (global agentDir/prompts → project cwd/pi/prompts → 明示パス、includeDefaults で既定2ディレクトリを制御)、expand_prompt_template (/name args 形式の展開、未一致なら原文を返す)。divergence: YAML frontmatter は最小の行ベーススカラー パーサ (name/description/argument-hint のみ消費、クォート対応) — 上流は yaml パッケージ。次の候補: skills のディレクトリ走査 (ignore パターン), keybindings, model-config → その後 agent-session (3.5k行, 依存多数) と package-manager (2.7k行)。
 4. **pillar-tui / client / server / session-store**: 未着手。
 5. **pillar-extensions**: luaur VM 統合。設計は docs/rules/04。
 
