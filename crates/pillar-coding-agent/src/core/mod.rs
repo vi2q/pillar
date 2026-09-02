@@ -16,6 +16,7 @@ pub mod provider_attribution;
 pub mod provider_composer;
 pub mod resolve_config_value;
 pub mod runtime_credentials;
+pub mod session_entries;
 pub mod skills;
 pub mod source_info;
 pub mod system_prompt;
