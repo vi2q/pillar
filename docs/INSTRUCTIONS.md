@@ -43,7 +43,7 @@ pi v0.84.3 (TypeScript, commit `56700d42e`) を Rust に移植する。拡張機
 | telemetry | 0.9k | 0.2k | ✅ 完了 (src 0.7k / tests 0.5k) |
 | ai | 27.7k | 35.1k | 🔶 約9割 (src 24.5k / tests 13.2k。残り: provider stream 結線の仕上げ) |
 | agent | 12.9k | 8.6k | ✅ ほぼ完了 (src 16.2k / tests 10.6k。残り: live-API 依存の e2e・models_generated.rs のみ。search 208行 / e2e 415行 / telemetry.ts 615行 + docs renderer 117行 / reducer / result / agent-harness / tools 1203 / session jsonl 848 / proxy 370 / branch-summarization 済み) |
-| coding-agent | 78.9k | 50.3k | 🔶 着手 (system-prompt 16 + prompt-templates 19 + keybindings 9 + model-config 12 + skills 22 + resolve-config-value 24 + cache-stats 16 + model-resolver 48 + provider-composer 32 + 小規模 core 群 20 + auth-storage/models-store 11 + model-runtime 15 + messages 18 + compaction 23 + session-entries/branch-summarization 11 + session-manager 22 テスト) |
+| coding-agent | 78.9k | 50.3k | 🔶 着手 (system-prompt 16 + prompt-templates 19 + keybindings 9 + model-config 12 + skills 22 + resolve-config-value 24 + cache-stats 16 + model-resolver 48 + provider-composer 32 + 小規模 core 群 20 + auth-storage/models-store 11 + model-runtime 15 + messages 18 + compaction 23 + session-entries/branch-summarization 11 + session-manager 22 + settings-manager 22 テスト) |
 | tui | 17.9k | 16.4k | 🔶 着手 (keys + keybindings 9テスト) |
 | server / client / session-backends | 6.3k | 4.2k | ❌ 未着手 |
 | evals | 1.3k | 0.5k | ❌ 対象外の可能性 |
@@ -103,7 +103,7 @@ pi v0.84.3 (TypeScript, commit `56700d42e`) を Rust に移植する。拡張機
 
 1. **agent の残り**: search/ (187bcf2) / e2e のモック可能部 (e1c55c1) は**完了**。残りは live-API 依存の e2e (responseid, xhigh, tool-call-without-result, tool-call-id-normalization — 非移植) と models_generated.rs (generate-models ジェネレータ, live カタログ依存) のみで、**agent クレートは実質完了**。agent-harness の操作本体 (prompt/compact/resume/watch 等) の依存先は揃ったので次は着手可能。→ 次: pillar-ai のプロバイダ残り または pillar-coding-agent 着手。
 2. **pillar-ai**: **完了**。カタログジェネレータ (39 providers / 1371 モデル) + builtin provider 登録 + stream dispatch 結線済み。`cargo run -p pillar-ai --bin generate-models` で `models_generated.rs` を再生成できる。残るは live-API 依存の検証のみ (非移植方針)。→ 次: pillar-coding-agent 着手。
-3. **pillar-coding-agent**: 着手。小規模 core 群 + auth-storage/models-store + model-runtime/runtime-credentials + messages + compaction + session-entries/branch-summarization + session-manager 完了。次の候補: session-manager の残り (list/listAll/continueRecent/forkFrom/ヘッダ走査) / settings-manager (1.4k行) / package-manager (2.7k行) / agent-session (3.5k行) / export-html (746行)。
+3. **pillar-coding-agent**: 着手。小規模 core 群 + auth-storage/models-store + model-runtime/runtime-credentials + messages + compaction + session-entries/branch-summarization + session-manager + settings-manager 完了。次の候補: package-manager (2.7k行) / agent-session (3.5k行) / export-html (746行) / trust-manager。
 4. **pillar-tui / client / server / session-store**: pillar-tui の keys + keybindings 完了。次の候補: エディタ/セレクタ コンポーネント、VirtualTerminal テスト基盤。client / server / session-store は未着手。
 5. **pillar-extensions**: luaur VM 統合。設計は docs/rules/04。
 
