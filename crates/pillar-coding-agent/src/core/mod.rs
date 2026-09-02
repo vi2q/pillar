@@ -3,5 +3,6 @@
 pub mod keybindings;
 pub mod model_config;
 pub mod prompt_templates;
+pub mod resolve_config_value;
 pub mod skills;
 pub mod system_prompt;
