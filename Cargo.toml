@@ -5,6 +5,7 @@ members = [
     "crates/pillar-telemetry",
     "crates/pillar-ai",
     "crates/pillar-agent",
+    "crates/pillar-coding-agent",
 ]
 
 [workspace.package]
