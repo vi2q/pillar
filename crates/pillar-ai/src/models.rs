@@ -1537,7 +1537,8 @@ fn merge_headers(
     Some(merged)
 }
 
-fn now_ms() -> u64 {
+/// Current Unix time in milliseconds (shared with downstream crates).
+pub fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)

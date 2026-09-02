@@ -3,6 +3,7 @@
 pub mod auth_guidance;
 pub mod auth_storage;
 pub mod cache_stats;
+pub mod compaction;
 pub mod diagnostics;
 pub mod event_bus;
 pub mod keybindings;
