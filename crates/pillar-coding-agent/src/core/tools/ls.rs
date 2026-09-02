@@ -86,7 +86,7 @@ pub fn ls(
 
     // Sort alphabetically, case-insensitive.
     let mut entries = entries;
-    entries.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    entries.sort_by_key(|a| a.to_lowercase());
 
     // Format entries with directory indicators.
     let mut results: Vec<String> = Vec::new();

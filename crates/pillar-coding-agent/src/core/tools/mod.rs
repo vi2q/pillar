@@ -5,3 +5,4 @@ pub mod ls;
 pub mod output_accumulator;
 pub mod path_utils;
 pub mod render_utils;
+pub mod search;
