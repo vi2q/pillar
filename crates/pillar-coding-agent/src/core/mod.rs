@@ -6,6 +6,7 @@ pub mod cache_stats;
 pub mod compaction;
 pub mod diagnostics;
 pub mod event_bus;
+pub mod export_html;
 pub mod http_dispatcher;
 pub mod keybindings;
 pub mod messages;
