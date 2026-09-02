@@ -77,9 +77,10 @@ pi v0.84.3 (TypeScript, commit `56700d42e`) を Rust に移植する。拡張機
   - 検証: luaur-rt 253 tests / mlua_serde 21 tests (serde feature) / workspace 5725 tests 全パス、fmt クリーン、clippy luaur-rt 内エラーなし
   - [x] Confirm (user): 修正内容の承認 — user-confirmed (2026-09-02)
 
-- [ ] 考察: 今後の独自性としての「Rust製エージェントランタイム + id_effect」の相性と方向性 (2026-09-02)
-  - 移植 (厳密互換) と独自レイヤ (Effect 型実行基盤) の役割分担・移行パスを提示する
-  - Confirm (user): 考察内容の受け入れ判断
+- [x] 考察: 今後の独自性としての「Rust製エージェントランタイム + id_effect」の相性と方向性 (2026-09-02) — user-confirmed (2026-09-02)
+  - 結論: 外部境界は厳密互換を維持し、実行モデル (プロバイダ層/ツール実行層/拡張ランタイム) への Effect セマンティクス導入を独自性の中核にする。id_effect / id_effect_ai は pillar から独立した leaf として育成
+  - 移行は 3段階: (1) 移植完了後、id_effect でプロバイダ層を対照実験的に再実装 (#53/#49/#3/#4 のバグクラスが消えるか既存 parity テストで検証) → (2) 新規コンポーネント (pillar-extensions / server / session-store / agent-harness 操作本体) を Effect ベースで → (3) コア (agent-loop) は外部 API 互換のまま内部 Runtime を吸収
+  - **ユーザー確認済み: 完全移植完了後の道筋であり、移植完了前には実装に着手しない** (対照実験含む)。移植を最優先する
 - [ ] 「docs/INSTRUCTIONS.md から引き継いで続きを頼む」— 次の作業キューに従って移植を継続する (2026-08-31)
   - [x] pillar-ai: google 系 (google-shared / google-generative-ai / google-vertex / providers/google*) — 9717334, 27テスト (9717334)
   - [x] pillar-ai: mistral-conversations — ab4e80a + 870fca8 (adapter + 20 parity tests)
