@@ -14,6 +14,7 @@ use serde_json::{Map, Value, json};
 
 use crate::AbortSignal;
 use crate::api::fetch_json_stream;
+use crate::api::impl_from_request_options;
 use crate::api::openai_completions::SseDataEvents;
 use crate::api::openai_prompt_cache::clamp_openai_prompt_cache_key;
 use crate::api::openai_responses_shared::{
@@ -75,6 +76,9 @@ pub struct AzureOpenAIResponsesOptions {
     pub azure_base_url: Option<String>,
     pub azure_deployment_name: Option<String>,
 }
+
+impl_from_request_options!(AzureOpenAIResponsesOptions);
+impl_from_request_options!(SimpleStreamOptions);
 
 /// Upstream `SimpleStreamOptions` for this API.
 #[derive(Default)]

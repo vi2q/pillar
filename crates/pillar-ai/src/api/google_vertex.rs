@@ -14,17 +14,14 @@
 //! Bearer token supplied via options/env; only the API-key path is fully
 //! self-sufficient (see docs/INSTRUCTIONS.md #52).
 
-use std::sync::Arc;
-
-use serde_json::{Map, Value, json};
+use serde_json::Value;
 
 use crate::api::google_generative_ai::{
-    GoogleOptions, build_params_common, is_gemini_3_flash_model, is_gemini_3_pro_model,
-    stream_with_request, to_model_thinking_level,
+    GoogleOptions, build_params as build_params_common, is_gemini_3_flash_model,
+    is_gemini_3_pro_model, stream_with_request, to_model_thinking_level,
 };
-use crate::api::google_shared::{
-    ResolvedGoogleThinkingLevel, resolve_google_thinking_level,
-};
+use crate::api::google_shared::{ResolvedGoogleThinkingLevel, resolve_google_thinking_level};
+use crate::api::impl_from_request_options;
 use crate::event_stream::assistant_message_event_stream;
 use crate::provider_env::get_provider_env_value;
 use crate::types::{AssistantMessageEvent, StopReason};
@@ -56,6 +53,9 @@ pub struct GoogleVertexOptions {
     pub location: Option<String>,
 }
 
+impl_from_request_options!(GoogleVertexOptions);
+impl_from_request_options!(SimpleStreamOptions);
+
 /// Upstream `SimpleStreamOptions` for google-vertex.
 #[derive(Default)]
 pub struct SimpleStreamOptions {
@@ -80,10 +80,7 @@ pub struct SimpleStreamOptions {
 /// gcp-vertex-credentials marker, or a `<placeholder>`.
 pub fn resolve_api_key(options: &GoogleVertexOptions) -> Option<String> {
     let key = options.api_key.as_deref()?.trim();
-    if key.is_empty()
-        || key == GCP_VERTEX_CREDENTIALS_MARKER
-        || is_placeholder_api_key(key)
-    {
+    if key.is_empty() || key == GCP_VERTEX_CREDENTIALS_MARKER || is_placeholder_api_key(key) {
         return None;
     }
     Some(key.to_string())
@@ -94,9 +91,7 @@ fn is_placeholder_api_key(api_key: &str) -> bool {
     api_key.len() > 2
         && api_key.starts_with('<')
         && api_key.ends_with('>')
-        && api_key[1..api_key.len() - 1]
-            .chars()
-            .all(|c| c != '>')
+        && api_key[1..api_key.len() - 1].chars().all(|c| c != '>')
 }
 
 /// Upstream `resolveProject`.
@@ -139,14 +134,6 @@ pub fn resolve_custom_base_url(base_url: &str) -> Option<String> {
 /// Upstream `baseUrlIncludesApiVersion`: does any path segment match
 /// `/^v\d+(?:beta\d*)?$/`? URL parse failure falls back to a regex-like scan.
 pub fn base_url_includes_api_version(base_url: &str) -> bool {
-    if let Ok(url) = url::Url::parse(base_url) {
-        return url
-            .path_segments()
-            .map(|segments| {
-                segments.any(|part| is_version_segment(part))
-            })
-            .unwrap_or(false);
-    }
     // Fallback: scan raw string for /(?:^|\/)v\d+(?:beta\d*)?(?:\/|$)/
     let bytes = base_url.as_bytes();
     let mut i = 0;
@@ -175,7 +162,10 @@ fn is_version_segment(part: &str) -> bool {
         return false;
     }
     let after = &rest[digits.len()..];
-    after.is_empty() || after.strip_prefix("beta").map_or(false, |b| b.chars().all(|c| c.is_ascii_digit()))
+    after.is_empty()
+        || after
+            .strip_prefix("beta")
+            .is_some_and(|b| b.chars().all(|c| c.is_ascii_digit()))
 }
 
 /// Upstream `buildHttpOptions`: resolve base URL (resource scope
@@ -215,7 +205,10 @@ pub fn build_vertex_url(
     let (base_url, api_version, _headers) = build_http_options(model, options.headers.as_ref());
     let base = base_url.unwrap_or_else(|| "https://aiplatform.googleapis.com".to_string());
     let base = base.trim_end_matches('/');
-    let path_model = format!("publishers/google/models/{}:streamGenerateContent", model.id);
+    let path_model = format!(
+        "publishers/google/models/{}:streamGenerateContent",
+        model.id
+    );
     let version = api_version.unwrap_or_else(|| API_VERSION.to_string());
 
     if api_key.is_some() {
@@ -242,7 +235,11 @@ pub fn build_vertex_request(
     if let Some(key) = &api_key {
         headers.push(("x-goog-api-key".to_string(), key.clone()));
     }
-    let headers = crate::api::merge_request_headers(headers, model.headers.as_ref(), options.headers.as_ref());
+    let headers = crate::api::merge_request_headers(
+        headers,
+        model.headers.as_ref(),
+        options.headers.as_ref(),
+    );
 
     let params = build_params(model, context, options)?;
     let body = serde_json::to_vec(&params)
@@ -297,14 +294,15 @@ pub fn stream(
         let options = options.unwrap_or_default();
         let mut output = fresh_output(&model);
 
-        let result = (|| async {
-            if resolve_api_key(&options).is_none() {
-                // ADC path: project/location are required; a pre-minted
-                // Bearer token must be supplied via headers (see module doc).
-                let project = resolve_project(&options)?;
-                let _ = resolve_location(&options)?;
-                let _ = project;
-            }
+        // ADC path: project/location are required; validated before the
+        // request build so the error surfaces through the same channel.
+        let preflight = if resolve_api_key(&options).is_none() {
+            resolve_project(&options).and_then(|_| resolve_location(&options))
+        } else {
+            Ok(String::new())
+        };
+        let result = async {
+            preflight?;
             let request = build_vertex_request(&model, &context, &options)?;
             stream_with_request(
                 &model,
@@ -315,7 +313,7 @@ pub fn stream(
                 &task_stream,
             )
             .await
-        })();
+        };
         if let Err(error) = result.await {
             let aborted = options
                 .signal
@@ -424,9 +422,8 @@ pub fn stream_simple(
     if let Some(reasoning) = options.reasoning {
         let clamped =
             crate::models::clamp_thinking_level(&model, to_model_thinking_level(reasoning));
-        let resolved_level = resolve_google_thinking_level(&model, clamped).unwrap_or(
-            ResolvedGoogleThinkingLevel::High,
-        );
+        let resolved_level = resolve_google_thinking_level(&model, clamped)
+            .unwrap_or(ResolvedGoogleThinkingLevel::High);
         if is_gemini_3_pro_model(&model.id) || is_gemini_3_flash_model(&model.id) {
             vertex_options.thinking_enabled = Some(true);
             vertex_options.thinking_level =
@@ -517,7 +514,9 @@ pub fn adc_credentials_available(env: Option<&crate::types::ProviderEnv>) -> boo
     adc_credentials_path(env)
         .map(|path| {
             let expanded = if let Some(rest) = path.strip_prefix("~/") {
-                dirs_home().map(|home| format!("{home}/{rest}")).unwrap_or(path)
+                dirs_home()
+                    .map(|home| format!("{home}/{rest}"))
+                    .unwrap_or(path)
             } else {
                 path
             };

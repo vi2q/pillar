@@ -9,6 +9,7 @@
 
 pub mod abort;
 pub mod api;
+pub mod api_dispatch;
 pub mod auth_context;
 pub mod auth_resolve;
 pub mod auth_types;

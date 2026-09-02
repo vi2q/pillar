@@ -11,6 +11,7 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 
 use crate::AbortSignal;
+use crate::api::impl_from_request_options;
 use crate::api::{ProviderResponseInfo, get_pi_user_agent};
 use crate::diagnostics::append_assistant_message_diagnostic;
 use crate::event_stream::AssistantMessageEventStream;
@@ -47,6 +48,9 @@ pub struct PiMessagesOptions {
     /// Ask the backend for debug metadata (e.g. routing response headers).
     pub debug: Option<bool>,
 }
+
+impl_from_request_options!(PiMessagesOptions);
+impl_from_request_options!(SimpleStreamOptions);
 
 /// Upstream `SimpleStreamOptions` for this API.
 #[derive(Default)]

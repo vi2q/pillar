@@ -3,6 +3,7 @@
 //! divergence: upstream talks to the Anthropic SDK client; the Rust port
 //! performs requests via `FetchFn` and decodes raw SSE itself.
 
+use crate::api::impl_from_request_options;
 use std::collections::BTreeSet;
 
 use serde_json::{Map, Value, json};
@@ -148,6 +149,9 @@ pub struct AnthropicOptions {
     /// (default true).
     pub interleaved_thinking: Option<bool>,
 }
+
+impl_from_request_options!(AnthropicOptions);
+impl_from_request_options!(AnthropicSimpleStreamOptions);
 
 /// Upstream `SimpleStreamOptions` for anthropic-messages.
 #[derive(Default)]

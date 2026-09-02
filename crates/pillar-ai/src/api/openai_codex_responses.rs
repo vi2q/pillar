@@ -24,6 +24,7 @@ use std::time::Duration;
 
 use serde_json::{Map, Value, json};
 
+use crate::api::impl_from_request_options;
 use crate::api::openai_completions::{SseDataEvents, SseJsonEvents};
 use crate::api::openai_prompt_cache::clamp_openai_prompt_cache_key;
 use crate::api::openai_responses_shared::{
@@ -115,6 +116,9 @@ pub struct OpenaiCodexResponsesOptions {
     /// constructor). `None` uses the native tokio-tungstenite transport.
     pub websocket: Option<Arc<dyn WsConnFactory>>,
 }
+
+impl_from_request_options!(OpenaiCodexResponsesOptions);
+impl_from_request_options!(CodexSimpleStreamOptions);
 
 /// Upstream `SimpleStreamOptions` for this API.
 #[derive(Default)]

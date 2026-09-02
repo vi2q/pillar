@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
 
+use crate::api::impl_from_request_options;
 use crate::api::{OnPayloadFn, OnResponseFn, get_pi_user_agent, merge_request_headers};
 use crate::constrained_sampling::{
     get_json_schema_tool_parameters, resolve_json_schema_strict_sampling,
@@ -66,6 +67,9 @@ pub struct MistralOptions {
     pub cache_retention: Option<CacheRetention>,
     pub session_id: Option<String>,
 }
+
+impl_from_request_options!(MistralOptions);
+impl_from_request_options!(SimpleStreamOptions);
 
 /// Upstream `SimpleStreamOptions` for mistral-conversations.
 #[derive(Default)]

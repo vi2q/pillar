@@ -18,6 +18,7 @@ use crate::api::google_shared::{
     map_stop_reason_string, resolve_google_function_calling_mode, resolve_google_thinking_level,
     retain_thought_signature, supports_google_strict_tool_sampling,
 };
+use crate::api::impl_from_request_options;
 use crate::event_stream::assistant_message_event_stream;
 use crate::text::sanitize_surrogates;
 use crate::types::{
@@ -47,6 +48,9 @@ pub struct GoogleOptions {
     pub thinking_budget_tokens: Option<i64>,
     pub thinking_level: Option<String>,
 }
+
+impl_from_request_options!(GoogleOptions);
+impl_from_request_options!(SimpleStreamOptions);
 
 /// Upstream `SimpleStreamOptions` for google-generative-ai.
 #[derive(Default)]
@@ -599,7 +603,7 @@ async fn decode_fetch_response(
 /// Upstream `buildParams`: assemble GenerateContentParameters (mldev wire
 /// format: contents + generationConfig; systemInstruction/tools/toolConfig
 /// lifted to the top level by the SDK converters).
-fn build_params(
+pub(crate) fn build_params(
     model: &Model,
     context: &Context,
     options: &GoogleOptions,
@@ -888,7 +892,9 @@ pub fn stream_simple(
     stream(model, context, Some(google_options))
 }
 
-fn to_model_thinking_level(level: crate::types::ThinkingLevel) -> crate::types::ModelThinkingLevel {
+pub(crate) fn to_model_thinking_level(
+    level: crate::types::ThinkingLevel,
+) -> crate::types::ModelThinkingLevel {
     match level {
         crate::types::ThinkingLevel::Minimal => crate::types::ModelThinkingLevel::Minimal,
         crate::types::ThinkingLevel::Low => crate::types::ModelThinkingLevel::Low,

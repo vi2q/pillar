@@ -12,6 +12,7 @@ use futures::{Stream, StreamExt};
 use serde_json::{Map, Value};
 
 use crate::abort::AbortSignal;
+use crate::api::impl_from_request_options;
 use crate::api::openai_prompt_cache::clamp_openai_prompt_cache_key;
 use crate::api::{
     OnPayloadFn, OnResponseFn, ProviderResponseInfo, get_pi_user_agent, merge_request_headers,
@@ -70,6 +71,9 @@ pub struct OpenaiCompletionsOptions {
     /// `{ "$var": "thinking.budget" }`.
     pub thinking_budgets: Option<ThinkingBudgets>,
 }
+
+impl_from_request_options!(OpenaiCompletionsOptions);
+impl_from_request_options!(SimpleStreamOptions);
 
 /// Upstream `SimpleStreamOptions` for this API.
 #[derive(Default)]

@@ -11,6 +11,7 @@ use serde_json::{Map, Value, json};
 
 use crate::abort::AbortSignal;
 use crate::api::github_copilot_headers::{build_copilot_dynamic_headers, has_copilot_vision_input};
+use crate::api::impl_from_request_options;
 use crate::api::openai_completions::SseJsonEvents;
 use crate::api::openai_prompt_cache::clamp_openai_prompt_cache_key;
 use crate::api::openai_responses_shared::{
@@ -74,6 +75,9 @@ pub struct OpenaiResponsesOptions {
     pub service_tier: Option<String>,
     pub tool_choice: Option<Value>,
 }
+
+impl_from_request_options!(OpenaiResponsesOptions);
+impl_from_request_options!(SimpleStreamOptions);
 
 /// Upstream `SimpleStreamOptions` for this API.
 #[derive(Default)]

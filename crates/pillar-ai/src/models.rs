@@ -102,12 +102,19 @@ pub struct ModelsRefreshResult {
 /// Resolved request options handed to a stream implementation (upstream
 /// `ProviderRequestOptions` subset). Per-API extras land with the provider
 /// API modules.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct StreamRequestOptions {
     pub api_key: Option<String>,
     pub env: Option<ProviderEnv>,
     pub headers: Option<ProviderHeaders>,
     pub signal: Option<AbortSignal>,
+    /// Custom HTTP transport (upstream `ProviderRequestOptions.fetch`).
+    pub fetch: Option<crate::transport::SharedFetchFn>,
+    pub timeout_ms: Option<u64>,
+    pub max_retries: Option<u32>,
+    pub max_retry_delay_ms: Option<u64>,
+    pub temperature: Option<f64>,
+    pub max_tokens: Option<u64>,
 }
 
 /// Stream implementation bundle for one API (upstream `ProviderStreams`).
@@ -742,6 +749,7 @@ impl ModelsState {
             env,
             headers,
             signal: options.and_then(|o| o.signal.clone()),
+            ..Default::default()
         };
         Ok((request_model, request_options))
     }

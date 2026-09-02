@@ -10,6 +10,7 @@ pub mod bedrock_converse_stream;
 pub mod github_copilot_headers;
 pub mod google_generative_ai;
 pub mod google_shared;
+pub mod google_vertex;
 pub mod mistral_conversations;
 pub mod openai_codex_responses;
 pub mod openai_completions;
@@ -26,6 +27,31 @@ use crate::auth_types::BoxFuture;
 use crate::provider_retry::ProviderRequestError;
 use crate::transport::{FetchResponse, SharedFetchFn};
 use crate::types::{CacheRetention, Model, ProviderEnv, ProviderHeaders, Transport, Usage};
+
+/// Shared conversion from collection-level request options to the common
+/// adapter-option core (upstream spreads `StreamOptions` into each adapter's
+/// options object at dispatch).
+macro_rules! impl_from_request_options {
+    ($ty:ty) => {
+        impl From<&crate::models::StreamRequestOptions> for $ty {
+            fn from(options: &crate::models::StreamRequestOptions) -> Self {
+                let mut converted = Self::default();
+                converted.signal = options.signal.clone();
+                converted.api_key = options.api_key.clone();
+                converted.fetch = options.fetch.clone();
+                converted.env = options.env.clone();
+                converted.headers = options.headers.clone();
+                converted.timeout_ms = options.timeout_ms;
+                converted.max_retries = options.max_retries;
+                converted.max_retry_delay_ms = options.max_retry_delay_ms;
+                converted.temperature = options.temperature;
+                converted.max_tokens = options.max_tokens;
+                converted
+            }
+        }
+    };
+}
+pub(crate) use impl_from_request_options;
 
 /// Upstream `ProviderResponse` — HTTP response metadata handed to
 /// `onResponse`.

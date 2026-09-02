@@ -27,7 +27,8 @@
 use serde_json::{Map, Value, json};
 
 use crate::api::{
-    OnPayloadFn, OnResponseFn, ProviderResponseInfo, get_pi_user_agent, resolve_cache_retention,
+    OnPayloadFn, OnResponseFn, ProviderResponseInfo, get_pi_user_agent, impl_from_request_options,
+    resolve_cache_retention,
 };
 use crate::constrained_sampling::{
     get_json_schema_tool_parameters, resolve_json_schema_strict_sampling,
@@ -126,6 +127,9 @@ pub struct BedrockOptions {
     /// SigV4 signing and sends `Authorization: Bearer <token>` instead.
     pub bearer_token: Option<String>,
 }
+
+impl_from_request_options!(BedrockOptions);
+impl_from_request_options!(SimpleStreamOptions);
 
 /// Upstream `SimpleStreamOptions` for bedrock-converse-stream.
 #[derive(Default)]

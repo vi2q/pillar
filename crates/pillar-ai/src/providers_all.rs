@@ -11,7 +11,7 @@ use crate::auth_types::{
     ApiKeyAuth, ApiKeyAuthInput, ApiKeyCredential, AuthResult, ModelAuth, ProviderAuth,
 };
 use crate::error::AiError;
-use crate::models::{CreateProviderOptions, Models, Provider, ProviderApi, ProviderStreams};
+use crate::models::{CreateProviderOptions, Models, Provider, ProviderApi};
 use crate::models_catalog::generated_models_for;
 
 // ---------------------------------------------------------------------------
@@ -179,43 +179,8 @@ impl ApiKeyAuth for CloudflareAuth {
 // Adapter dispatch helpers
 // ---------------------------------------------------------------------------
 
-/// A placeholder streams bundle: the collection-level stream dispatch requires
-/// per-API option plumbing that the builtin registry wires lazily. Providers
-/// currently dispatch through `Models.stream` with these error stubs until
-/// per-API option plumbing lands; catalog/auth behavior is fully live.
-fn pending_streams() -> &'static ProviderStreams {
-    static STREAMS: std::sync::OnceLock<ProviderStreams> = std::sync::OnceLock::new();
-    STREAMS.get_or_init(|| ProviderStreams {
-        stream: Arc::new(|model, _context, _options| {
-            crate::models::error_stream_for(
-                model,
-                AiError::Other("provider stream dispatch not configured".to_string()),
-            )
-        }),
-        stream_simple: Arc::new(|model, _context, _options| {
-            crate::models::error_stream_for(
-                model,
-                AiError::Other("provider stream dispatch not configured".to_string()),
-            )
-        }),
-    })
-}
-
-fn clone_pending() -> ProviderStreams {
-    ProviderStreams {
-        stream: pending_streams().stream.clone(),
-        stream_simple: pending_streams().stream_simple.clone(),
-    }
-}
-
 fn single_api(api_name: &str) -> ProviderApi {
-    ProviderApi::Map(BTreeMap::from([(
-        api_name.to_string(),
-        Arc::new(ProviderStreams {
-            stream: pending_streams().stream.clone(),
-            stream_simple: pending_streams().stream_simple.clone(),
-        }),
-    )]))
+    crate::api_dispatch::single_api(api_name)
 }
 
 fn simple_provider(
@@ -479,11 +444,11 @@ pub fn builtin_providers() -> Vec<Arc<Provider>> {
                 })),
                 oauth: None,
             },
-            ProviderApi::Map(BTreeMap::from([
-                ("anthropic-messages".to_string(), Arc::new(clone_pending())),
-                ("openai-completions".to_string(), Arc::new(clone_pending())),
-                ("openai-responses".to_string(), Arc::new(clone_pending())),
-            ])),
+            crate::api_dispatch::api_map(&[
+                "anthropic-messages",
+                "openai-completions",
+                "openai-responses",
+            ]),
         ),
         simple_provider(
             "cloudflare-workers-ai",
@@ -503,11 +468,11 @@ pub fn builtin_providers() -> Vec<Arc<Provider>> {
             "GitHub Copilot",
             None,
             env_api_key_auth("GitHub Copilot", &["GITHUB_COPILOT_TOKEN"]),
-            ProviderApi::Map(BTreeMap::from([
-                ("anthropic-messages".to_string(), Arc::new(clone_pending())),
-                ("openai-completions".to_string(), Arc::new(clone_pending())),
-                ("openai-responses".to_string(), Arc::new(clone_pending())),
-            ])),
+            crate::api_dispatch::api_map(&[
+                "anthropic-messages",
+                "openai-completions",
+                "openai-responses",
+            ]),
         ),
         simple_provider(
             "google",
