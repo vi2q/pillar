@@ -226,6 +226,11 @@ impl Provider {
 
 /// A stream that terminates immediately with an error event (upstream
 /// `lazyStream` whose setup throws).
+/// Public alias for `error_stream` (used by builtin provider dispatch).
+pub fn error_stream_for(model: &Model, error: AiError) -> AssistantMessageEventStream {
+    error_stream(model, error)
+}
+
 fn error_stream(model: &Model, error: AiError) -> AssistantMessageEventStream {
     lazy_stream(model.clone(), Box::pin(async move { Err(error) }))
 }
