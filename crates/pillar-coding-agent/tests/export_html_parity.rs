@@ -1,7 +1,7 @@
 //! Parity tests for export-html/ansi-to-html.ts (pi v0.84.3): ANSI escape
 //! code to HTML conversion — colors, styles, and reset semantics.
-use pillar_coding_agent::core::export_html::ansi_to_html::ansi_to_html;
 
+use pillar_coding_agent::core::export_html::ansi_to_html::{ansi_lines_to_html, ansi_to_html};
 
 // --- basic styling -----------------------------------------------------------
 
@@ -81,4 +81,20 @@ fn empty_parameter_body_is_reset() {
 #[test]
 fn unrecognized_codes_are_ignored() {
     assert_eq!(ansi_to_html("\x1b[99mx"), "x");
+}
+
+#[test]
+fn ansi_lines_to_html_wraps_divs_and_blank_lines() {
+    let lines = vec!["\x1b[1mbold".to_string(), String::new()];
+    let html = ansi_lines_to_html(&lines);
+    assert!(
+        html.contains(
+            "<div class=\"ansi-line\"><span style=\"font-weight:bold\">bold</span></div>"
+        ),
+        "{html}"
+    );
+    assert!(
+        html.contains("<div class=\"ansi-line\">&nbsp;</div>"),
+        "{html}"
+    );
 }
