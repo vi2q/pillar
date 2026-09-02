@@ -791,6 +791,7 @@ dependencies = [
  "pillar-agent",
  "pillar-ai",
  "pillar-protocol",
+ "pillar-tui",
  "regex",
  "serde",
  "serde_json",
@@ -813,6 +814,15 @@ dependencies = [
  "futures",
  "thiserror",
  "tokio",
+]
+
+[[package]]
+name = "pillar-tui"
+version = "0.1.0"
+dependencies = [
+ "pillar-ai",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

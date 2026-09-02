@@ -3,10 +3,6 @@
 //! $@/$ARGUMENTS, ${N:-default}, ${@:N}, ${@:N:L}), template loading from
 //! directories, frontmatter parsing, and /name expansion.
 
-use std::collections::BTreeMap;
-use std::fs;
-use std::path::PathBuf;
-
 use pillar_coding_agent::core::prompt_templates::{
     LoadPromptTemplatesOptions, PromptTemplate, expand_prompt_template, load_prompt_templates,
     parse_command_args, substitute_args,

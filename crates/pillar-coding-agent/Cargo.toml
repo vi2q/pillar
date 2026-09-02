@@ -10,6 +10,7 @@ description = "Coding agent core. Port of pi packages/coding-agent (pi v0.84.3).
 pillar-ai = { path = "../pillar-ai" }
 pillar-agent = { path = "../pillar-agent" }
 pillar-protocol = { path = "../pillar-protocol" }
+pillar-tui = { path = "../pillar-tui" }
 serde.workspace = true
 serde_json.workspace = true
 regex = "1.12"

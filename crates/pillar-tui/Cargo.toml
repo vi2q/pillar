@@ -1,0 +1,12 @@
+[package]
+name = "pillar-tui"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Terminal UI. Port of pi packages/tui (pi v0.84.3)."
+
+[dependencies]
+pillar-ai = { path = "../pillar-ai" }
+serde.workspace = true
+serde_json.workspace = true

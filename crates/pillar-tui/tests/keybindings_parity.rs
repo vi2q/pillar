@@ -1,0 +1,216 @@
+//! Port of the upstream keybindings tests (pi v0.84.3, packages/tui/test/
+//! keybindings.test.ts): default bindings, per-binding user overrides, and
+//! direct conflict detection.
+
+use pillar_tui::keybindings::{KeybindingsConfig, KeybindingsManager, tui_keybindings};
+use pillar_tui::keys::matches_key;
+
+fn config(entries: &[(&str, Vec<&str>)]) -> KeybindingsConfig {
+    entries
+        .iter()
+        .map(|(id, keys)| {
+            (
+                id.to_string(),
+                keys.iter().map(|key| key.to_string()).collect::<Vec<_>>(),
+            )
+        })
+        .collect()
+}
+
+fn keys_list(keys: &[&str]) -> Vec<String> {
+    keys.iter().map(|key| key.to_string()).collect()
+}
+
+#[test]
+fn binds_ctrl_j_as_a_default_newline_alias() {
+    let keybindings = KeybindingsManager::new(tui_keybindings(), KeybindingsConfig::new());
+
+    assert_eq!(
+        keybindings.get_keys("tui.input.newLine"),
+        keys_list(&["shift+enter", "ctrl+j"])
+    );
+    assert!(keybindings.matches("\n", "tui.input.newLine"));
+    assert!(keybindings.matches("\x1b[106;5u", "tui.input.newLine"));
+}
+
+#[test]
+fn binds_modified_and_unmodified_editor_viewport_navigation() {
+    let keybindings = KeybindingsManager::new(tui_keybindings(), KeybindingsConfig::new());
+
+    assert_eq!(
+        keybindings.get_keys("tui.editor.cursorLineStart"),
+        keys_list(&["home", "ctrl+home", "ctrl+a"])
+    );
+    assert_eq!(
+        keybindings.get_keys("tui.editor.cursorLineEnd"),
+        keys_list(&["end", "ctrl+end", "ctrl+e"])
+    );
+    assert_eq!(
+        keybindings.get_keys("tui.editor.pageUp"),
+        keys_list(&["pageUp", "ctrl+pageUp"])
+    );
+    assert_eq!(
+        keybindings.get_keys("tui.editor.pageDown"),
+        keys_list(&["pageDown", "ctrl+pageDown"])
+    );
+}
+
+#[test]
+fn leaves_dedicated_prompt_history_navigation_unbound_by_default() {
+    let keybindings = KeybindingsManager::new(tui_keybindings(), KeybindingsConfig::new());
+
+    assert_eq!(
+        keybindings.get_keys("tui.editor.historyPrevious"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        keybindings.get_keys("tui.editor.historyNext"),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
+fn binds_unmodified_terminal_viewport_shortcuts_to_alternate_screen_navigation() {
+    let keybindings = KeybindingsManager::new(tui_keybindings(), KeybindingsConfig::new());
+
+    assert_eq!(
+        keybindings.get_keys("tui.altScreen.pageUp"),
+        keys_list(&["pageUp"])
+    );
+    assert_eq!(
+        keybindings.get_keys("tui.altScreen.pageDown"),
+        keys_list(&["pageDown"])
+    );
+    assert_eq!(
+        keybindings.get_keys("tui.altScreen.halfPageUp"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        keybindings.get_keys("tui.altScreen.halfPageDown"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        keybindings.get_keys("tui.altScreen.lineUp"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        keybindings.get_keys("tui.altScreen.lineDown"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        keybindings.get_keys("tui.altScreen.previousPrompt"),
+        keys_list(&["ctrl+shift+up", "ctrl+up"])
+    );
+    assert_eq!(
+        keybindings.get_keys("tui.altScreen.nextPrompt"),
+        keys_list(&["ctrl+shift+down", "ctrl+down"])
+    );
+    assert_eq!(
+        keybindings.get_keys("tui.altScreen.search"),
+        keys_list(&["ctrl+shift+f"])
+    );
+    assert_eq!(
+        keybindings.get_keys("tui.altScreen.searchNext"),
+        keys_list(&["enter", "ctrl+g"])
+    );
+    assert_eq!(
+        keybindings.get_keys("tui.altScreen.searchPrevious"),
+        keys_list(&["shift+enter", "ctrl+shift+g"])
+    );
+    assert_eq!(
+        keybindings.get_keys("tui.altScreen.searchClose"),
+        keys_list(&["escape"])
+    );
+    assert_eq!(
+        keybindings.get_keys("tui.altScreen.top"),
+        keys_list(&["home"])
+    );
+    assert_eq!(
+        keybindings.get_keys("tui.altScreen.bottom"),
+        keys_list(&["end"])
+    );
+}
+
+#[test]
+fn does_not_evict_selector_confirm_when_input_submit_is_rebound() {
+    let keybindings = KeybindingsManager::new(
+        tui_keybindings(),
+        config(&[("tui.input.submit", vec!["enter", "ctrl+enter"])]),
+    );
+
+    assert_eq!(
+        keybindings.get_keys("tui.input.submit"),
+        keys_list(&["enter", "ctrl+enter"])
+    );
+    assert_eq!(
+        keybindings.get_keys("tui.select.confirm"),
+        keys_list(&["enter"])
+    );
+}
+
+#[test]
+fn does_not_evict_cursor_bindings_when_another_action_reuses_the_same_key() {
+    let keybindings = KeybindingsManager::new(
+        tui_keybindings(),
+        config(&[("tui.select.up", vec!["up", "ctrl+p"])]),
+    );
+
+    assert_eq!(
+        keybindings.get_keys("tui.select.up"),
+        keys_list(&["up", "ctrl+p"])
+    );
+    assert_eq!(
+        keybindings.get_keys("tui.editor.cursorUp"),
+        keys_list(&["up"])
+    );
+}
+
+#[test]
+fn still_reports_direct_user_binding_conflicts_without_evicting_defaults() {
+    let keybindings = KeybindingsManager::new(
+        tui_keybindings(),
+        config(&[
+            ("tui.input.submit", vec!["ctrl+x"]),
+            ("tui.select.confirm", vec!["ctrl+x"]),
+        ]),
+    );
+
+    let conflicts = keybindings.get_conflicts();
+    assert_eq!(conflicts.len(), 1);
+    assert_eq!(conflicts[0].key, "ctrl+x");
+    assert_eq!(
+        conflicts[0].keybindings,
+        vec![
+            "tui.input.submit".to_string(),
+            "tui.select.confirm".to_string()
+        ]
+    );
+    assert_eq!(
+        keybindings.get_keys("tui.editor.cursorLeft"),
+        keys_list(&["left", "ctrl+b"])
+    );
+}
+
+#[test]
+fn resolved_bindings_cover_every_definition() {
+    let keybindings = KeybindingsManager::new(tui_keybindings(), KeybindingsConfig::new());
+    let resolved = keybindings.get_resolved_bindings();
+    assert_eq!(resolved.len(), tui_keybindings().len());
+}
+
+// --- matches_key core matching ----------------------------------------------
+
+#[test]
+fn matches_legacy_and_ctrl_keys() {
+    assert!(matches_key("\x1b[A", "up"));
+    assert!(matches_key("\x1bOA", "up"));
+    assert!(matches_key("\x1b", "escape"));
+    assert!(matches_key("\t", "tab"));
+    assert!(matches_key("\r", "enter"));
+    assert!(matches_key("\x07", "ctrl+g"));
+    assert!(matches_key("g", "g"));
+    assert!(matches_key("G", "shift+g"));
+    assert!(matches_key("\x1b[Z", "shift+tab"));
+    assert!(!matches_key("\x1b[A", "down"));
+    assert!(!matches_key("x", "ctrl+x"));
+}
