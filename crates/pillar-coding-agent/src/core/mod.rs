@@ -6,6 +6,7 @@ pub mod cache_stats;
 pub mod diagnostics;
 pub mod event_bus;
 pub mod keybindings;
+pub mod messages;
 pub mod model_config;
 pub mod model_resolver;
 pub mod model_runtime;
