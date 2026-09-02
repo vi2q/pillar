@@ -24,3 +24,4 @@ pub mod skills;
 pub mod source_info;
 pub mod system_prompt;
 pub mod timings;
+pub mod trust_manager;
