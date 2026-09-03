@@ -5,3 +5,4 @@ pub mod edit_support;
 pub mod fuzzy;
 pub mod keybindings;
 pub mod keys;
+pub mod latex;
