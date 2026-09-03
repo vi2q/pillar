@@ -12,6 +12,7 @@ pub mod event_bus;
 pub mod export_html;
 pub mod extensions_loader;
 pub mod extensions_runner;
+pub mod extras;
 pub mod http_dispatcher;
 pub mod keybindings;
 pub mod messages;

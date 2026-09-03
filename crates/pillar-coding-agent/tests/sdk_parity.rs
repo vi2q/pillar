@@ -6,9 +6,8 @@
 use pillar_ai::types::{Message, Model, UserContent};
 
 use pillar_coding_agent::core::sdk::{
-    fallback_message_using, filter_blocked_images, resolve_initial_active_tool_names,
-    resolve_initial_model, resolve_thinking_level, sdk_settings, ThinkingLevelInputs,
-    ToolSelectionInputs,
+    ThinkingLevelInputs, ToolSelectionInputs, fallback_message_using, filter_blocked_images,
+    resolve_initial_active_tool_names, resolve_initial_model, resolve_thinking_level, sdk_settings,
 };
 use pillar_coding_agent::core::settings_manager::{SettingsManager, SettingsManagerCreateOptions};
 
@@ -265,23 +264,27 @@ fn tool_selection_allowlist_and_exclusions() {
     );
 
     // noTools=all starts with nothing.
-    assert!(resolve_initial_active_tool_names(ToolSelectionInputs {
-        tools: None,
-        no_tools: Some("all"),
-        exclude_tools: &[],
-        configured_default_tools: Some(&configured),
-    })
-    .is_empty());
+    assert!(
+        resolve_initial_active_tool_names(ToolSelectionInputs {
+            tools: None,
+            no_tools: Some("all"),
+            exclude_tools: &[],
+            configured_default_tools: Some(&configured),
+        })
+        .is_empty()
+    );
 
     // noTools=builtin also starts with nothing (extension tools are added
     // separately by the runtime).
-    assert!(resolve_initial_active_tool_names(ToolSelectionInputs {
-        tools: None,
-        no_tools: Some("builtin"),
-        exclude_tools: &[],
-        configured_default_tools: Some(&configured),
-    })
-    .is_empty());
+    assert!(
+        resolve_initial_active_tool_names(ToolSelectionInputs {
+            tools: None,
+            no_tools: Some("builtin"),
+            exclude_tools: &[],
+            configured_default_tools: Some(&configured),
+        })
+        .is_empty()
+    );
 }
 
 // --- block images filter --------------------------------------------------------------------
