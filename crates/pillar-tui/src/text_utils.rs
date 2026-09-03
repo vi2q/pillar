@@ -234,7 +234,7 @@ fn east_asian_width_two_cells(ch: char) -> bool {
 
 /// CJK characters that allow a line break after them (upstream
 /// `cjkBreakRegex`).
-fn is_cjk_break(ch: char) -> bool {
+pub fn is_cjk_break(ch: char) -> bool {
     matches!(ch as u32,
         0x2E80..=0x2EFF | 0x3000..=0x303F | 0x3041..=0x309F | 0x30A0..=0x30FF
         | 0x3130..=0x318F | 0x31A0..=0x31BF | 0x3400..=0x4DBF | 0x4E00..=0x9FFF

@@ -2,6 +2,7 @@
 //! keybinding registry with per-action default keys, user overrides,
 //! conflict detection, and a thread-local global manager.
 
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 
 use crate::keys::matches_key;
@@ -413,7 +414,9 @@ impl KeybindingsManager {
         self.conflicts.clear();
 
         // Collect user claims per key to detect multi-action conflicts.
-        let mut user_claims: HashMap<String, Vec<String>> = HashMap::new();
+        // BTreeMap keeps deterministic ordering (upstream relies on JS
+        // object insertion order).
+        let mut user_claims: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for (keybinding, keys) in &self.user_bindings {
             for key in normalize_keys(keys) {
                 user_claims.entry(key).or_default().push(keybinding.clone());
