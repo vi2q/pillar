@@ -580,3 +580,90 @@ pub fn compute_context_usage(
         percent: Some(percent),
     })
 }
+
+// ============================================================================
+// Bash execution flow (upstream executeBash / recordBashResult)
+// ============================================================================
+
+/// Pending bash execution state tracked by the session (upstream the
+/// `_bashAbortControllers` + `_pendingBashMessages` pair).
+#[derive(Default)]
+pub struct BashSessionState {
+    running: usize,
+    pending: Vec<crate::core::messages::BashExecutionMessage>,
+}
+
+impl BashSessionState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn start_execution(&mut self) {
+        self.running += 1;
+    }
+
+    pub fn end_execution(&mut self) {
+        self.running = self.running.saturating_sub(1);
+    }
+
+    /// Whether a bash command is currently running (upstream
+    /// `isBashRunning`).
+    pub fn is_running(&self) -> bool {
+        self.running > 0
+    }
+
+    /// Whether messages are waiting to be flushed (upstream
+    /// `hasPendingBashMessages`).
+    pub fn has_pending(&self) -> bool {
+        !self.pending.is_empty()
+    }
+
+    /// Build the session message and either queue it (streaming) or hand
+    /// it back for immediate append (upstream `recordBashResult`).
+    /// Returns Some(message) to append now, or None when queued.
+    pub fn record_result(
+        &mut self,
+        command: &str,
+        result: &crate::core::bash_executor::BashResult,
+        exclude_from_context: bool,
+        timestamp: u64,
+        is_streaming: bool,
+    ) -> Option<crate::core::messages::BashExecutionMessage> {
+        let message = crate::core::messages::BashExecutionMessage {
+            command: command.to_string(),
+            output: result.output.clone(),
+            exit_code: result.exit_code,
+            cancelled: result.cancelled,
+            truncated: result.truncated,
+            full_output_path: result
+                .full_output_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string()),
+            timestamp,
+            exclude_from_context,
+        };
+        if is_streaming {
+            // Queue for later - flushed after the turn ends to maintain
+            // tool_use/tool_result ordering.
+            self.pending.push(message);
+            None
+        } else {
+            Some(message)
+        }
+    }
+
+    /// Drain pending messages (upstream `_flushPendingBashMessages`).
+    pub fn flush_pending(&mut self) -> Vec<crate::core::messages::BashExecutionMessage> {
+        std::mem::take(&mut self.pending)
+    }
+}
+
+/// Resolve the effective command with the configured prefix (upstream
+/// executeBash's `resolvedCommand`): prefix is prepended with a newline
+/// separator.
+pub fn resolve_shell_command(command: &str, prefix: Option<&str>) -> String {
+    match prefix {
+        Some(prefix) if !prefix.is_empty() => format!("{prefix}\n{command}"),
+        _ => command.to_string(),
+    }
+}

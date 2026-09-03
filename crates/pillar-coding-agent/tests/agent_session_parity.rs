@@ -502,3 +502,100 @@ fn context_usage_after_compaction_unknown_until_post_usage() {
     assert_eq!(usage.percent, None);
     assert_eq!(usage.context_window, 10_000);
 }
+
+// --- bash execution flow ---------------------------------------------------------------------------
+
+use pillar_coding_agent::core::agent_session::{BashSessionState, resolve_shell_command};
+use pillar_coding_agent::core::bash_executor::BashResult;
+
+fn bash_result(output: &str, exit_code: Option<i32>) -> BashResult {
+    BashResult {
+        output: output.to_string(),
+        exit_code,
+        cancelled: false,
+        truncated: false,
+        full_output_path: None,
+    }
+}
+
+#[test]
+fn shell_command_prefix_prepended_with_newline() {
+    assert_eq!(resolve_shell_command("ls -la", None), "ls -la");
+    assert_eq!(resolve_shell_command("ls -la", Some("")), "ls -la");
+    assert_eq!(
+        resolve_shell_command("ls -la", Some("shopt -s expand_aliases")),
+        "shopt -s expand_aliases\nls -la"
+    );
+}
+
+#[test]
+fn bash_record_appends_immediately_when_not_streaming() {
+    let mut state = BashSessionState::new();
+    assert!(!state.is_running());
+    state.start_execution();
+    assert!(state.is_running());
+
+    let result = bash_result("out", Some(0));
+    let message = state
+        .record_result("ls", &result, false, 1000, false)
+        .expect("appended now");
+    assert_eq!(message.command, "ls");
+    assert_eq!(message.output, "out");
+    assert_eq!(message.exit_code, Some(0));
+    assert!(!message.exclude_from_context);
+    assert_eq!(message.timestamp, 1000);
+
+    state.end_execution();
+    assert!(!state.is_running());
+    assert!(!state.has_pending());
+}
+
+#[test]
+fn bash_record_defers_while_streaming_and_flushes_after() {
+    let mut state = BashSessionState::new();
+    state.start_execution();
+
+    let result = bash_result("streaming out", Some(1));
+    // While streaming the message is queued, not returned.
+    assert!(
+        state
+            .record_result("make", &result, false, 2000, true)
+            .is_none()
+    );
+    assert!(state.has_pending());
+
+    // Flush drains everything.
+    let flushed = state.flush_pending();
+    assert_eq!(flushed.len(), 1);
+    assert_eq!(flushed[0].command, "make");
+    assert_eq!(flushed[0].exit_code, Some(1));
+    assert!(!state.has_pending());
+}
+
+#[test]
+fn bash_record_preserves_truncation_and_exclusion() {
+    let mut state = BashSessionState::new();
+    let mut result = bash_result("tail", Some(0));
+    result.truncated = true;
+    result.full_output_path = Some(std::path::PathBuf::from("/tmp/full.txt"));
+
+    let message = state
+        .record_result("big-command", &result, true, 3000, false)
+        .unwrap();
+    assert!(message.truncated);
+    assert_eq!(message.full_output_path.as_deref(), Some("/tmp/full.txt"));
+    assert!(message.exclude_from_context);
+}
+
+#[test]
+fn bash_cancelled_result_recorded() {
+    let mut state = BashSessionState::new();
+    let mut result = bash_result("partial", None);
+    result.cancelled = true;
+
+    let message = state
+        .record_result("sleep 100", &result, false, 4000, false)
+        .unwrap();
+    assert!(message.cancelled);
+    assert_eq!(message.exit_code, None);
+}
