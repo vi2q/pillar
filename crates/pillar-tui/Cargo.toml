@@ -11,3 +11,4 @@ pillar-ai = { path = "../pillar-ai" }
 serde.workspace = true
 serde_json.workspace = true
 pulldown-cmark = "0.13"
+base64 = "0.22"
