@@ -420,3 +420,163 @@ pub fn unique_tool_names(names: &[String]) -> Vec<String> {
         .cloned()
         .collect()
 }
+
+// ============================================================================
+// Tree navigation (upstream navigateTree decision core)
+// ============================================================================
+
+/// The navigation decision for a tree target (upstream `navigateTree`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TreeNavigation {
+    /// The new leaf after navigation (None = root).
+    pub new_leaf_id: Option<String>,
+    /// Text to place in the editor when the target is a user/custom
+    /// message.
+    pub editor_text: Option<String>,
+    /// Whether a branch summary entry should be created.
+    pub wants_summary: bool,
+}
+
+/// How the leaf moves for a target entry (upstream the targetEntry type
+/// branches of navigateTree): user/custom messages move the leaf to their
+/// parent and surface their text for editing; other entries become the
+/// leaf directly.
+pub fn plan_tree_navigation(
+    target_entry: &crate::core::session_entries::SessionEntry,
+    summarize: bool,
+) -> Result<TreeNavigation, String> {
+    use crate::core::session_entries::SessionEntry;
+    let new_leaf_id = target_entry.parent_id().map(str::to_string);
+    match target_entry {
+        SessionEntry::Message(message_entry) => {
+            if let CodingAgentMessage::Base(pillar_ai::types::Message::User {
+                content: pillar_ai::types::UserContent::Text(text),
+                ..
+            }) = &message_entry.message
+            {
+                return Ok(TreeNavigation {
+                    new_leaf_id,
+                    editor_text: Some(text.clone()),
+                    wants_summary: summarize,
+                });
+            }
+            Ok(TreeNavigation {
+                new_leaf_id: Some(target_entry.id().to_string()),
+                editor_text: None,
+                wants_summary: summarize,
+            })
+        }
+        SessionEntry::CustomMessage(custom_entry) => Ok(TreeNavigation {
+            new_leaf_id,
+            editor_text: Some(custom_message_text(&custom_entry.content)),
+            wants_summary: summarize,
+        }),
+        _ => Ok(TreeNavigation {
+            new_leaf_id: Some(target_entry.id().to_string()),
+            editor_text: None,
+            wants_summary: summarize,
+        }),
+    }
+}
+
+fn custom_message_text(content: &[crate::core::messages::CustomContent]) -> String {
+    content
+        .iter()
+        .filter_map(|c| match c {
+            crate::core::messages::CustomContent::Text(text) => Some(text.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+/// User messages available for the fork selector (upstream
+/// `getUserMessagesForForking`).
+pub fn user_messages_for_forking(
+    entries: &[crate::core::session_entries::SessionEntry],
+) -> Vec<(String, String)> {
+    let mut result = Vec::new();
+    for entry in entries {
+        if let crate::core::session_entries::SessionEntry::Message(message_entry) = entry {
+            if let CodingAgentMessage::Base(pillar_ai::types::Message::User {
+                content: pillar_ai::types::UserContent::Text(text),
+                ..
+            }) = &message_entry.message
+            {
+                if !text.is_empty() {
+                    result.push((entry.id().to_string(), text.clone()));
+                }
+            }
+        }
+    }
+    result
+}
+
+// ============================================================================
+// Context usage (upstream getContextUsage)
+// ============================================================================
+
+/// Context usage snapshot (upstream `ContextUsage`); None tokens means
+/// "unknown until the next LLM response".
+#[derive(Debug, Clone, PartialEq)]
+pub struct ContextUsage {
+    pub tokens: Option<u64>,
+    pub context_window: u64,
+    pub percent: Option<f64>,
+}
+
+/// Compute context usage over branch entries (upstream `getContextUsage`):
+/// after a compaction, usage from the pre-compaction assistant cannot be
+/// trusted until a post-compaction assistant responds.
+pub fn compute_context_usage(
+    branch_entries: &[crate::core::session_entries::SessionEntry],
+    context_window: u64,
+) -> Option<ContextUsage> {
+    if context_window == 0 {
+        return None;
+    }
+    let latest_compaction_index = branch_entries.iter().rposition(|entry| {
+        matches!(
+            entry,
+            crate::core::session_entries::SessionEntry::Compaction(_)
+        )
+    });
+    if let Some(compaction_index) = latest_compaction_index {
+        let mut has_post_compaction_usage = false;
+        for entry in &branch_entries[compaction_index + 1..] {
+            if let crate::core::session_entries::SessionEntry::Message(message_entry) = entry {
+                if let CodingAgentMessage::Base(pillar_ai::types::Message::Assistant(assistant)) =
+                    &message_entry.message
+                {
+                    if assistant.stop_reason != pillar_ai::types::StopReason::Aborted
+                        && assistant.stop_reason != pillar_ai::types::StopReason::Error
+                        && crate::core::compaction::driver::calculate_context_tokens(
+                            &assistant.usage,
+                        ) > 0
+                    {
+                        has_post_compaction_usage = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if !has_post_compaction_usage {
+            return Some(ContextUsage {
+                tokens: None,
+                context_window,
+                percent: None,
+            });
+        }
+    }
+    let messages: Vec<CodingAgentMessage> = branch_entries
+        .iter()
+        .filter_map(crate::core::session_entries::get_message_from_entry)
+        .collect();
+    let tokens = crate::core::compaction::driver::estimate_context_tokens(&messages).tokens;
+    let percent = (tokens as f64 / context_window as f64) * 100.0;
+    Some(ContextUsage {
+        tokens: Some(tokens),
+        context_window,
+        percent: Some(percent),
+    })
+}

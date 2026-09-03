@@ -48,6 +48,21 @@ fn assistant_ok_message() -> CodingAgentMessage {
     assistant_message(vec![Content::text("ok")], StopReason::Stop, None)
 }
 
+fn user_entry(id: &str, parent: &str, text: &str) -> SessionEntry {
+    SessionEntry::Message(SessionMessageEntry {
+        base: SessionEntryBase {
+            id: id.to_string(),
+            parent_id: if parent.is_empty() {
+                None
+            } else {
+                Some(parent.to_string())
+            },
+            timestamp: 1000,
+        },
+        message: user_message(text),
+    })
+}
+
 fn user_message(text: &str) -> CodingAgentMessage {
     CodingAgentMessage::Base(Message::User {
         content: pillar_ai::types::UserContent::Text(text.to_string()),
@@ -329,4 +344,161 @@ fn message_counting_for_stats() {
     assert_eq!(assistant, 2);
     assert_eq!(tool_calls, 0);
     assert_eq!(tool_results, 0);
+}
+
+// --- tree navigation -----------------------------------------------------------------------------
+
+use pillar_coding_agent::core::agent_session::{
+    compute_context_usage, plan_tree_navigation, user_messages_for_forking,
+};
+use pillar_coding_agent::core::session_entries::{
+    CustomMessageEntry, SessionEntry, SessionEntryBase, SessionMessageEntry,
+};
+
+fn custom_entry(id: &str, parent: Option<&str>, text: &str) -> SessionEntry {
+    SessionEntry::CustomMessage(CustomMessageEntry {
+        base: SessionEntryBase {
+            id: id.to_string(),
+            parent_id: parent.map(str::to_string),
+            timestamp: 1000,
+        },
+        custom_type: "note".to_string(),
+        content: vec![CustomContent::Text(text.to_string())],
+        details: None,
+        display: true,
+    })
+}
+
+fn assistant_tool_entry(id: &str, parent: Option<&str>) -> SessionEntry {
+    SessionEntry::Message(SessionMessageEntry {
+        base: SessionEntryBase {
+            id: id.to_string(),
+            parent_id: parent.map(str::to_string),
+            timestamp: 1000,
+        },
+        message: assistant_ok_message(),
+    })
+}
+
+#[test]
+fn tree_navigation_user_entry_moves_leaf_to_parent_with_editor_text() {
+    let entry = user_entry("e2", "e1", "edit me");
+    let plan = plan_tree_navigation(&entry, false).unwrap();
+    assert_eq!(plan.new_leaf_id.as_deref(), Some("e1"));
+    assert_eq!(plan.editor_text.as_deref(), Some("edit me"));
+    assert!(!plan.wants_summary);
+
+    // Custom message entries behave like user messages.
+    let custom = custom_entry("e3", Some("e2"), "custom text");
+    let plan = plan_tree_navigation(&custom, false).unwrap();
+    assert_eq!(plan.new_leaf_id.as_deref(), Some("e2"));
+    assert_eq!(plan.editor_text.as_deref(), Some("custom text"));
+}
+
+#[test]
+fn tree_navigation_non_user_entry_becomes_leaf() {
+    let entry = assistant_tool_entry("e3", Some("e2"));
+    let plan = plan_tree_navigation(&entry, false).unwrap();
+    assert_eq!(plan.new_leaf_id.as_deref(), Some("e3"));
+    assert_eq!(plan.editor_text, None);
+}
+
+#[test]
+fn fork_selector_lists_user_messages_with_text() {
+    let entries = vec![
+        user_entry("e1", "", "first"),
+        assistant_tool_entry("e2", Some("e1")),
+        user_entry("e3", "e2", "second"),
+        custom_entry("e4", Some("e3"), "skipped"),
+    ];
+    let forks = user_messages_for_forking(&entries);
+    assert_eq!(
+        forks,
+        vec![
+            ("e1".to_string(), "first".to_string()),
+            ("e3".to_string(), "second".to_string()),
+        ]
+    );
+}
+
+// --- context usage --------------------------------------------------------------------------------
+
+#[test]
+fn context_usage_zero_window_is_unknown() {
+    assert_eq!(
+        compute_context_usage(&[], 0),
+        None,
+        "zero context window returns None"
+    );
+}
+
+#[test]
+fn context_usage_estimates_from_branch() {
+    // Simple branch with assistant usage.
+    let mut assistant = match assistant_ok_message() {
+        CodingAgentMessage::Base(Message::Assistant(a)) => a,
+        _ => unreachable!(),
+    };
+    assistant.usage = Usage {
+        input: 1000,
+        output: 500,
+        cache_read: 200,
+        cache_write: 0,
+        ..Default::default()
+    };
+    let entries = vec![
+        user_entry("e1", "", "hi"),
+        SessionEntry::Message(SessionMessageEntry {
+            base: SessionEntryBase {
+                id: "e2".to_string(),
+                parent_id: Some("e1".to_string()),
+                timestamp: 1000,
+            },
+            message: CodingAgentMessage::Base(Message::Assistant(assistant)),
+        }),
+    ];
+    let usage = compute_context_usage(&entries, 10_000).unwrap();
+    let tokens = usage.tokens.unwrap();
+    assert!(tokens > 0, "{tokens}");
+    assert_eq!(usage.context_window, 10_000);
+    let percent = usage.percent.unwrap();
+    assert!((percent - (tokens as f64 / 10_000.0) * 100.0).abs() < 1e-9);
+}
+
+#[test]
+fn context_usage_after_compaction_unknown_until_post_usage() {
+    // Build a branch: user, assistant (with usage), compaction, user.
+    let compaction = SessionEntry::Compaction(
+        pillar_coding_agent::core::session_entries::CompactionEntry {
+            base: SessionEntryBase {
+                id: "e3c".to_string(),
+                parent_id: Some("e2".to_string()),
+                timestamp: 1000,
+            },
+            summary: "compacted".to_string(),
+            first_kept_entry_id: "e1".to_string(),
+            tokens_before: 5000,
+            details: None,
+            usage: None,
+            from_hook: false,
+        },
+    );
+    let entries = vec![
+        user_entry("e1", "", "hi"),
+        SessionEntry::Message(SessionMessageEntry {
+            base: SessionEntryBase {
+                id: "e2".to_string(),
+                parent_id: Some("e1".to_string()),
+                timestamp: 1000,
+            },
+            message: assistant_ok_message(),
+        }),
+        compaction,
+        user_entry("e4", "e3c", "after"),
+    ];
+    let usage = compute_context_usage(&entries, 10_000).unwrap();
+    // No assistant usage after the compaction → unknown tokens.
+    assert_eq!(usage.tokens, None);
+    assert_eq!(usage.percent, None);
+    assert_eq!(usage.context_window, 10_000);
 }
