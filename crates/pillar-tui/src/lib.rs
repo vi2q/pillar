@@ -7,3 +7,4 @@ pub mod fuzzy;
 pub mod keybindings;
 pub mod keys;
 pub mod latex;
+pub mod text_utils;
