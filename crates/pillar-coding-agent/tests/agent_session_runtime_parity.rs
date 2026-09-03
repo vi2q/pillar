@@ -432,6 +432,7 @@ fn import_missing_file_errors() {
 fn import_copies_file_into_session_dir_and_resumes() {
     let cwd = temp_dir("imp2-cwd");
     let agent_dir = temp_dir("imp2-agent");
+    let session_dir = temp_dir("imp2-sessions");
     let source_cwd = temp_dir("imp2-src-cwd");
     let source_dir = temp_dir("imp2-src");
     let source_file = source_dir.join("imported-session.jsonl");
@@ -448,7 +449,8 @@ fn import_copies_file_into_session_dir_and_resumes() {
     });
     std::fs::write(&source_file, format!("{header}\n{entry}\n")).unwrap();
 
-    let initial = SessionManager::in_memory(&cwd.to_string_lossy(), None).unwrap();
+    // Use a persisted manager so the import lands in a real session dir.
+    let initial = SessionManager::create(&cwd.to_string_lossy(), Some(&session_dir), None).unwrap();
     let log = Arc::new(Mutex::new(FactoryLog { calls: Vec::new() }));
     let mut factory = make_factory(log.clone());
     let runtime = AgentSessionRuntime::create(
@@ -469,8 +471,8 @@ fn import_copies_file_into_session_dir_and_resumes() {
         )
         .unwrap();
     assert!(!outcome.cancelled);
-    // The file was copied into the in-memory session's (empty) session dir
-    // or used in place; the factory observed a resume.
+    // The file was copied into the session dir; the factory observed a resume.
+    assert!(session_dir.join("imported-session.jsonl").exists());
     assert_eq!(log.lock().unwrap().calls.last().unwrap().2, "resume");
 }
 
