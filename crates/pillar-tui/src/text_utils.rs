@@ -957,3 +957,254 @@ pub fn apply_background_to_line(
     let with_padding = format!("{line}{}", " ".repeat(padding_needed));
     bg_fn(&with_padding)
 }
+
+// ============================================================================
+// Truncation (upstream truncateToWidth / truncateFragmentToWidth)
+// ============================================================================}
+
+/// Truncate a fragment to a width without an ellipsis (upstream
+/// `truncateFragmentToWidth`).
+fn truncate_fragment_to_width(text: &str, max_width: usize) -> (String, usize) {
+    if max_width == 0 || text.is_empty() {
+        return (String::new(), 0);
+    }
+    if is_printable_ascii(text) {
+        let clipped: String = text.chars().take(max_width).collect();
+        let width = clipped.chars().count();
+        return (clipped, width);
+    }
+    if !text.contains('\u{1b}') && !text.contains('\t') {
+        let mut result = String::new();
+        let mut width = 0;
+        for cluster in grapheme_clusters(text) {
+            let w = grapheme_width(&cluster);
+            if width + w > max_width {
+                break;
+            }
+            result.push_str(&cluster);
+            width += w;
+        }
+        return (result, width);
+    }
+    // ANSI-aware path.
+    let chars: Vec<char> = text.chars().collect();
+    let mut result = String::new();
+    let mut width = 0;
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '\t' {
+            if width + 3 > max_width {
+                break;
+            }
+            result.push('\t');
+            width += 3;
+            i += 1;
+            continue;
+        }
+        let mut end = i;
+        while end < chars.len() && chars[end] != '\t' && extract_ansi_code(&chars, end).is_none() {
+            end += 1;
+        }
+        for cluster in grapheme_clusters(&chars[i..end].iter().collect::<String>()) {
+            let w = grapheme_width(&cluster);
+            if width + w > max_width {
+                return (result, width);
+            }
+            result.push_str(&cluster);
+            width += w;
+        }
+        i = end;
+    }
+    (result, width)
+}
+
+fn finalize_truncated_result(
+    prefix: &str,
+    prefix_width: usize,
+    ellipsis: &str,
+    ellipsis_width: usize,
+    max_width: usize,
+    pad: bool,
+) -> String {
+    let reset = "\u{1b}[0m";
+    let hyperlink_close = get_active_osc8_close(prefix);
+    let visible_width_total = prefix_width + ellipsis_width;
+    let result = if !ellipsis.is_empty() {
+        format!("{prefix}{hyperlink_close}{reset}{ellipsis}{reset}")
+    } else {
+        format!("{prefix}{hyperlink_close}{reset}")
+    };
+    if pad {
+        format!(
+            "{result}{}",
+            " ".repeat(max_width.saturating_sub(visible_width_total))
+        )
+    } else {
+        result
+    }
+}
+
+/// Truncate text to fit a maximum visible width, adding an ellipsis when
+/// truncated (upstream `truncateToWidth`). Optionally pads to exactly
+/// `max_width`. ANSI escape codes don't count toward width.
+pub fn truncate_to_width(text: &str, max_width: usize, ellipsis: &str, pad: bool) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+    if text.is_empty() {
+        return if pad {
+            " ".repeat(max_width)
+        } else {
+            String::new()
+        };
+    }
+    let ellipsis_width = visible_width(ellipsis);
+    if ellipsis_width >= max_width {
+        let text_width = visible_width(text);
+        if text_width <= max_width {
+            return if pad {
+                format!("{text}{}", " ".repeat(max_width - text_width))
+            } else {
+                text.to_string()
+            };
+        }
+        let (clipped, clipped_width) = truncate_fragment_to_width(ellipsis, max_width);
+        if clipped_width == 0 {
+            return if pad {
+                " ".repeat(max_width)
+            } else {
+                String::new()
+            };
+        }
+        return finalize_truncated_result("", 0, &clipped, clipped_width, max_width, pad);
+    }
+    if is_printable_ascii(text) {
+        let len = text.chars().count();
+        if len <= max_width {
+            return if pad {
+                format!("{text}{}", " ".repeat(max_width - len))
+            } else {
+                text.to_string()
+            };
+        }
+        let target_width = max_width - ellipsis_width;
+        let prefix: String = text.chars().take(target_width).collect();
+        return finalize_truncated_result(
+            &prefix,
+            target_width,
+            ellipsis,
+            ellipsis_width,
+            max_width,
+            pad,
+        );
+    }
+
+    let target_width = max_width - ellipsis_width;
+    let mut result = String::new();
+    let mut pending_ansi = String::new();
+    let mut visible_so_far = 0usize;
+    let mut kept_width = 0usize;
+    let mut keep_contiguous_prefix = true;
+    let mut overflowed = false;
+    let exhausted_input;
+    let has_ansi = text.contains('\u{1b}');
+    let has_tabs = text.contains('\t');
+
+    if !has_ansi && !has_tabs {
+        for cluster in grapheme_clusters(text) {
+            let width = grapheme_width(&cluster);
+            if keep_contiguous_prefix && kept_width + width <= target_width {
+                result.push_str(&cluster);
+                kept_width += width;
+            } else {
+                keep_contiguous_prefix = false;
+            }
+            visible_so_far += width;
+            if visible_so_far > max_width {
+                overflowed = true;
+                break;
+            }
+        }
+        exhausted_input = !overflowed;
+    } else {
+        let chars: Vec<char> = text.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            if let Some(ansi) = extract_ansi_code(&chars, i) {
+                pending_ansi.push_str(&ansi.code);
+                i += ansi.length;
+                continue;
+            }
+            if chars[i] == '\t' {
+                if keep_contiguous_prefix && kept_width + 3 <= target_width {
+                    if !pending_ansi.is_empty() {
+                        result.push_str(&pending_ansi);
+                        pending_ansi.clear();
+                    }
+                    result.push('\t');
+                    kept_width += 3;
+                } else {
+                    keep_contiguous_prefix = false;
+                    pending_ansi.clear();
+                }
+                visible_so_far += 3;
+                if visible_so_far > max_width {
+                    overflowed = true;
+                    break;
+                }
+                i += 1;
+                continue;
+            }
+            let mut end = i;
+            while end < chars.len()
+                && chars[end] != '\t'
+                && extract_ansi_code(&chars, end).is_none()
+            {
+                end += 1;
+            }
+            for cluster in grapheme_clusters(&chars[i..end].iter().collect::<String>()) {
+                let width = grapheme_width(&cluster);
+                if keep_contiguous_prefix && kept_width + width <= target_width {
+                    if !pending_ansi.is_empty() {
+                        result.push_str(&pending_ansi);
+                        pending_ansi.clear();
+                    }
+                    result.push_str(&cluster);
+                    kept_width += width;
+                } else {
+                    keep_contiguous_prefix = false;
+                    pending_ansi.clear();
+                }
+                visible_so_far += width;
+                if visible_so_far > max_width {
+                    overflowed = true;
+                    break;
+                }
+            }
+            if overflowed {
+                break;
+            }
+            i = end;
+        }
+        exhausted_input = i >= chars.len();
+    }
+
+    if !overflowed && exhausted_input {
+        return if pad {
+            format!(
+                "{text}{}",
+                " ".repeat(max_width.saturating_sub(visible_so_far))
+            )
+        } else {
+            text.to_string()
+        };
+    }
+    finalize_truncated_result(
+        &result,
+        kept_width,
+        ellipsis,
+        ellipsis_width,
+        max_width,
+        pad,
+    )
+}

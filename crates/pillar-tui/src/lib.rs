@@ -2,6 +2,7 @@
 
 pub mod alt_screen_search;
 pub mod autocomplete;
+pub mod components;
 pub mod edit_support;
 pub mod fuzzy;
 pub mod keybindings;
