@@ -22,6 +22,7 @@ pub mod resolve_config_value;
 pub mod runtime_credentials;
 pub mod session_entries;
 pub mod session_manager;
+pub mod session_support;
 pub mod settings_manager;
 pub mod skills;
 pub mod source_info;
