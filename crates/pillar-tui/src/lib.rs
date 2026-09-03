@@ -9,6 +9,7 @@ pub mod input;
 pub mod keybindings;
 pub mod keys;
 pub mod latex;
+pub mod markdown;
 pub mod select_list;
 pub mod settings_list;
 pub mod stack_layout;
