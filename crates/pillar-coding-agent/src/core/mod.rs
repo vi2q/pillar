@@ -1,5 +1,6 @@
 //! Port of packages/coding-agent/src/core (pi v0.84.3).
 
+pub mod agent_session_runtime;
 pub mod auth_guidance;
 pub mod auth_storage;
 pub mod bash_executor;
