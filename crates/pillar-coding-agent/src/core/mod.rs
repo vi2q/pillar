@@ -14,6 +14,7 @@ pub mod messages;
 pub mod model_config;
 pub mod model_resolver;
 pub mod model_runtime;
+pub mod package_manager;
 pub mod prompt_templates;
 pub mod provider_attribution;
 pub mod provider_composer;
