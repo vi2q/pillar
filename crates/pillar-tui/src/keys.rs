@@ -812,3 +812,89 @@ pub fn matches_key(data: &str, key_id: &str) -> bool {
         }
     }
 }
+
+// ============================================================================
+// Printable key decoding (upstream decodeKittyPrintable /
+// decodeModifyOtherKeysPrintable / decodePrintableKey)
+// ============================================================================
+
+const KITTY_PRINTABLE_ALLOWED_MODIFIERS: u8 = MOD_SHIFT | LOCK_MASK;
+
+/// A parsed CSI-u sequence with the optional shifted key (upstream the
+/// csi-u branch of the Kitty parser).
+struct ParsedKittyCsiU {
+    codepoint: i32,
+    shifted_key: Option<i32>,
+    modifier: u8,
+}
+
+/// Parse `\x1b[<cp>[:<shifted>[:<base>]][;<mod>[:<event>]]u`.
+fn parse_kitty_csi_u(data: &str) -> Option<ParsedKittyCsiU> {
+    let rest = data.strip_prefix("\u{1b}[")?.strip_suffix('u')?;
+    let mut colon_parts = rest.split(';');
+    let key_part = colon_parts.next()?;
+    let modifier_part = colon_parts.next().unwrap_or("");
+    let mut key_segments = key_part.split(':');
+    let codepoint = key_segments.next()?.parse::<i32>().ok()?;
+    let shifted_key = key_segments
+        .next()
+        .filter(|p| !p.is_empty())
+        .and_then(|p| p.parse::<i32>().ok());
+    let _base = key_segments.next();
+    let mut mod_segments = modifier_part.split(':');
+    let mod_value = mod_segments
+        .next()
+        .unwrap_or("1")
+        .parse::<i32>()
+        .unwrap_or(1);
+    Some(ParsedKittyCsiU {
+        codepoint,
+        shifted_key,
+        modifier: (mod_value - 1).clamp(0, u8::MAX as i32) as u8,
+    })
+}
+
+/// Extract the printable character from a Kitty CSI-u sequence (upstream
+/// `decodeKittyPrintable`). Only plain or Shift-modified keys are accepted;
+/// Ctrl/Alt/Super and unknown modifier bits are rejected.
+pub fn decode_kitty_printable(data: &str) -> Option<String> {
+    let parsed = parse_kitty_csi_u(data)?;
+    let modifier = parsed.modifier;
+    if (modifier & !KITTY_PRINTABLE_ALLOWED_MODIFIERS) != 0 {
+        return None;
+    }
+    if (modifier & (MOD_ALT | MOD_CTRL)) != 0 {
+        return None;
+    }
+    let mut effective_codepoint = parsed.codepoint;
+    if modifier & MOD_SHIFT != 0 {
+        if let Some(shifted) = parsed.shifted_key {
+            effective_codepoint = shifted;
+        }
+    }
+    let effective_codepoint = normalize_kitty_functional_codepoint(effective_codepoint);
+    if effective_codepoint < 32 {
+        return None;
+    }
+    char::from_u32(effective_codepoint as u32).map(|c| c.to_string())
+}
+
+/// Extract the printable character from a modifyOtherKeys sequence (upstream
+/// `decodeModifyOtherKeysPrintable`): `\x1b[27;<mod>;<keycode>~`.
+pub fn decode_modify_other_keys_printable(data: &str) -> Option<String> {
+    let parsed = parse_modify_other_keys_sequence(data)?;
+    let modifier = parsed.modifier & !LOCK_MASK;
+    if (modifier & !MOD_SHIFT) != 0 {
+        return None;
+    }
+    if parsed.codepoint < 32 {
+        return None;
+    }
+    char::from_u32(parsed.codepoint as u32).map(|c| c.to_string())
+}
+
+/// Decode a printable character from either protocol (upstream
+/// `decodePrintableKey`).
+pub fn decode_printable_key(data: &str) -> Option<String> {
+    decode_kitty_printable(data).or_else(|| decode_modify_other_keys_printable(data))
+}
