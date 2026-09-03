@@ -599,3 +599,55 @@ fn bash_cancelled_result_recorded() {
     assert!(message.cancelled);
     assert_eq!(message.exit_code, None);
 }
+
+// --- last assistant text -----------------------------------------------------------------------
+
+use pillar_coding_agent::core::agent_session::get_last_assistant_text;
+
+#[test]
+fn last_assistant_text_finds_latest_non_empty() {
+    let messages = vec![
+        user_message("q1"),
+        assistant_message(vec![Content::text("first answer")], StopReason::Stop, None),
+        user_message("q2"),
+        assistant_message(vec![Content::text("second  ")], StopReason::Stop, None),
+    ];
+    assert_eq!(
+        get_last_assistant_text(&messages).as_deref(),
+        Some("second")
+    );
+}
+
+#[test]
+fn last_assistant_text_skips_aborted_empty_and_skips_whitespace() {
+    // Aborted with no content is skipped to the earlier answer.
+    let messages = vec![
+        assistant_message(vec![Content::text("kept")], StopReason::Stop, None),
+        assistant_message(vec![], StopReason::Aborted, None),
+    ];
+    assert_eq!(get_last_assistant_text(&messages).as_deref(), Some("kept"));
+
+    // Whitespace-only text yields None.
+    let messages = vec![assistant_message(
+        vec![Content::text("   ")],
+        StopReason::Stop,
+        None,
+    )];
+    assert_eq!(get_last_assistant_text(&messages), None);
+
+    // No assistant at all.
+    assert_eq!(get_last_assistant_text(&[user_message("hi")]), None);
+}
+
+#[test]
+fn last_assistant_text_concatenates_text_blocks() {
+    let messages = vec![assistant_message(
+        vec![Content::text("part1 "), Content::text("part2")],
+        StopReason::Stop,
+        None,
+    )];
+    assert_eq!(
+        get_last_assistant_text(&messages).as_deref(),
+        Some("part1 part2")
+    );
+}

@@ -667,3 +667,35 @@ pub fn resolve_shell_command(command: &str, prefix: Option<&str>) -> String {
         _ => command.to_string(),
     }
 }
+
+// ============================================================================
+// Utilities (upstream getLastAssistantText)
+// ============================================================================
+
+/// Get the text content of the last assistant message (upstream
+/// `getLastAssistantText`): aborted messages with no content are skipped;
+/// returns None when there is no non-empty text.
+pub fn get_last_assistant_text(messages: &[CodingAgentMessage]) -> Option<String> {
+    for message in messages.iter().rev() {
+        if let CodingAgentMessage::Base(pillar_ai::types::Message::Assistant(assistant)) = message {
+            if assistant.stop_reason == pillar_ai::types::StopReason::Aborted
+                && assistant.content.is_empty()
+            {
+                continue;
+            }
+            let mut text = String::new();
+            for content in &assistant.content {
+                if let pillar_ai::types::Content::Text { text: t, .. } = content {
+                    text.push_str(t);
+                }
+            }
+            let trimmed = text.trim();
+            return if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            };
+        }
+    }
+    None
+}
