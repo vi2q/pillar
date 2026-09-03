@@ -8,4 +8,5 @@ pub mod fuzzy;
 pub mod keybindings;
 pub mod keys;
 pub mod latex;
+pub mod stack_layout;
 pub mod text_utils;
