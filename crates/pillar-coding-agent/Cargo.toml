@@ -18,6 +18,7 @@ async-trait = "0.1"
 fd-lock = "4"
 globset = "0.4.19"
 ignore = "0.4"
+similar = "2"
 
 [dev-dependencies]
 tokio = { version = "1.47", features = ["rt", "macros", "time"] }
