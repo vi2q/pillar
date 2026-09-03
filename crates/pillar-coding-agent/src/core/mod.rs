@@ -25,6 +25,7 @@ pub mod provider_composer;
 pub mod resolve_config_value;
 pub mod resource_loader;
 pub mod runtime_credentials;
+pub mod sdk;
 pub mod session_entries;
 pub mod session_manager;
 pub mod session_support;
