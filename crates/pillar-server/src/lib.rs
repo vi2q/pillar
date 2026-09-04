@@ -6,3 +6,4 @@
 //! session lifecycle decisions over trait-injected runtimes.
 
 pub mod sessions;
+pub mod snapshots;
