@@ -117,6 +117,19 @@ pub struct ExtensionRuntime {
     registry: SharedRegistry,
 }
 
+/// Result of dispatching one event to a handler (upstream the
+/// handler return value semantics).
+#[derive(Debug, Clone, PartialEq)]
+pub enum HandlerOutcome {
+    /// Handler returned nothing (or nil).
+    None,
+    /// Handler returned `{ block = true, reason = "..." }`.
+    Block { reason: Option<String> },
+    /// Handler returned a non-block table (modifications feed the
+    /// next handler).
+    Table(serde_json::Value),
+}
+
 impl Default for ExtensionRuntime {
     fn default() -> Self {
         Self::new()
@@ -140,6 +153,73 @@ impl ExtensionRuntime {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
+    }
+
+    /// Dispatch an event to handlers registered for it, in
+    /// registration order (upstream the runner's emit loop): a
+    /// `block = true` return stops the chain.
+    pub fn dispatch(
+        &mut self,
+        event: &str,
+        payload: serde_json::Value,
+    ) -> Result<HandlerOutcome, ExtensionLoadError> {
+        let handlers: Vec<Value> = self
+            .lua
+            .load(
+                r#"
+                local event = ...
+                local list = __pillar_handlers and __pillar_handlers[event] or {}
+                return list
+            "#,
+            )
+            .call((event,))
+            .unwrap_or_default();
+        let mut last_table: Option<HandlerOutcome> = None;
+        for handler in handlers {
+            let arg = self
+                .lua
+                .to_value(&payload)
+                .map_err(|error| ExtensionLoadError::Setup(error.to_string()))?;
+            let function = match handler {
+                Value::Function(function) => function,
+                _ => continue,
+            };
+            let result: Value = function
+                .call(arg)
+                .map_err(|error| ExtensionLoadError::Setup(error.to_string()))?;
+            let outcome = match &result {
+                Value::Nil => {
+                    #[cfg(test)]
+                    if std::env::var("DISPATCH_DEBUG").is_ok() {
+                        eprintln!("DBG dispatch: nil result from handler");
+                    }
+                    HandlerOutcome::None
+                }
+                other => {
+                    let json = self
+                        .lua
+                        .from_value::<serde_json::Value>(other.clone())
+                        .map_err(|error| ExtensionLoadError::Setup(error.to_string()))?;
+                    if json.get("block").and_then(serde_json::Value::as_bool) == Some(true) {
+                        HandlerOutcome::Block {
+                            reason: json
+                                .get("reason")
+                                .and_then(serde_json::Value::as_str)
+                                .map(|reason| reason.to_string()),
+                        }
+                    } else {
+                        HandlerOutcome::Table(json)
+                    }
+                }
+            };
+            if matches!(outcome, HandlerOutcome::Block { .. }) {
+                return Ok(outcome);
+            }
+            if matches!(outcome, HandlerOutcome::Table(_)) {
+                last_table = Some(outcome);
+            }
+        }
+        Ok(last_table.unwrap_or(HandlerOutcome::None))
     }
 
     /// VM access for the host API installation and tests.
@@ -197,8 +277,9 @@ impl ExtensionRuntime {
 fn install_pillar_api(lua: &Lua, registry: &SharedRegistry) {
     let module = lua.create_table();
 
-    // pillar.on(event, handler)
-    let handlers = Arc::clone(registry);
+    // pillar.on(event, handler): handlers live inside the VM in a
+    // host-managed table (luaur Values stay on the VM side).
+    let registry_sink = Arc::clone(registry);
     module
         .set(
             "on",
@@ -207,11 +288,25 @@ fn install_pillar_api(lua: &Lua, registry: &SharedRegistry) {
                     Value::Function(function) => format!("{:p}", function.to_pointer()),
                     other => format!("<{}>", other.type_name()),
                 };
-                handlers
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .event_handlers
-                    .push((event, name));
+                let store = lua
+                    .load(
+                        r#"
+                        local event, handler = ...
+                        __pillar_handlers = __pillar_handlers or {}
+                        __pillar_handlers[event] = __pillar_handlers[event] or {}
+                        table.insert(__pillar_handlers[event], handler)
+                        return true
+                    "#,
+                    )
+                    .call::<bool>((event.as_str(), handler))
+                    .is_ok();
+                if store {
+                    registry_sink
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .event_handlers
+                        .push((event, name));
+                }
                 Ok::<(), luaur_rt::Error>(())
             }),
         )
@@ -591,5 +686,138 @@ mod registration_tests {
         assert_eq!(registry.shortcuts[0].0, "ctrl+g");
         assert_eq!(registry.flags.len(), 1);
         assert_eq!(registry.flags[0].0, "verbose");
+    }
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+    use crate::runtime::HandlerOutcome;
+
+    /// A tool_call handler returning `{ block = true, reason }` blocks
+    /// the chain with the reason (upstream ToolCallEventResult).
+    #[test]
+    fn block_result_stops_the_chain() {
+        let mut runtime = ExtensionRuntime::new();
+        runtime
+            .load_extension(
+                "blocker.luau",
+                r#"
+                local pillar = require("@pillar")
+                pillar.on("tool_call", function(event)
+                    if event.tool_name == "bash" then
+                        return { block = true, reason = "Blocked by user" }
+                    end
+                end)
+                pillar.on("tool_call", function(event)
+                    error("must not run after block")
+                end)
+                return nil
+            "#,
+            )
+            .unwrap();
+        let outcome = runtime
+            .dispatch(
+                "tool_call",
+                serde_json::json!({ "tool_name": "bash", "input": { "command": "rm -rf /" } }),
+            )
+            .unwrap();
+        assert_eq!(
+            outcome,
+            HandlerOutcome::Block {
+                reason: Some("Blocked by user".to_string())
+            }
+        );
+    }
+
+    /// Handlers run in registration order; a non-block return lets the
+    /// next handler run.
+    #[test]
+    fn handlers_run_in_registration_order() {
+        let mut runtime = ExtensionRuntime::new();
+        runtime
+            .load_extension(
+                "chain.luau",
+                r#"
+                local pillar = require("@pillar")
+                local seen = {}
+                pillar.on("tool_call", function(event)
+                    table.insert(seen, "first:" .. event.tool_name)
+                    _G.__seen = seen
+                    return nil
+                end)
+                pillar.on("tool_call", function(event)
+                    table.insert(seen, "second")
+                    _G.__seen = seen
+                    return nil
+                end)
+                return nil
+            "#,
+            )
+            .unwrap();
+        let outcome = runtime
+            .dispatch("tool_call", serde_json::json!({ "tool_name": "read" }))
+            .unwrap();
+        assert_eq!(outcome, HandlerOutcome::None);
+        let seen: Value = runtime.vm().load("return _G.__seen").call(()).unwrap();
+        let json = runtime.vm().from_value::<serde_json::Value>(seen).unwrap();
+        assert_eq!(json, serde_json::json!(["first:read", "second"]));
+    }
+
+    /// A non-block table return surfaces as Table (modifications feed
+    /// the next handler upstream).
+    #[test]
+    fn non_block_table_returns_surface() {
+        let mut runtime = ExtensionRuntime::new();
+        runtime
+            .load_extension(
+                "modify.luau",
+                r#"
+                local pillar = require("@pillar")
+                pillar.on("tool_call", function(event)
+                    return { tool_name = event.tool_name, renamed = true }
+                end)
+                return nil
+            "#,
+            )
+            .unwrap();
+        let outcome = runtime
+            .dispatch("tool_call", serde_json::json!({ "tool_name": "read" }))
+            .unwrap();
+        assert_eq!(
+            outcome,
+            HandlerOutcome::Table(serde_json::json!({ "tool_name": "read", "renamed": true }))
+        );
+    }
+
+    /// Events with no registered handlers resolve to None.
+    #[test]
+    fn unregistered_events_resolve_to_none() {
+        let mut runtime = ExtensionRuntime::new();
+        let outcome = runtime
+            .dispatch("session_start", serde_json::json!({ "reason": "startup" }))
+            .unwrap();
+        assert_eq!(outcome, HandlerOutcome::None);
+    }
+
+    /// A handler error surfaces as Setup (upstream the runtime catches
+    /// handler errors and reports them).
+    #[test]
+    fn handler_errors_surface() {
+        let mut runtime = ExtensionRuntime::new();
+        runtime
+            .load_extension(
+                "erroring.luau",
+                r#"
+                local pillar = require("@pillar")
+                pillar.on("agent_start", function()
+                    error("boom")
+                end)
+                return nil
+            "#,
+            )
+            .unwrap();
+        let outcome = runtime.dispatch("agent_start", serde_json::json!({}));
+        assert!(matches!(outcome, Err(ExtensionLoadError::Setup(_))));
     }
 }
