@@ -852,6 +852,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pillar-client"
+version = "0.1.0"
+dependencies = [
+ "pillar-protocol",
+ "serde_json",
+]
+
+[[package]]
 name = "pillar-coding-agent"
 version = "0.1.0"
 dependencies = [
