@@ -23,7 +23,7 @@ pub const MIGRATIONS: &[SqliteMigration] = &[SqliteMigration {
 }];
 
 /// Create the migrations table (upstream `ensureMigrationsTable`).
-fn ensure_migrations_table(db: &Connection) -> rusqlite::Result<()> {
+pub(crate) fn ensure_migrations_table(db: &Connection) -> rusqlite::Result<()> {
     db.execute(
         "CREATE TABLE IF NOT EXISTS migrations (
             id TEXT PRIMARY KEY,
@@ -56,7 +56,7 @@ pub fn apply_migrations(db: &mut Connection) -> rusqlite::Result<()> {
         transaction.execute_batch(migration.sql)?;
         transaction.execute(
             "INSERT INTO migrations (id, applied_at) VALUES (?, ?)",
-            rusqlite::params![migration.id, now_iso()],
+            rusqlite::params![migration.id, now_timestamp()],
         )?;
         transaction.commit()?;
     }
@@ -67,7 +67,7 @@ pub fn apply_migrations(db: &mut Connection) -> rusqlite::Result<()> {
 /// `new Date().toISOString()` shape: YYYY-MM-DDTHH:MM:SSZ). The
 /// migrations table orders by this string, so a second-resolution
 /// monotonic value keeps ordering stable within a process.
-fn now_iso() -> String {
+pub(crate) fn now_timestamp() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)

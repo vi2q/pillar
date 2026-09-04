@@ -876,7 +876,7 @@ fn claim_writer_lease(
 /// operations, the Mutex-guarded Connection provides the same
 /// exclusion here.
 pub struct SqliteSessionRepository {
-    db: SharedDb,
+    pub(crate) db: SharedDb,
     lease_options: WriterLeaseOptions,
     owner_counter: std::sync::atomic::AtomicU64,
     /// Ids of storages currently handed out (upstream
