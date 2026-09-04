@@ -10,7 +10,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use luaur_rt::{Function, Lua, LuaSerdeExt, Value};
+use luaur_rt::{Function, Lua, LuaSerdeExt, TypeDiagnostic, Value, check_with_definitions};
 
 /// Registration records captured from `pillar.*` API calls (upstream
 /// the ExtensionAPI's internal registries).
@@ -110,6 +110,23 @@ impl std::error::Error for ExtensionLoadError {}
 
 /// Shared registry handle (native closures capture `'static` data).
 pub type SharedRegistry = Arc<Mutex<HostRegistry>>;
+
+/// Host `declare` definitions for the type-checker: the `@pillar`
+/// module surface (grows with the API; currently the registration
+/// methods installed by [`install_pillar_api`]).
+pub const PILLAR_DEFINITIONS: &str = r#"
+declare pillar: {
+    on: (event: string, handler: (event: any) -> any) -> (),
+    register_tool: (definition: any) -> (),
+    register_command: (name: string, opts: any) -> (),
+    register_shortcut: (key: string, opts: any) -> (),
+    register_flag: (name: string, opts: any) -> (),
+    append_entry: (kind: string, data: any?) -> (),
+    send_message: (message: any) -> (),
+    send_user_message: (message: any) -> (),
+    set_session_name: (name: string) -> (),
+}
+"#;
 
 /// The process-wide extension runtime.
 pub struct ExtensionRuntime {
@@ -225,6 +242,28 @@ impl ExtensionRuntime {
     /// VM access for the host API installation and tests.
     pub fn vm(&self) -> &Lua {
         &self.lua
+    }
+
+    /// Type-check one extension source (upstream the loader's
+    /// pre-run type-check: failing files are skipped with a warning
+    /// listing the diagnostics, they do not abort startup). Returns
+    /// the diagnostics (host-definition diagnostics filtered out) on
+    /// failure.
+    pub fn type_check(&self, path: &str, source: &str) -> Result<(), Vec<TypeDiagnostic>> {
+        match check_with_definitions(source, PILLAR_DEFINITIONS) {
+            Ok(()) => Ok(()),
+            Err(diagnostics) => {
+                let diagnostics: Vec<TypeDiagnostic> = diagnostics
+                    .into_iter()
+                    .filter(|diagnostic| !diagnostic.in_definitions)
+                    .collect();
+                eprintln!(
+                    "pillar-extensions: skipping {path} (type-check failed: {} diagnostics)",
+                    diagnostics.len()
+                );
+                Err(diagnostics)
+            }
+        }
     }
 
     /// Load one extension file: compile, call the module chunk, and
@@ -820,5 +859,116 @@ mod dispatch_tests {
             .unwrap();
         let outcome = runtime.dispatch("agent_start", serde_json::json!({}));
         assert!(matches!(outcome, Err(ExtensionLoadError::Setup(_))));
+    }
+}
+
+#[cfg(test)]
+mod typecheck_tests {
+    use super::*;
+
+    /// A clean extension passes the type check.
+    #[test]
+    fn clean_extension_passes() {
+        let runtime = ExtensionRuntime::new();
+        assert!(
+            runtime
+                .type_check(
+                    "good.luau",
+                    r#"
+                --!strict
+                local pillar = require("@pillar")
+                pillar.on("tool_call", function(event)
+                    return nil
+                end)
+                return nil
+            "#,
+                )
+                .is_ok()
+        );
+    }
+
+    /// Global `declare pillar` definitions type-check direct global
+    /// access (the require bridge types as any, so member calls on it
+    /// are unchecked — a checker limitation, documented).
+    #[test]
+    fn global_declare_gates_direct_access() {
+        let runtime = ExtensionRuntime::new();
+        let result = runtime.type_check(
+            "probe.luau",
+            r#"
+                --!strict
+                pillar.set_session_name(42)
+                return nil
+            "#,
+        );
+        assert!(result.is_err(), "typed misuse must be caught: {result:?}");
+        let result = runtime.type_check(
+            "probe-ok.luau",
+            r#"
+                --!strict
+                pillar.set_session_name("ok")
+                pillar.append_entry("note", nil)
+                return nil
+            "#,
+        );
+        assert!(result.is_ok(), "valid use must pass: {result:?}");
+    }
+
+    /// A type error is reported with its location (upstream the
+    /// skip-with-warning path). Global `declare` definitions gate the
+    /// surface; a checker limitation types require("@pillar") as any,
+    /// so member calls through the require bridge are unchecked
+    /// (documented divergence until the definitions can bind the
+    /// module alias).
+    #[test]
+    fn type_errors_are_reported_with_locations() {
+        let runtime = ExtensionRuntime::new();
+        let diagnostics = runtime
+            .type_check(
+                "bad.luau",
+                r#"
+                --!strict
+                pillar.set_session_name(42)
+                return nil
+            "#,
+            )
+            .unwrap_err();
+        assert!(!diagnostics.is_empty());
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| !diagnostic.in_definitions),
+            "script diagnostics only: {diagnostics:?}"
+        );
+        assert!(diagnostics[0].line >= 1);
+    }
+
+    /// The `@pillar` definitions type-check: calling an undefined API
+    /// method fails (the definitions gate the surface).
+    #[test]
+    fn undefined_api_method_is_rejected() {
+        let runtime = ExtensionRuntime::new();
+        let diagnostics = runtime
+            .type_check(
+                "unknown.luau",
+                r#"
+                --!strict
+                pillar.nonexistent_method()
+                return nil
+            "#,
+            )
+            .unwrap_err();
+        assert!(!diagnostics.is_empty());
+    }
+
+    /// A syntax error surfaces as a diagnostic (upstream the file is
+    /// skipped before it can fail the startup).
+    #[test]
+    fn syntax_errors_surface_as_diagnostics() {
+        let runtime = ExtensionRuntime::new();
+        let diagnostics = runtime
+            .type_check("broken.luau", "this is not ) luau")
+            .unwrap_err();
+        assert!(!diagnostics.is_empty());
     }
 }

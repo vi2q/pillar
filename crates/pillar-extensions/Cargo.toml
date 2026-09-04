@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-luaur-rt = { version = "0.1.8", features = ["serde"] }
+luaur-rt = { version = "0.1.8", features = ["serde", "typecheck"] }
 serde.workspace = true
 serde_json.workspace = true
 
