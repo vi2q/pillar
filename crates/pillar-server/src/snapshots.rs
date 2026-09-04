@@ -9,7 +9,7 @@
 //! usage/details sanitizers that the protocol boundary enforces).
 
 use pillar_protocol::schemas::{
-    ServerEvent, ServerSnapshot, SessionMetadata, Usage, UsageCost, PROTOCOL_VERSION,
+    PROTOCOL_VERSION, ServerEvent, ServerSnapshot, SessionMetadata, Usage, UsageCost,
 };
 
 use crate::sessions::{ConnectionState, ServerError};

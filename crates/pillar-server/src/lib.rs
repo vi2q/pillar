@@ -5,5 +5,6 @@
 //! pump, and UUID generation stay host-side; the port exposes the
 //! session lifecycle decisions over trait-injected runtimes.
 
+pub mod server;
 pub mod sessions;
 pub mod snapshots;
