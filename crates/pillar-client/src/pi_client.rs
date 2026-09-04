@@ -50,6 +50,9 @@ pub struct PendingRequest {
 /// request/response bookkeeping.
 pub struct PiClient {
     connection: Connection,
+    /// Embedded client state (upstream ClientState is composed into
+    /// the client).
+    pub state: crate::ClientState,
     next_request_id: u64,
     /// Pending request ids → the error they would reject with.
     pub pending: HashMap<String, Option<ClientError>>,
@@ -78,6 +81,7 @@ impl PiClient {
         }
         Ok(Self {
             connection: Connection::new(max_frame_length),
+            state: crate::ClientState::new(),
             next_request_id: 0,
             pending: HashMap::new(),
             responses: Vec::new(),
@@ -231,9 +235,9 @@ impl PiClient {
     }
 
     fn apply_result(&mut self, result: &CommandResult) {
-        // Snapshot/event application lives in ClientState; the client
-        // layer only surfaces responses. Hook point for host state.
-        let _ = result;
+        // Snapshot/event application lives in ClientState (upstream
+        // the client routes results into ClientState).
+        self.state.apply_result(result);
     }
 
     fn drain_connection_events(&mut self) {
@@ -257,6 +261,7 @@ impl PiClient {
                         let _ = self.complete_request(&id, ok, result, error);
                     }
                     ServerMessage::Event { event } => {
+                        self.state.apply_event(&event);
                         self.events.push(event);
                     }
                     _ => {}

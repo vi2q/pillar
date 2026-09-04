@@ -9,3 +9,4 @@ pillar-protocol = { path = "../pillar-protocol" }
 serde_json.workspace = true
 
 [dev-dependencies]
+pillar-client = { path = "../pillar-client" }

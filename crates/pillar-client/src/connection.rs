@@ -32,6 +32,28 @@ pub struct ConnectionStateChange {
 }
 
 /// The host-implemented byte transport (upstream `ByteTransport`).
+/// A loopback transport capturing writes (the port's test stand-in
+/// for the socket; drivers route `taken_writes` into the server).
+#[derive(Default)]
+pub struct LoopTransport {
+    pub taken_writes: Vec<Vec<u8>>,
+    pub closed: bool,
+}
+
+impl ByteTransport for LoopTransport {
+    fn send(&mut self, chunk: &[u8]) -> Result<(), String> {
+        if self.closed {
+            return Err("transport is closed".to_string());
+        }
+        self.taken_writes.push(chunk.to_vec());
+        Ok(())
+    }
+
+    fn close(&mut self) {
+        self.closed = true;
+    }
+}
+
 pub trait ByteTransport {
     /// Sends one byte chunk; calls are delivered in invocation order.
     fn send(&mut self, chunk: &[u8]) -> Result<(), String>;
