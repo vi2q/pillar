@@ -380,7 +380,7 @@ impl TestServerService {
                 .contains(id)
     }
 
-    fn lock_session(&mut self, id: &str) {
+    pub fn lock_session(&mut self, id: &str) {
         self.locked_registry
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())

@@ -276,7 +276,7 @@ impl PiServer {
     fn finish_handshake(
         &mut self,
         connection_id: &str,
-        _service: &mut dyn PiServerService,
+        service: &mut dyn PiServerService,
         sink: &mut dyn BroadcastSink,
     ) {
         let version = match self.find_connection(connection_id) {
@@ -300,8 +300,9 @@ impl PiServer {
             );
             return;
         }
-        // Build the handshake snapshot.
-        let snapshot = self.sessions_snapshot();
+        // Build the handshake snapshot (upstream includes the live
+        // session catalog).
+        let snapshot = self.sessions_snapshot_with(service);
         let hello = serde_json::to_value(ServerMessage::Hello {
             version: PROTOCOL_VERSION,
             connection_id: connection_id.to_string(),
@@ -334,41 +335,11 @@ impl PiServer {
         let _ = sink;
     }
 
-    fn sessions_snapshot(&mut self) -> pillar_protocol::schemas::ServerSnapshot {
-        struct Sink;
-        impl BroadcastSink for Sink {
-            fn send_event(&mut self, _: u64, _: &pillar_protocol::schemas::ServerEvent) {}
-            fn broadcast_server_snapshot(&mut self) {}
-            fn close_connection(&mut self, _: u64) {}
-            fn report_error(&mut self, _: String) {}
-        }
-        let _sink = Sink;
-        struct NullService;
-        impl PiServerService for NullService {
-            fn list_sessions(&self) -> Vec<pillar_protocol::schemas::SessionMetadata> {
-                Vec::new()
-            }
-            fn create_session(
-                &mut self,
-                _: &crate::sessions::CreateSessionOptions,
-            ) -> Result<Box<dyn crate::sessions::PiSessionRuntime>, ServerError> {
-                Err(ServerError::new(
-                    ProtocolErrorCode::InternalError,
-                    "no service",
-                ))
-            }
-            fn open_session(
-                &mut self,
-                _: &str,
-            ) -> Result<Box<dyn crate::sessions::PiSessionRuntime>, ServerError> {
-                Err(ServerError::new(
-                    ProtocolErrorCode::InternalError,
-                    "no service",
-                ))
-            }
-        }
-        let mut null_service = NullService;
-        let sessions = self.sessions.list_metadata(&mut null_service);
+    fn sessions_snapshot_with(
+        &mut self,
+        service: &mut dyn PiServerService,
+    ) -> pillar_protocol::schemas::ServerSnapshot {
+        let sessions = self.sessions.list_metadata(service);
         self.snapshots.get(&sessions, &[])
     }
 
