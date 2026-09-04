@@ -20,5 +20,6 @@ pub mod select_list;
 pub mod settings_list;
 pub mod stack_layout;
 pub mod stdin_buffer;
+pub mod terminal;
 pub mod terminal_image;
 pub mod text_utils;
