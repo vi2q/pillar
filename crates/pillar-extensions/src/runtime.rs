@@ -125,13 +125,22 @@ declare pillar: {
     send_message: (message: any) -> (),
     send_user_message: (message: any) -> (),
     set_session_name: (name: string) -> (),
+    exec: (command: string, args: { number }?, opts: any?) -> any,
 }
 "#;
+
+/// Host command executor (upstream `pi.exec` backed by the process
+/// layer): the host injects the real executor; the extension receives
+/// `{ stdout, stderr, code, killed }`.
+pub type ExecHost = Arc<dyn Fn(&str, &[String]) -> serde_json::Value + Send + Sync>;
 
 /// The process-wide extension runtime.
 pub struct ExtensionRuntime {
     lua: Lua,
     registry: SharedRegistry,
+    /// Host exec callback (None until the host installs one; calls
+    /// before installation return the not-installed failure result).
+    exec_host: Arc<Mutex<Option<ExecHost>>>,
 }
 
 /// Result of dispatching one event to a handler (upstream the
@@ -159,8 +168,22 @@ impl ExtensionRuntime {
     pub fn new() -> Self {
         let lua = Lua::new();
         let registry = HostRegistry::shared();
-        install_pillar_api(&lua, &registry);
-        Self { lua, registry }
+        let exec_host = Arc::new(Mutex::new(None));
+        install_pillar_api(&lua, &registry, &exec_host);
+        Self {
+            lua,
+            registry,
+            exec_host,
+        }
+    }
+
+    /// Install the host exec callback (upstream the runtime wiring the
+    /// process layer into the ExtensionAPI).
+    pub fn set_exec_host(&self, exec_host: ExecHost) {
+        *self
+            .exec_host
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(exec_host);
     }
 
     /// A snapshot of the registration records (upstream reading the
@@ -381,8 +404,41 @@ impl ExtensionRuntime {
 /// Install the `@pillar` module and its registration functions
 /// (upstream the ExtensionAPI methods; each records into the shared
 /// registry).
-fn install_pillar_api(lua: &Lua, registry: &SharedRegistry) {
+fn install_pillar_api(
+    lua: &Lua,
+    registry: &SharedRegistry,
+    exec_host: &Arc<Mutex<Option<ExecHost>>>,
+) {
     let module = lua.create_table();
+
+    // pillar.exec(command, args?, opts?): returns
+    // { stdout, stderr, code, killed } (upstream pi.exec). The host
+    // callback performs the execution; the timeout/signal options are
+    // host-side (the port passes only command and args across).
+    let exec_error_lua = lua.clone();
+    let exec_slot = Arc::clone(exec_host);
+    module
+        .set(
+            "exec",
+            Function::wrap(move |command: String, args: Option<Vec<String>>| {
+                let args = args.unwrap_or_default();
+                let guard = exec_slot
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let result = match guard.as_ref() {
+                    Some(exec) => exec(&command, &args),
+                    None => serde_json::json!({
+                        "stdout": "", "stderr": "exec host not installed",
+                        "code": -1, "killed": false,
+                    }),
+                };
+                drop(guard);
+                exec_error_lua
+                    .to_value(&result)
+                    .map_err(luaur_rt::Error::external)
+            }),
+        )
+        .expect("set pillar.exec");
 
     // pillar.on(event, handler): handlers live inside the VM in a
     // host-managed table (luaur Values stay on the VM side).
@@ -1146,5 +1202,83 @@ mod load_and_run_tests {
         assert!(loaded.is_empty());
         assert_eq!(errors.len(), 1);
         assert!(errors[0].1.starts_with("Failed to load extension: "));
+    }
+}
+
+#[cfg(test)]
+mod exec_tests {
+    use super::*;
+
+    /// pillar.exec returns the host executor's result shape
+    /// (upstream { stdout, stderr, code, killed }).
+    #[test]
+    fn exec_returns_host_result_shape() {
+        let runtime = ExtensionRuntime::new();
+        runtime.set_exec_host(Arc::new(|command: &str, args: &[String]| {
+            assert_eq!(command, "git");
+            serde_json::json!({
+                "stdout": format!("args={args:?}"),
+                "stderr": "",
+                "code": 0,
+                "killed": false,
+            })
+        }));
+        let result: serde_json::Value = runtime
+            .vm()
+            .load(
+                r#"
+                local pillar = require("@pillar")
+                return pillar.exec("git", { "status", "--short" })
+            "#,
+            )
+            .call(())
+            .and_then(|value| runtime.vm().from_value(value))
+            .unwrap();
+        assert_eq!(result["stdout"], r#"args=["status", "--short"]"#);
+        assert_eq!(result["code"], 0);
+        assert_eq!(result["killed"], false);
+    }
+
+    /// Calling exec before the host installs one returns the
+    /// not-installed failure result (code -1, stderr explanation).
+    #[test]
+    fn exec_without_host_returns_failure() {
+        let runtime = ExtensionRuntime::new();
+        let result: serde_json::Value = runtime
+            .vm()
+            .load(
+                r#"
+                local pillar = require("@pillar")
+                return pillar.exec("anything")
+            "#,
+            )
+            .call(())
+            .and_then(|value| runtime.vm().from_value(value))
+            .unwrap();
+        assert_eq!(result["code"], -1);
+        assert_eq!(result["stderr"], "exec host not installed");
+        assert_eq!(result["stdout"], "");
+    }
+
+    /// exec accepts a nil args table (upstream optional args).
+    #[test]
+    fn exec_accepts_nil_args() {
+        let runtime = ExtensionRuntime::new();
+        runtime.set_exec_host(Arc::new(|command: &str, args: &[String]| {
+            serde_json::json!({ "stdout": command, "stderr": "", "code": args.len(), "killed": false })
+        }));
+        let result: serde_json::Value = runtime
+            .vm()
+            .load(
+                r#"
+                local pillar = require("@pillar")
+                return pillar.exec("ls")
+            "#,
+            )
+            .call(())
+            .and_then(|value| runtime.vm().from_value(value))
+            .unwrap();
+        assert_eq!(result["stdout"], "ls");
+        assert_eq!(result["code"], 0);
     }
 }
