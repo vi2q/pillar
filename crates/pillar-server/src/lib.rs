@@ -8,3 +8,4 @@
 pub mod server;
 pub mod sessions;
 pub mod snapshots;
+pub mod testing;
