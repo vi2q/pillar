@@ -6,6 +6,8 @@
 //! socket plumbing, promise resolvers) is host-side; the port exposes
 //! the pure client state machine over pillar-protocol types.
 
+pub mod connection;
+
 use std::collections::{HashMap, HashSet};
 
 use pillar_protocol::schemas::{
