@@ -953,6 +953,8 @@ dependencies = [
 name = "pillar-session-store"
 version = "0.1.0"
 dependencies = [
+ "pillar-agent",
+ "pillar-ai",
  "rusqlite",
  "serde_json",
 ]

@@ -8,6 +8,7 @@
 
 pub mod branch_cache;
 pub mod migrations;
+pub mod repo;
 pub mod storage;
 
 /// Re-exported for convenience.

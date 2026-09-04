@@ -5,6 +5,8 @@ edition.workspace = true
 
 [dependencies]
 rusqlite = { version = "0.32", features = ["bundled"] }
+pillar-agent = { path = "../pillar-agent" }
+pillar-ai = { path = "../pillar-ai" }
 serde_json.workspace = true
 
 [dev-dependencies]
