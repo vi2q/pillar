@@ -6,6 +6,7 @@ pub mod autocomplete;
 pub mod components;
 pub mod edit_support;
 pub mod editor;
+pub mod editor_autocomplete;
 pub mod fuzzy;
 pub mod input;
 pub mod keybindings;
