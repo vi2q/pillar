@@ -16,6 +16,7 @@ pub mod loaders;
 pub mod main_screen;
 pub mod markdown;
 pub mod overlay;
+pub mod overlay_focus;
 pub mod select_list;
 pub mod settings_list;
 pub mod stack_layout;
