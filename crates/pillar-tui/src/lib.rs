@@ -12,6 +12,7 @@ pub mod keys;
 pub mod latex;
 pub mod layout;
 pub mod loaders;
+pub mod main_screen;
 pub mod markdown;
 pub mod overlay;
 pub mod select_list;
