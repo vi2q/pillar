@@ -945,6 +945,7 @@ dependencies = [
 name = "pillar-server"
 version = "0.1.0"
 dependencies = [
+ "pillar-ai",
  "pillar-protocol",
  "serde_json",
 ]

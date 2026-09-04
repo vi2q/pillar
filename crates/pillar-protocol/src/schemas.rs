@@ -120,6 +120,7 @@ pub enum AssistantStatus {
 pub enum AssistantStopReason {
     Stop,
     Length,
+    #[serde(rename = "toolUse")]
     ToolUse,
     Error,
     Aborted,
@@ -183,7 +184,11 @@ pub enum TranscriptItem {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 pub enum UserContent {
     Text {
         text: String,
@@ -210,6 +215,7 @@ pub enum AssistantContent {
         #[serde(skip_serializing_if = "Option::is_none")]
         redacted: Option<bool>,
     },
+    #[serde(rename = "toolCall")]
     ToolCall {
         tool_call_id: String,
         tool_name: String,
@@ -1128,6 +1134,9 @@ pub mod validation {
 
     fn validate_usage(value: &Value) -> VResult<()> {
         let map = value.as_object().ok_or_else(|| fail(SERVER))?;
+        // `reasoning` is emitted only when the provider reported it
+        // (upstream `{...(reasoning === undefined ? {} : {reasoning})}`),
+        // so it is validated when present rather than required.
         expect_keys(
             map,
             &[
@@ -1135,7 +1144,6 @@ pub mod validation {
                 "output",
                 "cacheRead",
                 "cacheWrite",
-                "reasoning",
                 "totalTokens",
                 "cost",
             ],

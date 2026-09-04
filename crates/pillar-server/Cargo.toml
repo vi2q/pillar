@@ -4,6 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 
 [dependencies]
+pillar-ai = { path = "../pillar-ai" }
 pillar-protocol = { path = "../pillar-protocol" }
 serde_json.workspace = true
 
