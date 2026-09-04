@@ -6,7 +6,8 @@
 //! rusqlite with the bundled SQLite. The SessionError taxonomy maps to
 //! the pillar-agent session error shape via a local error type.
 
+pub mod branch_cache;
 pub mod migrations;
 
 /// Re-exported for convenience.
-pub use migrations::{apply_migrations, MIGRATIONS};
+pub use migrations::{MIGRATIONS, apply_migrations};
