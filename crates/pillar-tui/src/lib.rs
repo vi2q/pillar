@@ -1,5 +1,6 @@
 //! Port of packages/tui (pi v0.84.3).
 
+pub mod alt_screen;
 pub mod alt_screen_search;
 pub mod autocomplete;
 pub mod components;
