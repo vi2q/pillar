@@ -279,6 +279,7 @@ fn install_pillar_api(lua: &Lua, registry: &SharedRegistry) {
 
     // pillar.on(event, handler): handlers live inside the VM in a
     // host-managed table (luaur Values stay on the VM side).
+    let store_lua = lua.clone();
     let registry_sink = Arc::clone(registry);
     module
         .set(
@@ -288,7 +289,7 @@ fn install_pillar_api(lua: &Lua, registry: &SharedRegistry) {
                     Value::Function(function) => format!("{:p}", function.to_pointer()),
                     other => format!("<{}>", other.type_name()),
                 };
-                let store = lua
+                let store = store_lua
                     .load(
                         r#"
                         local event, handler = ...
