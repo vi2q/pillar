@@ -9,11 +9,11 @@
 //! pillar-protocol codec.
 
 use crate::PiDisconnectedError;
-use pillar_protocol::codec::{ServerMessageDecoder, encode_client_message};
+use pillar_protocol::codec::{encode_client_message, ServerMessageDecoder};
 use pillar_protocol::framing::FrameDecoderOptions;
 use pillar_protocol::schemas::{
-    ClientMessage, PROTOCOL_VERSION, ProtocolError, ServerMessage, ServerSnapshot,
-    parse_server_message,
+    parse_server_message, ClientMessage, ProtocolError, ServerMessage, ServerSnapshot,
+    PROTOCOL_VERSION,
 };
 
 /// Connection state (upstream `ConnectionState`).
@@ -556,12 +556,10 @@ mod tests {
         let _ = connection.connect().unwrap();
         connection.handle_data(99, b"junk");
         assert_eq!(connection.state(), ConnectionState::Connecting);
-        assert!(
-            connection
-                .events
-                .iter()
-                .all(|event| !matches!(event, ConnectionEvent::Failed(_)))
-        );
+        assert!(connection
+            .events
+            .iter()
+            .all(|event| !matches!(event, ConnectionEvent::Failed(_))));
     }
 
     #[test]
