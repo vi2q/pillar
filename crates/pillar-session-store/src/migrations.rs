@@ -175,13 +175,12 @@ mod tests {
             [],
         )
         .unwrap();
-        assert!(
-            db.execute(
+        assert!(db
+            .execute(
                 "INSERT INTO sessions (id, created_at, cwd) VALUES ('a', 2, '/tmp')",
                 [],
             )
-            .is_err()
-        );
+            .is_err());
     }
 
     #[test]

@@ -9,4 +9,4 @@
 pub mod migrations;
 
 /// Re-exported for convenience.
-pub use migrations::{MIGRATIONS, apply_migrations};
+pub use migrations::{apply_migrations, MIGRATIONS};
