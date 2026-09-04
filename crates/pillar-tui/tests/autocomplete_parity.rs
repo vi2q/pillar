@@ -37,7 +37,8 @@ fn commands() -> Vec<SlashCommand> {
 }
 
 fn make_tree() -> PathBuf {
-    let base = temp_dir("base");
+    // Unique per call: parallel tests share the process id.
+    let base = temp_dir(&format!("base-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().subsec_nanos()));
     std::fs::create_dir_all(base.join("src/nested")).unwrap();
     std::fs::write(base.join("src/main.rs"), "").unwrap();
     std::fs::write(base.join("src/nested/deep.rs"), "").unwrap();
