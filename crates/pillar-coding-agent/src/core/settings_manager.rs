@@ -1024,3 +1024,99 @@ impl SettingsManager {
         }
     }
 }
+
+impl SettingsManager {
+    /// Upstream `setDefaultModelAndProvider`.
+    pub fn set_default_model_and_provider(&mut self, provider: &str, model_id: &str) {
+        self.set_global_setting("defaultProvider", Value::String(provider.to_string()));
+        self.set_global_setting("defaultModel", Value::String(model_id.to_string()));
+    }
+
+    /// Upstream `getDefaultModelAndProvider` shape: (provider, model id).
+    pub fn default_model_and_provider(&self) -> Option<(String, String)> {
+        let provider = self
+            .settings
+            .get("defaultProvider")
+            .and_then(Value::as_str)?;
+        let model = self.settings.get("defaultModel").and_then(Value::as_str)?;
+        Some((provider.to_string(), model.to_string()))
+    }
+
+    /// Upstream `getDefaultThinkingLevel`.
+    pub fn default_thinking_level(&self) -> Option<String> {
+        self.settings
+            .get("defaultThinkingLevel")
+            .and_then(Value::as_str)
+            .map(|value| value.to_string())
+    }
+
+    /// Upstream `setDefaultThinkingLevel`.
+    pub fn set_default_thinking_level(&mut self, level: &str) {
+        self.set_global_setting("defaultThinkingLevel", Value::String(level.to_string()));
+    }
+
+    /// Upstream `getModelThinkingLevel` (keyed "provider/modelId").
+    pub fn model_thinking_level(&self, provider: &str, model_id: &str) -> Option<String> {
+        let key = format!("{provider}/{model_id}");
+        self.settings
+            .get("modelThinkingLevels")
+            .and_then(|map| map.get(&key))
+            .and_then(Value::as_str)
+            .map(|value| value.to_string())
+    }
+
+    /// Upstream `setModelThinkingLevel`.
+    pub fn set_model_thinking_level(&mut self, provider: &str, model_id: &str, level: &str) {
+        self.set_global_nested_setting(
+            "modelThinkingLevels",
+            &format!("{provider}/{model_id}"),
+            Value::String(level.to_string()),
+        );
+    }
+
+    /// Upstream `getEnabledModels`.
+    pub fn enabled_models(&self) -> Option<Vec<String>> {
+        self.settings.get("enabledModels").and_then(|value| {
+            value.as_array().map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(|entry| entry.as_str().map(|value| value.to_string()))
+                    .collect()
+            })
+        })
+    }
+
+    /// Upstream `setEnabledModels`.
+    pub fn set_enabled_models(&mut self, patterns: Option<Vec<String>>) {
+        let value = match patterns {
+            Some(patterns) => Value::Array(patterns.into_iter().map(Value::String).collect()),
+            None => Value::Null,
+        };
+        self.set_global_setting("enabledModels", value);
+    }
+}
+
+/// Steering/follow-up queue delivery mode (upstream
+/// "all" | "one-at-a-time").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueMode {
+    All,
+    OneAtATime,
+}
+
+impl QueueMode {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "all" => Some(Self::All),
+            "one-at-a-time" => Some(Self::OneAtATime),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::OneAtATime => "one-at-a-time",
+        }
+    }
+}

@@ -18,6 +18,7 @@ pub mod http_dispatcher;
 pub mod keybindings;
 pub mod messages;
 pub mod model_config;
+pub mod model_mutation;
 pub mod model_registry;
 pub mod model_resolver;
 pub mod model_runtime;
