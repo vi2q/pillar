@@ -889,6 +889,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pillar-server"
+version = "0.1.0"
+dependencies = [
+ "pillar-protocol",
+ "serde_json",
+]
+
+[[package]]
 name = "pillar-telemetry"
 version = "0.1.0"
 dependencies = [

@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/pillar-client",
     "crates/pillar-protocol",
+    "crates/pillar-server",
     "crates/pillar-telemetry",
     "crates/pillar-ai",
     "crates/pillar-agent",
