@@ -297,16 +297,84 @@ impl ExtensionRuntime {
 
     /// Call a loaded extension's setup function with the `@pillar`
     /// table (upstream the factory invocation). Extensions without a
-    /// setup function are skipped.
+    /// setup function are skipped. The API commit/discard contract is
+    /// the caller's: registration records land in the shared registry
+    /// as the setup body runs.
     pub fn run_setup(&mut self, extension: &LoadedExtension) -> Result<(), ExtensionLoadError> {
         if !extension.has_setup {
             return Ok(());
         }
-        // The setup call goes through a fresh evaluation of the same
-        // chunk result; the runtime keeps a handle registry keyed by
-        // path. The port re-loads for the setup call (host-driven in
-        // upstream via the retained export).
-        Ok(())
+        // Re-run the module chunk so its setup factory is re-created
+        // and invoke it with the @pillar table (upstream retains the
+        // export; the port's per-file VM re-evaluation is equivalent
+        // because each file is independent).
+        let setup: Value = self
+            .lua
+            .load(
+                &std::fs::read_to_string(&extension.path).map_err(|error| {
+                    ExtensionLoadError::Io(format!("{}: {error}", extension.path))
+                })?,
+            )
+            .call(())
+            .map_err(|error| ExtensionLoadError::Setup(format!("{}: {error}", extension.path)))?;
+        let function = match setup {
+            Value::Function(function) => function,
+            _ => return Ok(()),
+        };
+        function
+            .call(())
+            .map_err(|error| ExtensionLoadError::Setup(format!("{}: {error}", extension.path)))
+    }
+
+    /// The full load flow (upstream `loadExtensions`): type-check,
+    /// load, and run setup for each discovered path. Per-file failures
+    /// land in `errors` and the remaining files continue (one failing
+    /// file never aborts startup).
+    pub fn load_and_run(
+        &mut self,
+        discovered: &[crate::discovery::DiscoveredExtension],
+    ) -> (Vec<String>, Vec<(String, String)>) {
+        let mut loaded = Vec::new();
+        let mut errors = Vec::new();
+        for entry in discovered {
+            let path = entry.path.to_string_lossy().to_string();
+            let source = match std::fs::read_to_string(&entry.path) {
+                Ok(source) => source,
+                Err(error) => {
+                    errors.push((path.clone(), format!("Failed to load extension: {error}")));
+                    continue;
+                }
+            };
+            // The type-check runs first; a failing file is skipped
+            // with its diagnostics (upstream the same skip contract,
+            // surfaced through the load error list).
+            if let Err(diagnostics) = self.type_check(&path, &source) {
+                let summary = diagnostics
+                    .iter()
+                    .map(|diagnostic| {
+                        format!(
+                            "{}:{}: {}",
+                            diagnostic.line, diagnostic.column, diagnostic.message
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                errors.push((path.clone(), format!("type-check failed: {summary}")));
+                continue;
+            }
+            match self.load_extension(&path, &source) {
+                Ok(extension) => match self.run_setup(&extension) {
+                    Ok(()) => loaded.push(extension.path),
+                    Err(error) => {
+                        errors.push((path.clone(), format!("Failed to load extension: {error}")))
+                    }
+                },
+                Err(error) => {
+                    errors.push((path.clone(), format!("Failed to load extension: {error}")))
+                }
+            }
+        }
+        (loaded, errors)
     }
 }
 
@@ -970,5 +1038,113 @@ mod typecheck_tests {
             .type_check("broken.luau", "this is not ) luau")
             .unwrap_err();
         assert!(!diagnostics.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod load_and_run_tests {
+    use super::*;
+    use crate::discovery::{ExtensionOrigin, discover_extension_files};
+    use std::path::Path;
+
+    fn write_extension(dir: &Path, name: &str, body: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join(name), body).unwrap();
+    }
+
+    /// One good extension loads and registers; a type-check failure
+    /// and a setup error land in errors without stopping the others.
+    #[test]
+    fn per_file_failures_do_not_stop_the_flow() {
+        let temp = tempfile::tempdir().unwrap();
+        let global = temp.path().join("global");
+        write_extension(
+            &global,
+            "good.luau",
+            r#"
+            local pillar = require("@pillar")
+            pillar.set_session_name("registered")
+            return nil
+        "#,
+        );
+        write_extension(
+            &global,
+            "typo.luau",
+            r#"
+            --!strict
+            pillar.set_session_name(42)
+            return nil
+        "#,
+        );
+        write_extension(
+            &global,
+            "setup_error.luau",
+            r#"
+            local pillar = require("@pillar")
+            error("setup exploded")
+        "#,
+        );
+        let discovered = discover_extension_files(Some(&global), None);
+        let mut runtime = ExtensionRuntime::new();
+        let (loaded, errors) = runtime.load_and_run(&discovered);
+        assert_eq!(loaded.len(), 1, "loaded={loaded:?} errors={errors:?}");
+        assert_eq!(errors.len(), 2, "loaded={loaded:?} errors={errors:?}");
+        // The good extension's registrations landed.
+        assert_eq!(
+            runtime.registry().session_names,
+            vec!["registered".to_string()]
+        );
+        // The type-check failure message lists diagnostics.
+        let typo = errors
+            .iter()
+            .find(|(path, _)| path.ends_with("typo.luau"))
+            .expect("typo error recorded");
+        assert!(typo.1.starts_with("type-check failed"));
+        // The setup error uses the upstream prefix.
+        let setup = errors
+            .iter()
+            .find(|(path, _)| path.ends_with("setup_error.luau"))
+            .expect("setup error recorded");
+        assert!(setup.1.starts_with("Failed to load extension: "));
+    }
+
+    /// Global-before-project ordering flows through load_and_run.
+    #[test]
+    fn discovery_order_flows_through() {
+        let temp = tempfile::tempdir().unwrap();
+        let global = temp.path().join("global");
+        let project = temp.path().join("project");
+        write_extension(&global, "a.luau", "return nil");
+        write_extension(&project, "b.luau", "return nil");
+        let discovered = discover_extension_files(Some(&global), Some(&project));
+        assert_eq!(discovered[0].origin, ExtensionOrigin::Global);
+        assert_eq!(discovered[1].origin, ExtensionOrigin::Project);
+        let mut runtime = ExtensionRuntime::new();
+        let (loaded, errors) = runtime.load_and_run(&discovered);
+        assert!(errors.is_empty());
+        assert_eq!(loaded.len(), 2);
+    }
+
+    /// An empty scope list yields an empty result.
+    #[test]
+    fn empty_discovery_yields_empty() {
+        let mut runtime = ExtensionRuntime::new();
+        let (loaded, errors) = runtime.load_and_run(&[]);
+        assert!(loaded.is_empty());
+        assert!(errors.is_empty());
+    }
+
+    /// Missing files on disk surface as Io-path errors.
+    #[test]
+    fn missing_files_surface_as_errors() {
+        let mut runtime = ExtensionRuntime::new();
+        let missing = vec![crate::discovery::DiscoveredExtension {
+            path: std::path::PathBuf::from("/nonexistent/ext.luau"),
+            origin: ExtensionOrigin::Global,
+        }];
+        let (loaded, errors) = runtime.load_and_run(&missing);
+        assert!(loaded.is_empty());
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].1.starts_with("Failed to load extension: "));
     }
 }
