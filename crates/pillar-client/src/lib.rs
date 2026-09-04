@@ -7,6 +7,7 @@
 //! the pure client state machine over pillar-protocol types.
 
 pub mod connection;
+pub mod pi_client;
 
 pub mod session_handle;
 pub mod unix;
