@@ -9,3 +9,4 @@ pub mod server;
 pub mod sessions;
 pub mod snapshots;
 pub mod testing;
+pub mod testing_client;
