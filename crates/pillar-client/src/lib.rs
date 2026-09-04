@@ -8,6 +8,9 @@
 
 pub mod connection;
 
+pub mod session_handle;
+pub mod unix;
+
 use std::collections::{HashMap, HashSet};
 
 use pillar_protocol::schemas::{
