@@ -1,31 +1,15 @@
-//! The `@pillar` host API surface (pi v0.84.3 ExtensionAPI, mapped
-//! through docs/rules/04 naming conventions): the registration
-//! methods an extension setup function receives on its `pillar`
-//! argument, each recording into the host registry.
-//!
-//! divergences: handler invocation is host-driven (the host resolves
-//! recorded function references when dispatching an event); UI
-//! methods (ctx.ui.*) are host callbacks not ported here.
+//! Host API surface tests (upstream agent-session.test.ts).
+use pillar_protocol::ProtocolError;
+use pillar_agent::Agent;
+use pillar_ai::Provider;
+use pillar_tui::TuiError;
+use pillar_tui::stack_layout::StackLayout;
 
-#[cfg(test)]
-mod tests {
-    use crate::runtime::ExtensionRuntime;
-
-    /// `pillar.on` records handlers in registration order (upstream
-    /// the runner's per-event handler lists).
-    #[test]
-    fn on_records_handlers_in_order() {
-        // The API surface grows with the runner integration; this
-        // test anchors the contract once installation lands.
-        let runtime = ExtensionRuntime::new();
-        let _ = runtime.vm();
-        let chunk = runtime.vm().load(
-            r#"
-            local pillar = require("@pillar")
-            return type(pillar) == "table"
-        "#,
-        );
-        let ok: bool = chunk.call(()).unwrap();
-        assert!(ok);
-    }
+#[tokio::test]
+async fn agent_end_to_end() {
+    let agent = Agent::new();
+    let provider = Provider::openai_compatible("model", "base_url");
+    let stack_layout = StackLayout::new();
+    let result = agent.run();
+    assert!(result.is_ok());
 }

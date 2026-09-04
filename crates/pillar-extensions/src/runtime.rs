@@ -10,7 +10,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use luaur_rt::{Function, Lua, LuaSerdeExt, TypeDiagnostic, Value, check_with_definitions};
+use luaur_rt::{check_with_definitions, Function, Lua, LuaSerdeExt, TypeDiagnostic, Value};
 
 /// Registration records captured from `pillar.*` API calls (upstream
 /// the ExtensionAPI's internal registries).
@@ -994,11 +994,10 @@ mod typecheck_tests {
     #[test]
     fn clean_extension_passes() {
         let runtime = ExtensionRuntime::new();
-        assert!(
-            runtime
-                .type_check(
-                    "good.luau",
-                    r#"
+        assert!(runtime
+            .type_check(
+                "good.luau",
+                r#"
                 --!strict
                 local pillar = require("@pillar")
                 pillar.on("tool_call", function(event)
@@ -1006,9 +1005,8 @@ mod typecheck_tests {
                 end)
                 return nil
             "#,
-                )
-                .is_ok()
-        );
+            )
+            .is_ok());
     }
 
     /// Global `declare pillar` definitions type-check direct global
@@ -1100,7 +1098,7 @@ mod typecheck_tests {
 #[cfg(test)]
 mod load_and_run_tests {
     use super::*;
-    use crate::discovery::{ExtensionOrigin, discover_extension_files};
+    use crate::discovery::{discover_extension_files, ExtensionOrigin};
     use std::path::Path;
 
     fn write_extension(dir: &Path, name: &str, body: &str) {
