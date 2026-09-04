@@ -8,8 +8,9 @@
 //! with luaur-analysis lands with the analysis integration; async
 //! handler invocation is host-driven (the runtime records calls).
 
-use luaur_rt::Lua;
-use serde_json::Value;
+use std::sync::{Arc, Mutex};
+
+use luaur_rt::{Function, Lua, LuaSerdeExt, Value};
 
 /// Registration records captured from `pillar.*` API calls (upstream
 /// the ExtensionAPI's internal registries).
@@ -18,18 +19,18 @@ pub struct HostRegistry {
     /// `pillar.on(event, handler)` — handler identity is
     /// (extension, function reference index).
     pub event_handlers: Vec<(String, String)>,
-    /// `pillar.register_tool(def)` — the raw definition table.
-    pub tools: Vec<Value>,
+    /// `pillar.register_tool(def)` — JSON-normalized definition.
+    pub tools: Vec<serde_json::Value>,
     /// `pillar.register_command(name, opts)`.
-    pub commands: Vec<(String, Value)>,
+    pub commands: Vec<(String, serde_json::Value)>,
     /// `pillar.register_shortcut(key, opts)`.
-    pub shortcuts: Vec<(String, Value)>,
+    pub shortcuts: Vec<(String, serde_json::Value)>,
     /// `pillar.register_flag(name, opts)`.
-    pub flags: Vec<(String, Value)>,
+    pub flags: Vec<(String, serde_json::Value)>,
     /// `pillar.append_entry(type, data)`.
-    pub appended_entries: Vec<(String, Option<Value>)>,
+    pub appended_entries: Vec<(String, Option<serde_json::Value>)>,
     /// `pillar.send_message(msg)` / `send_user_message`.
-    pub messages: Vec<Value>,
+    pub messages: Vec<serde_json::Value>,
     /// `pillar.set_session_name(name)`.
     pub session_names: Vec<String>,
 }
@@ -41,6 +42,10 @@ impl Default for HostRegistry {
 }
 
 impl HostRegistry {
+    pub fn shared() -> SharedRegistry {
+        Arc::new(Mutex::new(Self::new()))
+    }
+
     pub fn new() -> Self {
         Self {
             event_handlers: Vec::new(),
@@ -103,10 +108,13 @@ impl std::fmt::Display for ExtensionLoadError {
 
 impl std::error::Error for ExtensionLoadError {}
 
+/// Shared registry handle (native closures capture `'static` data).
+pub type SharedRegistry = Arc<Mutex<HostRegistry>>;
+
 /// The process-wide extension runtime.
 pub struct ExtensionRuntime {
     lua: Lua,
-    pub registry: HostRegistry,
+    registry: SharedRegistry,
 }
 
 impl Default for ExtensionRuntime {
@@ -120,9 +128,18 @@ impl ExtensionRuntime {
     /// the ExtensionAPI construction).
     pub fn new() -> Self {
         let lua = Lua::new();
-        let registry = HostRegistry::new();
+        let registry = HostRegistry::shared();
         install_pillar_api(&lua, &registry);
         Self { lua, registry }
+    }
+
+    /// A snapshot of the registration records (upstream reading the
+    /// runner's registries after setup runs).
+    pub fn registry(&self) -> HostRegistry {
+        self.registry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     /// VM access for the host API installation and tests.
@@ -177,14 +194,160 @@ impl ExtensionRuntime {
 /// Install the `@pillar` module and its registration functions
 /// (upstream the ExtensionAPI methods; each records into the shared
 /// registry).
-fn install_pillar_api(lua: &Lua, registry: &HostRegistry) {
+fn install_pillar_api(lua: &Lua, registry: &SharedRegistry) {
     let module = lua.create_table();
-    let _ = registry;
-    // Registration functions are installed as the host grows the
-    // runner integration; the module alias exists from construction
-    // so `require("@pillar")` resolves.
+
+    // pillar.on(event, handler)
+    let handlers = Arc::clone(registry);
+    module
+        .set(
+            "on",
+            Function::wrap(move |event: String, handler: Value| {
+                let name = match &handler {
+                    Value::Function(function) => format!("{:p}", function.to_pointer()),
+                    other => format!("<{}>", other.type_name()),
+                };
+                handlers
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .event_handlers
+                    .push((event, name));
+                Ok::<(), luaur_rt::Error>(())
+            }),
+        )
+        .expect("set pillar.on");
+
+    // pillar.register_tool(def): the definition table converts to
+    // JSON at the boundary (payload keys snake_cased mechanically).
+    let tools = Arc::clone(registry);
+    let lua_tools = lua.clone();
+    module
+        .set(
+            "register_tool",
+            Function::wrap(move |definition: Value| {
+                let json = lua_tools.from_value::<serde_json::Value>(definition)?;
+                tools
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .tools
+                    .push(json);
+                Ok::<(), luaur_rt::Error>(())
+            }),
+        )
+        .expect("set pillar.register_tool");
+
+    // pillar.register_command(name, opts)
+    let commands = Arc::clone(registry);
+    let lua_commands = lua.clone();
+    module
+        .set(
+            "register_command",
+            Function::wrap(move |name: String, opts: Value| {
+                let json = lua_commands.from_value::<serde_json::Value>(opts)?;
+                commands
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .commands
+                    .push((name, json));
+                Ok::<(), luaur_rt::Error>(())
+            }),
+        )
+        .expect("set pillar.register_command");
+
+    // pillar.register_shortcut(key, opts)
+    let shortcuts = Arc::clone(registry);
+    let lua_shortcuts = lua.clone();
+    module
+        .set(
+            "register_shortcut",
+            Function::wrap(move |key: String, opts: Value| {
+                let json = lua_shortcuts.from_value::<serde_json::Value>(opts)?;
+                shortcuts
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .shortcuts
+                    .push((key, json));
+                Ok::<(), luaur_rt::Error>(())
+            }),
+        )
+        .expect("set pillar.register_shortcut");
+
+    // pillar.register_flag(name, opts)
+    let flags = Arc::clone(registry);
+    let lua_flags = lua.clone();
+    module
+        .set(
+            "register_flag",
+            Function::wrap(move |name: String, opts: Value| {
+                let json = lua_flags.from_value::<serde_json::Value>(opts)?;
+                flags
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .flags
+                    .push((name, json));
+                Ok::<(), luaur_rt::Error>(())
+            }),
+        )
+        .expect("set pillar.register_flag");
+
+    // pillar.append_entry(type, data?)
+    let entries = Arc::clone(registry);
+    let lua_entries = lua.clone();
+    module
+        .set(
+            "append_entry",
+            Function::wrap(move |kind: String, data: Value| {
+                let json = match data {
+                    Value::Nil => None,
+                    other => Some(lua_entries.from_value::<serde_json::Value>(other)?),
+                };
+                entries
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .appended_entries
+                    .push((kind, json));
+                Ok::<(), luaur_rt::Error>(())
+            }),
+        )
+        .expect("set pillar.append_entry");
+
+    // pillar.send_message(msg) / pillar.send_user_message(msg)
+    for name in ["send_message", "send_user_message"] {
+        let sink = Arc::clone(registry);
+        let sink_lua = lua.clone();
+        module
+            .set(
+                name,
+                Function::wrap(move |message: Value| {
+                    let json = sink_lua.from_value::<serde_json::Value>(message)?;
+                    sink.lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .messages
+                        .push(json);
+                    Ok::<(), luaur_rt::Error>(())
+                }),
+            )
+            .expect("set pillar send");
+    }
+
+    // pillar.set_session_name(name)
+    let names = Arc::clone(registry);
+    module
+        .set(
+            "set_session_name",
+            Function::wrap(move |name: String| {
+                names
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .session_names
+                    .push(name);
+                Ok::<(), luaur_rt::Error>(())
+            }),
+        )
+        .expect("set pillar.set_session_name");
+
+    // Registration cannot fail for a fresh VM; surface for clarity.
     if let Err(error) = lua.register_module("@pillar", module) {
-        // Registration cannot fail for a fresh VM; surface for clarity.
         panic!("register @pillar failed: {error}");
     }
 }
@@ -260,5 +423,173 @@ mod tests {
         let chunk = runtime.lua.load("return require('@other')");
         let result: Result<bool, _> = chunk.call(());
         assert!(result.is_err());
+    }
+}
+
+#[cfg(test)]
+mod registration_tests {
+    use super::*;
+
+    /// `pillar.on` records handlers in registration order with a
+    /// stable per-function identity (upstream the runner's per-event
+    /// handler lists).
+    #[test]
+    fn on_records_handlers_in_registration_order() {
+        let mut runtime = ExtensionRuntime::new();
+        runtime
+            .load_extension(
+                "test.luau",
+                r#"
+                local pillar = require("@pillar")
+                pillar.on("tool_call", function() end)
+                pillar.on("tool_call", function() end)
+                pillar.on("session_start", function() end)
+                return nil
+            "#,
+            )
+            .unwrap();
+        let registry = runtime.registry();
+        let tool_call = registry.handlers_for("tool_call");
+        assert_eq!(tool_call.len(), 2);
+        assert_ne!(tool_call[0], tool_call[1], "distinct handlers");
+        assert_eq!(registry.handlers_for("session_start").len(), 1);
+        assert!(registry.handlers_for("unknown").is_empty());
+    }
+
+    /// `pillar.register_tool` captures the definition table.
+    #[test]
+    fn register_tool_captures_definition() {
+        let mut runtime = ExtensionRuntime::new();
+        runtime
+            .load_extension(
+                "greet.luau",
+                r#"
+                local pillar = require("@pillar")
+                pillar.register_tool({
+                    name = "greet",
+                    label = "Greet",
+                    description = "Greet someone by name",
+                })
+                return nil
+            "#,
+            )
+            .unwrap();
+        let registry = runtime.registry();
+        assert_eq!(registry.tools.len(), 1);
+        assert_eq!(registry.tools[0]["name"], "greet");
+        assert_eq!(registry.tools[0]["label"], "Greet");
+    }
+
+    /// `pillar.register_command(name, opts)` keeps the name and opts.
+    #[test]
+    fn register_command_keeps_name_and_opts() {
+        let mut runtime = ExtensionRuntime::new();
+        runtime
+            .load_extension(
+                "cmd.luau",
+                r#"
+                local pillar = require("@pillar")
+                pillar.register_command("hello", { description = "Say hello" })
+                return nil
+            "#,
+            )
+            .unwrap();
+        let registry = runtime.registry();
+        assert_eq!(registry.commands.len(), 1);
+        assert_eq!(registry.commands[0].0, "hello");
+        assert_eq!(registry.commands[0].1["description"], "Say hello");
+    }
+
+    /// `pillar.append_entry(type, data?)` distinguishes nil data.
+    #[test]
+    fn append_entry_handles_nil_data() {
+        let mut runtime = ExtensionRuntime::new();
+        runtime
+            .load_extension(
+                "entries.luau",
+                r#"
+                local pillar = require("@pillar")
+                pillar.append_entry("note", { text = "hi" })
+                pillar.append_entry("bare", nil)
+                return nil
+            "#,
+            )
+            .unwrap();
+        let registry = runtime.registry();
+        assert_eq!(registry.appended_entries.len(), 2);
+        assert_eq!(registry.appended_entries[0].0, "note");
+        assert_eq!(
+            registry.appended_entries[0].1.as_ref().unwrap()["text"],
+            "hi"
+        );
+        assert_eq!(registry.appended_entries[1].0, "bare");
+        assert_eq!(registry.appended_entries[1].1, None);
+    }
+
+    /// `pillar.set_session_name` records names in call order (upstream
+    /// the session_info_changed flow).
+    #[test]
+    fn set_session_name_records_calls() {
+        let mut runtime = ExtensionRuntime::new();
+        runtime
+            .load_extension(
+                "name.luau",
+                r#"
+                local pillar = require("@pillar")
+                pillar.set_session_name("first")
+                pillar.set_session_name("second")
+                return nil
+            "#,
+            )
+            .unwrap();
+        let registry = runtime.registry();
+        assert_eq!(
+            registry.session_names,
+            vec!["first".to_string(), "second".to_string()]
+        );
+    }
+
+    /// send_message and send_user_message share the message sink
+    /// (upstream both deliver to the session's message queue).
+    #[test]
+    fn send_methods_share_the_sink() {
+        let mut runtime = ExtensionRuntime::new();
+        runtime
+            .load_extension(
+                "send.luau",
+                r#"
+                local pillar = require("@pillar")
+                pillar.send_message({ role = "user", content = "a" })
+                pillar.send_user_message({ role = "user", content = "b" })
+                return nil
+            "#,
+            )
+            .unwrap();
+        let registry = runtime.registry();
+        assert_eq!(registry.messages.len(), 2);
+        assert_eq!(registry.messages[0]["content"], "a");
+        assert_eq!(registry.messages[1]["content"], "b");
+    }
+
+    /// Shortcut and flag registration record their keys.
+    #[test]
+    fn shortcut_and_flag_registration() {
+        let mut runtime = ExtensionRuntime::new();
+        runtime
+            .load_extension(
+                "keys.luau",
+                r#"
+                local pillar = require("@pillar")
+                pillar.register_shortcut("ctrl+g", { description = "Go" })
+                pillar.register_flag("verbose", { description = "Verbose" })
+                return nil
+            "#,
+            )
+            .unwrap();
+        let registry = runtime.registry();
+        assert_eq!(registry.shortcuts.len(), 1);
+        assert_eq!(registry.shortcuts[0].0, "ctrl+g");
+        assert_eq!(registry.flags.len(), 1);
+        assert_eq!(registry.flags[0].0, "verbose");
     }
 }
