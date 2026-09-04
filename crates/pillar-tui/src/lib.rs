@@ -13,6 +13,7 @@ pub mod latex;
 pub mod layout;
 pub mod loaders;
 pub mod markdown;
+pub mod overlay;
 pub mod select_list;
 pub mod settings_list;
 pub mod stack_layout;

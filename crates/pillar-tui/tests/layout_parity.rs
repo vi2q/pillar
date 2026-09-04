@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 
 use pillar_tui::layout::{
-    get_scroll_views_at, get_scrollbar_geometry, render_layout_frame, Align, LayoutNode, StackEntry,
+    Align, LayoutNode, StackEntry, get_scroll_views_at, get_scrollbar_geometry, render_layout_frame,
 };
 use pillar_tui::loaders::{ScrollView, ScrollViewOptions, ScrollViewScrollbar};
 use pillar_tui::text_utils::{strip_terminal_sequences, visible_width};
