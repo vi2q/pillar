@@ -23,3 +23,4 @@ pub mod stdin_buffer;
 pub mod terminal;
 pub mod terminal_image;
 pub mod text_utils;
+pub mod virtual_terminal;
