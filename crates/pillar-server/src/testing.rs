@@ -284,6 +284,12 @@ pub struct TestServerService {
     pub locked: HashSet<String>,
     pub runtime_count: HashMap<String, usize>,
     pub last_created_id: Option<String>,
+    /// Shared runtime lifecycle log (upstream tests inspect
+    /// runtime.disposeCount; the port records through a closure).
+    pub event_log: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    /// Shared lock registry so runtime dispose can release it
+    /// (upstream the onDispose closure does `locked.delete(id)`).
+    locked_registry: std::sync::Arc<std::sync::Mutex<HashSet<String>>>,
     /// Upstream `delayNextList`: when set, the next list_sessions
     /// reports it as entered and holds.
     pub pending_list_delay: bool,
@@ -303,6 +309,8 @@ impl TestServerService {
             locked: HashSet::new(),
             runtime_count: HashMap::new(),
             last_created_id: None,
+            event_log: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            locked_registry: std::sync::Arc::new(std::sync::Mutex::new(HashSet::new())),
             pending_list_delay: false,
             list_delay_entered: false,
         }
@@ -363,43 +371,105 @@ impl TestServerService {
         self.pending_list_delay = false;
     }
 
+    fn is_locked(&self, id: &str) -> bool {
+        self.locked.contains(id)
+            || self
+                .locked_registry
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .contains(id)
+    }
+
+    fn lock_session(&mut self, id: &str) {
+        self.locked_registry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(id.to_string());
+    }
+
     fn acquire(&mut self, id: &str) -> Result<Box<dyn PiSessionRuntime>, ServerError> {
-        let Some(stored) = self.sessions.get_mut(id) else {
+        let stored = self.sessions.get(id).cloned();
+        let Some(stored) = stored else {
             return Err(ServerError::new(
                 ProtocolErrorCode::InternalError,
                 format!("Unknown session: {id}"),
             ));
         };
-        self.locked.insert(id.to_string());
-        let snapshot = stored.clone();
+        self.lock_session(id);
+        let snapshot = stored;
         let counter = self.runtime_count.entry(id.to_string()).or_default();
         *counter += 1;
-        Ok(Box::new(TestSessionRuntime::new(snapshot, Box::new(|| ()))))
+        let log = self.event_log.clone();
+        let log_id = id.to_string();
+        let registry = self.locked_registry.clone();
+        Ok(Box::new(TestSessionRuntime::new(
+            snapshot,
+            Box::new(move || {
+                log.lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(format!("dispose:{log_id}"));
+                registry
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .remove(&log_id);
+            }),
+        )))
     }
 
     /// Release the lock for a session after its runtime is dropped
     /// (upstream the onDispose closure; explicit in the port).
     pub fn release_lock(&mut self, id: &str) {
         self.locked.remove(id);
+        self.locked_registry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(id);
     }
 
     /// Concrete-typed variants for tests and drivers that need the
     /// scripted surface (finish_prompt, steers, emit_*).
     pub fn acquire_test_runtime(&mut self, id: &str) -> Result<TestSessionRuntime, ServerError> {
-        let Some(stored) = self.sessions.get(id) else {
+        let stored = self.sessions.get(id).cloned();
+        let Some(stored) = stored else {
             return Err(ServerError::new(
                 ProtocolErrorCode::NotFound,
                 format!("Unknown session: {id}"),
             ));
         };
-        if self.locked.contains(id) {
+        if self.is_locked(id) {
             return Err(ServerError::new(
                 ProtocolErrorCode::SessionLocked,
                 format!("Session is locked: {id}"),
             ));
         }
-        self.locked.insert(id.to_string());
-        Ok(TestSessionRuntime::new(stored.clone(), Box::new(|| ())))
+        self.lock_session(id);
+        let snapshot = stored.clone();
+        let log = self.event_log.clone();
+        let log_id = id.to_string();
+        let registry = self.locked_registry.clone();
+        Ok(TestSessionRuntime::new(
+            snapshot,
+            Box::new(move || {
+                log.lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(format!("dispose:{log_id}"));
+                registry
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .remove(&log_id);
+            }),
+        ))
+    }
+
+    /// Recorded runtime lifecycle events ("dispose:<id>"); the port's
+    /// stand-in for upstream's per-runtime disposeCount inspection.
+    pub fn dispose_count(&self, id: &str) -> usize {
+        self.event_log
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .filter(|entry| entry.as_str() == format!("dispose:{id}").as_str())
+            .count()
     }
 
     /// Upstream `PiServerService.listModels` (part of the service
@@ -464,7 +534,7 @@ impl PiServerService for TestServerService {
                 format!("Unknown session: {session_id}"),
             ));
         }
-        if self.locked.contains(session_id) {
+        if self.is_locked(session_id) {
             return Err(ServerError::new(
                 ProtocolErrorCode::SessionLocked,
                 format!("Session is locked: {session_id}"),
@@ -548,7 +618,7 @@ mod tests {
             ProtocolErrorCode::NotFound
         );
         let runtime = service.acquire_test_runtime("session-1").unwrap();
-        assert!(service.locked.contains("session-1"));
+        assert!(service.is_locked("session-1"));
         assert_eq!(
             match service.open_session("session-1") {
                 Ok(_) => panic!("expected error"),
@@ -575,7 +645,7 @@ mod tests {
         };
         let _first = service.create_session(&options).unwrap();
         assert_eq!(service.last_created_id.as_deref(), Some("abc"));
-        assert!(service.locked.contains("abc"));
+        assert!(service.is_locked("abc"));
         assert_eq!(
             match service.create_session(&options) {
                 Ok(_) => panic!("expected error"),
@@ -596,6 +666,7 @@ mod tests {
         assert_eq!(snapshot.name.as_deref(), Some("Named"));
         assert_eq!(snapshot.cwd, "/work");
         assert_eq!(snapshot.model, session_ref());
+        assert!(service.is_locked("abc"));
     }
 
     /// Upstream anchor: prompt appends a user item, moves to turn, and

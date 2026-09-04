@@ -12,7 +12,7 @@ use pillar_protocol::codec::ClientMessageDecoder;
 use pillar_protocol::codec::encode_server_message;
 use pillar_protocol::framing::FrameDecoderOptions;
 use pillar_protocol::schemas::{
-    ClientMessage, CommandResult, PROTOCOL_VERSION, ProtocolError, ProtocolErrorCode,
+    ClientMessage, Command, CommandResult, PROTOCOL_VERSION, ProtocolError, ProtocolErrorCode,
     RequestEnvelope, ServerMessage, is_supported_protocol_version, parse_client_message,
 };
 
@@ -35,6 +35,20 @@ pub enum Stage {
 
 /// A server-side connection (upstream `ConnectionState` with its
 /// decoder).
+/// Server-side durable id allocation (upstream uuidv7()): a
+/// time-ordered id without external crates.
+fn allocate_session_id() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let counter = ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    format!("session-{nanos:x}-{counter:04x}")
+}
+
+static ID_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 pub struct ServerConnection {
     pub id: String,
     pub stage: Stage,
@@ -376,10 +390,21 @@ impl PiServer {
             closed: false,
             session_ids: session_ids.clone(),
         };
-        // The host maps ids; execute against the session manager.
-        let result =
-            self.sessions
-                .execute_command(&mut state, &envelope.request, service, sink, "");
+        // The host maps ids; execute against the session manager. The
+        // server allocates durable ids for create commands (upstream
+        // uuidv7 generated inside the server).
+        let new_session_id = if matches!(envelope.request, Command::Create { .. }) {
+            allocate_session_id()
+        } else {
+            String::new()
+        };
+        let result = self.sessions.execute_command(
+            &mut state,
+            &envelope.request,
+            service,
+            sink,
+            &new_session_id,
+        );
         if let Some(connection) = self.find_connection(connection_id) {
             connection.session_ids = state.session_ids;
         }
