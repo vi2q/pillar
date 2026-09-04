@@ -11,6 +11,7 @@
 //! surface is snake_case (pillar.on / pillar.register_tool) per the
 //! naming-convention table.
 
+pub mod bridge;
 pub mod discovery;
 pub mod host_api;
 pub mod runtime;

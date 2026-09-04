@@ -1029,6 +1029,7 @@ name = "pillar-extensions"
 version = "0.1.0"
 dependencies = [
  "luaur-rt",
+ "pillar-coding-agent",
  "serde",
  "serde_json",
  "tempfile",
