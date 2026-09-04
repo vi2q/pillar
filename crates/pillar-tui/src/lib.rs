@@ -10,6 +10,7 @@ pub mod input;
 pub mod keybindings;
 pub mod keys;
 pub mod latex;
+pub mod layout;
 pub mod loaders;
 pub mod markdown;
 pub mod select_list;

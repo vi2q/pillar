@@ -3,8 +3,8 @@
 use std::time::{Duration, Instant};
 
 use pillar_tui::stdin_buffer::{
-    extract_complete_sequences, is_complete_csi_sequence, is_complete_sequence, SequenceStatus,
-    StdinBuffer,
+    SequenceStatus, StdinBuffer, extract_complete_sequences, is_complete_csi_sequence,
+    is_complete_sequence,
 };
 
 fn now() -> Instant {
