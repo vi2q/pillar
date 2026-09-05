@@ -13,7 +13,6 @@
 
 pub mod bridge;
 pub mod discovery;
-pub mod host_api;
 pub mod loader;
 pub mod runtime;
 

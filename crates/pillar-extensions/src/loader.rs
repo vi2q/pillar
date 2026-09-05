@@ -19,9 +19,7 @@ use crate::runtime::ExtensionRuntime;
 pub type SharedRuntime = Arc<Mutex<ExtensionRuntime>>;
 
 /// Create a shared runtime and install the host exec callback.
-pub fn create_shared_runtime(
-    exec_host: Option<crate::runtime::ExecHost>,
-) -> SharedRuntime {
+pub fn create_shared_runtime(exec_host: Option<crate::runtime::ExecHost>) -> SharedRuntime {
     let runtime = Arc::new(Mutex::new(ExtensionRuntime::new()));
     if let Some(exec_host) = exec_host {
         runtime
@@ -36,30 +34,26 @@ pub fn create_shared_runtime(
 /// type-checks, compiles, runs the setup body, and returns the
 /// bridged `HostExtension`. Per the loader contract, a `Ok(None)`
 /// means "not an extension" and errors are per-path strings.
-pub fn luau_module_loader(
-    runtime: &SharedRuntime,
-) -> impl FnMut(&str) -> LoadOutcome + '_ {
+pub fn luau_module_loader(runtime: &SharedRuntime) -> impl FnMut(&str) -> LoadOutcome + '_ {
     move |path: &str| {
         let source = std::fs::read_to_string(path)
             .map_err(|error| format!("Failed to load extension: {error}"))?;
         let mut guard = runtime
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        guard
-            .type_check(path, &source)
-            .map_err(|diagnostics| {
-                let summary = diagnostics
-                    .iter()
-                    .map(|diagnostic| {
-                        format!(
-                            "{}:{}: {}",
-                            diagnostic.line, diagnostic.column, diagnostic.message
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("; ");
-                format!("type-check failed: {summary}")
-            })?;
+        guard.type_check(path, &source).map_err(|diagnostics| {
+            let summary = diagnostics
+                .iter()
+                .map(|diagnostic| {
+                    format!(
+                        "{}:{}: {}",
+                        diagnostic.line, diagnostic.column, diagnostic.message
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            format!("type-check failed: {summary}")
+        })?;
         let loaded = guard
             .load_extension(path, &source)
             .map_err(|error| format!("Failed to load extension: {error}"))?;
@@ -122,8 +116,7 @@ mod tests {
         "#,
         );
         let runtime = create_shared_runtime(None);
-        let (extensions, errors) =
-            discover_and_load(&runtime, Some(&global), None);
+        let (extensions, errors) = discover_and_load(&runtime, Some(&global), None);
         assert!(errors.is_empty(), "errors={errors:?}");
         assert_eq!(extensions.len(), 1);
         assert_eq!(extensions[0].commands.len(), 1);
@@ -171,9 +164,9 @@ mod tests {
             return nil
         "#,
         );
-        let runtime = create_shared_runtime(Some(Arc::new(|command: &str, _: &[String]| {
-            serde_json::json!({ "stdout": command, "stderr": "", "code": 0, "killed": false })
-        })));
+        let runtime = create_shared_runtime(Some(Arc::new(
+            |command: &str, _: &[String]| serde_json::json!({ "stdout": command, "stderr": "", "code": 0, "killed": false }),
+        )));
         let (extensions, errors) = discover_and_load(&runtime, Some(&global), None);
         assert!(errors.is_empty(), "errors={errors:?}");
         assert_eq!(extensions.len(), 1);
@@ -199,6 +192,8 @@ mod tests {
         let outcome = loader(&good.to_string_lossy());
         assert!(matches!(outcome, Ok(Some(_))));
         let outcome = loader(&"/nonexistent/x.luau".to_string());
-        assert!(matches!(outcome, Err(message) if message.starts_with("Failed to load extension: ")));
+        assert!(
+            matches!(outcome, Err(message) if message.starts_with("Failed to load extension: "))
+        );
     }
 }
