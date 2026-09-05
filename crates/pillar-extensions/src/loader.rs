@@ -60,6 +60,10 @@ pub fn luau_module_loader(runtime: &SharedRuntime) -> impl FnMut(&str) -> LoadOu
         guard
             .run_setup(&loaded)
             .map_err(|error| format!("Failed to load extension: {error}"))?;
+        // Drop the guard before bridging: `bridge_to_runner` locks the
+        // same non-reentrant mutex (docs/INSTRUCTIONS.md #1 — don't
+        // hold a guard across a call that re-locks).
+        drop(guard);
         let extension = bridge_to_runner(path, runtime)
             .map_err(|error| format!("Failed to load extension: {error}"))?;
         Ok(Some(extension))
