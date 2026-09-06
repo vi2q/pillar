@@ -15,8 +15,8 @@ use std::path::PathBuf;
 use pillar_ai::types::AssistantMessage;
 
 use crate::core::messages::{CodingAgentMessage, CustomMessage};
-use crate::core::prompt_templates::{expand_prompt_template, PromptTemplate};
-use crate::core::system_prompt::{build_system_prompt, BuildSystemPromptOptions, Skill};
+use crate::core::prompt_templates::{PromptTemplate, expand_prompt_template};
+use crate::core::system_prompt::{BuildSystemPromptOptions, Skill, build_system_prompt};
 
 // ============================================================================
 // Skill Block Parsing

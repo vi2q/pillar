@@ -12,6 +12,7 @@ pub mod diagnostics;
 pub mod event_bus;
 pub mod export_html;
 pub mod extensions_loader;
+pub mod extensions_luau;
 pub mod extensions_runner;
 pub mod extensions_types;
 pub mod extras;

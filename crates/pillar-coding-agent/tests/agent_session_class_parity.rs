@@ -259,6 +259,20 @@ fn make_session_with_model(
     settings_extra: serde_json::Value,
     model: FauxModelRef,
 ) -> (Arc<AgentSession>, Arc<AtomicU32>) {
+    make_session_with_model_and_runner(
+        stream_fn,
+        settings_extra,
+        model,
+        Arc::new(Mutex::new(ExtensionRunner::new(Vec::new()))),
+    )
+}
+
+fn make_session_with_model_and_runner(
+    stream_fn: pillar_agent::StreamFn,
+    settings_extra: serde_json::Value,
+    model: FauxModelRef,
+    extension_runner: Arc<Mutex<ExtensionRunner>>,
+) -> (Arc<AgentSession>, Arc<AtomicU32>) {
     let call_count = Arc::new(AtomicU32::new(0));
     let mut options = AgentOptions::new(stream_fn);
     options.initial_state = Some(AgentState {
@@ -309,7 +323,7 @@ fn make_session_with_model(
         String::new(),
         resource_loader,
         Arc::new(runtime),
-        Arc::new(Mutex::new(ExtensionRunner::new(Vec::new()))),
+        extension_runner,
     ));
     (Arc::new(session), call_count)
 }
@@ -870,4 +884,302 @@ async fn threshold_compaction_runs_and_rebuilds_context() {
         )),
         "recent user message kept after compaction"
     );
+}
+
+// ============================================================================
+// Overflow compaction -> compact-and-retry (upstream _checkCompaction Case 1)
+// ============================================================================
+
+/// Stream fn: call 1 is a length-stop overflow message (usage at the context
+/// window), summarization prompts return a compaction summary, and later
+/// calls succeed.
+fn overflow_then_success_stream(call_count: Arc<AtomicU32>) -> pillar_agent::StreamFn {
+    pillar_agent::StreamFn::new(move |context, _options| {
+        let call_count = Arc::clone(&call_count);
+        async move {
+            let is_summarization = context
+                .system_prompt
+                .as_deref()
+                .is_some_and(|prompt| prompt.to_lowercase().contains("summariz"));
+            let call = call_count.fetch_add(1, Ordering::SeqCst) + 1;
+            let stream = assistant_message_event_stream();
+            if is_summarization {
+                let message = assistant_message("Compacted summary.", StopReason::Stop, None);
+                stream.push(AssistantMessageEvent::Start {
+                    partial: message.clone(),
+                });
+                stream.push(AssistantMessageEvent::Done {
+                    reason: StopReason::Stop,
+                    message,
+                });
+            } else if call == 1 {
+                let mut message = assistant_message("", StopReason::Length, None);
+                message.usage.input = 200;
+                message.usage.total_tokens = 200;
+                stream.push(AssistantMessageEvent::Start {
+                    partial: message.clone(),
+                });
+                stream.push(AssistantMessageEvent::Done {
+                    reason: StopReason::Length,
+                    message,
+                });
+            } else {
+                let message = assistant_message("Success", StopReason::Stop, None);
+                stream.push(AssistantMessageEvent::Start {
+                    partial: message.clone(),
+                });
+                stream.push(AssistantMessageEvent::Done {
+                    reason: StopReason::Stop,
+                    message,
+                });
+            }
+            stream
+        }
+    })
+}
+
+#[tokio::test]
+async fn overflow_compaction_retries_once_and_succeeds() {
+    let mut model = mock_model();
+    model.context_window = 200;
+    let call_count = Arc::new(AtomicU32::new(0));
+    let (session, _) = make_session_with_model(
+        overflow_then_success_stream(Arc::clone(&call_count)),
+        serde_json::json!({
+            "compaction": { "enabled": true, "reserveTokens": 50, "keepRecentTokens": 10 },
+            "retry": { "enabled": false },
+        }),
+        model,
+    );
+
+    // Seed prior history so the summarizer has a non-empty prefix.
+    {
+        let mut sm = session.session_manager().lock().unwrap();
+        sm.append_message(CodingAgentMessage::Base(ai_types::Message::User {
+            content: UserContent::Text("Earlier user turn".to_string()),
+            timestamp: 1,
+        }))
+        .unwrap();
+        sm.append_message(CodingAgentMessage::Base(ai_types::Message::Assistant(
+            Box::new(assistant_message("Earlier reply", StopReason::Stop, None)),
+        )))
+        .unwrap();
+    }
+
+    let events: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let listener = {
+        let events = Arc::clone(&events);
+        Arc::new(move |event: &AgentSessionEvent| {
+            if let AgentSessionEvent::CompactionEnd {
+                reason, will_retry, ..
+            } = event
+            {
+                events
+                    .lock()
+                    .unwrap()
+                    .push(format!("end:{reason}:retry={will_retry}"));
+            }
+        })
+    };
+    let _unsub = session.subscribe(listener);
+
+    // A large prompt gives the cut point a non-empty prefix to summarize.
+    let big_prompt = "word ".repeat(100);
+    session
+        .prompt(&big_prompt, None)
+        .await
+        .expect("prompt succeeds");
+
+    // 1 length-stop call + 1 summarization call + 1 retry success.
+    assert_eq!(call_count.load(Ordering::SeqCst), 3);
+
+    let events = events.lock().unwrap().clone();
+    assert!(
+        events.iter().any(|e| e == "end:overflow:retry=true"),
+        "{events:?}"
+    );
+
+    // The retry delivered a successful assistant response.
+    let messages = session.state().messages;
+    assert!(
+        messages.iter().any(|m| matches!(
+            m,
+            pillar_agent::AgentMessage::Message(ai_types::Message::Assistant(a))
+                if pillar_ai::text::content_text(&a.content, "") == "Success"
+        )),
+        "retry success in agent state: {messages:?}"
+    );
+    // No trailing length-stop message remains.
+    assert!(
+        !messages.iter().any(|m| matches!(
+            m,
+            pillar_agent::AgentMessage::Message(ai_types::Message::Assistant(a))
+                if a.stop_reason == StopReason::Length
+        )),
+        "length message dropped before retry"
+    );
+
+    // A compaction checkpoint was persisted.
+    let sm = session.session_manager().lock().unwrap();
+    let branch = sm.get_branch(None);
+    assert!(
+        branch
+            .iter()
+            .any(|e| matches!(e, session_entry::SessionEntry::Compaction(_))),
+        "compaction entry persisted: {branch:?}"
+    );
+}
+
+// ============================================================================
+// Tool interception hooks (upstream _installAgentToolHooks)
+// ============================================================================
+
+/// Stream fn: call 1 requests the `noop` tool, later calls succeed.
+fn tool_use_then_done_stream(call_count: Arc<AtomicU32>) -> pillar_agent::StreamFn {
+    pillar_agent::StreamFn::new(move |_context, _options| {
+        let call_count = Arc::clone(&call_count);
+        async move {
+            let call = call_count.fetch_add(1, Ordering::SeqCst) + 1;
+            let stream = assistant_message_event_stream();
+            let message = if call == 1 {
+                let mut message = assistant_message("", StopReason::ToolUse, None);
+                message.content = vec![Content::tool_call("call-1", "noop", serde_json::json!({}))];
+                message
+            } else {
+                assistant_message("Done", StopReason::Stop, None)
+            };
+            stream.push(AssistantMessageEvent::Start {
+                partial: message.clone(),
+            });
+            stream.push(AssistantMessageEvent::Done {
+                reason: message.stop_reason,
+                message,
+            });
+            stream
+        }
+    })
+}
+
+fn noop_tool() -> pillar_agent::AgentTool {
+    pillar_agent::AgentTool {
+        tool: pillar_ai::types::Tool {
+            name: "noop".into(),
+            description: "Noop tool".into(),
+            parameters: serde_json::json!({"type": "object"}),
+            constrained_sampling: None,
+        },
+        label: "Noop".into(),
+        prepare_arguments: None,
+        execute: Arc::new(|_id, _args, _signal, _on_update| {
+            Box::pin(async move {
+                Ok(pillar_agent::AgentToolResult {
+                    content: vec![Content::text("ok")],
+                    details: serde_json::json!({}),
+                    ..Default::default()
+                })
+            })
+        }),
+        execution_mode: None,
+    }
+}
+
+#[tokio::test]
+async fn tool_hooks_dispatch_tool_call_and_tool_result_to_extensions() {
+    use pillar_coding_agent::core::extensions_runner::{ExtensionHandler, HostExtension};
+
+    let hook_calls: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let tool_call_handler: ExtensionHandler = {
+        let hook_calls = Arc::clone(&hook_calls);
+        Arc::new(move |event: &serde_json::Value| {
+            hook_calls.lock().unwrap().push(format!(
+                "tool_call:{}",
+                event["toolName"].as_str().unwrap_or("?")
+            ));
+            Ok(None)
+        })
+    };
+    let tool_result_handler: ExtensionHandler = {
+        let hook_calls = Arc::clone(&hook_calls);
+        Arc::new(move |event: &serde_json::Value| {
+            hook_calls.lock().unwrap().push(format!(
+                "tool_result:{}",
+                event["toolName"].as_str().unwrap_or("?")
+            ));
+            Ok(None)
+        })
+    };
+    let mut handlers = std::collections::BTreeMap::new();
+    handlers.insert("tool_call".to_string(), vec![tool_call_handler]);
+    handlers.insert("tool_result".to_string(), vec![tool_result_handler]);
+    let ext = HostExtension {
+        path: "<inline>".to_string(),
+        handlers,
+        commands: Vec::new(),
+        tools: std::collections::BTreeMap::new(),
+        flags: std::collections::BTreeMap::new(),
+        shortcuts: std::collections::BTreeMap::new(),
+    };
+    let runner = Arc::new(Mutex::new(ExtensionRunner::new(vec![ext])));
+
+    let call_count = Arc::new(AtomicU32::new(0));
+    let mut options = AgentOptions::new(tool_use_then_done_stream(Arc::clone(&call_count)));
+    options.initial_state = Some(AgentState {
+        system_prompt: "Test".to_string(),
+        model: mock_model(),
+        thinking_level: AgentThinkingLevel::Off,
+        tools: vec![noop_tool()],
+        messages: Vec::new(),
+        is_streaming: false,
+        streaming_message: None,
+        pending_tool_calls: Default::default(),
+        error_message: None,
+    });
+    let agent = Arc::new(Agent::new(options));
+
+    let session_manager = Arc::new(Mutex::new(
+        SessionManager::in_memory("", None).expect("in-memory session"),
+    ));
+    let settings = SettingsManager::in_memory(
+        serde_json::json!({ "retry": { "enabled": false } }),
+        SettingsManagerCreateOptions {
+            project_trusted: Some(true),
+        },
+    );
+    let settings_manager = Arc::new(Mutex::new(settings));
+    let resource_loader = Arc::new(ResourceLoader::new(
+        "",
+        ResourceLoaderOptions {
+            agent_dir: temp_dir("agent-dir").to_string_lossy().to_string(),
+            no_skills: true,
+            no_prompt_templates: true,
+            no_themes: true,
+            no_context_files: true,
+            ..Default::default()
+        },
+        Arc::clone(&settings_manager),
+    ));
+    let (runtime, _credentials) = runtime_with_anthropic_key();
+
+    let session = AgentSession::new(AgentSessionConfig::new(
+        agent,
+        session_manager,
+        settings_manager,
+        String::new(),
+        resource_loader,
+        Arc::new(runtime),
+        runner,
+    ));
+    let session = Arc::new(session);
+
+    session.install_tool_hooks();
+    session
+        .prompt("Use a tool", None)
+        .await
+        .expect("prompt succeeds");
+
+    let calls = hook_calls.lock().unwrap().clone();
+    assert!(calls.contains(&"tool_call:noop".to_string()), "{calls:?}");
+    assert!(calls.contains(&"tool_result:noop".to_string()), "{calls:?}");
+    // The tool ran and its result fed a second LLM call.
+    assert_eq!(call_count.load(Ordering::SeqCst), 2);
 }
