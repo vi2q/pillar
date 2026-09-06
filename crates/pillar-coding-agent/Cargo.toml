@@ -20,6 +20,7 @@ globset = "0.4.19"
 ignore = "0.4"
 similar = "2"
 semver = "1"
+tokio = { version = "1.47", features = ["sync", "time"] }
 
 [dev-dependencies]
 tokio = { version = "1.47", features = ["rt", "macros", "time"] }

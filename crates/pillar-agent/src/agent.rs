@@ -247,8 +247,11 @@ pub struct Agent {
     pub get_api_key: Option<Arc<GetApiKeyFn>>,
     pub on_payload: Option<pillar_ai::api::OnPayloadFn>,
     pub on_response: Option<pillar_ai::api::OnResponseFn>,
-    pub before_tool_call: Option<Arc<BeforeToolFn>>,
-    pub after_tool_call: Option<Arc<AfterToolFn>>,
+    /// Tool interception hooks, interior-mutable so session runtimes can
+    /// install extension interception after construction (upstream
+    /// assignment on the agent instance).
+    before_tool_call: Arc<std::sync::Mutex<Option<Arc<BeforeToolFn>>>>,
+    after_tool_call: Arc<std::sync::Mutex<Option<Arc<AfterToolFn>>>>,
     pub should_stop_after_turn: Option<Arc<ShouldStopWithSignalFn>>,
     pub prepare_next_turn: Option<Arc<PrepareNextWithSignalFn>>,
     /// Session identifier forwarded to providers for cache-aware backends.
@@ -341,8 +344,8 @@ impl Agent {
             get_api_key: options.get_api_key,
             on_payload: options.on_payload,
             on_response: options.on_response,
-            before_tool_call: options.before_tool_call,
-            after_tool_call: options.after_tool_call,
+            before_tool_call: Arc::new(std::sync::Mutex::new(options.before_tool_call)),
+            after_tool_call: Arc::new(std::sync::Mutex::new(options.after_tool_call)),
             should_stop_after_turn: options.should_stop_after_turn,
             prepare_next_turn: options.prepare_next_turn,
             session_id: Arc::new(std::sync::Mutex::new(options.session_id)),
@@ -415,6 +418,18 @@ impl Agent {
             .expect("agent state lock")
             .messages
             .push(message);
+    }
+
+    /// Install the before-tool-call interception hook (upstream assigning
+    /// `agent.beforeToolCall`). Applies to the next run.
+    pub fn set_before_tool_call(&self, hook: Arc<BeforeToolFn>) {
+        *self.before_tool_call.lock().expect("before hook lock") = Some(hook);
+    }
+
+    /// Install the after-tool-call interception hook (upstream assigning
+    /// `agent.afterToolCall`). Applies to the next run.
+    pub fn set_after_tool_call(&self, hook: Arc<AfterToolFn>) {
+        *self.after_tool_call.lock().expect("after hook lock") = Some(hook);
     }
 
     pub fn clear_messages(&self) {
@@ -717,8 +732,16 @@ impl Agent {
                 Box::pin(async move { queue.lock().expect("queue lock").drain() })
             })),
             tool_execution: Some(self.tool_execution),
-            before_tool_call: self.before_tool_call.clone(),
-            after_tool_call: self.after_tool_call.clone(),
+            before_tool_call: self
+                .before_tool_call
+                .lock()
+                .expect("before hook lock")
+                .clone(),
+            after_tool_call: self
+                .after_tool_call
+                .lock()
+                .expect("after hook lock")
+                .clone(),
             // Read at config-build time (each prompt/continue run); upstream
             // spreads `this.sessionId` the same way, so setter changes apply
             // to the next run.

@@ -2,12 +2,12 @@
 //! the session-state core: skill block parsing, steering/follow-up queue
 //! tracking with queue_update events, retry policy state machine,
 //! custom-message handling, tool registry with prompt rebuild, and
-//! session stats.
+//! session stats. The AgentSession streaming loop class lives in
+//! `agent_session_class.rs`.
 //!
 //! divergences: model switching/cycling needs the (unported)
-//! ModelRuntime and is host-injected via `ModelMutations`; the streaming
-//! agent-run loop and compaction orchestration live with the host; the
-//! LLM-facing queueing calls into the pillar-agent Agent directly.
+//! ModelRuntime and is host-injected via `ModelMutations`; the LLM-facing
+//! queueing calls into the pillar-agent Agent directly.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -15,8 +15,8 @@ use std::path::PathBuf;
 use pillar_ai::types::AssistantMessage;
 
 use crate::core::messages::{CodingAgentMessage, CustomMessage};
-use crate::core::prompt_templates::{PromptTemplate, expand_prompt_template};
-use crate::core::system_prompt::{BuildSystemPromptOptions, Skill, build_system_prompt};
+use crate::core::prompt_templates::{expand_prompt_template, PromptTemplate};
+use crate::core::system_prompt::{build_system_prompt, BuildSystemPromptOptions, Skill};
 
 // ============================================================================
 // Skill Block Parsing

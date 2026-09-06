@@ -195,7 +195,7 @@ mod tests {
         std::fs::write(&good, "return nil").unwrap();
         let outcome = loader(&good.to_string_lossy());
         assert!(matches!(outcome, Ok(Some(_))));
-        let outcome = loader(&"/nonexistent/x.luau".to_string());
+        let outcome = loader("/nonexistent/x.luau");
         assert!(
             matches!(outcome, Err(message) if message.starts_with("Failed to load extension: "))
         );
