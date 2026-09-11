@@ -9,14 +9,17 @@
 
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 
-use pillar_ai::abort::AbortSignal;
+use pillar_agent::abort::AbortSignal;
+use pillar_agent::types::{AgentTool, AgentToolResult, ToolExecuteError};
+use pillar_ai::types::Content;
 
 use crate::core::tools::edit_diff::{
     Edit, apply_edits_to_normalized_content, generate_diff_string, generate_unified_patch,
     normalize_to_lf, restore_line_endings,
 };
-use crate::core::tools::file_mutation_queue::FileMutationQueue;
+use crate::core::tools::file_mutation_queue::{FileMutationQueue, global_file_mutation_queue};
 use crate::core::tools::path_utils::resolve_to_cwd;
 
 /// The edit execution result (upstream `{ content, details }`).
@@ -147,4 +150,73 @@ pub fn check_editable(path: &Path) -> Result<(), String> {
         return Err("Error code: EISDIR".to_string());
     }
     Ok(())
+}
+
+/// Parse the `edits` argument (upstream `editSchema` items).
+fn parse_edits(args: &serde_json::Value) -> Result<Vec<Edit>, ToolExecuteError> {
+    let edits = args
+        .get("edits")
+        .and_then(|value| value.as_array())
+        .ok_or_else(|| ToolExecuteError("Missing required parameter: edits".to_string()))?;
+    let mut parsed = Vec::with_capacity(edits.len());
+    for edit in edits {
+        let old_text = edit
+            .get("oldText")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| ToolExecuteError("edits[].oldText must be a string".to_string()))?;
+        let new_text = edit
+            .get("newText")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| ToolExecuteError("edits[].newText must be a string".to_string()))?;
+        parsed.push(Edit {
+            old_text: old_text.to_string(),
+            new_text: new_text.to_string(),
+        });
+    }
+    Ok(parsed)
+}
+
+/// Build the edit tool as an `AgentTool` (upstream `createEditTool`).
+pub fn edit_tool(cwd: &str) -> AgentTool {
+    let cwd = cwd.to_string();
+    AgentTool {
+        tool: pillar_ai::types::Tool {
+            name: "edit".to_string(),
+            description: edit_description(),
+            parameters: edit_parameters_json(),
+            constrained_sampling: None,
+        },
+        label: "edit".to_string(),
+        prepare_arguments: None,
+        execute: Arc::new(move |_id, args, signal, _on_update| {
+            let cwd = cwd.clone();
+            Box::pin(async move {
+                let path = args
+                    .get("path")
+                    .and_then(|value| value.as_str())
+                    .ok_or_else(|| {
+                        ToolExecuteError("Missing required parameter: path".to_string())
+                    })?;
+                let edits = parse_edits(&args)?;
+                let result = edit(
+                    path,
+                    &edits,
+                    &cwd,
+                    signal.as_ref(),
+                    global_file_mutation_queue(),
+                )
+                .map_err(ToolExecuteError)?;
+                Ok(AgentToolResult {
+                    content: vec![Content::text(result.text)],
+                    details: serde_json::json!({
+                        "diff": result.diff,
+                        "patch": result.patch,
+                        "firstChangedLine": result.first_changed_line,
+                    }),
+                    ..Default::default()
+                })
+            })
+        }),
+        execution_mode: None,
+    }
 }

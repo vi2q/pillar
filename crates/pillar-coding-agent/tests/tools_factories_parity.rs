@@ -3,7 +3,10 @@
 
 use pillar_agent::types::{AgentTool, AgentToolResult, ToolExecuteError};
 use pillar_ai::types::Content;
+use pillar_coding_agent::core::tools::edit::edit_tool;
+use pillar_coding_agent::core::tools::ls::ls_tool;
 use pillar_coding_agent::core::tools::read::read_tool;
+use pillar_coding_agent::core::tools::write::write_tool;
 use serde_json::{Value, json};
 
 fn temp_dir(name: &str) -> std::path::PathBuf {
@@ -148,4 +151,113 @@ async fn read_tool_reports_missing_file() {
         .await
         .expect_err("missing file");
     assert!(error.0.contains("File not found"), "{error:?}");
+}
+
+#[tokio::test]
+async fn ls_tool_lists_directories_with_suffixes() {
+    let dir = temp_dir("ls");
+    std::fs::write(dir.join("b.txt"), "b").unwrap();
+    std::fs::create_dir_all(dir.join("a-dir")).unwrap();
+    let tool = ls_tool(&dir.to_string_lossy());
+
+    let result = run(&tool, json!({ "path": "." }))
+        .await
+        .expect("ls succeeds");
+    let text = text_of(&result);
+    assert_eq!(text, "a-dir/\nb.txt");
+    assert_eq!(result.details, json!({}));
+}
+
+#[tokio::test]
+async fn ls_tool_reports_entry_limit() {
+    let dir = temp_dir("ls-limit");
+    for index in 0..4 {
+        std::fs::write(dir.join(format!("f{index}.txt")), "x").unwrap();
+    }
+    let tool = ls_tool(&dir.to_string_lossy());
+
+    let result = run(&tool, json!({ "path": ".", "limit": 2 }))
+        .await
+        .expect("ls succeeds");
+    assert_eq!(result.details["entryLimitReached"], json!(2));
+    assert!(text_of(&result).contains("2 entries limit reached. Use limit=4 for more"));
+}
+
+#[tokio::test]
+async fn write_tool_creates_a_file() {
+    let dir = temp_dir("write");
+    let tool = write_tool(&dir.to_string_lossy());
+
+    let result = run(&tool, json!({ "path": "sub/out.txt", "content": "hello" }))
+        .await
+        .expect("write succeeds");
+    assert_eq!(
+        text_of(&result),
+        "Successfully wrote 5 bytes to sub/out.txt"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("sub/out.txt")).unwrap(),
+        "hello"
+    );
+}
+
+#[tokio::test]
+async fn write_tool_rejects_missing_content() {
+    let dir = temp_dir("write-missing");
+    let tool = write_tool(&dir.to_string_lossy());
+    let error = run(&tool, json!({ "path": "out.txt" }))
+        .await
+        .expect_err("missing content");
+    assert!(
+        error.0.contains("Missing required parameter: content"),
+        "{error:?}"
+    );
+}
+
+#[tokio::test]
+async fn edit_tool_replaces_text_and_reports_diff_details() {
+    let dir = temp_dir("edit");
+    std::fs::write(dir.join("note.txt"), "alpha\nbeta\n").unwrap();
+    let tool = edit_tool(&dir.to_string_lossy());
+
+    let result = run(
+        &tool,
+        json!({
+            "path": "note.txt",
+            "edits": [{ "oldText": "beta", "newText": "gamma" }],
+        }),
+    )
+    .await
+    .expect("edit succeeds");
+    assert_eq!(
+        text_of(&result),
+        "Successfully replaced 1 block(s) in note.txt."
+    );
+    assert!(
+        result.details["diff"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("gamma")
+    );
+    assert!(
+        result.details["patch"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("---")
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("note.txt")).unwrap(),
+        "alpha\ngamma\n"
+    );
+}
+
+#[tokio::test]
+async fn edit_tool_rejects_empty_edits() {
+    let dir = temp_dir("edit-empty");
+    std::fs::write(dir.join("note.txt"), "alpha\n").unwrap();
+    let tool = edit_tool(&dir.to_string_lossy());
+    let error = run(&tool, json!({ "path": "note.txt", "edits": [] }))
+        .await
+        .expect_err("empty edits");
+    assert!(error.0.contains("at least one replacement"), "{error:?}");
 }

@@ -6,7 +6,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use pillar_ai::abort::AbortSignal;
+use pillar_agent::abort::AbortSignal;
 use pillar_coding_agent::core::tools::edit::{
     edit as edit_file, edit_description, edit_parameters_json,
 };
@@ -215,7 +215,7 @@ fn edit_aborts_before_touching_the_filesystem() {
     let path = dir.join("f.txt");
     fs::write(&path, "content").unwrap();
     let signal = AbortSignal::new();
-    signal.abort(None);
+    signal.abort();
     let queue = FileMutationQueue::new();
     let error = edit_file(
         path.to_str().unwrap(),

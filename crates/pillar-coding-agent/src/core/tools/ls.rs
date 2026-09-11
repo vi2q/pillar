@@ -9,11 +9,16 @@
 
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 
+use pillar_agent::types::{AgentTool, AgentToolResult, ToolExecuteError};
+use pillar_ai::types::Content;
 use serde_json::Value;
 
 use crate::core::tools::path_utils::resolve_to_cwd;
-use crate::core::truncate::{DEFAULT_MAX_BYTES, TruncationOptions, truncate_head};
+use crate::core::truncate::{
+    DEFAULT_MAX_BYTES, TruncationOptions, TruncationResult, truncate_head,
+};
 
 /// Default entry limit (upstream `DEFAULT_LIMIT`).
 pub const DEFAULT_LIMIT: usize = 500;
@@ -62,8 +67,12 @@ pub struct LsToolResult {
     /// Entry limit hit, with the effective limit (upstream
     /// `details.entryLimitReached`).
     pub entry_limit_reached: Option<usize>,
-    /// Set when byte truncation occurred (upstream `details.truncation`).
+    /// Set when byte truncation occurred (upstream
+    /// `details.truncation`).
     pub truncation_max_bytes: Option<usize>,
+    /// Full byte-truncation details, present when truncation occurred
+    /// (upstream `details.truncation`).
+    pub truncation: Option<TruncationResult>,
 }
 
 /// Execute the ls tool (upstream the `execute` body).
@@ -141,6 +150,7 @@ pub fn ls(
             crate::core::truncate::format_size(DEFAULT_MAX_BYTES)
         ));
         details.truncation_max_bytes = Some(DEFAULT_MAX_BYTES);
+        details.truncation = Some(truncation.clone());
     }
     if !notices.is_empty() {
         output.push_str(&format!("\n\n[{}]", notices.join(". ")));
@@ -169,4 +179,64 @@ pub fn ls_description() -> String {
         DEFAULT_LIMIT,
         DEFAULT_MAX_BYTES / 1024
     )
+}
+
+/// Build the ls tool as an `AgentTool` (upstream `createLsTool`).
+pub fn ls_tool(cwd: &str) -> AgentTool {
+    let cwd = cwd.to_string();
+    AgentTool {
+        tool: pillar_ai::types::Tool {
+            name: "ls".to_string(),
+            description: ls_description(),
+            parameters: ls_parameters_json(),
+            constrained_sampling: None,
+        },
+        label: "ls".to_string(),
+        prepare_arguments: None,
+        execute: Arc::new(move |_id, args, signal, _on_update| {
+            let cwd = cwd.clone();
+            Box::pin(async move {
+                if signal.as_ref().is_some_and(|signal| signal.is_aborted()) {
+                    return Err(ToolExecuteError("Operation aborted".to_string()));
+                }
+                let path = args.get("path").and_then(|value| value.as_str());
+                let limit = args
+                    .get("limit")
+                    .and_then(|value| value.as_u64())
+                    .map(|value| value as usize);
+                let result = ls(path, limit, &cwd, &LocalLsOperations).map_err(ToolExecuteError)?;
+                let mut details = serde_json::Map::new();
+                if let Some(limit) = result.entry_limit_reached {
+                    details.insert("entryLimitReached".to_string(), serde_json::json!(limit));
+                }
+                if let Some(truncation) = &result.truncation {
+                    details.insert(
+                        "truncation".to_string(),
+                        serde_json::json!({
+                            "content": truncation.content,
+                            "truncated": truncation.truncated,
+                            "truncatedBy": truncation.truncated_by.map(|by| match by {
+                                crate::core::truncate::TruncatedBy::Lines => "lines",
+                                crate::core::truncate::TruncatedBy::Bytes => "bytes",
+                            }),
+                            "totalLines": truncation.total_lines,
+                            "totalBytes": truncation.total_bytes,
+                            "outputLines": truncation.output_lines,
+                            "outputBytes": truncation.output_bytes,
+                            "lastLinePartial": truncation.last_line_partial,
+                            "firstLineExceedsLimit": truncation.first_line_exceeds_limit,
+                            "maxLines": truncation.max_lines,
+                            "maxBytes": truncation.max_bytes,
+                        }),
+                    );
+                }
+                Ok(AgentToolResult {
+                    content: vec![Content::text(result.text)],
+                    details: Value::Object(details),
+                    ..Default::default()
+                })
+            })
+        }),
+        execution_mode: None,
+    }
 }

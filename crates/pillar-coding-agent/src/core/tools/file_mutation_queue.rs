@@ -38,6 +38,13 @@ impl FileMutationQueue {
     }
 }
 
+/// The process-global mutation queue shared by the built-in write/edit tools
+/// (upstream the module-level `fileMutationQueues` registry).
+pub fn global_file_mutation_queue() -> &'static FileMutationQueue {
+    static GLOBAL: std::sync::OnceLock<FileMutationQueue> = std::sync::OnceLock::new();
+    GLOBAL.get_or_init(FileMutationQueue::new)
+}
+
 /// Resolve the queue key: the real path when the file exists, the lexical
 /// resolution otherwise (upstream `getMutationQueueKey`).
 fn mutation_queue_key(file_path: &Path) -> Result<PathBuf, String> {

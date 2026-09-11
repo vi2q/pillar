@@ -8,10 +8,13 @@
 
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 
-use pillar_ai::abort::AbortSignal;
+use pillar_agent::abort::AbortSignal;
+use pillar_agent::types::{AgentTool, AgentToolResult, ToolExecuteError};
+use pillar_ai::types::Content;
 
-use crate::core::tools::file_mutation_queue::FileMutationQueue;
+use crate::core::tools::file_mutation_queue::{FileMutationQueue, global_file_mutation_queue};
 use crate::core::tools::path_utils::resolve_to_cwd;
 
 /// The write execution result (upstream `{ content, details }`).
@@ -79,4 +82,50 @@ pub fn write(
             text: format!("Successfully wrote {} bytes to {path}", content.len()),
         })
     })?
+}
+
+/// Build the write tool as an `AgentTool` (upstream `createWriteTool`).
+pub fn write_tool(cwd: &str) -> AgentTool {
+    let cwd = cwd.to_string();
+    AgentTool {
+        tool: pillar_ai::types::Tool {
+            name: "write".to_string(),
+            description: write_description(),
+            parameters: write_parameters_json(),
+            constrained_sampling: None,
+        },
+        label: "write".to_string(),
+        prepare_arguments: None,
+        execute: Arc::new(move |_id, args, signal, _on_update| {
+            let cwd = cwd.clone();
+            Box::pin(async move {
+                let path = args
+                    .get("path")
+                    .and_then(|value| value.as_str())
+                    .ok_or_else(|| {
+                        ToolExecuteError("Missing required parameter: path".to_string())
+                    })?;
+                let content = args
+                    .get("content")
+                    .and_then(|value| value.as_str())
+                    .ok_or_else(|| {
+                        ToolExecuteError("Missing required parameter: content".to_string())
+                    })?;
+                let result = write(
+                    path,
+                    content,
+                    &cwd,
+                    signal.as_ref(),
+                    global_file_mutation_queue(),
+                )
+                .map_err(ToolExecuteError)?;
+                Ok(AgentToolResult {
+                    content: vec![Content::text(result.text)],
+                    details: serde_json::Value::Null,
+                    ..Default::default()
+                })
+            })
+        }),
+        execution_mode: None,
+    }
 }

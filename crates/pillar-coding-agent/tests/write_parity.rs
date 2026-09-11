@@ -6,7 +6,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use pillar_ai::abort::AbortSignal;
+use pillar_agent::abort::AbortSignal;
 use pillar_coding_agent::core::tools::file_mutation_queue::FileMutationQueue;
 use pillar_coding_agent::core::tools::write::{write, write_description, write_parameters_json};
 
@@ -111,7 +111,7 @@ fn write_resolves_relative_paths_against_cwd() {
 fn write_aborts_before_touching_the_filesystem() {
     let dir = temp_dir("abort");
     let signal = AbortSignal::new();
-    signal.abort(None);
+    signal.abort();
     let queue = FileMutationQueue::new();
     let error = write(
         dir.join("f.txt").to_str().unwrap(),
