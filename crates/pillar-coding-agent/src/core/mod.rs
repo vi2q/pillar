@@ -7,6 +7,7 @@ pub mod auth_guidance;
 pub mod auth_storage;
 pub mod bash_executor;
 pub mod cache_stats;
+pub mod client_transcript;
 pub mod compaction;
 pub mod diagnostics;
 pub mod event_bus;
