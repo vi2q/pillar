@@ -15,10 +15,11 @@ crates/
 ├── pillar-server/       # pi-server port: experimental remote server
 ├── pillar-telemetry/    # pi-telemetry port: telemetry contracts
 ├── pillar-session-store/ # pi session-backends/sqlite-node port: sqlite session backend
-└── pillar-extensions/   # NEW (no pi counterpart): Luau extension runtime on luaur-rt
+├── pillar-extensions/   # NEW (no pi counterpart): Luau extension runtime on luaur-rt
+└── pillar-cli/          # NEW (no pi counterpart): the `pillar` binary; joins coding-agent and the Luau runtime
 ```
 
-One binary ships: `pillar-coding-agent` produces `pillar` (pi's `pi`). `pillar-server`, `pillar-client`, and `pillar-protocol` are compiled but behind the same feature gates as upstream. pi's `evals` package is private upstream tooling and is not ported.
+One binary ships: `pillar-cli` produces `pillar` (pi's `pi`). It owns the host wiring that `pillar-coding-agent` cannot (see the dependency rule below). `pillar-server`, `pillar-client`, and `pillar-protocol` are compiled but behind the same feature gates as upstream. pi's `evals` package is private upstream tooling and is not ported.
 
 ## Dependency direction
 
@@ -27,9 +28,10 @@ pillar-telemetry   (leaf)
 pillar-protocol    (leaf; CBOR codec, no deps on sibling crates)
 pillar-ai         → telemetry
 pillar-agent      → ai
-pillar-extensions → agent, luaur-rt, luaur-analysis, luaur-config
 pillar-tui        → (leaf among pillars; mirrors pi-tui standalone)
-pillar-coding-agent → agent, ai, tui, extensions, client, protocol, telemetry, session-store
+pillar-extensions → coding-agent (runner types), agent, luaur-rt, luaur-analysis, luaur-config
+pillar-coding-agent → agent, ai, tui, protocol, telemetry, session-store
+pillar-cli        → coding-agent, extensions
 pillar-server     → protocol, client
 pillar-client     → protocol
 pillar-session-store → (leaf; rusqlite, loaded behind a feature by coding-agent)
@@ -38,7 +40,7 @@ pillar-session-store → (leaf; rusqlite, loaded behind a feature by coding-agen
 Rules:
 
 - Dependencies point the same way as upstream package deps. If pi's `packages/agent` does not import `packages/tui`, `pillar-agent` must not depend on `pillar-tui`.
-- `pillar-extensions` depends on `luaur-*` crates and on `pillar-agent` types, never on `pillar-coding-agent`. The CLI wires the extension runtime into the agent; the runtime itself stays CLI-agnostic.
+- `pillar-coding-agent` must not depend on `pillar-extensions`: the extension runtime needs the coding-agent runner types, so that edge would cycle. The inversion is the `LuauExtensionLoader` trait (defined in coding-agent, implemented in `pillar-extensions`); `pillar-cli` is the only crate that depends on both and wires them.
 - No crate may depend on a `*-cli` or test-support crate.
 
 ## Module ownership map
@@ -56,6 +58,7 @@ Each pillar crate mirrors an upstream package directory. Port one upstream modul
 | `pillar-coding-agent/src/modes/*` | `packages/coding-agent/src/modes/*` |
 | `pillar-tui/src/*` | `packages/tui/src/*` |
 | `pillar-extensions/src/*` | no upstream module; semantics from `packages/coding-agent/src/core/extensions/*` |
+| `pillar-cli/src/*` | no upstream module; wires `packages/coding-agent/src/cli.ts` + `main.ts` to the Luau runtime |
 
 `pillar-extensions` is the deliberate divergence: pi's extension system is TypeScript-in-TS-runtime (loader.ts, runner.ts, wrapper.ts); pillar replaces the loader and runner with a Luau VM while keeping every event, payload shape, and API method documented in [04-luau-extensions.md](04-luau-extensions.md).
 

@@ -996,6 +996,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pillar-cli"
+version = "0.1.0"
+dependencies = [
+ "pillar-coding-agent",
+ "pillar-extensions",
+]
+
+[[package]]
 name = "pillar-client"
 version = "0.1.0"
 dependencies = [

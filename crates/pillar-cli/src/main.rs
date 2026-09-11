@@ -1,7 +1,7 @@
 //! Entry point of the `pillar` binary (upstream `cli.ts` + the `main.ts`
-//! bootstrap). Only the argument/help/version surface is ported so far; the
-//! runtime bootstrap and the interactive/rpc/print modes are pending
-//! (docs/TASKS.md).
+//! bootstrap). The argument/help/version surface and the mode resolution are
+//! ported; the runtime bootstrap (settings/session/services/AgentSession) and
+//! the interactive/rpc/print modes are pending (docs/TASKS.md).
 
 use std::io::IsTerminal;
 use std::process::ExitCode;
