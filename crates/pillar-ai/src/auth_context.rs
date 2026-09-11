@@ -20,14 +20,24 @@ impl AuthContext for DefaultAuthContext {
     }
 
     async fn file_exists(&self, path: &str) -> bool {
-        let resolved = if let Some(rest) = path.strip_prefix('~') {
-            match std::env::var("HOME") {
-                Ok(home) => format!("{home}{rest}"),
-                Err(_) => return false,
-            }
-        } else {
-            path.to_string()
-        };
-        tokio::fs::metadata(&resolved).await.is_ok()
+        // wasm32-unknown-unknown has no filesystem; a host-injected context is
+        // required for real file checks.
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = path;
+            false
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let resolved = if let Some(rest) = path.strip_prefix('~') {
+                match std::env::var("HOME") {
+                    Ok(home) => format!("{home}{rest}"),
+                    Err(_) => return false,
+                }
+            } else {
+                path.to_string()
+            };
+            tokio::fs::metadata(&resolved).await.is_ok()
+        }
     }
 }

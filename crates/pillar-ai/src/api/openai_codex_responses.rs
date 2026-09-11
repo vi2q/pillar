@@ -54,8 +54,10 @@ const BASE_DELAY_MS: u64 = 1000;
 const DEFAULT_MAX_RETRY_DELAY_MS: u64 = 60_000;
 const DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS: u64 = 15_000;
 
+#[cfg(not(target_arch = "wasm32"))]
 const REQUEST_COMPRESSION_ZSTD_LEVEL: i32 = 3;
 const CODEX_TOOL_CALL_PROVIDERS: [&str; 3] = ["openai", "openai-codex", "opencode"];
+#[cfg(not(target_arch = "wasm32"))]
 const WEBSOCKET_MESSAGE_TOO_BIG_CLOSE_CODE: u16 = 1009;
 const WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE: &str = "websocket_connection_limit_reached";
 const PREVIOUS_RESPONSE_NOT_FOUND_CODE: &str = "previous_response_not_found";
@@ -548,6 +550,7 @@ async fn sleep(ms: u64, signal: Option<&crate::AbortSignal>) -> Result<(), Codex
 }
 
 /// Upstream `compressRequestBodyZstd`.
+#[cfg(not(target_arch = "wasm32"))]
 fn compress_request_body_zstd(body_json: &str) -> Option<Vec<u8>> {
     // divergence: upstream relies on node:zlib availability and compresses
     // everything; the port skips bodies under 1 KiB where frame overhead
@@ -556,6 +559,13 @@ fn compress_request_body_zstd(body_json: &str) -> Option<Vec<u8>> {
         return None;
     }
     zstd::encode_all(body_json.as_bytes(), REQUEST_COMPRESSION_ZSTD_LEVEL).ok()
+}
+
+/// wasm32 has no zstd encoder; requests are sent uncompressed (the injected
+/// transport may compress at the host boundary).
+#[cfg(target_arch = "wasm32")]
+fn compress_request_body_zstd(_body_json: &str) -> Option<Vec<u8>> {
+    None
 }
 
 // ============================================================================
@@ -2067,8 +2077,32 @@ async fn connect_websocket(
 }
 
 /// Default WebSocket transport over tokio-tungstenite.
+#[cfg(not(target_arch = "wasm32"))]
 struct NativeWsConnFactory;
 
+/// wasm32 fallback: no native socket transport is available, so callers must
+/// inject a [`WsConnFactory`] through `StreamOptions.websocket`.
+#[cfg(target_arch = "wasm32")]
+struct NativeWsConnFactory;
+
+#[cfg(target_arch = "wasm32")]
+#[async_trait::async_trait]
+impl WsConnFactory for NativeWsConnFactory {
+    async fn connect(
+        &self,
+        _url: &str,
+        _headers: &[(String, String)],
+        _signal: Option<&crate::AbortSignal>,
+        _connect_timeout_ms: u64,
+    ) -> Result<Arc<dyn WsConn>, String> {
+        Err(
+            "native websocket transport is unavailable on wasm32; inject a WsConnFactory"
+                .to_string(),
+        )
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 #[async_trait::async_trait]
 impl WsConnFactory for NativeWsConnFactory {
     async fn connect(
@@ -2120,6 +2154,7 @@ impl WsConnFactory for NativeWsConnFactory {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 struct NativeWsConn {
     inner: tokio::sync::Mutex<
         Option<
@@ -2131,6 +2166,7 @@ struct NativeWsConn {
     closed: std::sync::atomic::AtomicBool,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[async_trait::async_trait]
 impl WsConn for NativeWsConn {
     fn send(&self, data: String) -> Result<(), String> {

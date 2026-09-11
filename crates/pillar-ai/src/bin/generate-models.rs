@@ -12,7 +12,7 @@
 //! - `src/models_data/.manifest.json` — structure manifest with SHA-256s
 //! - `src/models_generated.rs` — a committed aggregator exposing `MODELS`
 //!
-//! Run: `cargo run -p pillar-ai --bin generate-models`
+//! Run: `cargo run -p pillar-ai --features generate-models --bin generate-models`
 //!
 
 //! divergence: the upstream TS generator also emits `.models.ts` shards; the

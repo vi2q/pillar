@@ -11,6 +11,15 @@ async-trait = "0.1.89"
 fastrand = "2.3"
 futures = "0.3.31"
 regex = "1.12"
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { version = "1.47", features = ["sync", "time", "macros", "rt"] }
+
+# wasm32-unknown-unknown has no OS and no tokio runtime. rustls, zstd-sys (C),
+# tokio fs/process, and tokio-tungstenite are native-only. On wasm the HTTP and
+# websocket transports are host-injected (see `transport::FetchFn`).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 reqwest = { version = "0.12", default-features = false, features = [
     "rustls-tls",
     "gzip",
@@ -19,10 +28,16 @@ reqwest = { version = "0.12", default-features = false, features = [
     "stream",
     "blocking",
 ] }
-serde.workspace = true
-serde_json.workspace = true
-thiserror.workspace = true
-tokio = { version = "1.47", features = ["sync", "time", "macros", "rt", "rt-multi-thread", "fs" ] }
+tokio = { version = "1.47", features = ["rt-multi-thread", "fs"] }
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake", "rustls-tls-webpki-roots"] }
-uuid = { version = "1.18", features = ["v7"] }
 zstd = "0.13"
+
+[features]
+# The live model-catalog generator needs a native blocking HTTP client and
+# filesystem access; it is opt-in so wasm and ordinary builds skip it.
+generate-models = []
+
+[[bin]]
+name = "generate-models"
+path = "src/bin/generate-models.rs"
+required-features = ["generate-models"]

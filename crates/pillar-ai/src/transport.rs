@@ -102,10 +102,12 @@ pub trait FetchFn: Send + Sync {
 pub type SharedFetchFn = std::sync::Arc<dyn FetchFn>;
 
 /// Default [`FetchFn`] implementation backed by reqwest (rustls, streaming).
+#[cfg(not(target_arch = "wasm32"))]
 pub struct ReqwestFetch {
     client: reqwest::Client,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl ReqwestFetch {
     pub fn new() -> Result<Self, AiError> {
         let client = reqwest::Client::builder().build().map_err(|error| {
@@ -115,6 +117,7 @@ impl ReqwestFetch {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[async_trait]
 impl FetchFn for ReqwestFetch {
     async fn fetch(&self, request: FetchRequest) -> Result<FetchResponse, AiError> {
@@ -162,6 +165,31 @@ impl FetchFn for ReqwestFetch {
         })
     }
 }
+
+/// Placeholder [`FetchFn`] used where no native HTTP backend exists (wasm32).
+/// It keeps the provider constructors total while making the missing transport
+/// failure explicit; hosts inject a real [`FetchFn`] through stream options.
+pub struct UnconfiguredFetch;
+
+impl UnconfiguredFetch {
+    pub fn new() -> Result<Self, AiError> {
+        Ok(Self)
+    }
+}
+
+#[async_trait]
+impl FetchFn for UnconfiguredFetch {
+    async fn fetch(&self, _request: FetchRequest) -> Result<FetchResponse, AiError> {
+        Err(AiError::Other(
+            "fetch: no HTTP transport is configured for wasm32; inject a FetchFn".to_string(),
+        ))
+    }
+}
+
+/// On wasm32 the reqwest backend (and its rustls/`!Send` stream) is
+/// unavailable, so provider defaults resolve to [`UnconfiguredFetch`].
+#[cfg(target_arch = "wasm32")]
+pub type ReqwestFetch = UnconfiguredFetch;
 
 /// Upstream `headersToRecord`: response headers as a plain name/value map
 /// (later duplicates overwrite earlier ones, matching `Headers.entries()`).
