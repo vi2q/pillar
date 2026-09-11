@@ -14,7 +14,8 @@ use pillar_ai::auth_types::{ApiKeyCredential, Credential, CredentialInfo, Creden
 use pillar_ai::error::AiError;
 use pillar_ai::event_stream::assistant_message_event_stream;
 use pillar_ai::types::{
-    AssistantMessage, AssistantMessageEvent, Content, StopReason, Usage, UsageCost, UserContent,
+    AssistantMessage, AssistantMessageEvent, Content, Model, ModelCost, ModelCostRates, StopReason,
+    Usage, UsageCost, UserContent,
 };
 use pillar_coding_agent::core::agent_session_class::{
     AgentSession, AgentSessionConfig, AgentSessionEvent,
@@ -1480,4 +1481,194 @@ async fn tool_hooks_dispatch_tool_call_and_tool_result_to_extensions() {
     assert!(calls.contains(&"tool_result:noop".to_string()), "{calls:?}");
     // The tool ran and its result fed a second LLM call.
     assert_eq!(call_count.load(Ordering::SeqCst), 2);
+}
+
+// ============================================================================
+// Model management (upstream setModel / setThinkingLevel)
+// ============================================================================
+
+/// Full registry model fixture (upstream `Model` objects passed to
+/// `setModel`).
+fn model_fixture(id: &str, provider: &str, reasoning: bool, context_window: u64) -> Model {
+    Model {
+        id: id.to_string(),
+        name: id.to_string(),
+        api: "anthropic-messages".to_string(),
+        provider: provider.to_string(),
+        base_url: String::new(),
+        reasoning,
+        thinking_level_map: None,
+        input: vec!["text".to_string()],
+        cost: ModelCost {
+            rates: ModelCostRates {
+                input: 0.0,
+                output: 0.0,
+                cache_read: 0.0,
+                cache_write: 0.0,
+            },
+            tiers: None,
+        },
+        context_window,
+        max_tokens: 8_000,
+        sampling_params: None,
+        headers: None,
+        compat: None,
+    }
+}
+
+/// Runner recording every `model_select` / `thinking_level_select` payload.
+fn runner_recording_model_events(
+    recorded: Arc<Mutex<Vec<serde_json::Value>>>,
+) -> Arc<Mutex<ExtensionRunner>> {
+    use pillar_coding_agent::core::extensions_runner::{ExtensionHandler, HostExtension};
+
+    let handler_for = |event_type: &'static str| -> ExtensionHandler {
+        let recorded = Arc::clone(&recorded);
+        Arc::new(move |event: &serde_json::Value| {
+            recorded.lock().unwrap().push(serde_json::json!({
+                "handler": event_type,
+                "event": event.clone(),
+            }));
+            Ok(None)
+        })
+    };
+    let mut handlers = std::collections::BTreeMap::new();
+    handlers.insert(
+        "model_select".to_string(),
+        vec![handler_for("model_select")],
+    );
+    handlers.insert(
+        "thinking_level_select".to_string(),
+        vec![handler_for("thinking_level_select")],
+    );
+    let extension = HostExtension {
+        path: "<inline>".to_string(),
+        handlers,
+        commands: Vec::new(),
+        tools: std::collections::BTreeMap::new(),
+        flags: std::collections::BTreeMap::new(),
+        shortcuts: std::collections::BTreeMap::new(),
+    };
+    Arc::new(Mutex::new(ExtensionRunner::new(vec![extension])))
+}
+
+#[tokio::test]
+async fn set_model_updates_state_transcript_and_emits_model_select() {
+    let recorded: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
+    let (session, _) = make_session_with_model_and_runner(
+        threshold_compaction_stream(),
+        serde_json::json!({}),
+        mock_model(),
+        runner_recording_model_events(Arc::clone(&recorded)),
+    );
+
+    let next = model_fixture("claude-opus-4-1", "anthropic", false, 500_000);
+    session
+        .set_model(next, false)
+        .await
+        .expect("set model succeeds");
+
+    // Agent state reflects the switched model.
+    let model = session.model().expect("model selected");
+    assert_eq!(model.id, "claude-opus-4-1");
+    assert_eq!(model.context_window, 500_000);
+
+    // The transcript recorded a model_change entry.
+    {
+        let session_manager = session.session_manager().lock().unwrap();
+        let branch = session_manager.get_branch(None);
+        assert!(
+            branch.iter().any(|entry| matches!(
+                entry,
+                session_entry::SessionEntry::ModelChange(change)
+                    if change.provider == "anthropic" && change.model_id == "claude-opus-4-1"
+            )),
+            "model_change appended: {branch:?}"
+        );
+    }
+
+    let recorded = recorded.lock().unwrap().clone();
+    let select = recorded
+        .iter()
+        .find(|entry| entry["handler"] == "model_select")
+        .expect("model_select emitted");
+    assert_eq!(select["event"]["model"]["id"], "claude-opus-4-1");
+    assert_eq!(select["event"]["previousModel"]["id"], "claude-sonnet-4-5");
+    assert_eq!(select["event"]["source"], "set");
+}
+
+#[tokio::test]
+async fn set_model_without_auth_fails() {
+    let (session, _) = make_session(threshold_compaction_stream(), serde_json::json!({}));
+    let next = model_fixture("gpt-5", "openai", false, 400_000);
+    let error = session
+        .set_model(next, false)
+        .await
+        .expect_err("auth gate rejects");
+    assert_eq!(error, "No API key for openai/gpt-5");
+}
+
+#[tokio::test]
+async fn set_model_persist_updates_global_default() {
+    let (session, _) = make_session(threshold_compaction_stream(), serde_json::json!({}));
+    let next = model_fixture("claude-opus-4-1", "anthropic", false, 500_000);
+    session
+        .set_model(next, true)
+        .await
+        .expect("set model persists");
+
+    let settings = session.settings_manager().lock().unwrap();
+    assert_eq!(
+        settings.default_model_and_provider(),
+        Some(("anthropic".to_string(), "claude-opus-4-1".to_string()))
+    );
+}
+
+#[tokio::test]
+async fn set_thinking_level_updates_state_and_emits_event() {
+    let recorded: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
+    let mut model = mock_model();
+    model.reasoning = true;
+    let (session, _) = make_session_with_model_and_runner(
+        threshold_compaction_stream(),
+        serde_json::json!({}),
+        model,
+        runner_recording_model_events(Arc::clone(&recorded)),
+    );
+
+    let session_events: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let listener = {
+        let session_events = Arc::clone(&session_events);
+        Arc::new(move |event: &AgentSessionEvent| {
+            if let AgentSessionEvent::ThinkingLevelChanged { level } = event {
+                session_events.lock().unwrap().push(level.clone());
+            }
+        })
+    };
+    let _unsub = session.subscribe(listener);
+
+    session.set_thinking_level("high", false);
+    assert_eq!(session.thinking_level(), "high");
+
+    {
+        let session_manager = session.session_manager().lock().unwrap();
+        let branch = session_manager.get_branch(None);
+        assert!(
+            branch.iter().any(|entry| matches!(
+                entry,
+                session_entry::SessionEntry::ThinkingLevelChange(change)
+                    if change.thinking_level == "high"
+            )),
+            "thinking_level_change appended: {branch:?}"
+        );
+    }
+    assert_eq!(session_events.lock().unwrap().clone(), vec!["high"]);
+
+    let recorded = recorded.lock().unwrap().clone();
+    let select = recorded
+        .iter()
+        .find(|entry| entry["handler"] == "thinking_level_select")
+        .expect("thinking_level_select emitted");
+    assert_eq!(select["event"]["level"], "high");
+    assert_eq!(select["event"]["previousLevel"], "off");
 }

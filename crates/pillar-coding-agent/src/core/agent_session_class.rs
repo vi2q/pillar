@@ -26,7 +26,7 @@ use pillar_ai::abort::AbortSignal;
 use pillar_ai::models::AuthTarget;
 use pillar_ai::text::content_text;
 use pillar_ai::types::{
-    AssistantMessage, AssistantMessageEvent, Content, Message, StopReason, ThinkingLevel,
+    AssistantMessage, AssistantMessageEvent, Content, Message, Model, StopReason, ThinkingLevel,
     ToolResultMessage, UserContent,
 };
 use serde_json::Value;
@@ -47,6 +47,7 @@ use crate::core::extensions_runner::{ExtensionError, ExtensionRunner};
 use crate::core::messages::{
     BashExecutionMessage, CodingAgentMessage, CustomContent, CustomMessage,
 };
+use crate::core::model_mutation::{ModelMutations, MutationEvent, ScopedModel, TranscriptAppends};
 use crate::core::model_runtime::ModelRuntime;
 use crate::core::prompt_templates::{PromptTemplate, expand_prompt_template};
 use crate::core::resource_loader::{LoadedPrompt, LoadedSkill, ResourceLoader};
@@ -102,6 +103,10 @@ pub enum AgentSessionEvent {
         steering: Vec<String>,
         follow_up: Vec<String>,
     },
+    /// Upstream `{ type: "thinking_level_changed" }`.
+    ThinkingLevelChanged {
+        level: String,
+    },
     /// Upstream `{ type: "compaction_start" }`.
     CompactionStart {
         reason: &'static str,
@@ -113,10 +118,6 @@ pub enum AgentSessionEvent {
     /// Upstream `{ type: "session_info_changed" }`.
     SessionInfoChanged {
         name: Option<String>,
-    },
-    /// Upstream `{ type: "thinking_level_changed" }`.
-    ThinkingLevelChanged {
-        level: String,
     },
     CompactionEnd {
         reason: &'static str,
@@ -247,6 +248,8 @@ pub struct AgentSessionConfig {
     pub command_handler: Option<ExtensionCommandHandler>,
     /// Session-start event metadata (upstream `sessionStartEvent`).
     pub session_start_event: Option<SessionEventMeta>,
+    /// Scoped models from `--models` (upstream `scopedModels`).
+    pub scoped_models: Vec<ScopedModel>,
 }
 
 impl AgentSessionConfig {
@@ -274,6 +277,7 @@ impl AgentSessionConfig {
             excluded_tool_names: None,
             command_handler: None,
             session_start_event: None,
+            scoped_models: Vec::new(),
         }
     }
 }
@@ -298,6 +302,19 @@ struct SessionState {
     compaction_abort: Option<AbortSignal>,
     auto_compaction_abort: Option<AbortSignal>,
     system_prompt_override: Option<String>,
+    /// Scoped models from `--models`, grown by persisted-default
+    /// propagation (upstream `_scopedModels`).
+    scoped_models: Vec<ScopedModel>,
+}
+
+/// Captured decision output of a `ModelMutations` pass, applied to the
+/// session (agent state, transcript, events) by the caller.
+struct AppliedMutations {
+    scoped_models: Vec<ScopedModel>,
+    model_changes: Vec<(String, String)>,
+    thinking_changes: Vec<String>,
+    events: Vec<MutationEvent>,
+    thinking_level: String,
 }
 
 /// Shared session internals.
@@ -420,7 +437,10 @@ impl AgentSession {
             initial_active_tool_names: config.initial_active_tool_names,
             allowed_tool_names: config.allowed_tool_names,
             excluded_tool_names: config.excluded_tool_names,
-            state: Mutex::new(SessionState::default()),
+            state: Mutex::new(SessionState {
+                scoped_models: config.scoped_models,
+                ..SessionState::default()
+            }),
             base_system_prompt,
             idle_tx,
             _idle_rx: idle_rx,
@@ -1166,6 +1186,155 @@ impl AgentSession {
         let mut next = context;
         next.messages = self.inner.agent.state().messages;
         next
+    }
+
+    // --- Model management ------------------------------------------------
+
+    /// Upstream `setModel`: auth gate, transcript append, persisted
+    /// defaults, thinking-level switch, and `model_select` emission.
+    pub async fn set_model(&self, model: Model, persist: bool) -> Result<(), String> {
+        let has_auth = self
+            .inner
+            .model_runtime
+            .has_configured_auth(&model.provider)
+            || self
+                .inner
+                .model_runtime
+                .check_auth(&model.provider, None)
+                .await
+                .map_err(|error| error.to_string())?
+                .is_some();
+        if !has_auth {
+            return Err(format!("No API key for {}/{}", model.provider, model.id));
+        }
+
+        let previous_model = self.model().as_ref().map(faux_model_to_model);
+        let mut applied = self.run_model_mutation(|mutations| {
+            mutations
+                .set_model(model.clone(), persist, &mut |_| true)
+                .map_err(|error| error.message)
+        })?;
+        self.apply_mutations(Some(&model), previous_model.as_ref(), &mut applied);
+        Ok(())
+    }
+
+    /// Upstream `setThinkingLevel`: clamp to the current model, append on
+    /// change, persist to global defaults only when requested.
+    pub fn set_thinking_level(&self, level: &str, persist: bool) {
+        if let Ok(mut applied) = self.run_model_mutation(|mutations| {
+            mutations.set_thinking_level(level, persist);
+            Ok(())
+        }) {
+            self.apply_mutations(None, None, &mut applied);
+        }
+    }
+
+    /// Run a `ModelMutations` pass against the settings manager and capture
+    /// its decision outputs (appends, events, effective levels).
+    fn run_model_mutation<F>(&self, run: F) -> Result<AppliedMutations, String>
+    where
+        F: FnOnce(&mut ModelMutations<'_>) -> Result<(), String>,
+    {
+        let current_model = self.model().as_ref().map(faux_model_to_model);
+        let current_level = self.thinking_level();
+        let scoped_models = self
+            .inner
+            .state
+            .lock()
+            .expect("session state")
+            .scoped_models
+            .clone();
+        let available_models = self.inner.model_runtime.get_available_snapshot();
+        let mut settings = self.inner.settings_manager.lock().expect("settings lock");
+        let mut mutations = ModelMutations {
+            settings: &mut settings,
+            model: current_model,
+            thinking_level: current_level,
+            scoped_models,
+            available_models,
+            appends: TranscriptAppends::default(),
+            events: Vec::new(),
+        };
+        run(&mut mutations)?;
+        Ok(AppliedMutations {
+            scoped_models: mutations.scoped_models.clone(),
+            model_changes: std::mem::take(&mut mutations.appends.model_changes),
+            thinking_changes: std::mem::take(&mut mutations.appends.thinking_changes),
+            events: std::mem::take(&mut mutations.events),
+            thinking_level: mutations.thinking_level.clone(),
+        })
+    }
+
+    /// Apply a completed mutation pass: agent state, scoped models, session
+    /// transcript appends, and session/extension events (upstream the
+    /// side-effect order of `setModel` / `setThinkingLevel`).
+    fn apply_mutations(
+        &self,
+        model: Option<&Model>,
+        previous_model: Option<&Model>,
+        applied: &mut AppliedMutations,
+    ) {
+        if let Some(model) = model {
+            self.inner
+                .agent
+                .set_model(pillar_agent::types::FauxModelRef::from_model(model));
+        }
+        self.inner
+            .state
+            .lock()
+            .expect("session state")
+            .scoped_models = applied.scoped_models.clone();
+        self.inner.agent.set_thinking_level(
+            pillar_agent::types::thinking::AgentThinkingLevel::parse(&applied.thinking_level),
+        );
+        {
+            let mut session_manager = self.inner.session_manager.lock().expect("session lock");
+            for (provider, id) in &applied.model_changes {
+                let _ = session_manager.append_model_change(provider, id);
+            }
+            for level in &applied.thinking_changes {
+                let _ = session_manager.append_thinking_level_change(level);
+            }
+        }
+        for event in &applied.events {
+            match event {
+                MutationEvent::ThinkingLevelSelect {
+                    level,
+                    previous_level,
+                } => {
+                    self.inner.emit(&AgentSessionEvent::ThinkingLevelChanged {
+                        level: level.clone(),
+                    });
+                    self.inner
+                        .extension_runner
+                        .lock()
+                        .expect("runner lock")
+                        .emit(&serde_json::json!({
+                            "type": "thinking_level_select",
+                            "level": level,
+                            "previousLevel": previous_level,
+                        }));
+                }
+                MutationEvent::ModelSelect { source, .. } => {
+                    let model_json = model
+                        .and_then(|model| serde_json::to_value(model).ok())
+                        .unwrap_or(Value::Null);
+                    let previous_json = previous_model
+                        .and_then(|model| serde_json::to_value(model).ok())
+                        .unwrap_or(Value::Null);
+                    self.inner
+                        .extension_runner
+                        .lock()
+                        .expect("runner lock")
+                        .emit(&serde_json::json!({
+                            "type": "model_select",
+                            "model": model_json,
+                            "previousModel": previous_json,
+                            "source": source,
+                        }));
+                }
+            }
+        }
     }
 
     // --- Streaming loop --------------------------------------------------

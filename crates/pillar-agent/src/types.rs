@@ -549,6 +549,30 @@ impl FauxModelRef {
             max_tokens: model.max_tokens,
         }
     }
+
+    /// Build the loop's lightweight model ref from a registry model
+    /// (upstream carries the full `Model` in agent state; the port keeps the
+    /// subset the loop and stream fn read).
+    pub fn from_model(model: &pillar_ai::types::Model) -> Self {
+        Self {
+            id: model.id.clone(),
+            name: model.name.clone(),
+            api: model.api.clone(),
+            provider: model.provider.clone(),
+            base_url: model.base_url.clone(),
+            reasoning: model.reasoning,
+            input: model.input.clone(),
+            cost: pillar_ai::types::UsageCost {
+                input: model.cost.rates.input,
+                output: model.cost.rates.output,
+                cache_read: model.cost.rates.cache_read,
+                cache_write: model.cost.rates.cache_write,
+                total: 0.0,
+            },
+            context_window: model.context_window,
+            max_tokens: model.max_tokens,
+        }
+    }
 }
 
 /// Loop configuration hooks. Closures are stored as boxed trait objects;
@@ -710,6 +734,20 @@ pub mod thinking {
                 AgentThinkingLevel::High => Some(ThinkingLevel::High),
                 AgentThinkingLevel::Xhigh => Some(ThinkingLevel::Xhigh),
                 AgentThinkingLevel::Max => Some(ThinkingLevel::Max),
+            }
+        }
+
+        /// Parse a pi thinking-level string; unknown values fall back to
+        /// `off` (upstream reads the string union directly).
+        pub fn parse(level: &str) -> Self {
+            match level {
+                "minimal" => AgentThinkingLevel::Minimal,
+                "low" => AgentThinkingLevel::Low,
+                "medium" => AgentThinkingLevel::Medium,
+                "high" => AgentThinkingLevel::High,
+                "xhigh" => AgentThinkingLevel::Xhigh,
+                "max" => AgentThinkingLevel::Max,
+                _ => AgentThinkingLevel::Off,
             }
         }
     }
