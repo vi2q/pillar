@@ -10,8 +10,6 @@
 //! - The tool registry (base + extension tool definitions with prompt
 //!   snippets) is host-owned; the session uses the agent's current system
 //!   prompt as its base prompt.
-//! - The `prepare_next_turn` hook is not wrapped for between-turn
-//!   threshold compaction.
 //! - The `preflightResult` callback is host-specific and not ported.
 //! - Summarization routes through the agent's stream function with the
 //!   `SimpleStreamOptions` subset; provider headers/env beyond apiKey ride
@@ -445,6 +443,7 @@ impl AgentSession {
             }
         });
         *inner.unsubscribe_agent.lock().expect("unsub lock") = Some(Arc::new(unsubscribe));
+        session.install_next_turn_refresh();
         session
     }
 
@@ -1065,6 +1064,108 @@ impl AgentSession {
             },
         );
         self.inner.agent.set_after_tool_call(after);
+    }
+
+    /// Upstream `_installAgentNextTurnRefresh`: chain between-turn threshold
+    /// compaction and the fresh system-prompt/tool/model/thinking state onto
+    /// the agent's prepare-next-turn hook. The previously installed hook (if
+    /// any) runs after compaction and its context replacement is preserved.
+    pub fn install_next_turn_refresh(&self) {
+        let inner = Arc::clone(&self.inner);
+        let previous = inner.agent.prepare_next_turn_hook();
+        let hook = Arc::new(
+            move |turn: &pillar_agent::types::ShouldStopAfterTurnContext,
+                  signal: Option<pillar_agent::AbortSignal>|
+                  -> pillar_agent::types::PrepareNextFuture {
+                let inner = Arc::clone(&inner);
+                let previous = previous.clone();
+                let turn = turn.clone();
+                Box::pin(async move {
+                    let session = AgentSession {
+                        inner: Arc::clone(&inner),
+                    };
+                    let context = session
+                        .compact_before_next_assistant_response(turn.context.clone())
+                        .await;
+                    let previous_snapshot = match &previous {
+                        Some(previous) => {
+                            let chained = pillar_agent::types::ShouldStopAfterTurnContext {
+                                context: context.clone(),
+                                ..turn.clone()
+                            };
+                            previous(&chained, signal).await
+                        }
+                        None => None,
+                    };
+                    let next_context = previous_snapshot
+                        .as_ref()
+                        .and_then(|snapshot| snapshot.context.clone())
+                        .unwrap_or(context);
+                    let state = inner.agent.state();
+                    let system_prompt = inner
+                        .state
+                        .lock()
+                        .expect("session state")
+                        .system_prompt_override
+                        .clone()
+                        .unwrap_or_else(|| inner.base_system_prompt.clone());
+                    Some(pillar_agent::types::AgentLoopTurnUpdate {
+                        context: Some(pillar_agent::types::AgentContext {
+                            system_prompt,
+                            messages: next_context.messages,
+                            tools: state.tools,
+                        }),
+                        model: Some(state.model),
+                        thinking_level: Some(state.thinking_level),
+                    })
+                }) as pillar_agent::types::PrepareNextFuture
+            },
+        );
+        self.inner.agent.set_prepare_next_turn(Some(hook));
+    }
+
+    /// Upstream `_compactBeforeNextAssistantResponse`: run threshold
+    /// compaction between turns when the completed turn's context exceeds
+    /// the model window, then hand back the post-compaction transcript.
+    async fn compact_before_next_assistant_response(
+        &self,
+        context: pillar_agent::types::AgentContext,
+    ) -> pillar_agent::types::AgentContext {
+        let settings = self
+            .inner
+            .settings_manager
+            .lock()
+            .expect("settings lock")
+            .compaction_settings();
+        let model = self.model();
+        let should_run = match &model {
+            Some(model) if model.context_window > 0 => {
+                let messages: Vec<CodingAgentMessage> = context
+                    .messages
+                    .iter()
+                    .cloned()
+                    .map(agent_message_to_coding)
+                    .collect();
+                compaction_driver::should_compact(
+                    compaction_driver::estimate_context_tokens(&messages).tokens,
+                    model.context_window,
+                    &compaction_driver_settings(settings),
+                )
+            }
+            _ => false,
+        };
+        if !should_run {
+            return context;
+        }
+        if let Err(error) = self.run_auto_compaction(AutoReason::Threshold, false).await {
+            self.inner.emit_extension_error(
+                "session_before_compact",
+                format!("between-turn compaction failed: {error}"),
+            );
+        }
+        let mut next = context;
+        next.messages = self.inner.agent.state().messages;
+        next
     }
 
     // --- Streaming loop --------------------------------------------------

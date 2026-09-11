@@ -887,6 +887,304 @@ async fn threshold_compaction_runs_and_rebuilds_context() {
 }
 
 // ============================================================================
+// Between-turn refresh (upstream _installAgentNextTurnRefresh)
+// ============================================================================
+
+/// Session harness with explicit tools and an optional pre-construction
+/// `AgentOptions` mutator (used to install a prior prepare-next-turn hook).
+fn make_session_with_tools(
+    stream_fn: pillar_agent::StreamFn,
+    settings_extra: serde_json::Value,
+    model: FauxModelRef,
+    tools: Vec<pillar_agent::AgentTool>,
+    configure: impl FnOnce(&mut AgentOptions),
+) -> (Arc<AgentSession>, Arc<AtomicU32>) {
+    let call_count = Arc::new(AtomicU32::new(0));
+    let mut options = AgentOptions::new(stream_fn);
+    configure(&mut options);
+    options.initial_state = Some(AgentState {
+        system_prompt: "Test".to_string(),
+        model,
+        thinking_level: AgentThinkingLevel::Off,
+        tools,
+        messages: Vec::new(),
+        is_streaming: false,
+        streaming_message: None,
+        pending_tool_calls: Default::default(),
+        error_message: None,
+    });
+    let agent = Arc::new(Agent::new(options));
+
+    let (runtime, _credentials) = runtime_with_anthropic_key();
+    let session_manager = Arc::new(Mutex::new(
+        SessionManager::in_memory("", None).expect("in-memory session"),
+    ));
+    let mut settings = SettingsManager::in_memory(
+        serde_json::json!({ "retry": { "enabled": false } }),
+        SettingsManagerCreateOptions {
+            project_trusted: Some(true),
+        },
+    );
+    settings.apply_overrides(&settings_extra);
+    let settings_manager = Arc::new(Mutex::new(settings));
+
+    let resource_loader = Arc::new(ResourceLoader::new(
+        "",
+        ResourceLoaderOptions {
+            agent_dir: temp_dir("agent-dir").to_string_lossy().to_string(),
+            no_skills: true,
+            no_prompt_templates: true,
+            no_themes: true,
+            no_context_files: true,
+            ..Default::default()
+        },
+        Arc::clone(&settings_manager),
+    ));
+
+    let session = AgentSession::new(AgentSessionConfig::new(
+        agent,
+        session_manager,
+        settings_manager,
+        String::new(),
+        resource_loader,
+        Arc::new(runtime),
+        Arc::new(Mutex::new(ExtensionRunner::new(Vec::new()))),
+    ));
+    (Arc::new(session), call_count)
+}
+
+/// Stream fn: call 1 requests `noop`, summarization prompts return a
+/// compaction summary, and later calls succeed. `call_count` counts
+/// provider turns (summarization calls excluded).
+fn tool_then_summarize_stream(call_count: Arc<AtomicU32>) -> pillar_agent::StreamFn {
+    pillar_agent::StreamFn::new(move |context, _options| {
+        let call_count = Arc::clone(&call_count);
+        async move {
+            let is_summarization = context
+                .system_prompt
+                .as_deref()
+                .is_some_and(|prompt| prompt.to_lowercase().contains("summariz"));
+            let message = if is_summarization {
+                assistant_message("Compacted summary.", StopReason::Stop, None)
+            } else {
+                let call = call_count.fetch_add(1, Ordering::SeqCst) + 1;
+                if call == 1 {
+                    let mut message = assistant_message("", StopReason::ToolUse, None);
+                    message.content =
+                        vec![Content::tool_call("call-1", "noop", serde_json::json!({}))];
+                    message
+                } else {
+                    assistant_message("Done", StopReason::Stop, None)
+                }
+            };
+            let stream = assistant_message_event_stream();
+            stream.push(AssistantMessageEvent::Start {
+                partial: message.clone(),
+            });
+            stream.push(AssistantMessageEvent::Done {
+                reason: message.stop_reason,
+                message,
+            });
+            stream
+        }
+    })
+}
+
+#[tokio::test]
+async fn between_turn_threshold_compaction_runs_mid_run() {
+    let mut model = mock_model();
+    model.context_window = 200;
+    let call_count = Arc::new(AtomicU32::new(0));
+    let (session, _) = make_session_with_tools(
+        tool_then_summarize_stream(Arc::clone(&call_count)),
+        serde_json::json!({
+            "compaction": { "enabled": true, "reserveTokens": 50, "keepRecentTokens": 10 },
+        }),
+        model,
+        vec![noop_tool()],
+        |_| {},
+    );
+
+    // Seed a prior history so between-turn compaction has a prefix to cut.
+    {
+        let mut sm = session.session_manager().lock().unwrap();
+        sm.append_message(CodingAgentMessage::Base(ai_types::Message::User {
+            content: UserContent::Text("Earlier user turn".to_string()),
+            timestamp: 1,
+        }))
+        .unwrap();
+        sm.append_message(CodingAgentMessage::Base(ai_types::Message::Assistant(
+            Box::new(assistant_message("Earlier reply", StopReason::Stop, None)),
+        )))
+        .unwrap();
+    }
+
+    let events: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let listener = {
+        let events = Arc::clone(&events);
+        Arc::new(move |event: &AgentSessionEvent| match event {
+            AgentSessionEvent::CompactionStart { reason } => {
+                events.lock().unwrap().push(format!("start:{reason}"));
+            }
+            AgentSessionEvent::CompactionEnd { reason, .. } => {
+                events.lock().unwrap().push(format!("end:{reason}"));
+            }
+            _ => {}
+        })
+    };
+    let _unsub = session.subscribe(listener);
+
+    // Turn 1 requests a tool; the large prompt plus tool result push the
+    // agent context over the window, so the between-turn hook compacts
+    // before turn 2.
+    let big_prompt = format!("{}Use a tool", "word ".repeat(400));
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        session.prompt(&big_prompt, None),
+    )
+    .await
+    .expect("prompt completes")
+    .expect("prompt succeeds");
+
+    let events = events.lock().unwrap().clone();
+    assert!(
+        events.contains(&"start:threshold".to_string()),
+        "{events:?}"
+    );
+    assert!(events.contains(&"end:threshold".to_string()), "{events:?}");
+
+    // Two provider turns plus the summarization call.
+    assert_eq!(call_count.load(Ordering::SeqCst), 2);
+
+    // The summary replaced the summarized prefix in agent state.
+    let state_messages = session.state().messages;
+    assert!(
+        state_messages.iter().any(|m| matches!(
+            m,
+            pillar_agent::AgentMessage::CompactionSummary(summary)
+                if summary.summary == "Compacted summary."
+        )),
+        "compaction summary message in agent state: {state_messages:?}"
+    );
+    assert!(
+        !state_messages.iter().any(|m| matches!(
+            m,
+            pillar_agent::AgentMessage::Message(ai_types::Message::User { content, .. })
+                if user_content_text(content).contains("Earlier user turn")
+        )),
+        "summarized prefix dropped from agent state"
+    );
+}
+
+/// Captured `(system prompt, user texts)` per provider request.
+type CapturedContexts = Arc<Mutex<Vec<(Option<String>, Vec<String>)>>>;
+
+/// Stream fn: call 1 requests `noop`, later calls succeed, recording the
+/// system prompt and user text of every request.
+fn capture_tool_use_stream(
+    contexts: CapturedContexts,
+    call_count: Arc<AtomicU32>,
+) -> pillar_agent::StreamFn {
+    pillar_agent::StreamFn::new(move |context, _options| {
+        let contexts = Arc::clone(&contexts);
+        let call_count = Arc::clone(&call_count);
+        async move {
+            let users: Vec<String> = context
+                .messages
+                .iter()
+                .filter_map(|message| match message {
+                    ai_types::Message::User { content, .. } => Some(user_content_text(content)),
+                    _ => None,
+                })
+                .collect();
+            contexts
+                .lock()
+                .unwrap()
+                .push((context.system_prompt.clone(), users));
+            let call = call_count.fetch_add(1, Ordering::SeqCst) + 1;
+            let message = if call == 1 {
+                let mut message = assistant_message("", StopReason::ToolUse, None);
+                message.content = vec![Content::tool_call("call-1", "noop", serde_json::json!({}))];
+                message
+            } else {
+                assistant_message("Done", StopReason::Stop, None)
+            };
+            let stream = assistant_message_event_stream();
+            stream.push(AssistantMessageEvent::Start {
+                partial: message.clone(),
+            });
+            stream.push(AssistantMessageEvent::Done {
+                reason: message.stop_reason,
+                message,
+            });
+            stream
+        }
+    })
+}
+
+#[tokio::test]
+async fn next_turn_refresh_chains_previous_hook_and_refreshes_state() {
+    let hook_calls = Arc::new(AtomicU32::new(0));
+    let previous_calls = Arc::clone(&hook_calls);
+    let contexts: CapturedContexts = Arc::new(Mutex::new(Vec::new()));
+    let call_count = Arc::new(AtomicU32::new(0));
+
+    let (session, _) = make_session_with_tools(
+        capture_tool_use_stream(Arc::clone(&contexts), Arc::clone(&call_count)),
+        serde_json::json!({}),
+        mock_model(),
+        vec![noop_tool()],
+        move |options| {
+            options.prepare_next_turn = Some(Arc::new(move |_turn, _signal| {
+                let previous_calls = Arc::clone(&previous_calls);
+                Box::pin(async move {
+                    previous_calls.fetch_add(1, Ordering::SeqCst);
+                    Some(pillar_agent::AgentLoopTurnUpdate {
+                        context: Some(pillar_agent::AgentContext {
+                            system_prompt: "Hook prompt".to_string(),
+                            messages: vec![pillar_agent::AgentMessage::Message(
+                                ai_types::Message::User {
+                                    content: UserContent::Text("hook-injected".to_string()),
+                                    timestamp: 9,
+                                },
+                            )],
+                            tools: Vec::new(),
+                        }),
+                        model: None,
+                        thinking_level: None,
+                    })
+                }) as pillar_agent::types::PrepareNextFuture
+            }));
+        },
+    );
+
+    session
+        .prompt("Use a tool", None)
+        .await
+        .expect("prompt succeeds");
+
+    // The prior hook ran exactly once, chained after the compaction refresh.
+    assert_eq!(hook_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(call_count.load(Ordering::SeqCst), 2);
+
+    let contexts = contexts.lock().unwrap().clone();
+    assert_eq!(contexts.len(), 2, "two provider requests: {contexts:?}");
+    let (second_prompt, second_users) = &contexts[1];
+    // The prior hook's context replacement survives, but the wrapper
+    // restores the base system prompt and the agent's live tool set.
+    assert_eq!(second_prompt.as_deref(), Some("Test"), "{contexts:?}");
+    assert!(
+        second_users
+            .iter()
+            .any(|text| text.contains("hook-injected")),
+        "prior hook context preserved: {contexts:?}"
+    );
+
+    // The agent's system prompt reflects the refreshed base prompt.
+    assert_eq!(session.system_prompt(), "Test");
+}
+
+// ============================================================================
 // Overflow compaction -> compact-and-retry (upstream _checkCompaction Case 1)
 // ============================================================================
 

@@ -253,7 +253,11 @@ pub struct Agent {
     before_tool_call: Arc<std::sync::Mutex<Option<Arc<BeforeToolFn>>>>,
     after_tool_call: Arc<std::sync::Mutex<Option<Arc<AfterToolFn>>>>,
     pub should_stop_after_turn: Option<Arc<ShouldStopWithSignalFn>>,
-    pub prepare_next_turn: Option<Arc<PrepareNextWithSignalFn>>,
+    /// Prepare-next-turn hook, interior-mutable so session runtimes can
+    /// install or replace it after construction (upstream assignment of
+    /// `agent.prepareNextTurnWithContext`). Read when a run builds its loop
+    /// config.
+    prepare_next_turn: Arc<std::sync::Mutex<Option<Arc<PrepareNextWithSignalFn>>>>,
     /// Session identifier forwarded to providers for cache-aware backends.
     session_id: Arc<std::sync::Mutex<Option<String>>>,
     /// Optional per-level thinking token budgets forwarded to the stream fn.
@@ -347,7 +351,7 @@ impl Agent {
             before_tool_call: Arc::new(std::sync::Mutex::new(options.before_tool_call)),
             after_tool_call: Arc::new(std::sync::Mutex::new(options.after_tool_call)),
             should_stop_after_turn: options.should_stop_after_turn,
-            prepare_next_turn: options.prepare_next_turn,
+            prepare_next_turn: Arc::new(std::sync::Mutex::new(options.prepare_next_turn)),
             session_id: Arc::new(std::sync::Mutex::new(options.session_id)),
             thinking_budgets: options.thinking_budgets,
             max_retry_delay_ms: options.max_retry_delay_ms,
@@ -430,6 +434,26 @@ impl Agent {
     /// `agent.afterToolCall`). Applies to the next run.
     pub fn set_after_tool_call(&self, hook: Arc<AfterToolFn>) {
         *self.after_tool_call.lock().expect("after hook lock") = Some(hook);
+    }
+
+    /// The installed prepare-next-turn hook (upstream reading
+    /// `agent.prepareNextTurnWithContext`). Used by session runtimes that
+    /// chain their own compaction refresh on top of a previously installed
+    /// hook.
+    pub fn prepare_next_turn_hook(&self) -> Option<Arc<PrepareNextWithSignalFn>> {
+        self.prepare_next_turn
+            .lock()
+            .expect("prepare next turn lock")
+            .clone()
+    }
+
+    /// Install or replace the prepare-next-turn hook (upstream assigning
+    /// `agent.prepareNextTurnWithContext`). Applies to the next run.
+    pub fn set_prepare_next_turn(&self, hook: Option<Arc<PrepareNextWithSignalFn>>) {
+        *self
+            .prepare_next_turn
+            .lock()
+            .expect("prepare next turn lock") = hook;
     }
 
     pub fn clear_messages(&self) {
@@ -679,7 +703,12 @@ impl Agent {
                 }) as StopFuture
             }) as Arc<ShouldStopFn>
         });
-        let prepare_next_turn = self.prepare_next_turn.as_ref().map(|hook| {
+        let prepare_next_turn_hook = self
+            .prepare_next_turn
+            .lock()
+            .expect("prepare next turn lock")
+            .clone();
+        let prepare_next_turn = prepare_next_turn_hook.as_ref().map(|hook| {
             let active = Arc::clone(&self.active_run);
             let hook = Arc::clone(hook);
             Arc::new(
