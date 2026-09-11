@@ -18,6 +18,11 @@ pub const ENV_AGENT_DIR: &str = "PI_CODING_AGENT_DIR";
 /// Session directory environment variable (upstream `ENV_SESSION_DIR`).
 pub const ENV_SESSION_DIR: &str = "PI_CODING_AGENT_SESSION_DIR";
 
+/// Version reported by `--version` (upstream `VERSION` from package.json).
+/// The port reports the pinned pi version so pi-compatible clients
+/// (version detection, update checks) keep working.
+pub const VERSION: &str = "0.84.3";
+
 /// Output mode (`--mode`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {

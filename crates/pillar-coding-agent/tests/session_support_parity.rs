@@ -18,7 +18,14 @@ use pillar_coding_agent::core::session_support::{
 use pillar_coding_agent::core::settings_manager::{SettingsManager, SettingsManagerCreateOptions};
 
 fn temp_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("pillar-sessup-{}-{name}", std::process::id()));
+    // Per-call unique directory: parallel tests in one process must never
+    // share a pid-derived path (race: one test removes it while another
+    // creates/uses it).
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let id = NEXT.fetch_add(1, Ordering::Relaxed);
+    let dir =
+        std::env::temp_dir().join(format!("pillar-sessup-{}-{id}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
