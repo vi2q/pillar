@@ -281,7 +281,9 @@ fn assistant_message_event_to_json(event: &AssistantMessageEvent) -> Result<Valu
 }
 
 /// Serialize a compaction result (upstream `CompactionResult`).
-fn compaction_result_to_json(result: &crate::core::compaction::driver::CompactionResult) -> Value {
+pub(crate) fn compaction_result_to_json(
+    result: &crate::core::compaction::driver::CompactionResult,
+) -> Value {
     json!({
         "summary": result.summary,
         "firstKeptEntryId": result.first_kept_entry_id,

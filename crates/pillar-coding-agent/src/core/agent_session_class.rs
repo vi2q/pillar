@@ -630,6 +630,86 @@ impl AgentSession {
             .is_some()
     }
 
+    /// Whether auto-compaction is enabled (upstream `autoCompactionEnabled`).
+    pub fn auto_compaction_enabled(&self) -> bool {
+        self.inner
+            .settings_manager
+            .lock()
+            .expect("settings lock")
+            .compaction_settings()
+            .enabled
+    }
+
+    /// Toggle auto-compaction (upstream `setAutoCompactionEnabled`).
+    pub fn set_auto_compaction_enabled(&self, enabled: bool) {
+        let mut settings = self.inner.settings_manager.lock().expect("settings lock");
+        let current = settings.compaction_settings();
+        settings.set_global_setting(
+            "compaction",
+            serde_json::json!({
+                "enabled": enabled,
+                "reserveTokens": current.reserve_tokens,
+                "keepRecentTokens": current.keep_recent_tokens,
+            }),
+        );
+    }
+
+    /// Whether compaction or branch summarization is running (upstream
+    /// `isCompacting`).
+    pub fn is_compacting(&self) -> bool {
+        let state = self.inner.state.lock().expect("session state");
+        state.auto_compaction_abort.is_some() || state.compaction_abort.is_some()
+    }
+
+    /// Thinking levels the current model supports (upstream
+    /// `getAvailableThinkingLevels`).
+    pub fn available_thinking_levels(&self) -> Vec<String> {
+        match self.model() {
+            Some(model) => pillar_ai::models::get_supported_thinking_levels(&model.to_model())
+                .into_iter()
+                .map(|level| match level {
+                    pillar_ai::types::ModelThinkingLevel::Off => "off",
+                    pillar_ai::types::ModelThinkingLevel::Minimal => "minimal",
+                    pillar_ai::types::ModelThinkingLevel::Low => "low",
+                    pillar_ai::types::ModelThinkingLevel::Medium => "medium",
+                    pillar_ai::types::ModelThinkingLevel::High => "high",
+                    pillar_ai::types::ModelThinkingLevel::Xhigh => "xhigh",
+                    pillar_ai::types::ModelThinkingLevel::Max => "max",
+                })
+                .map(str::to_string)
+                .collect(),
+            None => crate::core::session_support::THINKING_LEVEL_OPTIONS
+                .iter()
+                .map(|level| (*level).to_string())
+                .collect(),
+        }
+    }
+
+    /// The text of the last assistant message (upstream the RPC
+    /// `get_last_assistant_text` response).
+    pub fn last_assistant_text(&self) -> Option<String> {
+        let messages = self.inner.agent.state().messages;
+        messages.iter().rev().find_map(|message| match message {
+            pillar_agent::types::AgentMessage::Message(Message::Assistant(assistant)) => {
+                Some(pillar_ai::text::content_text(&assistant.content, ""))
+            }
+            _ => None,
+        })
+    }
+
+    /// Set the session display name and notify listeners (upstream
+    /// `setSessionName`).
+    pub fn set_session_name(&self, name: &str) -> Result<(), String> {
+        {
+            let mut session_manager = self.inner.session_manager.lock().expect("session lock");
+            session_manager.append_session_info(name)?;
+        }
+        self.inner.emit(&AgentSessionEvent::SessionInfoChanged {
+            name: Some(name.to_string()),
+        });
+        Ok(())
+    }
+
     /// Whether auto-retry is enabled (upstream `autoRetryEnabled`).
     pub fn auto_retry_enabled(&self) -> bool {
         self.inner

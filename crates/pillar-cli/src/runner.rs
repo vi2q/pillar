@@ -50,3 +50,11 @@ pub fn build_extension_runner(
 pub fn shared_runner(runner: ExtensionRunner) -> Arc<std::sync::Mutex<ExtensionRunner>> {
     Arc::new(std::sync::Mutex::new(runner))
 }
+
+impl ExtensionWiring {
+    /// Move the built runner out while keeping the runtime/loader alive in
+    /// the wiring value.
+    pub fn take_runner(&mut self) -> ExtensionRunner {
+        std::mem::replace(&mut self.runner, ExtensionRunner::new(Vec::new()))
+    }
+}

@@ -5,7 +5,7 @@
 //! `coding-agent/main.ts`, because it is the only layer that can join the
 //! coding agent with the Luau extension runtime (docs/rules/01-architecture.md).
 //! The package/auth/update subcommands, migrations, trust prompts, and the
-//! interactive/rpc modes are not ported yet.
+//! interactive mode are not ported yet.
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -15,13 +15,16 @@ use std::sync::{Arc, Mutex};
 use pillar_coding_agent::cli::args::{Args, DiagnosticKind, Mode, VERSION, parse_args};
 use pillar_coding_agent::cli::help::render_help;
 use pillar_coding_agent::cli::main::{AppMode, resolve_app_mode};
-use pillar_coding_agent::core::agent_session_class::{ExtensionBindings, SessionEventMeta};
+use pillar_coding_agent::core::agent_session_class::{
+    AgentSession, ExtensionBindings, SessionEventMeta,
+};
 use pillar_coding_agent::core::extensions_runner::ExtensionRunner;
 use pillar_coding_agent::core::model_runtime::{CreateModelRuntimeOptions, ModelRuntime};
 use pillar_coding_agent::core::sdk::{CreateAgentSessionOptions, create_agent_session};
 use pillar_coding_agent::modes::print_mode::{PrintModeMode, PrintModeOptions, run_print_mode};
+use pillar_coding_agent::modes::rpc::rpc_mode::run_rpc_mode;
 
-use pillar_cli::runner::build_extension_runner;
+use pillar_cli::runner::{ExtensionWiring, build_extension_runner};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
@@ -64,10 +67,7 @@ async fn main() -> ExitCode {
     );
     match app_mode {
         AppMode::Print | AppMode::Json => run_print(&parsed, app_mode).await,
-        AppMode::Rpc => {
-            eprintln!("Error: `rpc` mode is not ported yet");
-            ExitCode::from(1)
-        }
+        AppMode::Rpc => run_rpc(&parsed).await,
         AppMode::Interactive => {
             eprintln!("Error: `interactive` mode is not ported yet");
             ExitCode::from(1)
@@ -125,29 +125,26 @@ fn prepare_initial_message(parsed: &Args, cwd: &str) -> Option<String> {
     }
 }
 
-async fn run_print(parsed: &Args, app_mode: AppMode) -> ExitCode {
+/// Create the runtime (model runtime, Luau extension runner, session). The
+/// returned wiring must outlive the session (it owns the Luau runtime).
+async fn build_session(parsed: &Args) -> Result<(AgentSession, ExtensionWiring), String> {
     let cwd = std::env::current_dir()
         .unwrap_or_default()
         .to_string_lossy()
         .to_string();
     let agent_dir = agent_dir();
 
-    let model_runtime = match ModelRuntime::new(CreateModelRuntimeOptions {
+    let model_runtime = ModelRuntime::new(CreateModelRuntimeOptions {
         auth_path: Some(PathBuf::from(&agent_dir).join("auth.json")),
         models_path: Some(PathBuf::from(&agent_dir).join("models.json")),
         ..Default::default()
-    }) {
-        Ok(runtime) => Arc::new(runtime),
-        Err(error) => {
-            eprintln!("Error: failed to create model runtime: {error}");
-            return ExitCode::from(1);
-        }
-    };
+    })
+    .map_err(|error| format!("failed to create model runtime: {error}"))?;
 
     let global_extensions = PathBuf::from(&agent_dir).join("extensions");
     let project_extensions = PathBuf::from(&cwd).join(".pi").join("extensions");
     let configured = parsed.extensions.clone().unwrap_or_default();
-    let wiring = build_extension_runner(
+    let mut wiring = build_extension_runner(
         &cwd,
         Some(&global_extensions),
         Some(&project_extensions),
@@ -156,14 +153,12 @@ async fn run_print(parsed: &Args, app_mode: AppMode) -> ExitCode {
     for (path, error) in &wiring.errors {
         eprintln!("Warning: failed to load extension {path}: {error}");
     }
-    let extension_runner: Arc<Mutex<ExtensionRunner>> = Arc::new(Mutex::new(wiring.runner));
-    // Keep the Luau runtime alive for the runner's bridges.
-    let _runtime = wiring.runtime;
+    let extension_runner: Arc<Mutex<ExtensionRunner>> = Arc::new(Mutex::new(wiring.take_runner()));
 
-    let created = match create_agent_session(CreateAgentSessionOptions {
+    let created = create_agent_session(CreateAgentSessionOptions {
         cwd: cwd.clone(),
         agent_dir: Some(agent_dir),
-        model_runtime,
+        model_runtime: Arc::new(model_runtime),
         settings_manager: None,
         session_manager: None,
         resource_loader: None,
@@ -183,19 +178,22 @@ async fn run_print(parsed: &Args, app_mode: AppMode) -> ExitCode {
         extension_runner_rebuild: None,
         stream_fn: None,
     })
-    .await
-    {
-        Ok(created) => created,
+    .await?;
+    if let Some(message) = &created.model_fallback_message {
+        eprintln!("Warning: {message}");
+    }
+    Ok((created.session, wiring))
+}
+
+async fn run_print(parsed: &Args, app_mode: AppMode) -> ExitCode {
+    let (session, _wiring) = match build_session(parsed).await {
+        Ok(built) => built,
         Err(error) => {
             eprintln!("Error: {error}");
             return ExitCode::from(1);
         }
     };
-    if let Some(message) = &created.model_fallback_message {
-        eprintln!("Warning: {message}");
-    }
 
-    let session = created.session;
     let mode = if app_mode == AppMode::Json {
         PrintModeMode::Json
     } else {
@@ -209,6 +207,10 @@ async fn run_print(parsed: &Args, app_mode: AppMode) -> ExitCode {
         })
         .await;
 
+    let cwd = std::env::current_dir()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
     let options = PrintModeOptions {
         mode,
         messages: parsed.messages.iter().skip(1).cloned().collect(),
@@ -218,6 +220,35 @@ async fn run_print(parsed: &Args, app_mode: AppMode) -> ExitCode {
     let mut stdout = std::io::stdout();
     match run_print_mode(&session, options, &mut stdout).await {
         Ok(code) => ExitCode::from(code as u8),
+        Err(error) => {
+            eprintln!("Error: {error}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+async fn run_rpc(parsed: &Args) -> ExitCode {
+    let (session, _wiring) = match build_session(parsed).await {
+        Ok(built) => built,
+        Err(error) => {
+            eprintln!("Error: {error}");
+            return ExitCode::from(1);
+        }
+    };
+    let session = Arc::new(session);
+    session
+        .bind_extensions(ExtensionBindings {
+            ui_context: Some(false),
+            mode: Some("rpc".to_string()),
+            on_error: None,
+        })
+        .await;
+
+    let out: Arc<Mutex<Box<dyn std::io::Write + Send>>> =
+        Arc::new(Mutex::new(Box::new(std::io::stdout())));
+    let stdin = std::io::stdin();
+    match run_rpc_mode(session, stdin.lock(), out).await {
+        Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("Error: {error}");
             ExitCode::from(1)

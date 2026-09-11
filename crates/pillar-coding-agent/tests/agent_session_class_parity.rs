@@ -2173,3 +2173,157 @@ async fn print_mode_json_emits_header_and_event_lines() {
     // Cumulative assistant snapshots are stripped from the wire.
     assert!(!text.contains("\"partial\""), "{text}");
 }
+
+// ============================================================================
+// RPC mode (upstream modes/rpc/rpc-mode.ts)
+// ============================================================================
+
+struct SharedBuf(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for SharedBuf {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn rpc_mode_get_state_only() {
+    use pillar_coding_agent::modes::rpc::rpc_mode::RpcMode;
+
+    let (session, _) = make_session(
+        threshold_compaction_stream(),
+        serde_json::json!({ "retry": { "enabled": false } }),
+    );
+    let buffer = Arc::new(Mutex::new(Vec::new()));
+    let out: Arc<Mutex<Box<dyn std::io::Write + Send>>> =
+        Arc::new(Mutex::new(Box::new(SharedBuf(Arc::clone(&buffer)))));
+    let mode = RpcMode::new(Arc::clone(&session), out);
+    let response = mode
+        .handle_command(command_envelope(
+            serde_json::json!({ "id": "1", "type": "get_state" }),
+        ))
+        .await;
+    assert!(response.success, "{response:?}");
+}
+
+#[tokio::test]
+async fn rpc_mode_dispatches_core_commands() {
+    use pillar_coding_agent::modes::rpc::rpc_mode::RpcMode;
+    use serde_json::json;
+
+    let (session, _) = make_session(
+        threshold_compaction_stream(),
+        serde_json::json!({ "retry": { "enabled": false } }),
+    );
+    let buffer = Arc::new(Mutex::new(Vec::new()));
+    let out: Arc<Mutex<Box<dyn std::io::Write + Send>>> =
+        Arc::new(Mutex::new(Box::new(SharedBuf(Arc::clone(&buffer)))));
+    let mode = RpcMode::new(Arc::clone(&session), out);
+
+    // get_state
+    let response = mode
+        .handle_command(command_envelope(json!({ "id": "1", "type": "get_state" })))
+        .await;
+    assert!(response.success, "{response:?}");
+    let data = response.data.expect("state data");
+    assert_eq!(data["sessionId"], json!(session.session_id()));
+    assert_eq!(data["thinkingLevel"], json!("off"));
+    assert_eq!(data["autoCompactionEnabled"], json!(true));
+    assert_eq!(data["isStreaming"], json!(false));
+
+    // prompt writes events and records the assistant reply
+    let response = mode
+        .handle_command(command_envelope(
+            json!({ "id": "2", "type": "prompt", "message": "hi" }),
+        ))
+        .await;
+    assert!(response.success, "{response:?}");
+
+    let response = mode
+        .handle_command(command_envelope(
+            json!({ "id": "3", "type": "get_last_assistant_text" }),
+        ))
+        .await;
+    assert_eq!(response.data.expect("text data")["text"], json!("Done"));
+
+    // get_messages
+    let response = mode
+        .handle_command(command_envelope(
+            json!({ "id": "4", "type": "get_messages" }),
+        ))
+        .await;
+    let messages = response.data.expect("messages data");
+    assert!(
+        messages["messages"]
+            .as_array()
+            .is_some_and(|m| !m.is_empty())
+    );
+
+    // clear_queue
+    let response = mode
+        .handle_command(command_envelope(
+            json!({ "id": "5", "type": "clear_queue" }),
+        ))
+        .await;
+    assert_eq!(
+        response.data.expect("queue data"),
+        json!({ "steering": [], "followUp": [] })
+    );
+
+    // settings toggles
+    for command in [
+        json!({ "id": "6", "type": "set_auto_retry", "enabled": false }),
+        json!({ "id": "7", "type": "set_auto_compaction", "enabled": false }),
+        json!({ "id": "8", "type": "set_steering_mode", "mode": "all" }),
+        json!({ "id": "9", "type": "set_thinking_level", "level": "high" }),
+        json!({ "id": "10", "type": "set_session_name", "name": "rpc" }),
+    ] {
+        let response = mode.handle_command(command_envelope(command)).await;
+        assert!(response.success, "{response:?}");
+    }
+    assert!(!session.auto_compaction_enabled());
+
+    // available models / thinking levels
+    let response = mode
+        .handle_command(command_envelope(
+            json!({ "id": "11", "type": "get_available_models" }),
+        ))
+        .await;
+    assert!(response.success);
+    assert!(response.data.expect("models")["models"].is_array());
+
+    let response = mode
+        .handle_command(command_envelope(
+            json!({ "id": "12", "type": "get_available_thinking_levels" }),
+        ))
+        .await;
+    assert_eq!(response.data.expect("levels")["levels"], json!(["off"]));
+
+    // unsupported commands fail explicitly
+    let response = mode
+        .handle_command(command_envelope(json!({ "id": "13", "type": "get_tree" })))
+        .await;
+    assert!(!response.success);
+    assert!(
+        response
+            .error
+            .unwrap_or_default()
+            .contains("not supported yet")
+    );
+
+    // events were written as JSON lines
+    let written = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
+    assert!(written.contains("\"type\":\"agent_start\""), "{written}");
+    assert!(written.contains("\"type\":\"message_end\""), "{written}");
+}
+
+fn command_envelope(
+    value: serde_json::Value,
+) -> pillar_coding_agent::modes::rpc::rpc_types::RpcCommandEnvelope {
+    serde_json::from_value(value).expect("command envelope")
+}
