@@ -2062,3 +2062,78 @@ async fn create_agent_session_wires_agent_tools_prompt_and_persistence() {
         "thinking_level_change appended: {branch:?}"
     );
 }
+
+// ============================================================================
+// Print mode (upstream modes/print-mode.ts)
+// ============================================================================
+
+#[tokio::test]
+async fn print_mode_prints_the_final_assistant_text() {
+    use pillar_coding_agent::modes::print_mode::{PrintModeMode, PrintModeOptions, run_print_mode};
+
+    let (session, _) = make_session(threshold_compaction_stream(), serde_json::json!({}));
+    let mut out = Vec::new();
+    let code = run_print_mode(
+        &session,
+        PrintModeOptions {
+            mode: PrintModeMode::Text,
+            messages: Vec::new(),
+            initial_message: Some("hi".to_string()),
+            initial_images: None,
+        },
+        &mut out,
+    )
+    .await
+    .expect("print mode succeeds");
+
+    assert_eq!(code, 0);
+    assert_eq!(String::from_utf8(out).unwrap().trim(), "Done");
+}
+
+#[tokio::test]
+async fn print_mode_reports_assistant_errors() {
+    use pillar_coding_agent::modes::print_mode::{PrintModeMode, PrintModeOptions, run_print_mode};
+
+    let call_count = Arc::new(AtomicU32::new(0));
+    let (session, _) = make_session(
+        fail_then_succeed_stream(1, Arc::clone(&call_count)),
+        serde_json::json!({ "retry": { "enabled": false } }),
+    );
+    let mut out = Vec::new();
+    let error = run_print_mode(
+        &session,
+        PrintModeOptions {
+            mode: PrintModeMode::Text,
+            messages: Vec::new(),
+            initial_message: Some("hi".to_string()),
+            initial_images: None,
+        },
+        &mut out,
+    )
+    .await
+    .expect_err("assistant error surfaces");
+
+    assert!(error.contains("overloaded_error"), "{error}");
+}
+
+#[tokio::test]
+async fn print_mode_json_is_not_ported_yet() {
+    use pillar_coding_agent::modes::print_mode::{PrintModeMode, PrintModeOptions, run_print_mode};
+
+    let (session, _) = make_session(threshold_compaction_stream(), serde_json::json!({}));
+    let mut out = Vec::new();
+    let error = run_print_mode(
+        &session,
+        PrintModeOptions {
+            mode: PrintModeMode::Json,
+            messages: Vec::new(),
+            initial_message: Some("hi".to_string()),
+            initial_images: None,
+        },
+        &mut out,
+    )
+    .await
+    .expect_err("json mode not ported");
+
+    assert!(error.contains("json print mode is not ported"), "{error}");
+}

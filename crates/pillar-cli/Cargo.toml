@@ -13,5 +13,6 @@ path = "src/main.rs"
 [dependencies]
 pillar-coding-agent = { path = "../pillar-coding-agent" }
 pillar-extensions = { path = "../pillar-extensions" }
+tokio = { version = "1.47", features = ["rt", "macros"] }
 
 [dev-dependencies]

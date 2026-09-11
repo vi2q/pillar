@@ -392,10 +392,17 @@ fn resolve_model_default(
     model_runtime: &ModelRuntime,
     settings: &SettingsManager,
 ) -> Option<Model> {
+    let configured = |model: &Model| model_runtime.has_configured_auth(&model.provider);
     settings
         .default_model_and_provider()
         .and_then(|(provider, model_id)| model_runtime.get_model(&provider, &model_id))
-        .or_else(|| model_runtime.get_available_snapshot().into_iter().next())
+        .filter(configured)
+        .or_else(|| {
+            model_runtime
+                .get_available_snapshot()
+                .into_iter()
+                .find(configured)
+        })
 }
 
 /// Create an agent session (upstream `createAgentSession`): model/thinking

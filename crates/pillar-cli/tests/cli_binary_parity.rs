@@ -50,3 +50,30 @@ fn binary_rejects_file_args_in_rpc_mode() {
             .contains("@file arguments are not supported in RPC mode")
     );
 }
+
+#[test]
+fn binary_print_mode_without_a_model_fails_cleanly() {
+    // Isolate the agent dir so no real credentials/settings are read.
+    let dir = std::env::temp_dir().join(format!(
+        "pillar-cli-print-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let output = Command::new(pillar_bin())
+        .args(["-p", "hi"])
+        .env("HOME", &dir)
+        .env("PI_CODING_AGENT_DIR", &dir)
+        .output()
+        .expect("run pillar");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Error:"), "{stderr}");
+    // Must fail through the model/auth path, not panic.
+    assert!(!stderr.contains("panicked"), "{stderr}");
+}
