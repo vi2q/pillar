@@ -2067,6 +2067,33 @@ async fn create_agent_session_wires_agent_tools_prompt_and_persistence() {
 // Print mode (upstream modes/print-mode.ts)
 // ============================================================================
 
+/// Stream fn that emits a text delta before finishing, so the session
+/// produces `message_update` events (upstream streaming shape).
+fn delta_then_done_stream() -> pillar_agent::StreamFn {
+    pillar_agent::StreamFn::new(move |_context, _options| async move {
+        let stream = assistant_message_event_stream();
+        let empty = assistant_message("", StopReason::Stop, None);
+        stream.push(AssistantMessageEvent::Start {
+            partial: empty.clone(),
+        });
+        let with_text = assistant_message("Hello", StopReason::Stop, None);
+        stream.push(AssistantMessageEvent::TextStart {
+            content_index: 0,
+            partial: empty,
+        });
+        stream.push(AssistantMessageEvent::TextDelta {
+            content_index: 0,
+            delta: "Hello".to_string(),
+            partial: with_text.clone(),
+        });
+        stream.push(AssistantMessageEvent::Done {
+            reason: StopReason::Stop,
+            message: with_text,
+        });
+        stream
+    })
+}
+
 #[tokio::test]
 async fn print_mode_prints_the_final_assistant_text() {
     use pillar_coding_agent::modes::print_mode::{PrintModeMode, PrintModeOptions, run_print_mode};
@@ -2117,12 +2144,12 @@ async fn print_mode_reports_assistant_errors() {
 }
 
 #[tokio::test]
-async fn print_mode_json_is_not_ported_yet() {
+async fn print_mode_json_emits_header_and_event_lines() {
     use pillar_coding_agent::modes::print_mode::{PrintModeMode, PrintModeOptions, run_print_mode};
 
-    let (session, _) = make_session(threshold_compaction_stream(), serde_json::json!({}));
+    let (session, _) = make_session(delta_then_done_stream(), serde_json::json!({}));
     let mut out = Vec::new();
-    let error = run_print_mode(
+    let code = run_print_mode(
         &session,
         PrintModeOptions {
             mode: PrintModeMode::Json,
@@ -2133,7 +2160,16 @@ async fn print_mode_json_is_not_ported_yet() {
         &mut out,
     )
     .await
-    .expect_err("json mode not ported");
+    .expect("json mode succeeds");
 
-    assert!(error.contains("json print mode is not ported"), "{error}");
+    assert_eq!(code, 0);
+    let text = String::from_utf8(out).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(lines.len() > 1, "{text}");
+    let header: serde_json::Value = serde_json::from_str(lines[0]).expect("header line is JSON");
+    assert!(header.get("id").is_some(), "{header}");
+    assert!(text.contains("\"type\":\"message_update\""), "{text}");
+    assert!(text.contains("assistantMessageEvent"), "{text}");
+    // Cumulative assistant snapshots are stripped from the wire.
+    assert!(!text.contains("\"partial\""), "{text}");
 }
