@@ -573,6 +573,36 @@ impl FauxModelRef {
             max_tokens: model.max_tokens,
         }
     }
+
+    /// Rebuild the registry model this ref was derived from (the reverse of
+    /// [`FauxModelRef::from_model`]). Fields the ref does not carry
+    /// (thinking-level map, sampling params, compat, headers) are left unset.
+    pub fn to_model(&self) -> pillar_ai::types::Model {
+        pillar_ai::types::Model {
+            id: self.id.clone(),
+            name: self.name.clone(),
+            api: self.api.clone(),
+            provider: self.provider.clone(),
+            base_url: self.base_url.clone(),
+            reasoning: self.reasoning,
+            thinking_level_map: None,
+            input: self.input.clone(),
+            cost: pillar_ai::types::ModelCost {
+                rates: pillar_ai::types::ModelCostRates {
+                    input: self.cost.input,
+                    output: self.cost.output,
+                    cache_read: self.cost.cache_read,
+                    cache_write: self.cost.cache_write,
+                },
+                tiers: None,
+            },
+            context_window: self.context_window,
+            max_tokens: self.max_tokens,
+            sampling_params: None,
+            headers: None,
+            compat: None,
+        }
+    }
 }
 
 /// Loop configuration hooks. Closures are stored as boxed trait objects;

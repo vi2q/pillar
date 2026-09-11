@@ -3184,7 +3184,9 @@ fn agent_message_to_coding(message: pillar_agent::types::AgentMessage) -> Coding
 }
 
 /// Convert a session message to a pillar-agent message.
-fn coding_message_to_agent(message: CodingAgentMessage) -> pillar_agent::types::AgentMessage {
+pub(crate) fn coding_message_to_agent(
+    message: CodingAgentMessage,
+) -> pillar_agent::types::AgentMessage {
     match message {
         CodingAgentMessage::Base(message) => pillar_agent::types::AgentMessage::Message(message),
         CodingAgentMessage::BashExecution(bash) => {

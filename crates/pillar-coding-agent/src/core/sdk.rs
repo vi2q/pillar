@@ -7,11 +7,29 @@
 //! are host-injected; the port covers the pure resolution logic over a
 //! host-provided model lookup.
 
+use std::path::Path;
+use std::sync::{Arc, Mutex, OnceLock};
+
+use pillar_agent::AgentThinkingLevel;
+use pillar_agent::agent::{Agent, AgentOptions, AgentState};
+use pillar_agent::types::{AgentTool, FauxModelRef, QueueMode, StreamFn};
 use pillar_ai::models::clamp_thinking_level;
 use pillar_ai::types::{Message, Model};
 
+use crate::core::agent_session_class::{
+    AgentSession, AgentSessionConfig, ExtensionRunnerFactory, SessionEventMeta,
+    SystemPromptRebuildFn, coding_message_to_agent,
+};
+use crate::core::auth_guidance::format_no_models_available_message;
+use crate::core::extensions_runner::ExtensionRunner;
+use crate::core::model_mutation::ScopedModel;
+use crate::core::model_runtime::ModelRuntime;
+use crate::core::resource_loader::{ResourceLoader, ResourceLoaderOptions};
+use crate::core::session_entries::SessionEntry;
+use crate::core::session_manager::SessionManager;
 use crate::core::session_support::{DEFAULT_THINKING_LEVEL, THINKING_LEVEL_OPTIONS};
-use crate::core::settings_manager::SettingsManager;
+use crate::core::settings_manager::{SettingsManager, SettingsManagerCreateOptions};
+use crate::core::system_prompt::{BuildSystemPromptOptions, PromptPaths, build_system_prompt};
 
 // ============================================================================
 // Model resolution (upstream createAgentSession model restoration)
@@ -318,4 +336,326 @@ pub fn sdk_settings(settings: &SettingsManager) -> SdkSettings {
         default_thinking_level,
         block_images,
     }
+}
+
+// ============================================================================
+// createAgentSession (upstream the factory)
+// ============================================================================
+
+/// Options for [`create_agent_session`] (upstream
+/// `CreateAgentSessionOptions`, capability subset).
+///
+/// divergence: the extension runner and the model runtime are host-injected
+/// (the port cannot build the Luau runner from this crate), and the
+/// blockImages convertToLlm filter is not applied here.
+pub struct CreateAgentSessionOptions {
+    pub cwd: String,
+    pub agent_dir: Option<String>,
+    pub model_runtime: Arc<ModelRuntime>,
+    pub settings_manager: Option<Arc<Mutex<SettingsManager>>>,
+    pub session_manager: Option<SessionManager>,
+    pub resource_loader: Option<Arc<Mutex<ResourceLoader>>>,
+    pub model: Option<Model>,
+    pub thinking_level: Option<String>,
+    pub scoped_models: Vec<ScopedModel>,
+    pub tools: Option<Vec<String>>,
+    /// `"all"` or `"builtin"` (upstream `noTools`).
+    pub no_tools: Option<String>,
+    pub exclude_tools: Vec<String>,
+    pub custom_tools: Vec<AgentTool>,
+    pub extension_runner: Arc<Mutex<ExtensionRunner>>,
+    pub session_start_event: Option<SessionEventMeta>,
+    pub system_prompt_rebuild: Option<SystemPromptRebuildFn>,
+    pub extension_runner_rebuild: Option<ExtensionRunnerFactory>,
+    /// Optional stream-fn override (tests / faux providers). Defaults to the
+    /// model runtime's simple stream over the agent's current model.
+    pub stream_fn: Option<StreamFn>,
+}
+
+/// Result of [`create_agent_session`] (upstream
+/// `CreateAgentSessionResult`; `extensionsResult` is host-owned in the
+/// port).
+pub struct CreateAgentSessionResult {
+    pub session: AgentSession,
+    pub model_fallback_message: Option<String>,
+}
+
+fn queue_mode(value: &str) -> QueueMode {
+    if value == "one-at-a-time" {
+        QueueMode::OneAtATime
+    } else {
+        QueueMode::All
+    }
+}
+
+fn resolve_model_default(
+    model_runtime: &ModelRuntime,
+    settings: &SettingsManager,
+) -> Option<Model> {
+    settings
+        .default_model_and_provider()
+        .and_then(|(provider, model_id)| model_runtime.get_model(&provider, &model_id))
+        .or_else(|| model_runtime.get_available_snapshot().into_iter().next())
+}
+
+/// Create an agent session (upstream `createAgentSession`): model/thinking
+/// resolution, tool selection, system prompt, agent assembly, and the
+/// session wiring.
+pub async fn create_agent_session(
+    options: CreateAgentSessionOptions,
+) -> Result<CreateAgentSessionResult, String> {
+    let cwd = options.cwd.clone();
+    let agent_dir = options
+        .agent_dir
+        .clone()
+        .or_else(default_agent_dir_string)
+        .unwrap_or_else(|| cwd.clone());
+    let model_runtime = Arc::clone(&options.model_runtime);
+
+    let settings_manager = match options.settings_manager {
+        Some(manager) => manager,
+        None => Arc::new(Mutex::new(SettingsManager::create(
+            &cwd,
+            Path::new(&agent_dir),
+            SettingsManagerCreateOptions {
+                project_trusted: Some(true),
+            },
+        ))),
+    };
+
+    let session_manager = match options.session_manager {
+        Some(manager) => manager,
+        None => SessionManager::create(&cwd, None, None)?,
+    };
+
+    let resource_loader = match options.resource_loader {
+        Some(loader) => loader,
+        None => {
+            let mut loader = ResourceLoader::new(
+                &cwd,
+                ResourceLoaderOptions {
+                    agent_dir: agent_dir.clone(),
+                    ..Default::default()
+                },
+                Arc::clone(&settings_manager),
+            );
+            loader.reload(None)?;
+            Arc::new(Mutex::new(loader))
+        }
+    };
+
+    // Restore model/thinking/tools from the session and settings.
+    let context = session_manager.session_context();
+    let has_existing_session = !context.messages.is_empty();
+    let has_thinking_entry = session_manager
+        .get_branch(None)
+        .iter()
+        .any(|entry| matches!(entry, SessionEntry::ThinkingLevelChange(_)));
+
+    let mut model_fallback_message: Option<String> = None;
+    let mut model = options.model.clone();
+    if model.is_none() && has_existing_session {
+        if let Some((provider, model_id)) = &context.model {
+            let restored = model_runtime
+                .get_model(provider, model_id)
+                .filter(|candidate| model_runtime.has_configured_auth(&candidate.provider));
+            if restored.is_none() {
+                model_fallback_message =
+                    Some(format!("Could not restore model {provider}/{model_id}"));
+            } else {
+                model = restored;
+            }
+        }
+    }
+    if model.is_none() {
+        let settings = settings_manager.lock().expect("settings lock");
+        model = resolve_model_default(&model_runtime, &settings);
+        drop(settings);
+        if let (Some(fallback), Some(selected)) = (&model_fallback_message, &model) {
+            model_fallback_message = Some(fallback_message_using(fallback, selected));
+        }
+    }
+    if model.is_none() && model_fallback_message.is_none() {
+        model_fallback_message = Some(format_no_models_available_message());
+    }
+
+    let settings_snapshot = {
+        let settings = settings_manager.lock().expect("settings lock");
+        sdk_settings(&settings)
+    };
+    let per_model_thinking = model.as_ref().and_then(|selected| {
+        let settings = settings_manager.lock().expect("settings lock");
+        settings.model_thinking_level(&selected.provider, &selected.id)
+    });
+    let thinking_level = resolve_thinking_level(
+        ThinkingLevelInputs {
+            explicit_level: options.thinking_level.clone(),
+            has_existing_session,
+            has_thinking_entry,
+            session_thinking_level: Some(context.thinking_level.clone()),
+            per_model_override: per_model_thinking.as_deref(),
+            default_level: settings_snapshot.default_thinking_level.clone(),
+        },
+        model.as_ref(),
+    );
+
+    let initial_active_tool_names = resolve_initial_active_tool_names(ToolSelectionInputs {
+        tools: options.tools.as_deref(),
+        no_tools: options.no_tools.as_deref(),
+        exclude_tools: &options.exclude_tools,
+        configured_default_tools: settings_snapshot.default_tools.as_deref(),
+    });
+
+    let mut tools: Vec<AgentTool> = initial_active_tool_names
+        .iter()
+        .filter_map(|name| crate::core::tools::index::create_tool(name, &cwd))
+        .collect();
+    for tool in options.custom_tools {
+        let keep = options.no_tools.as_deref() != Some("all")
+            && !options.exclude_tools.contains(&tool.tool.name);
+        if keep {
+            tools.push(tool);
+        }
+    }
+
+    let system_prompt = build_system_prompt(&BuildSystemPromptOptions {
+        custom_prompt: None,
+        selected_tools: Some(initial_active_tool_names.clone()),
+        tool_snippets: None,
+        prompt_guidelines: None,
+        append_system_prompt: None,
+        cwd: cwd.clone(),
+        context_files: None,
+        skills: None,
+        paths: PromptPaths::default(),
+    });
+
+    // The agent reads its model from state at stream time, so the closure can
+    // follow model switches and prepare_next_turn updates.
+    let agent_cell: Arc<OnceLock<Arc<Agent>>> = Arc::new(OnceLock::new());
+    let stream_fn = options.stream_fn.clone().unwrap_or_else(|| {
+        let runtime = Arc::clone(&model_runtime);
+        let cell = Arc::clone(&agent_cell);
+        StreamFn::new(move |context, _options| {
+            let runtime = Arc::clone(&runtime);
+            let model = cell.get().map(|agent| agent.state().model);
+            async move {
+                match model {
+                    Some(model) if model.id != "unknown" => {
+                        runtime.stream_simple(&model.to_model(), &context, None)
+                    }
+                    _ => no_model_stream(),
+                }
+            }
+        })
+    });
+
+    let mut initial_state = AgentState {
+        system_prompt: system_prompt.clone(),
+        model: model
+            .as_ref()
+            .map(FauxModelRef::from_model)
+            .unwrap_or_else(FauxModelRef::unknown),
+        thinking_level: AgentThinkingLevel::parse(&thinking_level),
+        tools: tools.clone(),
+        messages: Vec::new(),
+        ..Default::default()
+    };
+    if has_existing_session {
+        initial_state.messages = context
+            .messages
+            .iter()
+            .cloned()
+            .map(coding_message_to_agent)
+            .collect();
+    }
+
+    let mut agent_options = AgentOptions::new(stream_fn);
+    agent_options.initial_state = Some(initial_state);
+    agent_options.session_id = Some(session_manager.session_id().to_string());
+    {
+        let settings = settings_manager.lock().expect("settings lock");
+        agent_options.steering_mode = Some(queue_mode(settings.steering_mode()));
+        agent_options.follow_up_mode = Some(queue_mode(settings.follow_up_mode()));
+    }
+    let agent = Arc::new(Agent::new(agent_options));
+    let _ = agent_cell.set(Arc::clone(&agent));
+
+    // Persist the initial model/thinking for new sessions.
+    let mut session_manager = session_manager;
+    if !has_existing_session {
+        if let Some(selected) = &model {
+            let _ = session_manager.append_model_change(&selected.provider, &selected.id);
+        }
+        let _ = session_manager.append_thinking_level_change(&thinking_level);
+    } else if !has_thinking_entry {
+        let _ = session_manager.append_thinking_level_change(&thinking_level);
+    }
+
+    let excluded_tool_names = if options.exclude_tools.is_empty() {
+        None
+    } else {
+        Some(options.exclude_tools.iter().cloned().collect())
+    };
+    let session = AgentSession::new(AgentSessionConfig {
+        agent,
+        session_manager: Arc::new(Mutex::new(session_manager)),
+        settings_manager,
+        cwd,
+        resource_loader,
+        model_runtime,
+        extension_runner: options.extension_runner,
+        initial_active_tool_names: Some(initial_active_tool_names),
+        allowed_tool_names: None,
+        excluded_tool_names,
+        command_handler: None,
+        session_start_event: options.session_start_event,
+        scoped_models: options.scoped_models,
+        system_prompt_rebuild: options.system_prompt_rebuild,
+        extension_runner_rebuild: options.extension_runner_rebuild,
+    });
+    session.install_tool_hooks();
+
+    Ok(CreateAgentSessionResult {
+        session,
+        model_fallback_message,
+    })
+}
+
+fn default_agent_dir_string() -> Option<String> {
+    std::env::var_os("PI_CODING_AGENT_DIR")
+        .map(|value| value.to_string_lossy().to_string())
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(|home| Path::new(&home).join(".pi").join("agent"))
+                .map(|path| path.to_string_lossy().to_string())
+        })
+}
+
+fn no_model_stream() -> pillar_ai::event_stream::AssistantMessageEventStream {
+    let stream = pillar_ai::event_stream::assistant_message_event_stream();
+    let error = pillar_ai::types::AssistantMessage {
+        content: Vec::new(),
+        api: String::new(),
+        provider: String::new(),
+        model: String::new(),
+        response_model: None,
+        usage: Default::default(),
+        stop_reason: pillar_ai::types::StopReason::Error,
+        deferred: None,
+        error_message: Some("No model selected".to_string()),
+        response_id: None,
+        diagnostics: Vec::new(),
+        raw_stop_reason: None,
+        end_turn: None,
+        timestamp: 0,
+    };
+    stream.push(pillar_ai::types::AssistantMessageEvent::Start {
+        partial: error.clone(),
+    });
+    stream.push(pillar_ai::types::AssistantMessageEvent::Error {
+        reason: pillar_ai::types::StopReason::Error,
+        error,
+    });
+    stream
 }

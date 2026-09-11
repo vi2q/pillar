@@ -1962,3 +1962,103 @@ async fn reload_rebuilds_runner_and_reemits_session_start() {
     );
     assert_eq!(before_calls.load(Ordering::SeqCst), 1);
 }
+
+// ============================================================================
+// createAgentSession (upstream core/sdk.ts factory)
+// ============================================================================
+
+#[tokio::test]
+async fn create_agent_session_wires_agent_tools_prompt_and_persistence() {
+    use pillar_coding_agent::core::sdk::{CreateAgentSessionOptions, create_agent_session};
+
+    let (runtime, _credentials) = runtime_with_anthropic_key();
+    let dir = temp_dir("sdk");
+    let settings_manager = Arc::new(Mutex::new(SettingsManager::in_memory(
+        serde_json::json!({ "retry": { "enabled": false } }),
+        SettingsManagerCreateOptions {
+            project_trusted: Some(true),
+        },
+    )));
+    let session_manager = SessionManager::in_memory("", None).unwrap();
+    let resource_loader = Arc::new(Mutex::new(ResourceLoader::new(
+        "",
+        ResourceLoaderOptions {
+            agent_dir: dir.to_string_lossy().to_string(),
+            no_skills: true,
+            no_prompt_templates: true,
+            no_themes: true,
+            no_context_files: true,
+            ..Default::default()
+        },
+        Arc::clone(&settings_manager),
+    )));
+
+    let created = create_agent_session(CreateAgentSessionOptions {
+        cwd: String::new(),
+        agent_dir: Some(dir.to_string_lossy().to_string()),
+        model_runtime: Arc::new(runtime),
+        settings_manager: Some(settings_manager),
+        session_manager: Some(session_manager),
+        resource_loader: Some(resource_loader),
+        model: Some(model_fixture(
+            "claude-sonnet-4-5",
+            "anthropic",
+            false,
+            200_000,
+        )),
+        thinking_level: None,
+        scoped_models: Vec::new(),
+        tools: None,
+        no_tools: None,
+        exclude_tools: Vec::new(),
+        custom_tools: Vec::new(),
+        extension_runner: Arc::new(Mutex::new(ExtensionRunner::new(Vec::new()))),
+        session_start_event: None,
+        system_prompt_rebuild: None,
+        extension_runner_rebuild: None,
+        stream_fn: Some(threshold_compaction_stream()),
+    })
+    .await
+    .expect("session created");
+
+    let session = created.session;
+    assert_eq!(
+        session.model().map(|model| model.id),
+        Some("claude-sonnet-4-5".to_string())
+    );
+    let tool_names: Vec<String> = session
+        .state()
+        .tools
+        .iter()
+        .map(|tool| tool.tool.name.clone())
+        .collect();
+    assert_eq!(tool_names, vec!["read", "bash", "edit", "write"]);
+    assert!(!session.system_prompt().is_empty());
+
+    session.prompt("hi", None).await.expect("prompt succeeds");
+    let messages = session.state().messages;
+    assert!(
+        messages.iter().any(|message| matches!(
+            message,
+            pillar_agent::AgentMessage::Message(ai_types::Message::Assistant(assistant))
+                if pillar_ai::text::content_text(&assistant.content, "") == "Done"
+        )),
+        "assistant response in state: {messages:?}"
+    );
+
+    // A new session persisted its initial model and thinking level.
+    let session_manager = session.session_manager().lock().unwrap();
+    let branch = session_manager.get_branch(None);
+    assert!(
+        branch
+            .iter()
+            .any(|entry| matches!(entry, session_entry::SessionEntry::ModelChange(_))),
+        "model_change appended: {branch:?}"
+    );
+    assert!(
+        branch
+            .iter()
+            .any(|entry| matches!(entry, session_entry::SessionEntry::ThinkingLevelChange(_))),
+        "thinking_level_change appended: {branch:?}"
+    );
+}
