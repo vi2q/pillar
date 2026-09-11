@@ -116,10 +116,16 @@ impl FileAuthStorageBackend {
             .read(true)
             .open(&lock_path)
             .map_err(|e| format!("Failed to open lock file: {e}"))?;
+        #[cfg(not(target_arch = "wasm32"))]
         let mut guard = fd_lock::RwLock::new(&mut lock_file);
+        #[cfg(not(target_arch = "wasm32"))]
         let mut handle = guard
             .try_write()
             .map_err(|e| format!("Failed to acquire auth storage lock: {e}"))?;
+        // wasm32 has no advisory file locks; fall back to in-process
+        // serialization through the enclosing store lock.
+        #[cfg(target_arch = "wasm32")]
+        let handle = &mut lock_file;
 
         let current = read_optional(&self.auth_path);
         let (result, next) = f(current);
@@ -129,13 +135,10 @@ impl FileAuthStorageBackend {
                 .and_then(|_| handle.set_len(0))
                 .and_then(|_| handle.write_all(next.as_bytes()))
                 .map_err(|e| format!("Failed to write auth file: {e}"))?;
-            drop(handle);
-            // Write the actual auth file after releasing the lock handle is
-            // not needed: the lock file is separate from the auth file.
+            // The lock file is separate from the auth file; the guard is
+            // released when this function returns.
             fs::write(&self.auth_path, next)
                 .map_err(|e| format!("Failed to write auth file: {e}"))?;
-        } else {
-            drop(handle);
         }
         Ok(result)
     }

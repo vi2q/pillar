@@ -239,11 +239,20 @@ fn with_trust_file_lock<T>(
         .write(true)
         .open(&lock_path)
         .map_err(|e| format!("Failed to open trust lock: {e}"))?;
-    let mut guard = fd_lock::RwLock::new(&lock_file);
-    let _handle = guard
-        .try_write()
-        .map_err(|_| "Failed to acquire trust store lock".to_string())?;
-    f()
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut guard = fd_lock::RwLock::new(&lock_file);
+        let _handle = guard
+            .try_write()
+            .map_err(|_| "Failed to acquire trust store lock".to_string())?;
+        f()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        // wasm32 has no advisory file locks; callers serialize in-process.
+        let _ = &lock_file;
+        f()
+    }
 }
 
 /// Returns true when cwd has project-local resources gated by project trust:
