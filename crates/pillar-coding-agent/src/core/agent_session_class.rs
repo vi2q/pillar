@@ -38,6 +38,7 @@ use crate::core::agent_session::{
 use crate::core::auth_guidance::{
     format_no_api_key_found_message, format_no_model_selected_message,
 };
+use crate::core::bash_executor::{BashResult, CallbackSink};
 use crate::core::compaction::auto_driver::{self, AutoReason, CompactionDecision};
 use crate::core::compaction::driver as compaction_driver;
 use crate::core::compaction::driver::{
@@ -363,6 +364,13 @@ struct SessionState {
     extension_mode: String,
     /// Upstream `_extensionErrorListener` registered on the runner.
     extension_error_listener: Option<ExtensionErrorListener>,
+    /// Running bash commands (upstream `_bashAbortControllers`), keyed by a
+    /// session-local token so a finished run can remove exactly its own.
+    bash_aborts: Vec<(u64, pillar_agent::AbortSignal)>,
+    next_bash_abort_id: u64,
+    /// Bash results deferred while the agent streams (upstream
+    /// `_pendingBashMessages`).
+    pending_bash_messages: Vec<BashExecutionMessage>,
 }
 
 /// Captured decision output of a `ModelMutations` pass, applied to the
@@ -756,6 +764,18 @@ impl AgentSession {
             .lock()
             .expect("runner lock")
             .registered_commands()
+    }
+
+    /// `user_bash` extension hook (upstream
+    /// `extensionRunner.emitUserBash`): the first non-null handler result
+    /// wins. Extensions may return `{ result, operations }` to take over
+    /// the execution.
+    pub fn emit_user_bash(&self, event: &Value) -> Option<Value> {
+        self.inner
+            .extension_runner
+            .lock()
+            .expect("runner lock")
+            .emit_user_bash(event)
     }
 
     /// Loaded prompt templates (upstream `session.promptTemplates`).
@@ -1201,6 +1221,156 @@ impl AgentSession {
                 *last = replacement.clone();
                 inner.agent.set_messages(messages);
             }
+        }
+    }
+
+    /// Upstream `executeBash`: run a shell command through the configured
+    /// shell (honouring `shellCommandPrefix`), stream output as
+    /// `bash_execution_update` events, and record the result in context and
+    /// session history.
+    pub async fn execute_bash(
+        &self,
+        command: &str,
+        exclude_from_context: bool,
+        id: Option<&str>,
+    ) -> Result<BashResult, String> {
+        let cwd = self.cwd().to_string();
+        let prefix = self
+            .inner
+            .settings_manager
+            .lock()
+            .expect("settings lock")
+            .shell_command_prefix();
+        let resolved_command = match prefix {
+            Some(prefix) => format!("{prefix}\n{command}"),
+            None => command.to_string(),
+        };
+
+        let abort_signal = pillar_agent::AbortSignal::new();
+        let token = {
+            let mut state = self.inner.state.lock().expect("session state");
+            let token = state.next_bash_abort_id;
+            state.next_bash_abort_id += 1;
+            state.bash_aborts.push((token, abort_signal.clone()));
+            token
+        };
+
+        let inner = Arc::clone(&self.inner);
+        let event_id = id.map(str::to_string);
+        let mut sink = CallbackSink {
+            callback: move |delta: &str| {
+                inner.emit(&AgentSessionEvent::BashExecutionUpdate {
+                    id: event_id.clone(),
+                    delta: delta.to_string(),
+                });
+            },
+        };
+        let result = crate::core::bash_executor::execute_bash_local(
+            &resolved_command,
+            &cwd,
+            &mut sink,
+            Some(&abort_signal),
+        );
+        self.inner
+            .state
+            .lock()
+            .expect("session state")
+            .bash_aborts
+            .retain(|(candidate, _)| *candidate != token);
+        let result = result?;
+        self.record_bash_result(command, &result, exclude_from_context);
+        Ok(result)
+    }
+
+    /// Upstream `recordBashResult`: record a bash execution in agent context
+    /// and session history. Deferred while the agent streams, so a running
+    /// tool call keeps its tool_use/tool_result ordering.
+    pub fn record_bash_result(
+        &self,
+        command: &str,
+        result: &BashResult,
+        exclude_from_context: bool,
+    ) {
+        let message = BashExecutionMessage {
+            command: command.to_string(),
+            output: result.output.clone(),
+            exit_code: result.exit_code,
+            cancelled: result.cancelled,
+            truncated: result.truncated,
+            full_output_path: result
+                .full_output_path
+                .as_ref()
+                .map(|path| path.to_string_lossy().to_string()),
+            timestamp: pillar_ai::models::now_ms(),
+            exclude_from_context,
+        };
+        if self.is_streaming() {
+            self.inner
+                .state
+                .lock()
+                .expect("session state")
+                .pending_bash_messages
+                .push(message);
+        } else {
+            AgentSession::append_bash_message(&self.inner, message);
+        }
+    }
+
+    /// Cancel running bash commands (upstream `abortBash`).
+    pub fn abort_bash(&self) {
+        let signals: Vec<pillar_agent::AbortSignal> = self
+            .inner
+            .state
+            .lock()
+            .expect("session state")
+            .bash_aborts
+            .iter()
+            .map(|(_, signal)| signal.clone())
+            .collect();
+        for signal in signals {
+            signal.abort();
+        }
+    }
+
+    /// Whether a bash command is currently running (upstream
+    /// `isBashRunning`).
+    pub fn is_bash_running(&self) -> bool {
+        !self
+            .inner
+            .state
+            .lock()
+            .expect("session state")
+            .bash_aborts
+            .is_empty()
+    }
+
+    fn append_bash_message(inner: &Arc<SessionInner>, message: BashExecutionMessage) {
+        let agent_message = pillar_agent::types::AgentMessage::BashExecution(Box::new(
+            pillar_agent::types::BashExecutionMessage {
+                command: message.command.clone(),
+                output: message.output.clone(),
+                exit_code: message.exit_code,
+                cancelled: message.cancelled,
+                truncated: message.truncated,
+                full_output_path: message.full_output_path.clone(),
+                timestamp: message.timestamp,
+                exclude_from_context: message.exclude_from_context,
+            },
+        ));
+        let mut messages = inner.agent.state().messages;
+        messages.push(agent_message);
+        inner.agent.set_messages(messages);
+        let mut session_manager = inner.session_manager.lock().expect("session lock");
+        let _ = session_manager.append_message(CodingAgentMessage::BashExecution(message));
+    }
+
+    fn flush_pending_bash_messages(inner: &Arc<SessionInner>) {
+        let pending: Vec<BashExecutionMessage> = {
+            let mut state = inner.state.lock().expect("session state");
+            std::mem::take(&mut state.pending_bash_messages)
+        };
+        for message in pending {
+            AgentSession::append_bash_message(inner, message);
         }
     }
 
@@ -1913,7 +2083,8 @@ impl AgentSession {
             return Ok(());
         }
 
-        // Flush any pending custom messages before the new prompt.
+        // Flush any pending bash and custom messages before the new prompt.
+        AgentSession::flush_pending_bash_messages(&self.inner);
         AgentSession::flush_pending_custom_messages(&self.inner);
 
         // Validate model.
@@ -2172,6 +2343,7 @@ impl AgentSession {
             .lock()
             .expect("session state")
             .system_prompt_override = None;
+        AgentSession::flush_pending_bash_messages(&self.inner);
         AgentSession::flush_pending_custom_messages(&self.inner);
         self.emit_agent_settled().await;
         Ok(())

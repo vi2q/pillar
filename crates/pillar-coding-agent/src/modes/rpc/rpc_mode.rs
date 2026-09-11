@@ -196,6 +196,44 @@ impl RpcMode {
                 }
                 Err(error) => RpcResponse::failure(id, command, error),
             },
+            RpcCommand::Bash {
+                command: bash_command,
+                exclude_from_context,
+            } => {
+                let exclude = exclude_from_context.unwrap_or(false);
+                let event = json!({
+                    "type": "user_bash",
+                    "command": bash_command,
+                    "excludeFromContext": exclude,
+                    "cwd": self.session.cwd(),
+                });
+                // Extensions may handle the command themselves.
+                let event_result = self.session.emit_user_bash(&event);
+                if let Some(result) = event_result.as_ref().and_then(|value| value.get("result")) {
+                    let bash_result = bash_result_from_json(result);
+                    self.session
+                        .record_bash_result(&bash_command, &bash_result, exclude);
+                    return RpcResponse::success(
+                        id,
+                        command,
+                        Some(bash_result_to_json(&bash_result)),
+                    );
+                }
+                match self
+                    .session
+                    .execute_bash(&bash_command, exclude, id.as_deref())
+                    .await
+                {
+                    Ok(result) => {
+                        RpcResponse::success(id, command, Some(bash_result_to_json(&result)))
+                    }
+                    Err(error) => RpcResponse::failure(id, command, error),
+                }
+            }
+            RpcCommand::AbortBash => {
+                self.session.abort_bash();
+                RpcResponse::success(id, command, None)
+            }
             RpcCommand::GetSessionStats => {
                 RpcResponse::success(id, command, Some(self.session_stats()))
             }
@@ -519,6 +557,57 @@ pub async fn run_rpc_mode(
         }
     }
     Ok(())
+}
+
+/// The wire shape of a bash result (upstream `BashResult`).
+fn bash_result_to_json(result: &crate::core::bash_executor::BashResult) -> Value {
+    let mut obj = serde_json::Map::new();
+    obj.insert("output".to_string(), Value::String(result.output.clone()));
+    obj.insert(
+        "exitCode".to_string(),
+        result
+            .exit_code
+            .map(|code| json!(code))
+            .unwrap_or(Value::Null),
+    );
+    obj.insert("cancelled".to_string(), Value::Bool(result.cancelled));
+    obj.insert("truncated".to_string(), Value::Bool(result.truncated));
+    if let Some(path) = &result.full_output_path {
+        obj.insert(
+            "fullOutputPath".to_string(),
+            Value::String(path.to_string_lossy().to_string()),
+        );
+    }
+    Value::Object(obj)
+}
+
+/// Parse an extension-provided bash result (upstream extensions may answer
+/// `user_bash` with a `BashResult`).
+fn bash_result_from_json(value: &Value) -> crate::core::bash_executor::BashResult {
+    crate::core::bash_executor::BashResult {
+        output: value
+            .get("output")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        exit_code: value
+            .get("exitCode")
+            .and_then(Value::as_i64)
+            .map(|code| code as i32),
+        cancelled: value
+            .get("cancelled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        truncated: value
+            .get("truncated")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        full_output_path: value
+            .get("fullOutputPath")
+            .and_then(Value::as_str)
+            .map(std::path::PathBuf::from),
+        truncation: None,
+    }
 }
 
 fn parse_behavior(value: &str) -> Option<StreamingBehavior> {

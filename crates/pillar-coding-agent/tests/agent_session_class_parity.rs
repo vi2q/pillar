@@ -2426,7 +2426,7 @@ async fn rpc_mode_dispatches_core_commands() {
     // unsupported commands fail explicitly
     let response = mode
         .handle_command(command_envelope(
-            json!({ "id": "24", "type": "fork", "entryId": "missing" }),
+            json!({ "id": "25", "type": "fork", "entryId": "missing" }),
         ))
         .await;
     assert!(!response.success);
@@ -2447,4 +2447,134 @@ fn command_envelope(
     value: serde_json::Value,
 ) -> pillar_coding_agent::modes::rpc::rpc_types::RpcCommandEnvelope {
     serde_json::from_value(value).expect("command envelope")
+}
+
+/// Build a session whose cwd exists on disk (bash execution requires it).
+fn make_session_with_existing_cwd(cwd: &std::path::Path) -> Arc<AgentSession> {
+    let cwd = cwd.to_string_lossy().to_string();
+    let mut options = AgentOptions::new(threshold_compaction_stream());
+    options.initial_state = Some(AgentState {
+        system_prompt: "Test".to_string(),
+        model: mock_model(),
+        thinking_level: AgentThinkingLevel::Off,
+        tools: Vec::new(),
+        messages: Vec::new(),
+        is_streaming: false,
+        streaming_message: None,
+        pending_tool_calls: Default::default(),
+        error_message: None,
+    });
+    let agent = Arc::new(Agent::new(options));
+    let (runtime, _credentials) = runtime_with_anthropic_key();
+    let session_manager = Arc::new(Mutex::new(
+        SessionManager::in_memory(&cwd, None).expect("in-memory session"),
+    ));
+    let settings_manager = Arc::new(Mutex::new(SettingsManager::in_memory(
+        serde_json::json!({ "retry": { "enabled": false } }),
+        SettingsManagerCreateOptions {
+            project_trusted: Some(true),
+        },
+    )));
+    let resource_loader = Arc::new(Mutex::new(ResourceLoader::new(
+        &cwd,
+        ResourceLoaderOptions {
+            agent_dir: temp_dir("agent-dir").to_string_lossy().to_string(),
+            no_skills: true,
+            no_prompt_templates: true,
+            no_themes: true,
+            no_context_files: true,
+            ..Default::default()
+        },
+        Arc::clone(&settings_manager),
+    )));
+    Arc::new(AgentSession::new(AgentSessionConfig::new(
+        agent,
+        session_manager,
+        settings_manager,
+        cwd,
+        resource_loader,
+        Arc::new(runtime),
+        Arc::new(Mutex::new(ExtensionRunner::new(Vec::new()))),
+    )))
+}
+
+#[tokio::test]
+async fn rpc_mode_bash_records_result() {
+    use pillar_coding_agent::modes::rpc::rpc_mode::RpcMode;
+    use serde_json::json;
+
+    let cwd = temp_dir("rpc-bash");
+    let session = make_session_with_existing_cwd(&cwd);
+    let buffer = Arc::new(Mutex::new(Vec::new()));
+    let out: Arc<Mutex<Box<dyn std::io::Write + Send>>> =
+        Arc::new(Mutex::new(Box::new(SharedBuf(Arc::clone(&buffer)))));
+    let mode = RpcMode::new(Arc::clone(&session), out);
+
+    let response = mode
+        .handle_command(command_envelope(
+            json!({ "id": "1", "type": "bash", "command": "echo hello" }),
+        ))
+        .await;
+    assert!(response.success, "{response:?}");
+    let data = response.data.expect("bash data");
+    assert_eq!(data["exitCode"], json!(0));
+    assert!(
+        data["output"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("hello"),
+        "{data:?}"
+    );
+    assert_eq!(data["cancelled"], json!(false));
+
+    // The result lands in the transcript as a bashExecution message.
+    let response = mode
+        .handle_command(command_envelope(
+            json!({ "id": "2", "type": "get_entries" }),
+        ))
+        .await;
+    let entries = response.data.expect("entries")["entries"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry["message"]["role"] == json!("bashExecution")),
+        "{entries:?}"
+    );
+
+    // `!!` prefix: excluded from LLM context.
+    let response = mode
+        .handle_command(command_envelope(json!({
+            "id": "3",
+            "type": "bash",
+            "command": "echo hidden",
+            "excludeFromContext": true,
+        })))
+        .await;
+    assert!(response.success, "{response:?}");
+    let response = mode
+        .handle_command(command_envelope(
+            json!({ "id": "4", "type": "get_entries" }),
+        ))
+        .await;
+    let entries = response.data.expect("entries")["entries"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        entries.iter().any(|entry| {
+            entry["message"]["role"] == json!("bashExecution")
+                && entry["message"]["excludeFromContext"] == json!(true)
+        }),
+        "{entries:?}"
+    );
+
+    // abort_bash is a no-op when nothing runs, and answers successfully.
+    let response = mode
+        .handle_command(command_envelope(json!({ "id": "5", "type": "abort_bash" })))
+        .await;
+    assert!(response.success, "{response:?}");
+    assert!(!session.is_bash_running());
 }

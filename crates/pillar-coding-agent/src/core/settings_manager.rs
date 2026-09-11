@@ -757,6 +757,23 @@ impl SettingsManager {
 
     // --- typed accessors with upstream defaults ---------------------------------
 
+    /// Configured shell executable (upstream `getShellPath`).
+    pub fn shell_path(&self) -> Option<String> {
+        self.settings
+            .get("shellPath")
+            .and_then(|value| value.as_str())
+            .map(str::to_string)
+    }
+
+    /// Prefix prepended to every executed command, e.g. alias setup
+    /// (upstream `getShellCommandPrefix`).
+    pub fn shell_command_prefix(&self) -> Option<String> {
+        self.settings
+            .get("shellCommandPrefix")
+            .and_then(|value| value.as_str())
+            .map(str::to_string)
+    }
+
     pub fn compaction_settings(&self) -> CompactionSettings {
         let compaction = self.settings.get("compaction");
         CompactionSettings {
