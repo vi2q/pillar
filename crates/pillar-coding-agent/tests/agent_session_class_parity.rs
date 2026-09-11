@@ -18,7 +18,8 @@ use pillar_ai::types::{
     Usage, UsageCost, UserContent,
 };
 use pillar_coding_agent::core::agent_session_class::{
-    AgentSession, AgentSessionConfig, AgentSessionEvent,
+    AgentSession, AgentSessionConfig, AgentSessionEvent, ExtensionBindings, SessionEventMeta,
+    SystemPromptRebuildFn,
 };
 use pillar_coding_agent::core::auth_storage::InMemoryCodingAgentModelsStore;
 use pillar_coding_agent::core::extensions_runner::ExtensionRunner;
@@ -304,7 +305,7 @@ fn make_session_with_model_and_runner(
     settings.apply_overrides(&settings_extra);
     let settings_manager = Arc::new(Mutex::new(settings));
 
-    let resource_loader = Arc::new(ResourceLoader::new(
+    let resource_loader = Arc::new(Mutex::new(ResourceLoader::new(
         "",
         ResourceLoaderOptions {
             agent_dir: temp_dir("agent-dir").to_string_lossy().to_string(),
@@ -315,7 +316,7 @@ fn make_session_with_model_and_runner(
             ..Default::default()
         },
         Arc::clone(&settings_manager),
-    ));
+    )));
 
     let session = AgentSession::new(AgentSessionConfig::new(
         agent,
@@ -686,7 +687,7 @@ async fn prompt_fails_when_no_api_key_is_configured() {
         },
     );
     let settings_manager = Arc::new(Mutex::new(settings));
-    let resource_loader = Arc::new(ResourceLoader::new(
+    let resource_loader = Arc::new(Mutex::new(ResourceLoader::new(
         "",
         ResourceLoaderOptions {
             agent_dir: temp_dir("agent-dir").to_string_lossy().to_string(),
@@ -697,7 +698,7 @@ async fn prompt_fails_when_no_api_key_is_configured() {
             ..Default::default()
         },
         Arc::clone(&settings_manager),
-    ));
+    )));
 
     let session = AgentSession::new(AgentSessionConfig::new(
         agent,
@@ -929,7 +930,7 @@ fn make_session_with_tools(
     settings.apply_overrides(&settings_extra);
     let settings_manager = Arc::new(Mutex::new(settings));
 
-    let resource_loader = Arc::new(ResourceLoader::new(
+    let resource_loader = Arc::new(Mutex::new(ResourceLoader::new(
         "",
         ResourceLoaderOptions {
             agent_dir: temp_dir("agent-dir").to_string_lossy().to_string(),
@@ -940,7 +941,7 @@ fn make_session_with_tools(
             ..Default::default()
         },
         Arc::clone(&settings_manager),
-    ));
+    )));
 
     let session = AgentSession::new(AgentSessionConfig::new(
         agent,
@@ -1445,7 +1446,7 @@ async fn tool_hooks_dispatch_tool_call_and_tool_result_to_extensions() {
         },
     );
     let settings_manager = Arc::new(Mutex::new(settings));
-    let resource_loader = Arc::new(ResourceLoader::new(
+    let resource_loader = Arc::new(Mutex::new(ResourceLoader::new(
         "",
         ResourceLoaderOptions {
             agent_dir: temp_dir("agent-dir").to_string_lossy().to_string(),
@@ -1456,7 +1457,7 @@ async fn tool_hooks_dispatch_tool_call_and_tool_result_to_extensions() {
             ..Default::default()
         },
         Arc::clone(&settings_manager),
-    ));
+    )));
     let (runtime, _credentials) = runtime_with_anthropic_key();
 
     let session = AgentSession::new(AgentSessionConfig::new(
@@ -1671,4 +1672,183 @@ async fn set_thinking_level_updates_state_and_emits_event() {
         .expect("thinking_level_select emitted");
     assert_eq!(select["event"]["level"], "high");
     assert_eq!(select["event"]["previousLevel"], "off");
+}
+
+// ============================================================================
+// Extension binding (upstream bindExtensions / extendResourcesFromExtensions)
+// ============================================================================
+
+/// Session harness for binding tests: fixed model, no tools, empty queue.
+fn binding_session(
+    runner: Arc<Mutex<ExtensionRunner>>,
+    session_start_reason: &str,
+    rebuild: Option<SystemPromptRebuildFn>,
+) -> Arc<AgentSession> {
+    let mut options = AgentOptions::new(threshold_compaction_stream());
+    options.initial_state = Some(AgentState {
+        system_prompt: "Test".to_string(),
+        model: mock_model(),
+        thinking_level: AgentThinkingLevel::Off,
+        tools: Vec::new(),
+        messages: Vec::new(),
+        is_streaming: false,
+        streaming_message: None,
+        pending_tool_calls: Default::default(),
+        error_message: None,
+    });
+    let agent = Arc::new(Agent::new(options));
+    let (runtime, _credentials) = runtime_with_anthropic_key();
+    let session_manager = Arc::new(Mutex::new(
+        SessionManager::in_memory("", None).expect("in-memory session"),
+    ));
+    let settings_manager = Arc::new(Mutex::new(SettingsManager::in_memory(
+        serde_json::json!({ "retry": { "enabled": false } }),
+        SettingsManagerCreateOptions {
+            project_trusted: Some(true),
+        },
+    )));
+    let resource_loader = Arc::new(Mutex::new(ResourceLoader::new(
+        "",
+        ResourceLoaderOptions {
+            agent_dir: temp_dir("agent-dir").to_string_lossy().to_string(),
+            no_skills: true,
+            no_prompt_templates: true,
+            no_themes: true,
+            no_context_files: true,
+            ..Default::default()
+        },
+        Arc::clone(&settings_manager),
+    )));
+    let mut config = AgentSessionConfig::new(
+        agent,
+        session_manager,
+        settings_manager,
+        String::new(),
+        resource_loader,
+        Arc::new(runtime),
+        runner,
+    );
+    config.session_start_event = Some(SessionEventMeta {
+        reason: session_start_reason.to_string(),
+        previous_session_file: None,
+    });
+    config.system_prompt_rebuild = rebuild;
+    Arc::new(AgentSession::new(config))
+}
+
+/// Runner with `session_start` and `resources_discover` handlers recording
+/// `(event type, reason)` and returning one skill path.
+fn runner_with_resource_discovery(
+    calls: Arc<Mutex<Vec<(String, String)>>>,
+) -> Arc<Mutex<ExtensionRunner>> {
+    use pillar_coding_agent::core::extensions_runner::{ExtensionHandler, HostExtension};
+
+    let session_start: ExtensionHandler = {
+        let calls = Arc::clone(&calls);
+        Arc::new(move |event: &serde_json::Value| {
+            calls.lock().unwrap().push((
+                "session_start".to_string(),
+                event["reason"].as_str().unwrap_or("?").to_string(),
+            ));
+            Ok(None)
+        })
+    };
+    let resources_discover: ExtensionHandler = {
+        let calls = Arc::clone(&calls);
+        Arc::new(move |event: &serde_json::Value| {
+            calls.lock().unwrap().push((
+                "resources_discover".to_string(),
+                event["reason"].as_str().unwrap_or("?").to_string(),
+            ));
+            Ok(Some(serde_json::json!({
+                "skillPaths": ["/tmp/pillar-bind/SKILL.md"],
+            })))
+        })
+    };
+    let mut handlers = BTreeMap::new();
+    handlers.insert("session_start".to_string(), vec![session_start]);
+    handlers.insert("resources_discover".to_string(), vec![resources_discover]);
+    let extension = HostExtension {
+        path: "<inline>".to_string(),
+        handlers,
+        commands: Vec::new(),
+        tools: BTreeMap::new(),
+        flags: BTreeMap::new(),
+        shortcuts: BTreeMap::new(),
+    };
+    Arc::new(Mutex::new(ExtensionRunner::new(vec![extension])))
+}
+
+#[tokio::test]
+async fn bind_extensions_emits_session_start_and_extends_resources() {
+    let calls: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+    let runner = runner_with_resource_discovery(Arc::clone(&calls));
+
+    let rebuild_calls = Arc::new(AtomicU32::new(0));
+    let rebuild_calls_for = Arc::clone(&rebuild_calls);
+    let rebuild: SystemPromptRebuildFn = Arc::new(move |tools: &[String]| {
+        rebuild_calls_for.fetch_add(1, Ordering::SeqCst);
+        format!("REBUILT tools={}", tools.len())
+    });
+
+    let session = binding_session(Arc::clone(&runner), "startup", Some(rebuild));
+    session
+        .bind_extensions(ExtensionBindings {
+            ui_context: Some(true),
+            mode: Some("interactive".to_string()),
+            on_error: None,
+        })
+        .await;
+
+    // UI presence reached the runner and both extension events fired.
+    assert!(runner.lock().unwrap().has_ui());
+    let calls = calls.lock().unwrap().clone();
+    assert!(
+        calls.contains(&("session_start".to_string(), "startup".to_string())),
+        "{calls:?}"
+    );
+    assert!(
+        calls.contains(&("resources_discover".to_string(), "startup".to_string())),
+        "{calls:?}"
+    );
+
+    // Discovered resources rebuilt the base system prompt.
+    assert_eq!(rebuild_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(session.system_prompt(), "REBUILT tools=0");
+}
+
+#[tokio::test]
+async fn bind_extensions_uses_reload_reason_and_skips_without_handlers() {
+    // A reload session passes "reload" to resources_discover.
+    let calls: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+    let runner = runner_with_resource_discovery(Arc::clone(&calls));
+    let session = binding_session(Arc::clone(&runner), "reload", None);
+    session
+        .bind_extensions(ExtensionBindings {
+            ui_context: Some(false),
+            mode: None,
+            on_error: None,
+        })
+        .await;
+    assert!(
+        calls
+            .lock()
+            .unwrap()
+            .contains(&("resources_discover".to_string(), "reload".to_string())),
+        "{calls:?}"
+    );
+    assert!(!runner.lock().unwrap().has_ui());
+
+    // Without a resources_discover handler the rebuild hook never runs.
+    let rebuild_calls = Arc::new(AtomicU32::new(0));
+    let rebuild_calls_for = Arc::clone(&rebuild_calls);
+    let rebuild: SystemPromptRebuildFn = Arc::new(move |_tools: &[String]| {
+        rebuild_calls_for.fetch_add(1, Ordering::SeqCst);
+        "unused".to_string()
+    });
+    let empty_runner = Arc::new(Mutex::new(ExtensionRunner::new(Vec::new())));
+    let session = binding_session(empty_runner, "startup", Some(rebuild));
+    session.bind_extensions(ExtensionBindings::default()).await;
+    assert_eq!(rebuild_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(session.system_prompt(), "Test");
 }

@@ -304,6 +304,15 @@ impl ExtensionRunner {
         self.error_listeners.push(listener);
     }
 
+    /// Replace the error listener (upstream `runner.onError` + the session's
+    /// `_extensionErrorUnsubscriber`; the port keeps a single listener).
+    pub fn set_error_listener(&mut self, listener: Option<ErrorListener>) {
+        self.error_listeners.clear();
+        if let Some(listener) = listener {
+            self.error_listeners.push(listener);
+        }
+    }
+
     pub fn emit_error(&self, error: ExtensionError) {
         for listener in &self.error_listeners {
             listener(&error);

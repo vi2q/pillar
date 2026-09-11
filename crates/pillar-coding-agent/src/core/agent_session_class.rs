@@ -49,8 +49,11 @@ use crate::core::messages::{
 };
 use crate::core::model_mutation::{ModelMutations, MutationEvent, ScopedModel, TranscriptAppends};
 use crate::core::model_runtime::ModelRuntime;
+use crate::core::package_manager::{PathMetadata, ResourceOrigin, SourceScope};
 use crate::core::prompt_templates::{PromptTemplate, expand_prompt_template};
-use crate::core::resource_loader::{LoadedPrompt, LoadedSkill, ResourceLoader};
+use crate::core::resource_loader::{
+    LoadedPrompt, LoadedSkill, ResourceExtensionPaths, ResourceLoader,
+};
 use crate::core::session_entries::SessionEntry;
 use crate::core::session_manager::{SessionManager, session_entry_to_context_messages};
 use crate::core::settings_manager::SettingsManager;
@@ -222,6 +225,28 @@ pub struct SessionEventMeta {
 /// keeps command contexts host-owned.
 pub type ExtensionCommandHandler = Arc<dyn Fn(&str, &str) -> Result<bool, String> + Send + Sync>;
 
+/// Host hook that rebuilds the base system prompt from the active tool names
+/// (upstream `_rebuildSystemPrompt`; the tool registry and prompt options are
+/// host-owned in this port).
+pub type SystemPromptRebuildFn = Arc<dyn Fn(&[String]) -> String + Send + Sync>;
+
+/// Extension error listener (upstream `ExtensionErrorListener`).
+pub type ExtensionErrorListener = Arc<dyn Fn(&ExtensionError) + Send + Sync>;
+
+/// Bindings applied by [`AgentSession::bind_extensions`] (upstream
+/// `ExtensionBindings`). The UI and command contexts are host-owned in this
+/// port, so only their presence and mode are tracked.
+#[derive(Default)]
+pub struct ExtensionBindings {
+    /// Upstream `uiContext`; only presence is tracked (drives
+    /// `runner.set_has_ui`).
+    pub ui_context: Option<bool>,
+    /// Upstream `mode` ("interactive" | "print" | "json" | "rpc").
+    pub mode: Option<String>,
+    /// Upstream `onError`; replaces the runner's error listener.
+    pub on_error: Option<ExtensionErrorListener>,
+}
+
 /// Configuration for [`AgentSession::new`] (upstream `AgentSessionConfig`,
 /// capability subset).
 pub struct AgentSessionConfig {
@@ -229,7 +254,7 @@ pub struct AgentSessionConfig {
     pub session_manager: Arc<Mutex<SessionManager>>,
     pub settings_manager: Arc<Mutex<SettingsManager>>,
     pub cwd: String,
-    pub resource_loader: Arc<ResourceLoader>,
+    pub resource_loader: Arc<Mutex<ResourceLoader>>,
     pub model_runtime: Arc<ModelRuntime>,
     /// The extension runner. The session reads it at execution time so an
     /// extension reload can swap in a new runner (upstream
@@ -250,6 +275,9 @@ pub struct AgentSessionConfig {
     pub session_start_event: Option<SessionEventMeta>,
     /// Scoped models from `--models` (upstream `scopedModels`).
     pub scoped_models: Vec<ScopedModel>,
+    /// Host hook rebuilding the base system prompt from active tool names
+    /// (upstream `_rebuildSystemPrompt`).
+    pub system_prompt_rebuild: Option<SystemPromptRebuildFn>,
 }
 
 impl AgentSessionConfig {
@@ -260,7 +288,7 @@ impl AgentSessionConfig {
         session_manager: Arc<Mutex<SessionManager>>,
         settings_manager: Arc<Mutex<SettingsManager>>,
         cwd: String,
-        resource_loader: Arc<ResourceLoader>,
+        resource_loader: Arc<Mutex<ResourceLoader>>,
         model_runtime: Arc<ModelRuntime>,
         extension_runner: Arc<Mutex<ExtensionRunner>>,
     ) -> Self {
@@ -278,6 +306,7 @@ impl AgentSessionConfig {
             command_handler: None,
             session_start_event: None,
             scoped_models: Vec::new(),
+            system_prompt_rebuild: None,
         }
     }
 }
@@ -305,6 +334,13 @@ struct SessionState {
     /// Scoped models from `--models`, grown by persisted-default
     /// propagation (upstream `_scopedModels`).
     scoped_models: Vec<ScopedModel>,
+    /// Upstream `_extensionUIContext` presence (the UI context itself is
+    /// host-owned in this port).
+    extension_has_ui: bool,
+    /// Upstream `_extensionMode` (default "print").
+    extension_mode: String,
+    /// Upstream `_extensionErrorListener` registered on the runner.
+    extension_error_listener: Option<ExtensionErrorListener>,
 }
 
 /// Captured decision output of a `ModelMutations` pass, applied to the
@@ -323,18 +359,20 @@ struct SessionInner {
     session_manager: Arc<Mutex<SessionManager>>,
     settings_manager: Arc<Mutex<SettingsManager>>,
     cwd: String,
-    resource_loader: Arc<ResourceLoader>,
+    resource_loader: Arc<Mutex<ResourceLoader>>,
     model_runtime: Arc<ModelRuntime>,
     extension_runner: Arc<Mutex<ExtensionRunner>>,
     command_handler: Option<ExtensionCommandHandler>,
     session_start_event: Option<SessionEventMeta>,
+    system_prompt_rebuild: Option<SystemPromptRebuildFn>,
     initial_active_tool_names: Option<Vec<String>>,
     allowed_tool_names: Option<BTreeSet<String>>,
     excluded_tool_names: Option<BTreeSet<String>>,
     state: Mutex<SessionState>,
     /// Base system prompt (without per-turn extension modifications),
-    /// captured at construction (upstream `_baseSystemPrompt`).
-    base_system_prompt: String,
+    /// captured at construction (upstream `_baseSystemPrompt`). Rewritten by
+    /// resource discovery.
+    base_system_prompt: Mutex<String>,
     /// Idle watch: `true` when no agent run is active.
     idle_tx: tokio::sync::watch::Sender<bool>,
     /// Kept alive so `send` always stores the latest value (tokio watch
@@ -434,14 +472,16 @@ impl AgentSession {
             extension_runner: config.extension_runner,
             command_handler: config.command_handler,
             session_start_event: config.session_start_event,
+            system_prompt_rebuild: config.system_prompt_rebuild,
             initial_active_tool_names: config.initial_active_tool_names,
             allowed_tool_names: config.allowed_tool_names,
             excluded_tool_names: config.excluded_tool_names,
             state: Mutex::new(SessionState {
                 scoped_models: config.scoped_models,
+                extension_mode: "print".to_string(),
                 ..SessionState::default()
             }),
-            base_system_prompt,
+            base_system_prompt: Mutex::new(base_system_prompt),
             idle_tx,
             _idle_rx: idle_rx,
             unsubscribe_agent: Mutex::new(None),
@@ -485,8 +525,26 @@ impl AgentSession {
         &self.inner.model_runtime
     }
 
-    pub fn resource_loader(&self) -> &ResourceLoader {
-        &self.inner.resource_loader
+    pub fn resource_loader(&self) -> std::sync::MutexGuard<'_, ResourceLoader> {
+        self.inner
+            .resource_loader
+            .lock()
+            .expect("resource loader lock")
+    }
+
+    /// Loaded skills and prompt templates from the shared resource loader
+    /// (upstream reading `resourceLoader` snapshot state).
+    fn loaded_skills_and_templates(&self) -> (Vec<LoadedSkill>, Vec<PromptTemplate>) {
+        let loader = self
+            .inner
+            .resource_loader
+            .lock()
+            .expect("resource loader lock");
+        let snapshot = loader.snapshot();
+        (
+            snapshot.skills.clone(),
+            loaded_prompts_to_templates(&snapshot.prompts),
+        )
     }
 
     pub fn cwd(&self) -> &str {
@@ -1128,7 +1186,13 @@ impl AgentSession {
                         .expect("session state")
                         .system_prompt_override
                         .clone()
-                        .unwrap_or_else(|| inner.base_system_prompt.clone());
+                        .unwrap_or_else(|| {
+                            inner
+                                .base_system_prompt
+                                .lock()
+                                .expect("base prompt lock")
+                                .clone()
+                        });
                     Some(pillar_agent::types::AgentLoopTurnUpdate {
                         context: Some(pillar_agent::types::AgentContext {
                             system_prompt,
@@ -1337,6 +1401,122 @@ impl AgentSession {
         }
     }
 
+    // --- Extension binding ------------------------------------------------
+
+    /// Upstream `bindExtensions`: apply host bindings to the runner, emit
+    /// `session_start`, and merge extension-discovered resources.
+    pub async fn bind_extensions(&self, bindings: ExtensionBindings) {
+        {
+            let mut state = self.inner.state.lock().expect("session state");
+            if let Some(has_ui) = bindings.ui_context {
+                state.extension_has_ui = has_ui;
+            }
+            if let Some(mode) = bindings.mode {
+                state.extension_mode = mode;
+            }
+            if let Some(listener) = bindings.on_error {
+                state.extension_error_listener = Some(listener);
+            }
+        }
+        self.apply_extension_bindings();
+
+        let session_start = self.inner.session_start_event.clone();
+        let reason = session_start
+            .as_ref()
+            .map(|event| event.reason.clone())
+            .unwrap_or_else(|| "startup".to_string());
+        let mut payload = serde_json::json!({
+            "type": "session_start",
+            "reason": reason,
+        });
+        if let Some(previous) = session_start
+            .as_ref()
+            .and_then(|event| event.previous_session_file.clone())
+        {
+            payload["previousSessionFile"] = Value::String(previous);
+        }
+        self.inner
+            .extension_runner
+            .lock()
+            .expect("runner lock")
+            .emit(&payload);
+
+        let reason = if reason == "reload" {
+            "reload"
+        } else {
+            "startup"
+        };
+        self.extend_resources_from_extensions(reason);
+    }
+
+    /// Upstream `_applyExtensionBindings`: push the tracked UI presence and
+    /// error listener onto the runner. The UI/command contexts themselves are
+    /// host-owned (divergence).
+    fn apply_extension_bindings(&self) {
+        let (has_ui, listener) = {
+            let state = self.inner.state.lock().expect("session state");
+            (
+                state.extension_has_ui,
+                state.extension_error_listener.clone(),
+            )
+        };
+        let mut runner = self.inner.extension_runner.lock().expect("runner lock");
+        runner.set_has_ui(has_ui);
+        runner.set_error_listener(listener.map(
+            |listener| -> Box<dyn Fn(&ExtensionError) + Send> {
+                Box::new(move |error| listener(error))
+            },
+        ));
+    }
+
+    /// Upstream `extendResourcesFromExtensions`: merge `resources_discover`
+    /// results into the resource loader and rebuild the base system prompt.
+    fn extend_resources_from_extensions(&self, reason: &str) {
+        let discovered = {
+            let runner = self.inner.extension_runner.lock().expect("runner lock");
+            if !runner.has_handlers("resources_discover") {
+                return;
+            }
+            runner.emit_resources_discover(&self.inner.cwd, reason)
+        };
+        if discovered.skill_paths.is_empty()
+            && discovered.prompt_paths.is_empty()
+            && discovered.theme_paths.is_empty()
+        {
+            return;
+        }
+
+        self.inner
+            .resource_loader
+            .lock()
+            .expect("resource loader lock")
+            .extend_resources(ResourceExtensionPaths {
+                skill_paths: build_extension_resource_paths(discovered.skill_paths),
+                prompt_paths: build_extension_resource_paths(discovered.prompt_paths),
+                theme_paths: build_extension_resource_paths(discovered.theme_paths),
+            });
+
+        // Upstream rebuilds `_baseSystemPrompt` from the new resource set and
+        // copies it onto the agent. The prompt builder is host-owned here.
+        if let Some(rebuild) = &self.inner.system_prompt_rebuild {
+            let tool_names: Vec<String> = self
+                .inner
+                .agent
+                .state()
+                .tools
+                .iter()
+                .map(|tool| tool.tool.name.clone())
+                .collect();
+            let rebuilt = rebuild(&tool_names);
+            *self
+                .inner
+                .base_system_prompt
+                .lock()
+                .expect("base prompt lock") = rebuilt.clone();
+            self.inner.agent.set_system_prompt(rebuilt);
+        }
+    }
+
     // --- Streaming loop --------------------------------------------------
 
     /// Send a prompt to the agent (upstream `prompt`): extension commands,
@@ -1404,9 +1584,7 @@ impl AgentSession {
 
         // Expand skill commands and prompt templates.
         let expanded_text = if expand_prompt_templates {
-            let skills = self.inner.resource_loader.snapshot().skills.clone();
-            let templates =
-                loaded_prompts_to_templates(&self.inner.resource_loader.snapshot().prompts);
+            let (skills, templates) = self.loaded_skills_and_templates();
             let mut expanded = self.expand_skill_command(&current_text, &skills);
             expanded = expand_prompt_template(&expanded, &templates);
             expanded
@@ -1488,11 +1666,15 @@ impl AgentSession {
         }
 
         let mut system_prompt_override: Option<String> = None;
+        let base_prompt = self
+            .inner
+            .base_system_prompt
+            .lock()
+            .expect("base prompt lock")
+            .clone();
         {
             let runner = self.inner.extension_runner.lock().expect("runner lock");
-            if let Some(result) =
-                runner.emit_before_agent_start(&expanded_text, &self.inner.base_system_prompt)
-            {
+            if let Some(result) = runner.emit_before_agent_start(&expanded_text, &base_prompt) {
                 if let Some(custom_messages) = result.get("messages").and_then(Value::as_array) {
                     for value in custom_messages {
                         if let Ok(message) =
@@ -1518,9 +1700,7 @@ impl AgentSession {
                 .expect("session state")
                 .system_prompt_override = Some(override_prompt.clone());
         } else {
-            self.inner
-                .agent
-                .set_system_prompt(self.inner.base_system_prompt.clone());
+            self.inner.agent.set_system_prompt(base_prompt.clone());
             self.inner
                 .state
                 .lock()
@@ -1601,8 +1781,7 @@ impl AgentSession {
         if text.starts_with('/') {
             self.throw_if_extension_command(text);
         }
-        let skills = self.inner.resource_loader.snapshot().skills.clone();
-        let templates = loaded_prompts_to_templates(&self.inner.resource_loader.snapshot().prompts);
+        let (skills, templates) = self.loaded_skills_and_templates();
         let mut expanded = self.expand_skill_command(text, &skills);
         expanded = expand_prompt_template(&expanded, &templates);
         self.queue_steer(&expanded, images.map(|i| i.to_vec()))
@@ -1615,8 +1794,7 @@ impl AgentSession {
         if text.starts_with('/') {
             self.throw_if_extension_command(text);
         }
-        let skills = self.inner.resource_loader.snapshot().skills.clone();
-        let templates = loaded_prompts_to_templates(&self.inner.resource_loader.snapshot().prompts);
+        let (skills, templates) = self.loaded_skills_and_templates();
         let mut expanded = self.expand_skill_command(text, &skills);
         expanded = expand_prompt_template(&expanded, &templates);
         self.queue_follow_up(&expanded, images.map(|i| i.to_vec()))
@@ -3091,6 +3269,50 @@ fn preparation_to_json(preparation: &CompactionPreparation) -> Value {
             "keepRecentTokens": preparation.settings.keep_recent_tokens,
         },
     })
+}
+
+/// Map `resources_discover` entries to loader metadata (upstream
+/// `buildExtensionResourcePaths`).
+fn build_extension_resource_paths(entries: Vec<(String, String)>) -> Vec<(String, PathMetadata)> {
+    entries
+        .into_iter()
+        .map(|(path, extension_path)| {
+            let base_dir = if extension_path.starts_with('<') {
+                None
+            } else {
+                std::path::Path::new(&extension_path)
+                    .parent()
+                    .map(|parent| parent.to_path_buf())
+            };
+            (
+                path,
+                PathMetadata {
+                    source: extension_source_label(&extension_path),
+                    scope: SourceScope::Temporary,
+                    origin: ResourceOrigin::TopLevel,
+                    base_dir,
+                },
+            )
+        })
+        .collect()
+}
+
+/// Upstream `getExtensionSourceLabel`: `<inline>` paths keep their inner
+/// name, file paths use the basename without the extension suffix.
+fn extension_source_label(extension_path: &str) -> String {
+    if extension_path.starts_with('<') {
+        return format!("extension:{}", extension_path.replace(['<', '>'], ""));
+    }
+    let base = std::path::Path::new(extension_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(extension_path);
+    let name = base
+        .strip_suffix(".luau")
+        .or_else(|| base.strip_suffix(".ts"))
+        .or_else(|| base.strip_suffix(".js"))
+        .unwrap_or(base);
+    format!("extension:{name}")
 }
 
 /// Serialize branch entries for the extension boundary.
