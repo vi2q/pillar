@@ -49,7 +49,10 @@ use crate::core::extensions_runner::{
 use crate::core::messages::{
     BashExecutionMessage, CodingAgentMessage, CustomContent, CustomMessage,
 };
-use crate::core::model_mutation::{ModelMutations, MutationEvent, ScopedModel, TranscriptAppends};
+use crate::core::model_mutation::{
+    CycleDirection, ModelMutations, ModelSwitchOutcome, MutationEvent, ScopedModel,
+    TranscriptAppends,
+};
 use crate::core::model_runtime::ModelRuntime;
 use crate::core::package_manager::{PathMetadata, ResourceOrigin, SourceScope};
 use crate::core::prompt_templates::{PromptTemplate, expand_prompt_template};
@@ -1390,6 +1393,43 @@ impl AgentSession {
         }) {
             self.apply_mutations(None, None, &mut applied);
         }
+    }
+
+    /// Upstream `cycleModel`: cycle through the scoped models (or all
+    /// available ones). Returns the applied switch, or `None` when there is
+    /// nothing to cycle.
+    pub async fn cycle_model(
+        &self,
+        direction: CycleDirection,
+    ) -> Result<Option<ModelSwitchOutcome>, String> {
+        let previous_model = self.model().as_ref().map(faux_model_to_model);
+        let mut outcome: Option<ModelSwitchOutcome> = None;
+        let mut applied = self.run_model_mutation(|mutations| {
+            let model_runtime = &self.inner.model_runtime;
+            outcome = mutations
+                .cycle_model(direction, false, &mut |provider| {
+                    model_runtime.has_configured_auth(provider)
+                })
+                .map_err(|error| error.message)?;
+            Ok(())
+        })?;
+        if let Some(outcome) = &outcome {
+            self.apply_mutations(Some(&outcome.model), previous_model.as_ref(), &mut applied);
+        }
+        Ok(outcome)
+    }
+
+    /// Upstream `cycleThinkingLevel`: returns the new level, or `None` when
+    /// the model has no alternative levels.
+    pub fn cycle_thinking_level(&self) -> Option<String> {
+        let mut level = None;
+        if let Ok(mut applied) = self.run_model_mutation(|mutations| {
+            level = mutations.cycle_thinking_level(false);
+            Ok(())
+        }) {
+            self.apply_mutations(None, None, &mut applied);
+        }
+        level
     }
 
     /// Run a `ModelMutations` pass against the settings manager and capture

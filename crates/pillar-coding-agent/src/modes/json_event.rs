@@ -297,28 +297,10 @@ pub(crate) fn compaction_result_to_json(
     })
 }
 
-/// Best-effort session-entry serialization (upstream emits the full entry).
-/// The port's `SessionEntry` is not serializable yet, so the wire carries the
-/// entry id and type; the full shape lands with the session-entry port.
+/// Serialize a session entry with the canonical JSONL shape
+/// (`session_manager::entry_to_json`, upstream emits the full entry).
 fn session_entry_to_json(entry: &crate::core::session_entries::SessionEntry) -> Value {
-    use crate::core::session_entries::SessionEntry;
-    let kind = match entry {
-        SessionEntry::Message(_) => "message",
-        SessionEntry::ThinkingLevelChange(_) => "thinking_level_change",
-        SessionEntry::ModelChange(_) => "model_change",
-        SessionEntry::Compaction(_) => "compaction",
-        SessionEntry::BranchSummary(_) => "branch_summary",
-        SessionEntry::Custom(_) => "custom",
-        SessionEntry::Label(_) => "label",
-        SessionEntry::SessionInfo(_) => "session_info",
-        SessionEntry::CustomMessage(_) => "custom_message",
-    };
-    json!({
-        "type": kind,
-        "id": entry.id(),
-        "parentId": entry.parent_id(),
-        "timestamp": entry.base().timestamp,
-    })
+    crate::core::session_manager::entry_to_json(entry)
 }
 
 /// Re-export used by tests (the port keeps the assistant message type here).

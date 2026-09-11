@@ -85,6 +85,24 @@ impl FileEntry {
 
 // --- entry (de)serialization ----------------------------------------------------------
 
+/// Serialize a session-tree node (upstream `SessionTreeNode`): the entry,
+/// its children, and the resolved label.
+pub fn tree_node_to_json(node: &SessionTreeNode) -> Value {
+    let mut obj = serde_json::Map::new();
+    obj.insert("entry".to_string(), entry_to_json(&node.entry));
+    obj.insert(
+        "children".to_string(),
+        Value::Array(node.children.iter().map(tree_node_to_json).collect()),
+    );
+    if let Some(label) = &node.label {
+        obj.insert("label".to_string(), Value::String(label.clone()));
+    }
+    if let Some(timestamp) = node.label_timestamp {
+        obj.insert("labelTimestamp".to_string(), serde_json::json!(timestamp));
+    }
+    Value::Object(obj)
+}
+
 /// Serialize a session entry to its JSONL shape (upstream JSON.stringify of
 /// the TS shapes; camelCase field names).
 pub fn entry_to_json(entry: &Entry) -> Value {

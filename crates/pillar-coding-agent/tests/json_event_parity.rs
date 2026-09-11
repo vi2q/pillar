@@ -307,3 +307,31 @@ fn turn_end_serializes_tool_results() {
     assert_eq!(value["message"]["role"], "assistant");
     assert_eq!(value["toolResults"][0]["toolCallId"], "call-1");
 }
+
+#[test]
+fn entry_appended_serializes_the_full_entry() {
+    use pillar_coding_agent::core::messages::CodingAgentMessage;
+    use pillar_coding_agent::core::session_entries::{
+        SessionEntry, SessionEntryBase, SessionMessageEntry,
+    };
+
+    let entry = SessionEntry::Message(SessionMessageEntry {
+        base: SessionEntryBase {
+            id: "e1".to_string(),
+            parent_id: Some("e0".to_string()),
+            timestamp: 1_700_000_000_000,
+        },
+        message: CodingAgentMessage::Base(Message::User {
+            content: UserContent::Text("hello".to_string()),
+            timestamp: 1_700_000_000_000,
+        }),
+    });
+    let wire = to_json_event(&AgentSessionEvent::EntryAppended { entry }).expect("wire");
+    assert_eq!(wire["type"], json!("entry_appended"));
+    assert_eq!(wire["entry"]["type"], json!("message"));
+    assert_eq!(wire["entry"]["id"], json!("e1"));
+    assert_eq!(wire["entry"]["parentId"], json!("e0"));
+    // The canonical entry shape, not just the base fields.
+    assert_eq!(wire["entry"]["message"]["role"], json!("user"));
+    assert_eq!(wire["entry"]["message"]["content"], json!("hello"));
+}

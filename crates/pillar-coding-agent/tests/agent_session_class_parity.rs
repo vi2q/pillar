@@ -2304,9 +2304,82 @@ async fn rpc_mode_dispatches_core_commands() {
         .await;
     assert_eq!(response.data.expect("levels")["levels"], json!(["off"]));
 
+    // session tree / entries (full canonical entry serialization)
+    let response = mode
+        .handle_command(command_envelope(
+            json!({ "id": "13", "type": "get_entries" }),
+        ))
+        .await;
+    assert!(response.success, "{response:?}");
+    let data = response.data.expect("entries data");
+    let entries = data["entries"].as_array().cloned().expect("entries array");
+    assert!(!entries.is_empty());
+    assert!(
+        entries
+            .iter()
+            .any(|entry| { entry["type"] == json!("message") && entry.get("message").is_some() })
+    );
+    assert!(data["leafId"].is_string());
+
+    let last_id = entries
+        .last()
+        .and_then(|entry| entry["id"].as_str())
+        .expect("entry id")
+        .to_string();
+    let response = mode
+        .handle_command(command_envelope(
+            json!({ "id": "14", "type": "get_entries", "since": last_id }),
+        ))
+        .await;
+    assert_eq!(
+        response.data.expect("entries data")["entries"]
+            .as_array()
+            .map(Vec::len),
+        Some(0)
+    );
+
+    let response = mode
+        .handle_command(command_envelope(
+            json!({ "id": "15", "type": "get_entries", "since": "missing" }),
+        ))
+        .await;
+    assert!(!response.success);
+
+    let response = mode
+        .handle_command(command_envelope(json!({ "id": "16", "type": "get_tree" })))
+        .await;
+    let tree = response.data.expect("tree data")["tree"]
+        .as_array()
+        .cloned()
+        .expect("tree array");
+    assert!(!tree.is_empty());
+    assert!(tree[0]["entry"]["type"].is_string());
+
+    // session stats (entry counts + usage totals)
+    let response = mode
+        .handle_command(command_envelope(
+            json!({ "id": "17", "type": "get_session_stats" }),
+        ))
+        .await;
+    let stats = response.data.expect("stats data");
+    assert!(stats["totalMessages"].as_u64().unwrap_or(0) >= 1);
+    assert!(stats["tokens"]["total"].is_u64());
+    assert_eq!(stats["sessionId"], json!(session.session_id()));
+
+    // cycle commands answer successfully even when there is nothing to cycle
+    for command in [
+        json!({ "id": "18", "type": "cycle_model" }),
+        json!({ "id": "19", "type": "cycle_thinking_level" }),
+    ] {
+        let response = mode.handle_command(command_envelope(command)).await;
+        assert!(response.success, "{response:?}");
+    }
+
     // unsupported commands fail explicitly
     let response = mode
-        .handle_command(command_envelope(json!({ "id": "13", "type": "get_tree" })))
+        .handle_command(command_envelope(
+            json!({ "id": "20", "type": "get_commands" }),
+        ))
         .await;
     assert!(!response.success);
     assert!(

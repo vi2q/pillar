@@ -14,6 +14,10 @@ use std::sync::{Arc, Mutex};
 use serde_json::{Value, json};
 
 use crate::core::agent_session_class::{AgentSession, PromptOptions, StreamingBehavior};
+use crate::core::messages::CodingAgentMessage;
+use crate::core::model_mutation::CycleDirection;
+use crate::core::session_entries::SessionEntry;
+use crate::core::usage_totals::UsageTotals;
 use crate::modes::json_event::{compaction_result_to_json, to_json_event};
 use crate::modes::rpc::rpc_types::{
     RpcCommand, RpcCommandEnvelope, RpcExtensionUiResponse, RpcResponse, RpcSessionState,
@@ -140,6 +144,24 @@ impl RpcMode {
                 command,
                 Some(json!({ "levels": self.session.available_thinking_levels() })),
             ),
+            RpcCommand::CycleModel => match self.session.cycle_model(CycleDirection::Forward).await
+            {
+                Ok(Some(outcome)) => RpcResponse::success(
+                    id,
+                    command,
+                    Some(json!({
+                        "model": serde_json::to_value(&outcome.model).unwrap_or(Value::Null),
+                        "thinkingLevel": outcome.thinking_level,
+                        "isScoped": outcome.is_scoped,
+                    })),
+                ),
+                Ok(None) => RpcResponse::success(id, command, Some(Value::Null)),
+                Err(error) => RpcResponse::failure(id, command, error),
+            },
+            RpcCommand::CycleThinkingLevel => match self.session.cycle_thinking_level() {
+                Some(level) => RpcResponse::success(id, command, Some(json!({ "level": level }))),
+                None => RpcResponse::success(id, command, Some(Value::Null)),
+            },
             RpcCommand::SetSteeringMode { mode } => {
                 self.session.set_steering_mode(parse_queue_mode(&mode));
                 self.sync_queue_modes();
@@ -170,6 +192,60 @@ impl RpcMode {
                 }
                 Err(error) => RpcResponse::failure(id, command, error),
             },
+            RpcCommand::GetSessionStats => {
+                RpcResponse::success(id, command, Some(self.session_stats()))
+            }
+            RpcCommand::GetEntries { since } => {
+                let (entries, leaf_id) = {
+                    let session_manager =
+                        self.session.session_manager().lock().expect("session lock");
+                    (
+                        session_manager.get_entries_owned(),
+                        session_manager.get_leaf_id().map(str::to_string),
+                    )
+                };
+                let entries = match &since {
+                    Some(since) => match entries.iter().position(|entry| entry.id() == since) {
+                        Some(index) => entries.into_iter().skip(index + 1).collect(),
+                        None => {
+                            return RpcResponse::failure(
+                                id,
+                                command,
+                                format!("Entry not found: {since}"),
+                            );
+                        }
+                    },
+                    None => entries,
+                };
+                let entries: Vec<Value> = entries
+                    .iter()
+                    .map(crate::core::session_manager::entry_to_json)
+                    .collect();
+                RpcResponse::success(
+                    id,
+                    command,
+                    Some(json!({ "entries": entries, "leafId": leaf_id })),
+                )
+            }
+            RpcCommand::GetTree => {
+                let (tree, leaf_id) = {
+                    let session_manager =
+                        self.session.session_manager().lock().expect("session lock");
+                    (
+                        session_manager.get_tree(),
+                        session_manager.get_leaf_id().map(str::to_string),
+                    )
+                };
+                let tree: Vec<Value> = tree
+                    .iter()
+                    .map(crate::core::session_manager::tree_node_to_json)
+                    .collect();
+                RpcResponse::success(
+                    id,
+                    command,
+                    Some(json!({ "tree": tree, "leafId": leaf_id })),
+                )
+            }
             RpcCommand::GetLastAssistantText => RpcResponse::success(
                 id,
                 command,
@@ -199,6 +275,92 @@ impl RpcMode {
 
     fn sync_queue_modes(&self) {
         self.session.sync_queue_modes_from_settings();
+    }
+
+    /// Upstream `session.getSessionStats()`: entry counts, tool-call count,
+    /// and usage totals summed over message/toolResult/summary entries.
+    ///
+    /// divergence: `contextUsage` is omitted (the port has no
+    /// `getContextUsage` equivalent yet).
+    fn session_stats(&self) -> Value {
+        let (session_file, session_id, entries) = {
+            let session_manager = self.session.session_manager().lock().expect("session lock");
+            (
+                session_manager
+                    .session_file()
+                    .map(|path| path.to_string_lossy().to_string()),
+                session_manager.session_id().to_string(),
+                session_manager.get_entries_owned(),
+            )
+        };
+
+        let mut totals = UsageTotals::new();
+        let mut user_messages = 0u64;
+        let mut assistant_messages = 0u64;
+        let mut tool_calls = 0u64;
+        let mut tool_results = 0u64;
+        let mut total_messages = 0u64;
+        for entry in &entries {
+            match entry {
+                SessionEntry::Compaction(compaction) => {
+                    if let Some(usage) = &compaction.usage {
+                        totals.add(usage);
+                    }
+                }
+                SessionEntry::BranchSummary(summary) => {
+                    if let Some(usage) = &summary.usage {
+                        totals.add(usage);
+                    }
+                }
+                SessionEntry::Message(message) => {
+                    total_messages += 1;
+                    match &message.message {
+                        CodingAgentMessage::Base(pillar_ai::types::Message::User { .. }) => {
+                            user_messages += 1;
+                        }
+                        CodingAgentMessage::Base(pillar_ai::types::Message::ToolResult(result)) => {
+                            tool_results += 1;
+                            if let Some(usage) = &result.usage {
+                                totals.add(usage);
+                            }
+                        }
+                        CodingAgentMessage::Base(pillar_ai::types::Message::Assistant(
+                            assistant,
+                        )) => {
+                            assistant_messages += 1;
+                            tool_calls += assistant
+                                .content
+                                .iter()
+                                .filter(|content| {
+                                    matches!(content, pillar_ai::types::Content::ToolCall { .. })
+                                })
+                                .count() as u64;
+                            totals.add(&assistant.usage);
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        json!({
+            "sessionFile": session_file,
+            "sessionId": session_id,
+            "userMessages": user_messages,
+            "assistantMessages": assistant_messages,
+            "toolCalls": tool_calls,
+            "toolResults": tool_results,
+            "totalMessages": total_messages,
+            "tokens": {
+                "input": totals.input,
+                "output": totals.output,
+                "cacheRead": totals.cache_read,
+                "cacheWrite": totals.cache_write,
+                "total": totals.input + totals.output + totals.cache_read + totals.cache_write,
+            },
+            "cost": totals.cost,
+        })
     }
 
     fn session_state(&self) -> Value {
