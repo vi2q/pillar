@@ -18,7 +18,7 @@
 //!   (`AgentSessionConfig::command_handler`); upstream executes them via
 //!   `command.handler(args, ctx)`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 use pillar_agent::types::{AfterToolFuture, BeforeToolFuture};
@@ -43,7 +43,9 @@ use crate::core::compaction::driver::{
     CompactionPreparation, CompactionResult, SummarizationOptions, SummarizeFn, compact,
     estimate_tokens, prepare_compaction,
 };
-use crate::core::extensions_runner::{ExtensionError, ExtensionRunner};
+use crate::core::extensions_runner::{
+    ExtensionError, ExtensionRunner, emit_session_shutdown_event,
+};
 use crate::core::messages::{
     BashExecutionMessage, CodingAgentMessage, CustomContent, CustomMessage,
 };
@@ -230,6 +232,16 @@ pub type ExtensionCommandHandler = Arc<dyn Fn(&str, &str) -> Result<bool, String
 /// host-owned in this port).
 pub type SystemPromptRebuildFn = Arc<dyn Fn(&[String]) -> String + Send + Sync>;
 
+/// Host hook rebuilding the extension runner on reload from the previous
+/// flag values (upstream `_buildRuntime` constructing a new runner).
+pub type ExtensionRunnerFactory =
+    Arc<dyn Fn(BTreeMap<String, Value>) -> ExtensionRunner + Send + Sync>;
+
+/// Deferred `beforeSessionStart` callback passed to
+/// [`AgentSession::reload`].
+pub type BeforeSessionStartFn =
+    Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>;
+
 /// Extension error listener (upstream `ExtensionErrorListener`).
 pub type ExtensionErrorListener = Arc<dyn Fn(&ExtensionError) + Send + Sync>;
 
@@ -278,6 +290,10 @@ pub struct AgentSessionConfig {
     /// Host hook rebuilding the base system prompt from active tool names
     /// (upstream `_rebuildSystemPrompt`).
     pub system_prompt_rebuild: Option<SystemPromptRebuildFn>,
+    /// Host hook rebuilding the extension runner on reload (upstream
+    /// `_buildRuntime`). Without it, `reload` stops after the old runner
+    /// shuts down.
+    pub extension_runner_rebuild: Option<ExtensionRunnerFactory>,
 }
 
 impl AgentSessionConfig {
@@ -307,6 +323,7 @@ impl AgentSessionConfig {
             session_start_event: None,
             scoped_models: Vec::new(),
             system_prompt_rebuild: None,
+            extension_runner_rebuild: None,
         }
     }
 }
@@ -365,6 +382,7 @@ struct SessionInner {
     command_handler: Option<ExtensionCommandHandler>,
     session_start_event: Option<SessionEventMeta>,
     system_prompt_rebuild: Option<SystemPromptRebuildFn>,
+    extension_runner_rebuild: Option<ExtensionRunnerFactory>,
     initial_active_tool_names: Option<Vec<String>>,
     allowed_tool_names: Option<BTreeSet<String>>,
     excluded_tool_names: Option<BTreeSet<String>>,
@@ -473,6 +491,7 @@ impl AgentSession {
             command_handler: config.command_handler,
             session_start_event: config.session_start_event,
             system_prompt_rebuild: config.system_prompt_rebuild,
+            extension_runner_rebuild: config.extension_runner_rebuild,
             initial_active_tool_names: config.initial_active_tool_names,
             allowed_tool_names: config.allowed_tool_names,
             excluded_tool_names: config.excluded_tool_names,
@@ -1518,6 +1537,84 @@ impl AgentSession {
     }
 
     // --- Streaming loop --------------------------------------------------
+
+    /// Upstream `reload`: shut down the old runner, reload settings and
+    /// resources, rebuild the runner via the host factory, then re-emit
+    /// `session_start` and extension resources when bindings are present.
+    pub async fn reload(
+        &self,
+        before_session_start: Option<BeforeSessionStartFn>,
+    ) -> Result<(), String> {
+        let previous_flag_values = {
+            let runner = self.inner.extension_runner.lock().expect("runner lock");
+            runner.flag_values()
+        };
+        {
+            let mut runner = self.inner.extension_runner.lock().expect("runner lock");
+            emit_session_shutdown_event(&mut runner, "reload", None);
+            runner.invalidate("Extension runtime reloaded.");
+        }
+        self.inner
+            .settings_manager
+            .lock()
+            .expect("settings lock")
+            .reload();
+        self.sync_queue_modes_from_settings();
+        self.inner
+            .resource_loader
+            .lock()
+            .expect("resource loader lock")
+            .reload(None)?;
+        // divergence: upstream `resetApiProviders()` resets the pi-ai global
+        // provider registry; the port has no mutable global registry.
+
+        let Some(factory) = self.inner.extension_runner_rebuild.clone() else {
+            return Ok(());
+        };
+        let new_runner = factory(previous_flag_values);
+        *self.inner.extension_runner.lock().expect("runner lock") = new_runner;
+        self.apply_extension_bindings();
+        // divergence: upstream `_buildRuntime` also rebinds the extension core
+        // callbacks and refreshes the host-owned tool registry.
+
+        if let Some(rebuild) = &self.inner.system_prompt_rebuild {
+            let tool_names: Vec<String> = self
+                .inner
+                .agent
+                .state()
+                .tools
+                .iter()
+                .map(|tool| tool.tool.name.clone())
+                .collect();
+            let rebuilt = rebuild(&tool_names);
+            *self
+                .inner
+                .base_system_prompt
+                .lock()
+                .expect("base prompt lock") = rebuilt.clone();
+            self.inner.agent.set_system_prompt(rebuilt);
+        }
+
+        let has_bindings = {
+            let state = self.inner.state.lock().expect("session state");
+            state.extension_has_ui || state.extension_error_listener.is_some()
+        };
+        if has_bindings {
+            if let Some(callback) = before_session_start {
+                callback().await;
+            }
+            self.inner
+                .extension_runner
+                .lock()
+                .expect("runner lock")
+                .emit(&serde_json::json!({
+                    "type": "session_start",
+                    "reason": "reload",
+                }));
+            self.extend_resources_from_extensions("reload");
+        }
+        Ok(())
+    }
 
     /// Send a prompt to the agent (upstream `prompt`): extension commands,
     /// `input` interception, skill/template expansion, streaming queueing,

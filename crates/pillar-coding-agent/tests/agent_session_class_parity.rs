@@ -18,8 +18,8 @@ use pillar_ai::types::{
     Usage, UsageCost, UserContent,
 };
 use pillar_coding_agent::core::agent_session_class::{
-    AgentSession, AgentSessionConfig, AgentSessionEvent, ExtensionBindings, SessionEventMeta,
-    SystemPromptRebuildFn,
+    AgentSession, AgentSessionConfig, AgentSessionEvent, BeforeSessionStartFn, ExtensionBindings,
+    ExtensionRunnerFactory, SessionEventMeta, SystemPromptRebuildFn,
 };
 use pillar_coding_agent::core::auth_storage::InMemoryCodingAgentModelsStore;
 use pillar_coding_agent::core::extensions_runner::ExtensionRunner;
@@ -1683,6 +1683,7 @@ fn binding_session(
     runner: Arc<Mutex<ExtensionRunner>>,
     session_start_reason: &str,
     rebuild: Option<SystemPromptRebuildFn>,
+    runner_factory: Option<ExtensionRunnerFactory>,
 ) -> Arc<AgentSession> {
     let mut options = AgentOptions::new(threshold_compaction_stream());
     options.initial_state = Some(AgentState {
@@ -1733,6 +1734,7 @@ fn binding_session(
         previous_session_file: None,
     });
     config.system_prompt_rebuild = rebuild;
+    config.extension_runner_rebuild = runner_factory;
     Arc::new(AgentSession::new(config))
 }
 
@@ -1791,7 +1793,7 @@ async fn bind_extensions_emits_session_start_and_extends_resources() {
         format!("REBUILT tools={}", tools.len())
     });
 
-    let session = binding_session(Arc::clone(&runner), "startup", Some(rebuild));
+    let session = binding_session(Arc::clone(&runner), "startup", Some(rebuild), None);
     session
         .bind_extensions(ExtensionBindings {
             ui_context: Some(true),
@@ -1822,7 +1824,7 @@ async fn bind_extensions_uses_reload_reason_and_skips_without_handlers() {
     // A reload session passes "reload" to resources_discover.
     let calls: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
     let runner = runner_with_resource_discovery(Arc::clone(&calls));
-    let session = binding_session(Arc::clone(&runner), "reload", None);
+    let session = binding_session(Arc::clone(&runner), "reload", None, None);
     session
         .bind_extensions(ExtensionBindings {
             ui_context: Some(false),
@@ -1847,8 +1849,111 @@ async fn bind_extensions_uses_reload_reason_and_skips_without_handlers() {
         "unused".to_string()
     });
     let empty_runner = Arc::new(Mutex::new(ExtensionRunner::new(Vec::new())));
-    let session = binding_session(empty_runner, "startup", Some(rebuild));
+    let session = binding_session(empty_runner, "startup", Some(rebuild), None);
     session.bind_extensions(ExtensionBindings::default()).await;
     assert_eq!(rebuild_calls.load(Ordering::SeqCst), 0);
     assert_eq!(session.system_prompt(), "Test");
+}
+
+// ============================================================================
+// Reload (upstream reload)
+// ============================================================================
+
+#[tokio::test]
+async fn reload_rebuilds_runner_and_reemits_session_start() {
+    use pillar_coding_agent::core::extensions_runner::{ExtensionHandler, HostExtension};
+
+    // Old runner records session_shutdown and carries a flag value.
+    let shutdown_reasons: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let shutdown_handler: ExtensionHandler = {
+        let shutdown_reasons = Arc::clone(&shutdown_reasons);
+        Arc::new(move |event: &serde_json::Value| {
+            shutdown_reasons
+                .lock()
+                .unwrap()
+                .push(event["reason"].as_str().unwrap_or("?").to_string());
+            Ok(None)
+        })
+    };
+    let mut old_handlers = BTreeMap::new();
+    old_handlers.insert("session_shutdown".to_string(), vec![shutdown_handler]);
+    let old_extension = HostExtension {
+        path: "<old>".to_string(),
+        handlers: old_handlers,
+        commands: Vec::new(),
+        tools: BTreeMap::new(),
+        flags: BTreeMap::new(),
+        shortcuts: BTreeMap::new(),
+    };
+    let mut old_runner = ExtensionRunner::new(vec![old_extension]);
+    old_runner.set_flag_value("theme", serde_json::json!("dark"));
+    let runner = Arc::new(Mutex::new(old_runner));
+
+    // The factory receives the previous flag values and returns a runner
+    // whose session_start handler records the reload reason.
+    let session_start_reasons: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let factory_inputs: Arc<Mutex<Vec<BTreeMap<String, serde_json::Value>>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    let factory: ExtensionRunnerFactory = {
+        let session_start_reasons = Arc::clone(&session_start_reasons);
+        let factory_inputs = Arc::clone(&factory_inputs);
+        Arc::new(move |flags: BTreeMap<String, serde_json::Value>| {
+            factory_inputs.lock().unwrap().push(flags);
+            let handler: ExtensionHandler = {
+                let session_start_reasons = Arc::clone(&session_start_reasons);
+                Arc::new(move |event: &serde_json::Value| {
+                    session_start_reasons
+                        .lock()
+                        .unwrap()
+                        .push(event["reason"].as_str().unwrap_or("?").to_string());
+                    Ok(None)
+                })
+            };
+            let mut handlers = BTreeMap::new();
+            handlers.insert("session_start".to_string(), vec![handler]);
+            let extension = HostExtension {
+                path: "<new>".to_string(),
+                handlers,
+                commands: Vec::new(),
+                tools: BTreeMap::new(),
+                flags: BTreeMap::new(),
+                shortcuts: BTreeMap::new(),
+            };
+            ExtensionRunner::new(vec![extension])
+        })
+    };
+
+    let before_calls = Arc::new(AtomicU32::new(0));
+    let before_calls_for = Arc::clone(&before_calls);
+    let before: BeforeSessionStartFn = Arc::new(move || {
+        let before_calls = Arc::clone(&before_calls_for);
+        Box::pin(async move {
+            before_calls.fetch_add(1, Ordering::SeqCst);
+        })
+    });
+
+    let session = binding_session(Arc::clone(&runner), "startup", None, Some(factory));
+    // Bindings must be present so reload re-emits session_start.
+    session
+        .bind_extensions(ExtensionBindings {
+            ui_context: Some(true),
+            mode: None,
+            on_error: None,
+        })
+        .await;
+
+    session.reload(Some(before)).await.expect("reload succeeds");
+
+    assert_eq!(shutdown_reasons.lock().unwrap().clone(), vec!["reload"]);
+    let inputs = factory_inputs.lock().unwrap().clone();
+    assert_eq!(inputs.len(), 1, "factory called once: {inputs:?}");
+    assert_eq!(
+        inputs[0].get("theme").and_then(|value| value.as_str()),
+        Some("dark")
+    );
+    assert_eq!(
+        session_start_reasons.lock().unwrap().clone(),
+        vec!["reload"]
+    );
+    assert_eq!(before_calls.load(Ordering::SeqCst), 1);
 }
