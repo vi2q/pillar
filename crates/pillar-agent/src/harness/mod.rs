@@ -15,6 +15,9 @@
 
 pub mod agent_harness;
 pub mod compaction;
+// Native-only: the std/tokio filesystem and process execution environment.
+// wasm32 hosts provide the `FileSystem`/`Shell` traits instead (docs/TASKS.md task 3).
+#[cfg(not(target_arch = "wasm32"))]
 pub mod env;
 pub mod events;
 pub mod messages;
