@@ -1016,6 +1016,7 @@ name = "pillar-coding-agent"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64",
  "fd-lock",
  "globset",
  "ignore",

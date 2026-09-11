@@ -9,10 +9,16 @@
 
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
+
+use base64::Engine as _;
+use pillar_agent::types::{AgentTool, AgentToolResult, ToolExecuteError};
+use pillar_ai::types::Content;
 
 use crate::core::tools::path_utils::resolve_read_path;
 use crate::core::truncate::{
-    DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, TruncationOptions, truncate_head,
+    DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, TruncatedBy, TruncationOptions, TruncationResult,
+    truncate_head,
 };
 
 /// Image extensions supported by upstream (jpg, png, gif, webp, bmp).
@@ -40,6 +46,9 @@ pub struct ReadResult {
     /// `details.truncation`); `total_lines` is the full file line count.
     pub truncated: bool,
     pub total_file_lines: usize,
+    /// Truncation details, present when head truncation occurred (upstream
+    /// `details.truncation`).
+    pub truncation: Option<TruncationResult>,
 }
 
 /// An image attachment (upstream `ImageContent` subset).
@@ -159,6 +168,7 @@ pub fn read(
             crate::core::truncate::format_size(DEFAULT_MAX_BYTES)
         );
         result.truncated = true;
+        result.truncation = Some(truncation.clone());
     } else if truncation.truncated {
         // Truncation occurred. Build an actionable continuation notice.
         let end_line_display = start_line_display + truncation.output_lines - 1;
@@ -175,6 +185,7 @@ pub fn read(
             ));
         }
         result.truncated = true;
+        result.truncation = Some(truncation.clone());
     } else if let Some(user_limited) = user_limited_lines {
         if start_line + user_limited < total_file_lines {
             // User-specified limit stopped early, but the file still has
@@ -195,4 +206,87 @@ pub fn read(
 
     result.text = output_text;
     Ok(result)
+}
+
+/// Serialize a truncation result to the tool `details` shape (upstream
+/// `TruncationResult`, camelCase).
+fn truncation_to_json(truncation: &TruncationResult) -> serde_json::Value {
+    serde_json::json!({
+        "content": truncation.content,
+        "truncated": truncation.truncated,
+        "truncatedBy": truncation.truncated_by.map(|by| match by {
+            TruncatedBy::Lines => "lines",
+            TruncatedBy::Bytes => "bytes",
+        }),
+        "totalLines": truncation.total_lines,
+        "totalBytes": truncation.total_bytes,
+        "outputLines": truncation.output_lines,
+        "outputBytes": truncation.output_bytes,
+        "lastLinePartial": truncation.last_line_partial,
+        "firstLineExceedsLimit": truncation.first_line_exceeds_limit,
+        "maxLines": truncation.max_lines,
+        "maxBytes": truncation.max_bytes,
+    })
+}
+
+/// Build the read tool as an `AgentTool` (upstream `createReadTool`).
+pub fn read_tool(cwd: &str) -> AgentTool {
+    let cwd = cwd.to_string();
+    AgentTool {
+        tool: pillar_ai::types::Tool {
+            name: "read".to_string(),
+            description: read_description(),
+            parameters: read_parameters_json(),
+            constrained_sampling: None,
+        },
+        label: "read".to_string(),
+        prepare_arguments: None,
+        execute: Arc::new(move |_id, args, signal, _on_update| {
+            let cwd = cwd.clone();
+            Box::pin(async move {
+                if signal.as_ref().is_some_and(|signal| signal.is_aborted()) {
+                    return Err(ToolExecuteError("Operation aborted".to_string()));
+                }
+                let path = args
+                    .get("path")
+                    .and_then(|value| value.as_str())
+                    .ok_or_else(|| {
+                        ToolExecuteError("Missing required parameter: path".to_string())
+                    })?;
+                let offset = args
+                    .get("offset")
+                    .and_then(|value| value.as_u64())
+                    .map(|value| value as usize);
+                let limit = args
+                    .get("limit")
+                    .and_then(|value| value.as_u64())
+                    .map(|value| value as usize);
+                let result = read(path, offset, limit, &cwd).map_err(ToolExecuteError)?;
+
+                let mut content = Vec::new();
+                match &result.image {
+                    Some(image) => {
+                        content.push(Content::text(result.text.clone()));
+                        content.push(Content::Image {
+                            data: base64::engine::general_purpose::STANDARD.encode(&image.data),
+                            mime_type: image.mime_type.clone(),
+                        });
+                    }
+                    None => content.push(Content::text(result.text)),
+                }
+                let details = match &result.truncation {
+                    Some(truncation) => {
+                        serde_json::json!({ "truncation": truncation_to_json(truncation) })
+                    }
+                    None => serde_json::Value::Null,
+                };
+                Ok(AgentToolResult {
+                    content,
+                    details,
+                    ..Default::default()
+                })
+            })
+        }),
+        execution_mode: None,
+    }
 }
