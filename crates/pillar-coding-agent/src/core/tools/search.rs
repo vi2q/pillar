@@ -24,6 +24,9 @@ use std::sync::{Arc, Mutex};
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use ignore::{WalkBuilder, WalkState};
 
+use pillar_agent::types::{AgentTool, AgentToolResult, ToolExecuteError};
+use pillar_ai::types::Content;
+
 use crate::core::tools::path_utils::resolve_to_cwd;
 use crate::core::truncate::{
     DEFAULT_MAX_BYTES, GREP_MAX_LINE_LENGTH, TruncationOptions, truncate_head, truncate_line,
@@ -50,6 +53,9 @@ pub struct FindResult {
     pub result_limit_reached: Option<usize>,
     /// Set when byte truncation occurred.
     pub truncation_max_bytes: Option<usize>,
+    /// Full byte-truncation details, present when truncation occurred
+    /// (upstream `details.truncation`).
+    pub truncation: Option<crate::core::truncate::TruncationResult>,
 }
 
 /// Options for `find_files`.
@@ -205,6 +211,7 @@ fn finish_find_output(
             crate::core::truncate::format_size(DEFAULT_MAX_BYTES)
         ));
         details.truncation_max_bytes = Some(DEFAULT_MAX_BYTES);
+        details.truncation = Some(truncation.clone());
     }
     if !notices.is_empty() {
         output.push_str(&format!("\n\n[{}]", notices.join(". ")));
@@ -227,6 +234,9 @@ pub struct GrepResult {
     pub truncation_max_bytes: Option<usize>,
     /// Set when long lines were truncated.
     pub lines_truncated: bool,
+    /// Full byte-truncation details, present when truncation occurred
+    /// (upstream `details.truncation`).
+    pub truncation: Option<crate::core::truncate::TruncationResult>,
 }
 
 /// Options for `grep_files` (upstream grepSchema fields).
@@ -459,6 +469,7 @@ fn finish_grep_output(
             crate::core::truncate::format_size(DEFAULT_MAX_BYTES)
         ));
         details.truncation_max_bytes = Some(DEFAULT_MAX_BYTES);
+        details.truncation = Some(truncation.clone());
     }
     if lines_truncated {
         notices.push(format!(
@@ -664,5 +675,210 @@ impl ignore::ParallelVisitor for GrepVisitor {
             return WalkState::Quit;
         }
         WalkState::Continue
+    }
+}
+
+/// Serialize a truncation result to the upstream camelCase shape.
+fn truncation_json(truncation: &crate::core::truncate::TruncationResult) -> serde_json::Value {
+    serde_json::json!({
+        "content": truncation.content,
+        "truncated": truncation.truncated,
+        "truncatedBy": truncation.truncated_by.map(|by| match by {
+            crate::core::truncate::TruncatedBy::Lines => "lines",
+            crate::core::truncate::TruncatedBy::Bytes => "bytes",
+        }),
+        "totalLines": truncation.total_lines,
+        "totalBytes": truncation.total_bytes,
+        "outputLines": truncation.output_lines,
+        "outputBytes": truncation.output_bytes,
+        "lastLinePartial": truncation.last_line_partial,
+        "firstLineExceedsLimit": truncation.first_line_exceeds_limit,
+        "maxLines": truncation.max_lines,
+        "maxBytes": truncation.max_bytes,
+    })
+}
+
+/// The find tool parameter shape as JSON (upstream `findSchema`).
+pub fn find_parameters_json() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "pattern": {"type": "string", "description": "Glob pattern to match files, e.g. '*.ts', '**/*.json', or 'src/**/*.spec.ts'"},
+            "path": {"type": "string", "description": "Directory to search in (default: current directory)"},
+            "limit": {"type": "number", "description": "Maximum number of results (default: 1000)"}
+        },
+        "required": ["pattern"]
+    })
+}
+
+/// The find tool description (upstream `description`).
+pub fn find_description() -> String {
+    format!(
+        "Search for files by glob pattern. Returns matching file paths relative to the search directory. Respects .gitignore. Output is truncated to {} results or {}KB (whichever is hit first).",
+        FIND_DEFAULT_LIMIT,
+        DEFAULT_MAX_BYTES / 1024
+    )
+}
+
+/// Build the find tool as an `AgentTool` (upstream `createFindTool`).
+pub fn find_tool(cwd: &str) -> AgentTool {
+    let cwd = cwd.to_string();
+    AgentTool {
+        tool: pillar_ai::types::Tool {
+            name: "find".to_string(),
+            description: find_description(),
+            parameters: find_parameters_json(),
+            constrained_sampling: None,
+        },
+        label: "find".to_string(),
+        prepare_arguments: None,
+        execute: Arc::new(move |_id, args, signal, _on_update| {
+            let cwd = cwd.clone();
+            Box::pin(async move {
+                if signal.as_ref().is_some_and(|signal| signal.is_aborted()) {
+                    return Err(ToolExecuteError("Operation aborted".to_string()));
+                }
+                let pattern = args
+                    .get("pattern")
+                    .and_then(|value| value.as_str())
+                    .ok_or_else(|| {
+                        ToolExecuteError("Missing required parameter: pattern".to_string())
+                    })?;
+                let search_dir = args
+                    .get("path")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or(".");
+                let limit = args
+                    .get("limit")
+                    .and_then(|value| value.as_u64())
+                    .map(|value| value as usize)
+                    .unwrap_or(FIND_DEFAULT_LIMIT);
+                let result = find_files(
+                    pattern,
+                    search_dir,
+                    &cwd,
+                    FindOptions {
+                        limit,
+                        hidden: false,
+                    },
+                )
+                .map_err(ToolExecuteError)?;
+                let mut details = serde_json::Map::new();
+                if let Some(limit) = result.result_limit_reached {
+                    details.insert("resultLimitReached".to_string(), serde_json::json!(limit));
+                }
+                if let Some(truncation) = &result.truncation {
+                    details.insert("truncation".to_string(), truncation_json(truncation));
+                }
+                Ok(AgentToolResult {
+                    content: vec![Content::text(result.text)],
+                    details: serde_json::Value::Object(details),
+                    ..Default::default()
+                })
+            })
+        }),
+        execution_mode: None,
+    }
+}
+
+/// The grep tool parameter shape as JSON (upstream `grepSchema`).
+pub fn grep_parameters_json() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "pattern": {"type": "string", "description": "Search pattern (regex or literal string)"},
+            "path": {"type": "string", "description": "Directory or file to search (default: current directory)"},
+            "glob": {"type": "string", "description": "Filter files by glob pattern, e.g. '*.ts' or '**/*.spec.ts'"},
+            "ignoreCase": {"type": "boolean", "description": "Case-insensitive search (default: false)"},
+            "literal": {"type": "boolean", "description": "Treat pattern as literal string instead of regex (default: false)"},
+            "context": {"type": "number", "description": "Number of lines to show before and after each match (default: 0)"},
+            "limit": {"type": "number", "description": "Maximum number of matches to return (default: 100)"}
+        },
+        "required": ["pattern"]
+    })
+}
+
+/// The grep tool description (upstream `description`).
+pub fn grep_description() -> String {
+    format!(
+        "Search file contents for a pattern. Returns matching lines with file paths and line numbers. Respects .gitignore. Output is truncated to {} matches or {}KB (whichever is hit first). Long lines are truncated to {} chars.",
+        GREP_DEFAULT_LIMIT,
+        DEFAULT_MAX_BYTES / 1024,
+        GREP_MAX_LINE_LENGTH
+    )
+}
+
+/// Build the grep tool as an `AgentTool` (upstream `createGrepTool`).
+pub fn grep_tool(cwd: &str) -> AgentTool {
+    let cwd = cwd.to_string();
+    AgentTool {
+        tool: pillar_ai::types::Tool {
+            name: "grep".to_string(),
+            description: grep_description(),
+            parameters: grep_parameters_json(),
+            constrained_sampling: None,
+        },
+        label: "grep".to_string(),
+        prepare_arguments: None,
+        execute: Arc::new(move |_id, args, signal, _on_update| {
+            let cwd = cwd.clone();
+            Box::pin(async move {
+                if signal.as_ref().is_some_and(|signal| signal.is_aborted()) {
+                    return Err(ToolExecuteError("Operation aborted".to_string()));
+                }
+                let pattern = args
+                    .get("pattern")
+                    .and_then(|value| value.as_str())
+                    .ok_or_else(|| {
+                        ToolExecuteError("Missing required parameter: pattern".to_string())
+                    })?;
+                let search_dir = args
+                    .get("path")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or(".");
+                let options = GrepOptions {
+                    glob: args
+                        .get("glob")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string),
+                    ignore_case: args
+                        .get("ignoreCase")
+                        .and_then(|value| value.as_bool())
+                        .unwrap_or(false),
+                    literal: args
+                        .get("literal")
+                        .and_then(|value| value.as_bool())
+                        .unwrap_or(false),
+                    context: args
+                        .get("context")
+                        .and_then(|value| value.as_u64())
+                        .map(|value| value as usize)
+                        .unwrap_or(0),
+                    limit: args
+                        .get("limit")
+                        .and_then(|value| value.as_u64())
+                        .map(|value| value as usize)
+                        .unwrap_or(GREP_DEFAULT_LIMIT),
+                };
+                let result =
+                    grep_files(pattern, search_dir, &cwd, options).map_err(ToolExecuteError)?;
+                let mut details = serde_json::Map::new();
+                if let Some(limit) = result.match_limit_reached {
+                    details.insert("matchLimitReached".to_string(), serde_json::json!(limit));
+                }
+                if let Some(truncation) = &result.truncation {
+                    details.insert("truncation".to_string(), truncation_json(truncation));
+                }
+                if result.lines_truncated {
+                    details.insert("linesTruncated".to_string(), serde_json::json!(true));
+                }
+                Ok(AgentToolResult {
+                    content: vec![Content::text(result.text)],
+                    details: serde_json::Value::Object(details),
+                    ..Default::default()
+                })
+            })
+        }),
+        execution_mode: None,
     }
 }

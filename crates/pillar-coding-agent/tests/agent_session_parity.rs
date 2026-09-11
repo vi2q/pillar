@@ -515,6 +515,7 @@ fn bash_result(output: &str, exit_code: Option<i32>) -> BashResult {
         cancelled: false,
         truncated: false,
         full_output_path: None,
+        truncation: None,
     }
 }
 

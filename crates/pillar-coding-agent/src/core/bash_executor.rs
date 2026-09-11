@@ -14,10 +14,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use pillar_ai::abort::AbortSignal;
+use pillar_agent::abort::AbortSignal;
 
 use crate::core::truncate::{
-    DEFAULT_MAX_BYTES, TruncationOptions, sanitize_binary_output, strip_ansi, truncate_tail,
+    DEFAULT_MAX_BYTES, TruncationOptions, TruncationResult, sanitize_binary_output, strip_ansi,
+    truncate_tail,
 };
 
 // ============================================================================
@@ -131,6 +132,9 @@ pub struct BashResult {
     pub truncated: bool,
     /// Temp file containing the full output when truncation hit.
     pub full_output_path: Option<PathBuf>,
+    /// Tail-truncation details, present when output was truncated
+    /// (upstream `details.truncation`).
+    pub truncation: Option<TruncationResult>,
 }
 
 /// Output sink for a bash execution (upstream `BashOperations.exec` options
@@ -253,6 +257,7 @@ pub fn execute_bash_with_operations(
     let finish = |accumulator: &mut OutputAccumulator<'_>, exit_code: Option<i32>| {
         let full_output = accumulator.full_output();
         let truncation = truncate_tail(&full_output, TruncationOptions::default());
+        let truncation_details = truncation.truncated.then(|| truncation.clone());
         if truncation.truncated {
             accumulator.ensure_temp_file();
         }
@@ -269,6 +274,7 @@ pub fn execute_bash_with_operations(
             cancelled: false,
             truncated: truncation.truncated,
             full_output_path: accumulator.temp_file_path.clone(),
+            truncation: truncation_details,
         }
     };
 

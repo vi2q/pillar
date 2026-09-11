@@ -3,9 +3,15 @@
 
 use pillar_agent::types::{AgentTool, AgentToolResult, ToolExecuteError};
 use pillar_ai::types::Content;
+use pillar_coding_agent::core::tools::bash::bash_tool;
 use pillar_coding_agent::core::tools::edit::edit_tool;
+use pillar_coding_agent::core::tools::index::{
+    ALL_TOOL_NAMES, ToolName, create_all_tools, create_coding_tools, create_read_only_tools,
+    create_tool,
+};
 use pillar_coding_agent::core::tools::ls::ls_tool;
 use pillar_coding_agent::core::tools::read::read_tool;
+use pillar_coding_agent::core::tools::search::{find_tool, grep_tool};
 use pillar_coding_agent::core::tools::write::write_tool;
 use serde_json::{Value, json};
 
@@ -260,4 +266,119 @@ async fn edit_tool_rejects_empty_edits() {
         .await
         .expect_err("empty edits");
     assert!(error.0.contains("at least one replacement"), "{error:?}");
+}
+
+#[tokio::test]
+async fn bash_tool_exposes_schema_and_runs_a_command() {
+    let dir = temp_dir("bash");
+    let tool = bash_tool(&dir.to_string_lossy());
+    assert_eq!(tool.tool.name, "bash");
+    assert!(tool.tool.description.contains("Execute a bash command"));
+    assert!(tool.tool.parameters["properties"].get("command").is_some());
+
+    let result = run(&tool, json!({ "command": "echo hello" }))
+        .await
+        .expect("bash succeeds");
+    assert!(text_of(&result).contains("hello"), "{result:?}");
+    assert_eq!(result.details, json!({}));
+}
+
+#[tokio::test]
+async fn bash_tool_rejects_missing_command() {
+    let dir = temp_dir("bash-missing");
+    let tool = bash_tool(&dir.to_string_lossy());
+    let error = run(&tool, json!({})).await.expect_err("missing command");
+    assert!(
+        error.0.contains("Missing required parameter: command"),
+        "{error:?}"
+    );
+}
+
+#[tokio::test]
+async fn find_tool_matches_glob_patterns() {
+    let dir = temp_dir("find");
+    std::fs::write(dir.join("a.txt"), "a").unwrap();
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    std::fs::write(dir.join("sub").join("b.txt"), "b").unwrap();
+    std::fs::write(dir.join("c.md"), "c").unwrap();
+    let tool = find_tool(&dir.to_string_lossy());
+
+    let result = run(&tool, json!({ "pattern": "**/*.txt" }))
+        .await
+        .expect("find succeeds");
+    let text = text_of(&result);
+    assert!(text.contains("a.txt"), "{text}");
+    assert!(text.contains("b.txt"), "{text}");
+    assert!(!text.contains("c.md"), "{text}");
+    assert_eq!(result.details, json!({}));
+}
+
+#[tokio::test]
+async fn grep_tool_returns_matching_lines() {
+    let dir = temp_dir("grep");
+    std::fs::write(dir.join("note.txt"), "alpha\nhello world\nbeta\n").unwrap();
+    let tool = grep_tool(&dir.to_string_lossy());
+
+    let result = run(&tool, json!({ "pattern": "hello" }))
+        .await
+        .expect("grep succeeds");
+    let text = text_of(&result);
+    assert!(text.contains("hello world"), "{text}");
+    assert!(text.contains("note.txt"), "{text}");
+    assert_eq!(result.details, json!({}));
+}
+
+#[tokio::test]
+async fn grep_tool_honors_literal_and_case_insensitive_flags() {
+    let dir = temp_dir("grep-flags");
+    std::fs::write(dir.join("note.txt"), "Hello.World\n").unwrap();
+    let tool = grep_tool(&dir.to_string_lossy());
+
+    let literal = run(
+        &tool,
+        json!({ "pattern": "hello.world", "ignoreCase": true, "literal": true }),
+    )
+    .await
+    .expect("grep succeeds");
+    assert!(text_of(&literal).contains("Hello.World"), "{literal:?}");
+}
+
+fn names(tools: &[AgentTool]) -> Vec<String> {
+    tools.iter().map(|tool| tool.tool.name.clone()).collect()
+}
+
+#[test]
+fn tool_registry_exposes_all_names_and_parses_them() {
+    assert_eq!(ALL_TOOL_NAMES.len(), 8);
+    assert_eq!(ToolName::parse("read"), Some(ToolName::Read));
+    assert_eq!(ToolName::parse("powershell"), Some(ToolName::Powershell));
+    assert_eq!(ToolName::parse("bogus"), None);
+    assert_eq!(ToolName::Bash.as_str(), "bash");
+}
+
+#[test]
+fn coding_and_read_only_tool_sets_match_upstream_order() {
+    let cwd = ".";
+    assert_eq!(
+        names(&create_coding_tools(cwd)),
+        vec!["read", "bash", "edit", "write"]
+    );
+    assert_eq!(
+        names(&create_read_only_tools(cwd)),
+        vec!["read", "grep", "find", "ls"]
+    );
+}
+
+#[test]
+fn create_all_tools_omits_unported_powershell() {
+    let tools = create_all_tools(".");
+    let mut keys: Vec<&String> = tools.keys().collect();
+    keys.sort();
+    assert_eq!(
+        keys,
+        vec!["bash", "edit", "find", "grep", "ls", "read", "write"]
+    );
+    assert!(create_tool("read", ".").is_some());
+    assert!(create_tool("powershell", ".").is_none());
+    assert!(create_tool("bogus", ".").is_none());
 }

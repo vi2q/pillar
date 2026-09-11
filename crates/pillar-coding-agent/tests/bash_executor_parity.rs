@@ -4,7 +4,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use pillar_ai::abort::AbortSignal;
+use pillar_agent::abort::AbortSignal;
 use pillar_coding_agent::core::bash_executor::{
     BashResult, CallbackSink, ExecOptions, exec_command, execute_bash_local,
     execute_bash_with_operations,
@@ -133,7 +133,7 @@ fn bash_executor_truncates_long_output_and_spills_to_temp_file() {
 #[test]
 fn bash_executor_reports_cancellation_with_no_exit_code() {
     let signal = AbortSignal::new();
-    signal.abort(None);
+    signal.abort();
     let mut sink = CallbackSink {
         callback: |_chunk: &str| {},
     };
@@ -167,7 +167,7 @@ fn bash_executor_propagates_operation_errors_unless_aborted() {
 
     // Aborted signal converts the error into a cancelled result.
     let signal = AbortSignal::new();
-    signal.abort(None);
+    signal.abort();
     let aborted = execute_bash_with_operations(
         "cmd",
         "/tmp",
