@@ -59,6 +59,35 @@ pub struct SourceInfo {
     pub base_dir: Option<String>,
 }
 
+/// Serialize a `SourceInfo` (upstream passes the object straight to the
+/// wire; camelCase `baseDir`).
+pub fn source_info_to_json(info: &SourceInfo) -> serde_json::Value {
+    let mut obj = serde_json::Map::new();
+    obj.insert(
+        "path".to_string(),
+        serde_json::Value::String(info.path.clone()),
+    );
+    obj.insert(
+        "source".to_string(),
+        serde_json::Value::String(info.source.clone()),
+    );
+    obj.insert(
+        "scope".to_string(),
+        serde_json::Value::String(info.scope.as_str().to_string()),
+    );
+    obj.insert(
+        "origin".to_string(),
+        serde_json::Value::String(info.origin.as_str().to_string()),
+    );
+    if let Some(base_dir) = &info.base_dir {
+        obj.insert(
+            "baseDir".to_string(),
+            serde_json::Value::String(base_dir.clone()),
+        );
+    }
+    serde_json::Value::Object(obj)
+}
+
 /// Build a `SourceInfo` from package-manager path metadata (upstream
 /// `createSourceInfo`).
 pub fn create_source_info(path: &str, metadata: &PathMetadata) -> SourceInfo {

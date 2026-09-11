@@ -2375,10 +2375,58 @@ async fn rpc_mode_dispatches_core_commands() {
         assert!(response.success, "{response:?}");
     }
 
+    // fork candidates + slash commands + empty session-name rejection
+    let response = mode
+        .handle_command(command_envelope(
+            json!({ "id": "20", "type": "get_fork_messages" }),
+        ))
+        .await;
+    let messages = response.data.expect("fork messages")["messages"]
+        .as_array()
+        .cloned()
+        .expect("messages array");
+    assert!(
+        messages
+            .iter()
+            .any(|message| message["text"] == json!("hi")),
+        "{messages:?}"
+    );
+
+    let response = mode
+        .handle_command(command_envelope(
+            json!({ "id": "21", "type": "get_commands" }),
+        ))
+        .await;
+    let commands = response.data.clone().expect("commands data");
+    assert!(commands["commands"].is_array(), "{response:?}");
+
+    let response = mode
+        .handle_command(command_envelope(
+            json!({ "id": "22", "type": "set_session_name", "name": "   " }),
+        ))
+        .await;
+    assert!(!response.success);
+
+    // export_html rejects an in-memory session (upstream
+    // "Cannot export in-memory session to HTML"); the real binary with a
+    // session file is covered by the CLI smoke test.
+    let response = mode
+        .handle_command(command_envelope(json!({
+            "id": "23",
+            "type": "export_html",
+            "outputPath": temp_dir("rpc-export").join("session.html").to_string_lossy(),
+        })))
+        .await;
+    assert!(!response.success);
+    assert!(
+        response.error.unwrap_or_default().contains("in-memory"),
+        "export_html should reject in-memory sessions"
+    );
+
     // unsupported commands fail explicitly
     let response = mode
         .handle_command(command_envelope(
-            json!({ "id": "20", "type": "get_commands" }),
+            json!({ "id": "24", "type": "fork", "entryId": "missing" }),
         ))
         .await;
     assert!(!response.success);

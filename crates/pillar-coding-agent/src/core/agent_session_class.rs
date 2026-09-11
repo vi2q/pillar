@@ -19,6 +19,7 @@
 //!   `command.handler(args, ctx)`.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use pillar_agent::types::{AfterToolFuture, BeforeToolFuture};
@@ -43,8 +44,9 @@ use crate::core::compaction::driver::{
     CompactionPreparation, CompactionResult, SummarizationOptions, SummarizeFn, compact,
     estimate_tokens, prepare_compaction,
 };
+use crate::core::export_html::{SessionData, generate_html, write_export};
 use crate::core::extensions_runner::{
-    ExtensionError, ExtensionRunner, emit_session_shutdown_event,
+    ExtensionError, ExtensionRunner, ResolvedCommand, emit_session_shutdown_event,
 };
 use crate::core::messages::{
     BashExecutionMessage, CodingAgentMessage, CustomContent, CustomMessage,
@@ -711,6 +713,91 @@ impl AgentSession {
             name: Some(name.to_string()),
         });
         Ok(())
+    }
+
+    /// Upstream `getUserMessagesForForking`: the user messages that can be
+    /// used as fork points, as `(entryId, text)`.
+    pub fn user_messages_for_forking(&self) -> Vec<(String, String)> {
+        let entries = self
+            .inner
+            .session_manager
+            .lock()
+            .expect("session lock")
+            .get_entries_owned();
+        entries
+            .iter()
+            .filter_map(|entry| match entry {
+                SessionEntry::Message(message) => match &message.message {
+                    CodingAgentMessage::Base(Message::User { content, .. }) => {
+                        let text = match content {
+                            pillar_ai::types::UserContent::Text(text) => text.clone(),
+                            pillar_ai::types::UserContent::Blocks(blocks) => {
+                                content_text(blocks, "")
+                            }
+                        };
+                        if text.is_empty() {
+                            None
+                        } else {
+                            Some((entry.id().to_string(), text))
+                        }
+                    }
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Registered extension commands (upstream
+    /// `extensionRunner.getRegisteredCommands()`).
+    pub fn registered_commands(&self) -> Vec<ResolvedCommand> {
+        self.inner
+            .extension_runner
+            .lock()
+            .expect("runner lock")
+            .registered_commands()
+    }
+
+    /// Loaded prompt templates (upstream `session.promptTemplates`).
+    pub fn prompt_templates(&self) -> Vec<LoadedPrompt> {
+        self.resource_loader().snapshot().prompts.clone()
+    }
+
+    /// Loaded skills (upstream `resourceLoader.getSkills().skills`).
+    pub fn skills(&self) -> Vec<LoadedSkill> {
+        self.resource_loader().snapshot().skills.clone()
+    }
+
+    /// Upstream `exportToHtml`: render the session and write the HTML file,
+    /// returning the written path.
+    ///
+    /// divergence: the export omits `tools` / `renderedTools` (the port has
+    /// no tool-definition renderer yet).
+    pub fn export_to_html(&self, output_path: Option<&Path>) -> Result<PathBuf, String> {
+        let (header, entries, leaf_id, session_file) = {
+            let session_manager = self.inner.session_manager.lock().expect("session lock");
+            (
+                session_manager
+                    .get_header()
+                    .and_then(|header| serde_json::to_value(header).ok()),
+                session_manager.get_entries_owned(),
+                session_manager.get_leaf_id().map(str::to_string),
+                session_manager.session_file().map(Path::to_path_buf),
+            )
+        };
+        let session_file =
+            session_file.ok_or_else(|| "Cannot export in-memory session to HTML".to_string())?;
+        let system_prompt = self.system_prompt();
+        let data = SessionData::from_parts(
+            header,
+            &entries,
+            leaf_id.as_deref(),
+            Some(&system_prompt),
+            None,
+            None,
+        );
+        let html = generate_html(&data, None)?;
+        write_export(&html, output_path, &session_file)
     }
 
     /// Whether auto-retry is enabled (upstream `autoRetryEnabled`).

@@ -9,6 +9,7 @@
 //! `extension_ui_response` lines are accepted and ignored.
 
 use std::io::{BufRead, Write};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
@@ -17,6 +18,9 @@ use crate::core::agent_session_class::{AgentSession, PromptOptions, StreamingBeh
 use crate::core::messages::CodingAgentMessage;
 use crate::core::model_mutation::CycleDirection;
 use crate::core::session_entries::SessionEntry;
+use crate::core::source_info::{
+    SyntheticSourceOptions, create_synthetic_source_info, source_info_to_json,
+};
 use crate::core::usage_totals::UsageTotals;
 use crate::modes::json_event::{compaction_result_to_json, to_json_event};
 use crate::modes::rpc::rpc_types::{
@@ -251,10 +255,37 @@ impl RpcMode {
                 command,
                 Some(json!({ "text": self.session.last_assistant_text() })),
             ),
-            RpcCommand::SetSessionName { name } => match self.session.set_session_name(&name) {
-                Ok(()) => RpcResponse::success(id, command, None),
-                Err(error) => RpcResponse::failure(id, command, error),
-            },
+            RpcCommand::SetSessionName { name } => {
+                let name = name.trim();
+                if name.is_empty() {
+                    return RpcResponse::failure(id, command, "Session name cannot be empty");
+                }
+                match self.session.set_session_name(name) {
+                    Ok(()) => RpcResponse::success(id, command, None),
+                    Err(error) => RpcResponse::failure(id, command, error),
+                }
+            }
+            RpcCommand::GetForkMessages => {
+                let messages: Vec<Value> = self
+                    .session
+                    .user_messages_for_forking()
+                    .into_iter()
+                    .map(|(entry_id, text)| json!({ "entryId": entry_id, "text": text }))
+                    .collect();
+                RpcResponse::success(id, command, Some(json!({ "messages": messages })))
+            }
+            RpcCommand::GetCommands => RpcResponse::success(id, command, Some(self.commands())),
+            RpcCommand::ExportHtml { output_path } => {
+                let resolved = output_path.as_ref().map(Path::new);
+                match self.session.export_to_html(resolved) {
+                    Ok(path) => RpcResponse::success(
+                        id,
+                        command,
+                        Some(json!({ "path": path.to_string_lossy() })),
+                    ),
+                    Err(error) => RpcResponse::failure(id, command, error),
+                }
+            }
             RpcCommand::GetMessages => {
                 let messages: Vec<Value> = self
                     .session
@@ -275,6 +306,50 @@ impl RpcMode {
 
     fn sync_queue_modes(&self) {
         self.session.sync_queue_modes_from_settings();
+    }
+
+    /// Upstream `get_commands`: extension commands, prompt templates, and
+    /// skills available for invocation via prompt.
+    ///
+    /// divergence: extension commands carry a synthetic `sourceInfo` built
+    /// from the extension command's source path (the port's
+    /// `RegisteredCommand` does not record the loader metadata).
+    fn commands(&self) -> Value {
+        let mut commands: Vec<Value> = Vec::new();
+        for command in self.session.registered_commands() {
+            let source_info = create_synthetic_source_info(
+                &command.source_path,
+                SyntheticSourceOptions {
+                    source: "extension".to_string(),
+                    scope: None,
+                    origin: None,
+                    base_dir: None,
+                },
+            );
+            commands.push(json!({
+                "name": command.invocation_name,
+                "description": command.description,
+                "source": "extension",
+                "sourceInfo": source_info_to_json(&source_info),
+            }));
+        }
+        for template in self.session.prompt_templates() {
+            commands.push(json!({
+                "name": template.name,
+                "description": template.description,
+                "source": "prompt",
+                "sourceInfo": source_info_to_json(&template.source_info),
+            }));
+        }
+        for skill in self.session.skills() {
+            commands.push(json!({
+                "name": format!("skill:{}", skill.name),
+                "description": skill.description,
+                "source": "skill",
+                "sourceInfo": source_info_to_json(&skill.source_info),
+            }));
+        }
+        json!({ "commands": commands })
     }
 
     /// Upstream `session.getSessionStats()`: entry counts, tool-call count,
