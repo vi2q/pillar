@@ -1149,7 +1149,15 @@ impl SessionManager {
                 content.push_str(&serde_json::to_string(&e.to_json()).unwrap_or_default());
                 content.push('\n');
             }
-            fs::write(session_file, content)
+            // Upstream `openSync(sessionFile, "wx")`: fail rather than
+            // overwrite a file that unexpectedly exists.
+            use std::io::Write;
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(session_file)
+                .map_err(|e| format!("Failed to write session: {e}"))?;
+            file.write_all(content.as_bytes())
                 .map_err(|e| format!("Failed to write session: {e}"))?;
         } else {
             use std::io::Write;

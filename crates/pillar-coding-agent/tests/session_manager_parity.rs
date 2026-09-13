@@ -432,3 +432,84 @@ fn build_context_entries_without_compaction_is_the_full_path() {
     let context = build_context_entries(&entries, None, &by_id);
     assert_eq!(context.len(), 2);
 }
+
+// --- deferred file creation (upstream `_persist`) ------------------------------------
+
+/// A fresh persisted session keeps its entries in memory: the file is only
+/// created once an assistant message exists (upstream `_persist`).
+#[test]
+fn session_file_is_created_only_after_an_assistant_message() {
+    let dir = std::env::temp_dir().join(format!("pillar-session-deferred-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let mut manager = SessionManager::create(&dir.to_string_lossy(), Some(&dir), None).unwrap();
+    let file = manager
+        .session_file()
+        .expect("session file path")
+        .to_path_buf();
+    let _ = std::fs::remove_file(&file);
+    assert!(!file.exists(), "a fresh session must not create its file");
+
+    manager.append_thinking_level_change("off").unwrap();
+    manager.append_message(user_msg("hi")).unwrap();
+    assert!(
+        !file.exists(),
+        "entries before the first assistant message stay in memory"
+    );
+
+    manager.append_message(assistant_msg("hello")).unwrap();
+    assert!(
+        file.exists(),
+        "the first assistant message flushes everything"
+    );
+    let lines: Vec<String> = std::fs::read_to_string(&file)
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    assert_eq!(lines.len(), 4, "header + thinking + user + assistant");
+    assert!(lines[0].contains("\"type\":\"session\""), "{}", lines[0]);
+    assert!(lines[1].contains("thinking_level_change"), "{}", lines[1]);
+    assert!(lines[2].contains("hi"), "{}", lines[2]);
+    assert!(lines[3].contains("hello"), "{}", lines[3]);
+}
+
+/// A session whose file has already been flushed appends entries immediately,
+/// even while no assistant message is present (upstream `_persist`).
+#[test]
+fn flushed_session_appends_without_waiting_for_an_assistant() {
+    let dir = std::env::temp_dir().join(format!("pillar-session-flushed-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let mut manager = SessionManager::create(&dir.to_string_lossy(), Some(&dir), None).unwrap();
+    let file = manager
+        .session_file()
+        .expect("session file path")
+        .to_path_buf();
+    let _ = std::fs::remove_file(&file);
+    manager.append_message(assistant_msg("hello")).unwrap();
+    let before = std::fs::read_to_string(&file).unwrap().lines().count();
+
+    let mut reopened = SessionManager::open(&file, None, None).unwrap();
+    reopened.append_message(user_msg("after")).unwrap();
+
+    let after = std::fs::read_to_string(&file).unwrap();
+    assert_eq!(after.lines().count(), before + 1);
+    assert!(after.lines().last().unwrap().contains("after"));
+}
+
+/// Opening a path that has no file starts a fresh session bound to that path
+/// (upstream `SessionManager.open` → `_setSessionFile`); it is not an error.
+#[test]
+fn opening_a_missing_session_path_starts_a_fresh_session() {
+    let dir = std::env::temp_dir().join(format!("pillar-session-missing-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let missing = dir.join("does-not-exist.jsonl");
+    let _ = std::fs::remove_file(&missing);
+
+    let manager = SessionManager::open(&missing, None, None).unwrap();
+    assert_eq!(manager.session_file(), Some(missing.as_path()));
+    assert!(
+        !missing.exists(),
+        "no file is written until an assistant message"
+    );
+    assert!(manager.get_entries_owned().is_empty());
+}

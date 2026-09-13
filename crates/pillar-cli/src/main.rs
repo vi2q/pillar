@@ -380,12 +380,7 @@ impl CliRuntimeHost {
         let agent_dir = agent_dir();
         let session_manager = SessionManager::open(&session_file, None, None)?;
         let mut factory = replacement_factory(&self.parsed, &agent_dir);
-        AgentSessionRuntime::create(
-            &mut factory,
-            session.cwd(),
-            &agent_dir,
-            session_manager,
-        )
+        AgentSessionRuntime::create(&mut factory, session.cwd(), &agent_dir, session_manager)
     }
 
     /// Build the live session for a completed replacement flow.
