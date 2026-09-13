@@ -12,3 +12,8 @@ serde.workspace = true
 serde_json.workspace = true
 pulldown-cmark = "0.13"
 base64 = "0.22"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Raw mode / terminal size / Windows console handling. The process terminal is
+# excluded on wasm (host-provided terminal).
+crossterm = "0.29"
