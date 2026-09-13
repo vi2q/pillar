@@ -21,10 +21,9 @@ use pillar_ai::auth_types::{AuthOperationOptions, Credential, CredentialInfo, Cr
 use pillar_ai::error::AiError;
 use pillar_ai::models_store::{ModelsStore, ModelsStoreEntry, ModelsStoreOperationOptions};
 
-/// Strip a UTF-8 BOM (upstream `stripBom`).
-pub fn strip_bom(content: &str) -> &str {
-    content.strip_prefix('\u{feff}').unwrap_or(content)
-}
+/// Strip a UTF-8 BOM (upstream `auth-storage.ts` imports `stripBom` from
+/// `utils/text.ts`).
+pub use crate::utils::text::strip_bom;
 
 /// Read a file's content, None when missing (upstream readFileSync-or-undefined).
 fn read_optional(path: &Path) -> Option<String> {
