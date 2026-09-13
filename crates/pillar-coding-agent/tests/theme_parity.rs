@@ -4,10 +4,26 @@
 use std::collections::BTreeMap;
 
 use pillar_coding_agent::modes::interactive::theme::{
-    BG_COLOR_KEYS, ColorMode, ColorValue, REQUIRED_BG_COLORS, REQUIRED_FG_COLORS, ThemeJson,
-    bg_ansi, builtin_themes, create_theme, fg_ansi, get_builtin_theme_names, get_theme_by_name,
-    hex_to_256, hex_to_rgb, load_theme_from_path, rgb_to_256,
+    BG_COLOR_KEYS, ColorMode, ColorValue, REQUIRED_BG_COLORS, REQUIRED_FG_COLORS, TerminalTheme,
+    TerminalThemeConfidence, TerminalThemeSource, ThemeJson, ansi256_to_hex,
+    assert_theme_name_is_valid, bg_ansi, builtin_themes, create_theme, current_theme_name,
+    detect_terminal_background_from_env, fg_ansi, get_builtin_theme_names,
+    get_color_fg_bg_background_index, get_resolved_theme_colors, get_theme_by_name,
+    get_theme_export_colors, get_theme_for_rgb_color, hex_to_256, hex_to_rgb, init_theme,
+    is_light_theme, load_theme_from_path, load_theme_json, on_theme_change,
+    parse_auto_theme_setting, resolve_theme_setting, rgb_color_luminance, rgb_to_256,
+    set_registered_themes, set_theme, set_theme_instance, stop_theme_watcher, theme,
 };
+use pillar_coding_agent::utils::clipboard::ClipboardEnv;
+
+fn env(pairs: &[(&str, &str)]) -> ClipboardEnv {
+    ClipboardEnv::new(
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
+    )
+}
 
 fn sample_theme_json() -> ThemeJson {
     let mut colors = BTreeMap::new();
@@ -74,6 +90,7 @@ fn sample_theme_json() -> ThemeJson {
         name: "sample".to_string(),
         vars: BTreeMap::new(),
         colors,
+        export: BTreeMap::new(),
     }
 }
 
@@ -295,4 +312,188 @@ fn themes_load_from_a_file_and_report_missing_colors() {
 
     // A missing file reports a read error.
     assert!(load_theme_from_path("/definitely/not/a/theme.json", ColorMode::Truecolor).is_err());
+}
+
+#[test]
+fn auto_theme_settings_parse_and_resolve() {
+    let auto = parse_auto_theme_setting(Some("light/dark")).expect("auto pair");
+    assert_eq!(auto.light_theme, "light");
+    assert_eq!(auto.dark_theme, "dark");
+
+    let trimmed = parse_auto_theme_setting(Some(" light / dark ")).expect("trimmed pair");
+    assert_eq!(trimmed.light_theme, "light");
+    assert_eq!(trimmed.dark_theme, "dark");
+
+    // Anything other than exactly one slash is not an auto setting.
+    assert!(parse_auto_theme_setting(None).is_none());
+    assert!(parse_auto_theme_setting(Some("a/b/c")).is_none());
+    assert!(parse_auto_theme_setting(Some("/dark")).is_none());
+    assert!(parse_auto_theme_setting(Some("light/")).is_none());
+    assert!(parse_auto_theme_setting(Some("dark")).is_none());
+
+    assert_eq!(
+        resolve_theme_setting(Some("light/dark"), TerminalTheme::Light),
+        Some("light".to_string())
+    );
+    assert_eq!(
+        resolve_theme_setting(Some("light/dark"), TerminalTheme::Dark),
+        Some("dark".to_string())
+    );
+    assert_eq!(
+        resolve_theme_setting(Some("solarized"), TerminalTheme::Dark),
+        Some("solarized".to_string())
+    );
+    assert_eq!(
+        resolve_theme_setting(Some("a/b/c"), TerminalTheme::Dark),
+        None
+    );
+    assert_eq!(resolve_theme_setting(None, TerminalTheme::Dark), None);
+}
+
+#[test]
+fn colorfgbg_and_luminance_detection() {
+    assert_eq!(get_color_fg_bg_background_index("0;15"), Some(15));
+    assert_eq!(get_color_fg_bg_background_index("15;0"), Some(0));
+    // Out-of-range and non-numeric entries are skipped, scanning from the end.
+    assert_eq!(get_color_fg_bg_background_index("0;300"), Some(0));
+    assert_eq!(get_color_fg_bg_background_index("nope"), None);
+    assert_eq!(get_color_fg_bg_background_index(""), None);
+
+    assert!(rgb_color_luminance(0, 0, 0) < 0.001);
+    assert!(rgb_color_luminance(255, 255, 255) > 0.999);
+    assert_eq!(get_theme_for_rgb_color(255, 255, 255), TerminalTheme::Light);
+    assert_eq!(get_theme_for_rgb_color(0, 0, 0), TerminalTheme::Dark);
+
+    // 16 basic colours, the cube, and the gray ramp.
+    assert_eq!(ansi256_to_hex(0), "#000000");
+    assert_eq!(ansi256_to_hex(15), "#ffffff");
+    assert_eq!(ansi256_to_hex(196), "#ff0000");
+    assert_eq!(ansi256_to_hex(244), "#808080");
+    assert_eq!(ansi256_to_hex(255), "#eeeeee");
+}
+
+#[test]
+fn terminal_background_detection_from_env() {
+    let light = detect_terminal_background_from_env(&env(&[("COLORFGBG", "0;15")]));
+    assert_eq!(light.theme, TerminalTheme::Light);
+    assert_eq!(light.source, TerminalThemeSource::ColorFgBg);
+    assert_eq!(light.confidence, TerminalThemeConfidence::High);
+    assert_eq!(light.detail, "background color index 15");
+
+    let fallback = detect_terminal_background_from_env(&env(&[]));
+    assert_eq!(fallback.theme, TerminalTheme::Dark);
+    assert_eq!(fallback.source, TerminalThemeSource::Fallback);
+    assert_eq!(fallback.confidence, TerminalThemeConfidence::Low);
+    assert_eq!(fallback.detail, "no terminal background hint found");
+    assert_eq!(fallback.source.as_str(), "fallback");
+    assert_eq!(
+        TerminalThemeSource::TerminalBackground.as_str(),
+        "terminal background"
+    );
+    assert_eq!(TerminalTheme::Light.as_str(), "light");
+}
+
+#[test]
+fn theme_names_reject_slashes() {
+    assert!(assert_theme_name_is_valid("dark").is_ok());
+    let error = assert_theme_name_is_valid("light/dark").expect_err("slash is reserved");
+    assert!(
+        error.contains("Invalid theme name \"light/dark\""),
+        "{error}"
+    );
+    assert!(
+        error.contains("automatic light/dark theme settings"),
+        "{error}"
+    );
+}
+
+#[test]
+fn export_helpers_produce_css_colors_and_light_flags() {
+    let dark = get_resolved_theme_colors(Some("dark")).expect("dark colors");
+    assert!(dark["accent"].starts_with('#'), "{}", dark["accent"]);
+    assert!(dark.contains_key("selectedBg"));
+    // Empty values fall back to the per-brightness default text colour.
+    assert_eq!(dark.get("searchMatchText"), dark.get("text"));
+
+    let light = get_resolved_theme_colors(Some("light")).expect("light colors");
+    assert!(light.contains_key("text"));
+
+    assert!(is_light_theme(Some("light")));
+    assert!(!is_light_theme(Some("dark")));
+    assert!(!is_light_theme(None));
+
+    // The built-in dark theme declares its export colours.
+    let export = get_theme_export_colors(Some("dark"));
+    assert!(
+        export["pageBg"]
+            .as_deref()
+            .is_some_and(|hex| hex.starts_with('#')),
+        "{export:?}"
+    );
+    assert!(
+        export["cardBg"]
+            .as_deref()
+            .is_some_and(|hex| hex.starts_with('#'))
+    );
+    assert!(
+        export["infoBg"]
+            .as_deref()
+            .is_some_and(|hex| hex.starts_with('#'))
+    );
+    // An unknown theme yields the same empty shape instead of failing.
+    let unknown = get_theme_export_colors(Some("nope"));
+    assert_eq!(unknown["pageBg"], None);
+    assert_eq!(unknown["cardBg"], None);
+    assert!(get_resolved_theme_colors(Some("nope")).is_err());
+    assert_eq!(
+        load_theme_json("nope").unwrap_err(),
+        "Theme not found: nope"
+    );
+}
+
+/// Global-state test: kept in one test so the registry is only mutated here
+/// (tests inside a binary run in parallel).
+#[test]
+fn global_theme_registry_switches_and_notifies() {
+    // Not initialized yet -> upstream's proxy error (panic).
+    let uninitialized = std::panic::catch_unwind(theme);
+    assert!(uninitialized.is_err());
+    assert_eq!(current_theme_name(), None);
+
+    init_theme(Some("light"));
+    assert_eq!(current_theme_name(), Some("light".to_string()));
+    assert_eq!(theme().name(), Some("light"));
+
+    // An invalid name falls back to dark.
+    init_theme(Some("does-not-exist"));
+    assert_eq!(current_theme_name(), Some("dark".to_string()));
+
+    let notified = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = std::sync::Arc::clone(&notified);
+    on_theme_change(Box::new(move || {
+        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }));
+
+    set_theme("light").expect("switch to light");
+    assert_eq!(current_theme_name(), Some("light".to_string()));
+    assert_eq!(notified.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    let error = set_theme("missing").expect_err("missing theme");
+    assert!(error.starts_with("Theme not found:"), "{error}");
+    assert_eq!(current_theme_name(), Some("dark".to_string()));
+    assert_eq!(notified.load(std::sync::atomic::Ordering::SeqCst), 2);
+
+    // Registered themes win over built-ins and can be installed directly.
+    let custom = create_theme(&sample_theme_json(), ColorMode::Truecolor, None);
+    set_registered_themes(vec![std::sync::Arc::new(custom.clone())]).expect("register");
+    set_theme("sample").expect("registered theme");
+    assert_eq!(theme().name(), Some("sample"));
+
+    let in_memory = std::sync::Arc::new(custom);
+    set_theme_instance(in_memory);
+    assert_eq!(current_theme_name(), Some("<in-memory>".to_string()));
+    assert_eq!(notified.load(std::sync::atomic::Ordering::SeqCst), 4);
+
+    assert!(set_registered_themes(vec![]).is_ok());
+    stop_theme_watcher();
 }

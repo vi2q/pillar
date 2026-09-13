@@ -150,6 +150,8 @@ pub struct ThemeJson {
     pub name: String,
     pub vars: BTreeMap<String, ColorValue>,
     pub colors: BTreeMap<String, ColorValue>,
+    /// Optional explicit colours for HTML exports (upstream `export`).
+    pub export: BTreeMap<String, ColorValue>,
 }
 
 impl ThemeJson {
@@ -184,10 +186,18 @@ impl ThemeJson {
             }
         }
 
+        let mut export = BTreeMap::new();
+        if let Some(object) = object.get("export").and_then(Value::as_object) {
+            for (key, value) in object {
+                export.insert(key.clone(), ColorValue::from_json(value)?);
+            }
+        }
+
         Ok(ThemeJson {
             name: name.to_string(),
             vars,
             colors: parsed_colors,
+            export,
         })
     }
 
@@ -565,3 +575,422 @@ pub fn bg_ansi(color: &ColorValue, mode: ColorMode) -> Result<String, String> {
         ColorValue::Hex(other) => Err(format!("Invalid color value: {other}")),
     }
 }
+
+// ============================================================================
+// Theme selection and terminal detection (upstream theme.ts, same sections)
+// ============================================================================
+
+/// The terminal's background brightness (upstream `TerminalTheme`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalTheme {
+    Dark,
+    Light,
+}
+
+impl TerminalTheme {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TerminalTheme::Dark => "dark",
+            TerminalTheme::Light => "light",
+        }
+    }
+}
+
+/// An automatic light/dark theme setting (upstream the `light/dark` pair).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutoThemeSetting {
+    pub light_theme: String,
+    pub dark_theme: String,
+}
+
+/// Parse `"<light>/<dark>"` (upstream `parseAutoThemeSetting`): exactly one
+/// slash and both sides non-empty.
+pub fn parse_auto_theme_setting(theme_setting: Option<&str>) -> Option<AutoThemeSetting> {
+    let theme_setting = theme_setting?;
+    let slash_index = theme_setting.find('/')?;
+    if theme_setting[slash_index + 1..].contains('/') {
+        return None;
+    }
+    let light_theme = theme_setting[..slash_index].trim();
+    let dark_theme = theme_setting[slash_index + 1..].trim();
+    if light_theme.is_empty() || dark_theme.is_empty() {
+        return None;
+    }
+    Some(AutoThemeSetting {
+        light_theme: light_theme.to_string(),
+        dark_theme: dark_theme.to_string(),
+    })
+}
+
+/// Resolve a theme setting for a terminal brightness (upstream
+/// `resolveThemeSetting`): auto pairs pick a side, a stray slash is invalid,
+/// anything else is used as-is.
+pub fn resolve_theme_setting(
+    theme_setting: Option<&str>,
+    terminal_theme: TerminalTheme,
+) -> Option<String> {
+    if let Some(auto) = parse_auto_theme_setting(theme_setting) {
+        return Some(match terminal_theme {
+            TerminalTheme::Light => auto.light_theme,
+            TerminalTheme::Dark => auto.dark_theme,
+        });
+    }
+    let theme_setting = theme_setting?;
+    if theme_setting.contains('/') {
+        return None;
+    }
+    Some(theme_setting.to_string())
+}
+
+/// Where a background detection result came from (upstream `source`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalThemeSource {
+    TerminalBackground,
+    ColorFgBg,
+    Fallback,
+}
+
+impl TerminalThemeSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TerminalThemeSource::TerminalBackground => "terminal background",
+            TerminalThemeSource::ColorFgBg => "COLORFGBG",
+            TerminalThemeSource::Fallback => "fallback",
+        }
+    }
+}
+
+/// Detection confidence (upstream `confidence`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalThemeConfidence {
+    High,
+    Low,
+}
+
+impl TerminalThemeConfidence {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TerminalThemeConfidence::High => "high",
+            TerminalThemeConfidence::Low => "low",
+        }
+    }
+}
+
+/// A background detection result (upstream `TerminalThemeDetection`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalThemeDetection {
+    pub theme: TerminalTheme,
+    pub source: TerminalThemeSource,
+    pub detail: String,
+    pub confidence: TerminalThemeConfidence,
+}
+
+/// The last valid `COLORFGBG` entry as a 256-colour index (upstream
+/// `getColorFgBgBackgroundIndex`).
+pub fn get_color_fg_bg_background_index(colorfgbg: &str) -> Option<u8> {
+    for part in colorfgbg.split(';').rev() {
+        if let Ok(index) = part.trim().parse::<u16>() {
+            if index <= 255 {
+                return Some(index as u8);
+            }
+        }
+    }
+    None
+}
+
+/// Relative luminance of an RGB colour (upstream `getRgbColorLuminance`).
+pub fn rgb_color_luminance(r: u8, g: u8, b: u8) -> f64 {
+    let to_linear = |channel: u8| {
+        let value = channel as f64 / 255.0;
+        if value <= 0.03928 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * to_linear(r) + 0.7152 * to_linear(g) + 0.0722 * to_linear(b)
+}
+
+/// Relative luminance of a 256-colour index (upstream
+/// `getAnsiColorLuminance`).
+pub fn ansi_color_luminance(index: u8) -> f64 {
+    let (r, g, b) = hex_to_rgb(&ansi256_to_hex(index)).unwrap_or((0, 0, 0));
+    rgb_color_luminance(r, g, b)
+}
+
+/// Classify a background colour (upstream `getThemeForRgbColor`).
+pub fn get_theme_for_rgb_color(r: u8, g: u8, b: u8) -> TerminalTheme {
+    if rgb_color_luminance(r, g, b) >= 0.5 {
+        TerminalTheme::Light
+    } else {
+        TerminalTheme::Dark
+    }
+}
+
+/// Convert a 256-colour index to hex (upstream `ansi256ToHex`): the 16 basic
+/// colours are approximations, 16-231 are the cube, 232-255 the gray ramp.
+pub fn ansi256_to_hex(index: u8) -> String {
+    const BASIC_COLORS: [&str; 16] = [
+        "#000000", "#800000", "#008000", "#808000", "#000080", "#800080", "#008080", "#c0c0c0",
+        "#808080", "#ff0000", "#00ff00", "#ffff00", "#0000ff", "#ff00ff", "#00ffff", "#ffffff",
+    ];
+    if index < 16 {
+        return BASIC_COLORS[index as usize].to_string();
+    }
+    if index < 232 {
+        let cube_index = index as u32 - 16;
+        let r = cube_index / 36;
+        let g = (cube_index % 36) / 6;
+        let b = cube_index % 6;
+        let to_hex = |channel: u32| if channel == 0 { 0 } else { 55 + channel * 40 };
+        return format!("#{:02x}{:02x}{:02x}", to_hex(r), to_hex(g), to_hex(b));
+    }
+    let gray = 8 + (index as u32 - 232) * 10;
+    format!("#{gray:02x}{gray:02x}{gray:02x}")
+}
+
+/// Detect the terminal background from the environment (upstream
+/// `detectTerminalBackgroundFromEnv`).
+pub fn detect_terminal_background_from_env(
+    env: &crate::utils::clipboard::ClipboardEnv,
+) -> TerminalThemeDetection {
+    let colorfgbg = env.get("COLORFGBG").unwrap_or_default();
+    if let Some(background) = get_color_fg_bg_background_index(colorfgbg) {
+        return TerminalThemeDetection {
+            theme: if ansi_color_luminance(background) >= 0.5 {
+                TerminalTheme::Light
+            } else {
+                TerminalTheme::Dark
+            },
+            source: TerminalThemeSource::ColorFgBg,
+            detail: format!("background color index {background}"),
+            confidence: TerminalThemeConfidence::High,
+        };
+    }
+
+    TerminalThemeDetection {
+        theme: TerminalTheme::Dark,
+        source: TerminalThemeSource::Fallback,
+        detail: "no terminal background hint found".to_string(),
+        confidence: TerminalThemeConfidence::Low,
+    }
+}
+
+/// The default theme name for this environment (upstream `getDefaultTheme`).
+pub fn get_default_theme() -> String {
+    let env = crate::utils::clipboard::ClipboardEnv::from_process();
+    detect_terminal_background_from_env(&env)
+        .theme
+        .as_str()
+        .to_string()
+}
+
+/// Theme names may not contain `/` (upstream `assertThemeNameIsValid`).
+pub fn assert_theme_name_is_valid(name: &str) -> Result<(), String> {
+    if name.contains('/') {
+        return Err(format!(
+            "Invalid theme name \"{name}\": theme names cannot contain \"/\" because it is reserved for automatic light/dark theme settings."
+        ));
+    }
+    Ok(())
+}
+
+/// Look up a theme document by name: built-ins only for now (custom and
+/// registered file-backed themes land with the theme controller).
+pub fn load_theme_json(name: &str) -> Result<ThemeJson, String> {
+    if let Some(theme) = builtin_themes().get(name) {
+        return Ok(theme.clone());
+    }
+    Err(format!("Theme not found: {name}"))
+}
+
+/// Resolved theme colours as CSS-compatible hex strings (upstream
+/// `getResolvedThemeColors`).
+pub fn get_resolved_theme_colors(
+    theme_name: Option<&str>,
+) -> Result<BTreeMap<String, String>, String> {
+    let name = match theme_name {
+        Some(name) => name.to_string(),
+        None => current_theme_name().unwrap_or_else(get_default_theme),
+    };
+    let is_light = name == "light";
+    let theme_json = load_theme_json(&name)?;
+    let resolved = with_color_fallbacks(&theme_json.colors);
+    let default_text = if is_light { "#000000" } else { "#e5e5e7" };
+
+    let mut colors = BTreeMap::new();
+    for (key, value) in &resolved {
+        let value = resolve_var_refs(value, &theme_json.vars, &mut Vec::new())?;
+        let css = match value {
+            ColorValue::Index(index) => ansi256_to_hex(index),
+            ColorValue::Empty => default_text.to_string(),
+            ColorValue::Hex(hex) => hex,
+        };
+        colors.insert(key.clone(), css);
+    }
+    Ok(colors)
+}
+
+/// Whether a theme is a light theme (upstream `isLightTheme`).
+pub fn is_light_theme(theme_name: Option<&str>) -> bool {
+    theme_name == Some("light")
+}
+
+/// Explicit export colours from a theme document (upstream
+/// `getThemeExportColors`); unset or unresolvable entries stay `None`.
+pub fn get_theme_export_colors(theme_name: Option<&str>) -> BTreeMap<String, Option<String>> {
+    let mut result = BTreeMap::new();
+    for key in ["pageBg", "cardBg", "infoBg"] {
+        result.insert(key.to_string(), None);
+    }
+    let name = match theme_name {
+        Some(name) => name.to_string(),
+        None => current_theme_name().unwrap_or_else(get_default_theme),
+    };
+    let Ok(theme_json) = load_theme_json(&name) else {
+        return result;
+    };
+    for (key, value) in &theme_json.export {
+        let resolved = resolve_var_refs(value, &theme_json.vars, &mut Vec::new());
+        let css = match resolved {
+            Ok(ColorValue::Index(index)) => Some(ansi256_to_hex(index)),
+            Ok(ColorValue::Empty) | Err(_) => None,
+            Ok(ColorValue::Hex(hex)) => Some(hex),
+        };
+        result.insert(key.clone(), css);
+    }
+    result
+}
+
+// ============================================================================
+// Global theme instance (upstream theme.ts global section)
+// ============================================================================
+
+/// The active theme instance plus the registered theme table.
+///
+/// divergence: upstream shares the instance through `globalThis` (for dual
+/// module loaders) and hot-reloads custom theme files with an `fs` watcher;
+/// the port keeps process-wide state in a `RwLock` and does not watch files.
+#[derive(Default)]
+struct ThemeRegistry {
+    current: Option<std::sync::Arc<Theme>>,
+    current_name: Option<String>,
+    registered: BTreeMap<String, std::sync::Arc<Theme>>,
+    on_change: Option<Box<dyn Fn() + Send + Sync>>,
+}
+
+static REGISTRY: LazyLock<std::sync::RwLock<ThemeRegistry>> =
+    LazyLock::new(|| std::sync::RwLock::new(ThemeRegistry::default()));
+
+/// The active theme (upstream `theme`). Panics when the theme was never
+/// initialized, mirroring upstream's proxy error.
+pub fn theme() -> std::sync::Arc<Theme> {
+    let registry = REGISTRY.read().expect("theme registry");
+    registry
+        .current
+        .clone()
+        .expect("Theme not initialized. Call init_theme() first.")
+}
+
+/// The active theme name, if any.
+pub fn current_theme_name() -> Option<String> {
+    REGISTRY
+        .read()
+        .expect("theme registry")
+        .current_name
+        .clone()
+}
+
+/// Replace the registered theme table (upstream `setRegisteredThemes`).
+pub fn set_registered_themes(themes: Vec<std::sync::Arc<Theme>>) -> Result<(), String> {
+    let mut registry = REGISTRY.write().expect("theme registry");
+    registry.registered.clear();
+    for theme in themes {
+        if let Some(name) = theme.name() {
+            assert_theme_name_is_valid(name)?;
+            registry.registered.insert(name.to_string(), theme);
+        }
+    }
+    Ok(())
+}
+
+/// Load a theme by name: registered themes win over built-ins (upstream
+/// `loadTheme`).
+fn load_theme(name: &str) -> Result<Theme, String> {
+    if let Some(theme) = REGISTRY
+        .read()
+        .expect("theme registry")
+        .registered
+        .get(name)
+    {
+        return Ok((**theme).clone());
+    }
+    load_theme_json(name).map(|theme_json| create_theme(&theme_json, ColorMode::Truecolor, None))
+}
+
+/// Initialize the active theme, falling back to dark on failure (upstream
+/// `initTheme`).
+pub fn init_theme(theme_name: Option<&str>) {
+    let name = theme_name
+        .map(str::to_string)
+        .unwrap_or_else(get_default_theme);
+    let (theme, resolved_name) = match load_theme(&name) {
+        Ok(theme) => (theme, name),
+        Err(_) => (
+            create_theme(&builtin_themes()["dark"], ColorMode::Truecolor, None),
+            "dark".to_string(),
+        ),
+    };
+    let mut registry = REGISTRY.write().expect("theme registry");
+    registry.current = Some(std::sync::Arc::new(theme));
+    registry.current_name = Some(resolved_name);
+}
+
+/// Switch the active theme, falling back to dark on failure (upstream
+/// `setTheme`).
+pub fn set_theme(name: &str) -> Result<(), String> {
+    let (theme, error) = match load_theme(name) {
+        Ok(theme) => (theme, None),
+        Err(error) => (
+            create_theme(&builtin_themes()["dark"], ColorMode::Truecolor, None),
+            Some(error),
+        ),
+    };
+    let callback = {
+        let mut registry = REGISTRY.write().expect("theme registry");
+        registry.current = Some(std::sync::Arc::new(theme));
+        registry.current_name = Some(if error.is_none() { name } else { "dark" }.to_string());
+        registry.on_change.take()
+    };
+    if let Some(callback) = callback {
+        callback();
+        REGISTRY.write().expect("theme registry").on_change = Some(callback);
+    }
+    match error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
+/// Install a theme instance directly (upstream `setThemeInstance`).
+pub fn set_theme_instance(theme: std::sync::Arc<Theme>) {
+    let callback = {
+        let mut registry = REGISTRY.write().expect("theme registry");
+        registry.current = Some(theme);
+        registry.current_name = Some("<in-memory>".to_string());
+        registry.on_change.take()
+    };
+    if let Some(callback) = callback {
+        callback();
+        REGISTRY.write().expect("theme registry").on_change = Some(callback);
+    }
+}
+
+/// Register the theme-change callback (upstream `onThemeChange`).
+pub fn on_theme_change(callback: Box<dyn Fn() + Send + Sync>) {
+    REGISTRY.write().expect("theme registry").on_change = Some(callback);
+}
+
+/// File watching is not ported; provided so callers can mirror upstream
+/// shutdown.
+pub fn stop_theme_watcher() {}
