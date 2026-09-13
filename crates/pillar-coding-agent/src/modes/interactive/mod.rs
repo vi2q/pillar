@@ -4,3 +4,4 @@
 
 pub mod external_editor;
 pub mod model_search;
+pub mod session_share;

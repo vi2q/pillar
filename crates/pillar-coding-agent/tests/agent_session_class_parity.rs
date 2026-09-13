@@ -2742,3 +2742,48 @@ async fn rpc_mode_bash_records_result() {
     assert!(response.success, "{response:?}");
     assert!(!session.is_bash_running());
 }
+
+#[tokio::test]
+async fn share_export_appends_pi_share_metadata() {
+    use pillar_coding_agent::modes::interactive::session_share::{
+        export_session_for_share, share_tool_definitions,
+    };
+
+    let (session, _) = make_session(
+        threshold_compaction_stream(),
+        serde_json::json!({ "retry": { "enabled": false } }),
+    );
+    session.prompt("hi", None).await.expect("prompt");
+
+    let dir = temp_dir("share-export");
+    let file = dir.join("session.jsonl");
+    let _ = std::fs::remove_file(&file);
+    export_session_for_share(&file, &session).expect("export");
+
+    let content = std::fs::read_to_string(&file).expect("read export");
+    let lines: Vec<&str> = content.lines().collect();
+    assert!(lines.len() >= 2, "header + branch + share entry");
+
+    let header: serde_json::Value = serde_json::from_str(lines[0]).expect("header json");
+    assert_eq!(header["type"], serde_json::json!("session"));
+
+    // The share metadata is the trailing entry, parented to the last branch
+    // entry, and carries the system prompt plus tool definitions.
+    let last: serde_json::Value =
+        serde_json::from_str(lines.last().expect("last line")).expect("share json");
+    assert_eq!(last["type"], serde_json::json!("custom"));
+    assert_eq!(last["customType"], serde_json::json!("pi.share"));
+    assert_eq!(last["id"].as_str().expect("id").len(), 8);
+    assert_eq!(
+        last["data"]["systemPrompt"],
+        serde_json::json!(session.system_prompt())
+    );
+    assert_eq!(
+        last["data"]["tools"],
+        serde_json::Value::Array(share_tool_definitions(&session))
+    );
+
+    let previous: serde_json::Value =
+        serde_json::from_str(lines[lines.len() - 2]).expect("branch json");
+    assert_eq!(last["parentId"], previous["id"]);
+}
