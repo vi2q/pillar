@@ -3,5 +3,6 @@
 //! `pillar-tui` crate.
 
 pub mod external_editor;
+pub mod interactive_mode;
 pub mod model_search;
 pub mod session_share;

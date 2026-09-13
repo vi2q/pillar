@@ -1605,6 +1605,12 @@ impl SessionManager {
         &self.session_dir
     }
 
+    /// Whether the session dir is the default for the cwd (upstream
+    /// `usesDefaultSessionDir`).
+    pub fn uses_default_session_dir(&self) -> bool {
+        self.session_dir == default_session_dir_path(&self.cwd)
+    }
+
     pub fn session_id(&self) -> &str {
         &self.session_id
     }
