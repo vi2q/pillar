@@ -40,6 +40,7 @@ pub mod session_manager;
 pub mod session_support;
 pub mod settings_manager;
 pub mod skills;
+pub mod slash_commands;
 pub mod source_info;
 pub mod system_prompt;
 pub mod timings;
