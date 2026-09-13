@@ -319,6 +319,19 @@ impl AgentSessionRuntime {
         &mut self.session_manager
     }
 
+    /// Consume the runtime, yielding the bound services, session manager, and
+    /// diagnostics (used by hosts that build a live session from a
+    /// replacement).
+    pub fn into_parts(
+        self,
+    ) -> (
+        AgentSessionServices,
+        SessionManager,
+        Vec<AgentSessionRuntimeDiagnostic>,
+    ) {
+        (self.services, self.session_manager, self.diagnostics)
+    }
+
     pub fn cwd(&self) -> &Path {
         &self.services.cwd
     }
@@ -368,9 +381,9 @@ impl AgentSessionRuntime {
         cwd_override: Option<&str>,
         hooks: &mut RuntimeHooks<'_>,
         factory: RuntimeFactory<'_>,
-    ) -> Result<ReplacementOutcome, String> {
+    ) -> Result<(ReplacementOutcome, Self), String> {
         if Self::emit_before_switch(hooks, "resume", Some(session_path)) {
-            return Ok(ReplacementOutcome { cancelled: true });
+            return Ok((ReplacementOutcome { cancelled: true }, self));
         }
 
         let previous_session_file = self.session_manager.session_file().map(Path::to_path_buf);
@@ -394,17 +407,15 @@ impl AgentSessionRuntime {
             previous_session_file: target,
         })?;
         let _ = previous_session_file;
-        Ok(Self::finish_replacement(
-            result.services,
-            result.session_manager,
-            result.diagnostics,
-            hooks,
-        )
-        .into_outcome())
-    }
-
-    fn into_outcome(self) -> ReplacementOutcome {
-        ReplacementOutcome { cancelled: false }
+        Ok((
+            ReplacementOutcome { cancelled: false },
+            Self::finish_replacement(
+                result.services,
+                result.session_manager,
+                result.diagnostics,
+                hooks,
+            ),
+        ))
     }
 
     /// Start a new session (upstream `newSession`).
@@ -413,9 +424,9 @@ impl AgentSessionRuntime {
         parent_session: Option<&str>,
         hooks: &mut RuntimeHooks<'_>,
         factory: RuntimeFactory<'_>,
-    ) -> Result<ReplacementOutcome, String> {
+    ) -> Result<(ReplacementOutcome, Self), String> {
         if Self::emit_before_switch(hooks, "new", None) {
-            return Ok(ReplacementOutcome { cancelled: true });
+            return Ok((ReplacementOutcome { cancelled: true }, self));
         }
         let previous_session_file = self.session_manager.session_file().map(Path::to_path_buf);
         let session_dir = self.session_manager.session_dir().to_path_buf();
@@ -445,13 +456,15 @@ impl AgentSessionRuntime {
             session_start_reason: SessionStartReason::New,
             previous_session_file,
         })?;
-        Ok(Self::finish_replacement(
-            result.services,
-            result.session_manager,
-            result.diagnostics,
-            hooks,
-        )
-        .into_outcome())
+        Ok((
+            ReplacementOutcome { cancelled: false },
+            Self::finish_replacement(
+                result.services,
+                result.session_manager,
+                result.diagnostics,
+                hooks,
+            ),
+        ))
     }
 
     /// Fork from a previous entry (upstream `fork`).
@@ -461,17 +474,20 @@ impl AgentSessionRuntime {
         position: &str,
         hooks: &mut RuntimeHooks<'_>,
         factory: RuntimeFactory<'_>,
-    ) -> Result<ForkOutcome, String> {
+    ) -> Result<(ForkOutcome, Self), String> {
         let position = if position.is_empty() {
             "before"
         } else {
             position
         };
         if Self::emit_before_fork(hooks, entry_id, position) {
-            return Ok(ForkOutcome {
-                cancelled: true,
-                selected_text: None,
-            });
+            return Ok((
+                ForkOutcome {
+                    cancelled: true,
+                    selected_text: None,
+                },
+                self,
+            ));
         }
         let Some(selected_entry) = self.session_manager.get_entry(entry_id).cloned() else {
             return Err("Invalid entry ID for forking".to_string());
@@ -543,13 +559,18 @@ impl AgentSessionRuntime {
                     session_start_reason: SessionStartReason::Fork,
                     previous_session_file,
                 })?;
-                return Ok(Self::finish_replacement(
-                    result.services,
-                    result.session_manager,
-                    result.diagnostics,
-                    hooks,
-                )
-                .into_fork_outcome(selected_text));
+                return Ok((
+                    ForkOutcome {
+                        cancelled: false,
+                        selected_text,
+                    },
+                    Self::finish_replacement(
+                        result.services,
+                        result.session_manager,
+                        result.diagnostics,
+                        hooks,
+                    ),
+                ));
             };
 
             if !current_session_file.exists() {
@@ -575,13 +596,18 @@ impl AgentSessionRuntime {
                 session_start_reason: SessionStartReason::Fork,
                 previous_session_file,
             })?;
-            return Ok(Self::finish_replacement(
-                result.services,
-                result.session_manager,
-                result.diagnostics,
-                hooks,
-            )
-            .into_fork_outcome(selected_text));
+            return Ok((
+                ForkOutcome {
+                    cancelled: false,
+                    selected_text,
+                },
+                Self::finish_replacement(
+                    result.services,
+                    result.session_manager,
+                    result.diagnostics,
+                    hooks,
+                ),
+            ));
         }
 
         // In-memory fork.
@@ -611,20 +637,18 @@ impl AgentSessionRuntime {
             session_start_reason: SessionStartReason::Fork,
             previous_session_file,
         })?;
-        Ok(Self::finish_replacement(
-            result.services,
-            result.session_manager,
-            result.diagnostics,
-            hooks,
-        )
-        .into_fork_outcome(selected_text))
-    }
-
-    fn into_fork_outcome(self, selected_text: Option<String>) -> ForkOutcome {
-        ForkOutcome {
-            cancelled: false,
-            selected_text,
-        }
+        Ok((
+            ForkOutcome {
+                cancelled: false,
+                selected_text,
+            },
+            Self::finish_replacement(
+                result.services,
+                result.session_manager,
+                result.diagnostics,
+                hooks,
+            ),
+        ))
     }
 
     /// Import a session JSONL file and switch to it (upstream
@@ -635,7 +659,7 @@ impl AgentSessionRuntime {
         cwd_override: Option<&str>,
         hooks: &mut RuntimeHooks<'_>,
         factory: RuntimeFactory<'_>,
-    ) -> Result<ReplacementOutcome, String> {
+    ) -> Result<(ReplacementOutcome, Self), String> {
         let resolved_path = resolve_to_cwd(input_path, "/");
         if !resolved_path.exists() {
             return Err(SessionImportFileNotFoundError {
@@ -656,7 +680,7 @@ impl AgentSessionRuntime {
         let destination_path = session_dir.join(file_name);
         let destination_display = destination_path.to_string_lossy().to_string();
         if Self::emit_before_switch(hooks, "resume", Some(&destination_display)) {
-            return Ok(ReplacementOutcome { cancelled: true });
+            return Ok((ReplacementOutcome { cancelled: true }, self));
         }
 
         let previous_session_file = self.session_manager.session_file().map(Path::to_path_buf);
@@ -687,13 +711,15 @@ impl AgentSessionRuntime {
             previous_session_file,
         })?;
         let _ = previous_session_file;
-        Ok(Self::finish_replacement(
-            result.services,
-            result.session_manager,
-            result.diagnostics,
-            hooks,
-        )
-        .into_outcome())
+        Ok((
+            ReplacementOutcome { cancelled: false },
+            Self::finish_replacement(
+                result.services,
+                result.session_manager,
+                result.diagnostics,
+                hooks,
+            ),
+        ))
     }
 
     /// Shut down the runtime (upstream `dispose`).

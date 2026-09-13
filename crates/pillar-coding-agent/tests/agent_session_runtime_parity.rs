@@ -204,7 +204,7 @@ fn switch_session_resumes_with_stored_cwd() {
     .unwrap();
 
     let mut hooks = RuntimeHooks::default();
-    let outcome = runtime
+    let (outcome, runtime) = runtime
         .switch_session(
             &target_file.to_string_lossy(),
             None,
@@ -213,6 +213,14 @@ fn switch_session_resumes_with_stored_cwd() {
         )
         .unwrap();
     assert!(!outcome.cancelled);
+    // The replacement runtime owns the switched-to session file.
+    assert_eq!(
+        runtime
+            .session_manager()
+            .session_file()
+            .map(|path| path.to_string_lossy().to_string()),
+        Some(target_file.to_string_lossy().to_string())
+    );
     let calls = log.lock().unwrap().calls.clone();
     assert_eq!(calls.last().unwrap().0, target_cwd.to_string_lossy());
     assert_eq!(calls.last().unwrap().2, "resume");
@@ -237,7 +245,7 @@ fn switch_session_cancelled_by_before_switch_hook() {
         before_switch: Some(&mut |_, _| true),
         ..Default::default()
     };
-    let outcome = runtime
+    let (outcome, _runtime) = runtime
         .switch_session(
             "/tmp/whatever.jsonl",
             None,
@@ -270,7 +278,7 @@ fn new_session_replaces_with_fresh_manager_and_persists_parent_link() {
     .unwrap();
 
     let mut hooks = RuntimeHooks::default();
-    let outcome = runtime
+    let (outcome, _runtime) = runtime
         .new_session(
             Some(&parent_file.to_string_lossy()),
             &mut hooks,
@@ -305,7 +313,7 @@ fn fork_at_entry_positions_leaf_at_entry() {
     .unwrap();
 
     let mut hooks = RuntimeHooks::default();
-    let outcome = runtime
+    let (outcome, _runtime) = runtime
         .fork(&target_id, "at", &mut hooks, factory_ref(&mut factory))
         .unwrap();
     assert!(!outcome.cancelled);
@@ -336,7 +344,7 @@ fn fork_before_user_entry_returns_selected_text() {
     .unwrap();
 
     let mut hooks = RuntimeHooks::default();
-    let outcome = runtime
+    let (outcome, _runtime) = runtime
         .fork(&target_id, "before", &mut hooks, factory_ref(&mut factory))
         .unwrap();
     assert!(!outcome.cancelled);
@@ -365,6 +373,7 @@ fn fork_rejects_non_user_entry_before_position() {
     let mut hooks = RuntimeHooks::default();
     let error = runtime
         .fork(&target_id, "before", &mut hooks, factory_ref(&mut factory))
+        .map(|_| ())
         .unwrap_err();
     assert_eq!(error, "Invalid entry ID for forking");
 }
@@ -392,7 +401,7 @@ fn fork_cancelled_by_before_fork_hook() {
         before_fork: Some(&mut |_, _| true),
         ..Default::default()
     };
-    let outcome = runtime
+    let (outcome, _runtime) = runtime
         .fork(&target_id, "at", &mut hooks, factory_ref(&mut factory))
         .unwrap();
     assert!(outcome.cancelled);
@@ -424,6 +433,7 @@ fn import_missing_file_errors() {
             &mut hooks,
             factory_ref(&mut factory),
         )
+        .map(|_| ())
         .unwrap_err();
     assert!(error.starts_with("File not found: "), "{error}");
 }
@@ -462,7 +472,7 @@ fn import_copies_file_into_session_dir_and_resumes() {
     .unwrap();
 
     let mut hooks = RuntimeHooks::default();
-    let outcome = runtime
+    let (outcome, _runtime) = runtime
         .import_from_jsonl(
             &source_file.to_string_lossy(),
             Some(&source_cwd.to_string_lossy()),

@@ -18,11 +18,20 @@ use pillar_coding_agent::cli::main::{AppMode, resolve_app_mode};
 use pillar_coding_agent::core::agent_session_class::{
     AgentSession, ExtensionBindings, SessionEventMeta,
 };
+use pillar_coding_agent::core::agent_session_runtime::{
+    AgentSessionRuntime, CreateAgentSessionServicesOptions, RuntimeFactoryInput,
+    RuntimeFactoryResult, RuntimeHooks, create_agent_session_services,
+};
 use pillar_coding_agent::core::extensions_runner::ExtensionRunner;
 use pillar_coding_agent::core::model_runtime::{CreateModelRuntimeOptions, ModelRuntime};
+use pillar_coding_agent::core::resource_loader::ResourceLoader;
 use pillar_coding_agent::core::sdk::{CreateAgentSessionOptions, create_agent_session};
+use pillar_coding_agent::core::session_manager::SessionManager;
+use pillar_coding_agent::core::settings_manager::SettingsManager;
 use pillar_coding_agent::modes::print_mode::{PrintModeMode, PrintModeOptions, run_print_mode};
-use pillar_coding_agent::modes::rpc::rpc_mode::run_rpc_mode;
+use pillar_coding_agent::modes::rpc::rpc_mode::{
+    RpcRuntimeHost, SessionReplacement, run_rpc_mode_with_host,
+};
 
 use pillar_cli::runner::{ExtensionWiring, build_extension_runner};
 
@@ -125,21 +134,45 @@ fn prepare_initial_message(parsed: &Args, cwd: &str) -> Option<String> {
     }
 }
 
-/// Create the runtime (model runtime, Luau extension runner, session). The
-/// returned wiring must outlive the session (it owns the Luau runtime).
-async fn build_session(parsed: &Args) -> Result<(AgentSession, ExtensionWiring), String> {
-    let cwd = std::env::current_dir()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .to_string();
-    let agent_dir = agent_dir();
+/// Inputs for building a session: the initial bootstrap supplies defaults,
+/// a runtime replacement supplies the services and session manager produced
+/// by the replacement flow.
+struct SessionBuildInput {
+    cwd: String,
+    agent_dir: String,
+    session_manager: Option<SessionManager>,
+    settings_manager: Option<Arc<Mutex<SettingsManager>>>,
+    resource_loader: Option<Arc<Mutex<ResourceLoader>>>,
+    start_reason: String,
+    previous_session_file: Option<String>,
+}
 
-    let model_runtime = ModelRuntime::new(CreateModelRuntimeOptions {
-        auth_path: Some(PathBuf::from(&agent_dir).join("auth.json")),
-        models_path: Some(PathBuf::from(&agent_dir).join("models.json")),
+fn create_model_runtime(agent_dir: &str) -> Result<Arc<ModelRuntime>, String> {
+    let runtime = ModelRuntime::new(CreateModelRuntimeOptions {
+        auth_path: Some(PathBuf::from(agent_dir).join("auth.json")),
+        models_path: Some(PathBuf::from(agent_dir).join("models.json")),
         ..Default::default()
     })
     .map_err(|error| format!("failed to create model runtime: {error}"))?;
+    Ok(Arc::new(runtime))
+}
+
+/// Create the runtime (model runtime, Luau extension runner, session). The
+/// returned wiring must outlive the session (it owns the Luau runtime).
+async fn build_session_with(
+    parsed: &Args,
+    model_runtime: Arc<ModelRuntime>,
+    input: SessionBuildInput,
+) -> Result<(AgentSession, ExtensionWiring), String> {
+    let SessionBuildInput {
+        cwd,
+        agent_dir,
+        session_manager,
+        settings_manager,
+        resource_loader,
+        start_reason,
+        previous_session_file,
+    } = input;
 
     let global_extensions = PathBuf::from(&agent_dir).join("extensions");
     let project_extensions = PathBuf::from(&cwd).join(".pi").join("extensions");
@@ -158,10 +191,10 @@ async fn build_session(parsed: &Args) -> Result<(AgentSession, ExtensionWiring),
     let created = create_agent_session(CreateAgentSessionOptions {
         cwd: cwd.clone(),
         agent_dir: Some(agent_dir),
-        model_runtime: Arc::new(model_runtime),
-        settings_manager: None,
-        session_manager: None,
-        resource_loader: None,
+        model_runtime,
+        settings_manager,
+        session_manager,
+        resource_loader,
         model: None,
         thinking_level: parsed.thinking.clone(),
         scoped_models: Vec::new(),
@@ -171,8 +204,8 @@ async fn build_session(parsed: &Args) -> Result<(AgentSession, ExtensionWiring),
         custom_tools: Vec::new(),
         extension_runner,
         session_start_event: Some(SessionEventMeta {
-            reason: "startup".to_string(),
-            previous_session_file: None,
+            reason: start_reason,
+            previous_session_file,
         }),
         system_prompt_rebuild: None,
         extension_runner_rebuild: None,
@@ -183,6 +216,29 @@ async fn build_session(parsed: &Args) -> Result<(AgentSession, ExtensionWiring),
         eprintln!("Warning: {message}");
     }
     Ok((created.session, wiring))
+}
+
+async fn build_session(parsed: &Args) -> Result<(AgentSession, ExtensionWiring), String> {
+    let cwd = std::env::current_dir()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    let agent_dir = agent_dir();
+    let model_runtime = create_model_runtime(&agent_dir)?;
+    build_session_with(
+        parsed,
+        model_runtime,
+        SessionBuildInput {
+            cwd,
+            agent_dir,
+            session_manager: None,
+            settings_manager: None,
+            resource_loader: None,
+            start_reason: "startup".to_string(),
+            previous_session_file: None,
+        },
+    )
+    .await
 }
 
 async fn run_print(parsed: &Args, app_mode: AppMode) -> ExitCode {
@@ -228,13 +284,40 @@ async fn run_print(parsed: &Args, app_mode: AppMode) -> ExitCode {
 }
 
 async fn run_rpc(parsed: &Args) -> ExitCode {
-    let (session, _wiring) = match build_session(parsed).await {
+    let cwd = std::env::current_dir()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    let agent_dir = agent_dir();
+    let model_runtime = match create_model_runtime(&agent_dir) {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("Error: {error}");
+            return ExitCode::from(1);
+        }
+    };
+    let (session, _wiring) = match build_session_with(
+        parsed,
+        Arc::clone(&model_runtime),
+        SessionBuildInput {
+            cwd,
+            agent_dir,
+            session_manager: None,
+            settings_manager: None,
+            resource_loader: None,
+            start_reason: "startup".to_string(),
+            previous_session_file: None,
+        },
+    )
+    .await
+    {
         Ok(built) => built,
         Err(error) => {
             eprintln!("Error: {error}");
             return ExitCode::from(1);
         }
     };
+
     let session = Arc::new(session);
     session
         .bind_extensions(ExtensionBindings {
@@ -247,12 +330,223 @@ async fn run_rpc(parsed: &Args) -> ExitCode {
     let out: Arc<Mutex<Box<dyn std::io::Write + Send>>> =
         Arc::new(Mutex::new(Box::new(std::io::stdout())));
     let stdin = std::io::stdin();
-    match run_rpc_mode(session, stdin.lock(), out).await {
+    let host: Arc<dyn RpcRuntimeHost> = Arc::new(CliRuntimeHost {
+        parsed: parsed.clone(),
+        model_runtime,
+        current: Mutex::new(Some(Arc::clone(&session))),
+        wirings: Mutex::new(Vec::new()),
+    });
+    match run_rpc_mode_with_host(session, stdin.lock(), out, Some(host)).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("Error: {error}");
             ExitCode::from(1)
         }
+    }
+}
+
+/// Runtime host for `--mode rpc` (upstream `runtimeHost`): drives
+/// [`AgentSessionRuntime`] for session replacement and rebuilds a live
+/// session for the replacement's session manager.
+///
+/// divergence: the runtime is rebuilt from the current session file for
+/// every replacement (upstream keeps one runtime instance), so in-memory
+/// sessions cannot be replaced.
+struct CliRuntimeHost {
+    parsed: Args,
+    model_runtime: Arc<ModelRuntime>,
+    current: Mutex<Option<Arc<AgentSession>>>,
+    /// Keeps every replacement's Luau wiring alive for the process lifetime.
+    wirings: Mutex<Vec<ExtensionWiring>>,
+}
+
+impl CliRuntimeHost {
+    /// Open a runtime over the current session's file.
+    fn runtime_for_current(&self) -> Result<AgentSessionRuntime, String> {
+        let session = self
+            .current
+            .lock()
+            .expect("current session lock")
+            .clone()
+            .ok_or_else(|| "no current session".to_string())?;
+        let session_file = session
+            .session_manager()
+            .lock()
+            .expect("session lock")
+            .session_file()
+            .map(Path::to_path_buf);
+        let session_file = session_file
+            .ok_or_else(|| "session replacement requires a persisted session".to_string())?;
+        let agent_dir = agent_dir();
+        let session_manager = SessionManager::open(&session_file, None, None)?;
+        let mut factory = replacement_factory(&self.parsed, &agent_dir);
+        AgentSessionRuntime::create(
+            &mut factory,
+            session.cwd(),
+            &agent_dir,
+            session_manager,
+        )
+    }
+
+    /// Build the live session for a completed replacement flow.
+    async fn build_replacement(
+        &self,
+        runtime: AgentSessionRuntime,
+        start_reason: &str,
+        previous_session_file: Option<String>,
+    ) -> Result<Arc<AgentSession>, String> {
+        let (services, session_manager, _diagnostics) = runtime.into_parts();
+        let settings_manager = Arc::clone(&services.settings_manager);
+        let resource_loader = Arc::new(Mutex::new(services.resource_loader));
+        let (session, wiring) = build_session_with(
+            &self.parsed,
+            Arc::clone(&self.model_runtime),
+            SessionBuildInput {
+                cwd: services.cwd.to_string_lossy().to_string(),
+                agent_dir: services.agent_dir.to_string_lossy().to_string(),
+                session_manager: Some(session_manager),
+                settings_manager: Some(settings_manager),
+                resource_loader: Some(resource_loader),
+                start_reason: start_reason.to_string(),
+                previous_session_file,
+            },
+        )
+        .await?;
+        self.wirings.lock().expect("wirings lock").push(wiring);
+        let session = Arc::new(session);
+        *self.current.lock().expect("current session lock") = Some(Arc::clone(&session));
+        Ok(session)
+    }
+}
+
+/// The runtime factory: cwd-bound services for a replacement (the session
+/// manager itself comes from the replacement flow).
+fn replacement_factory<'a>(
+    parsed: &'a Args,
+    agent_dir: &'a str,
+) -> impl FnMut(RuntimeFactoryInput) -> Result<RuntimeFactoryResult, String> + 'a {
+    move |input: RuntimeFactoryInput| {
+        let services = create_agent_session_services(
+            &input.cwd,
+            CreateAgentSessionServicesOptions {
+                agent_dir: Some(agent_dir.to_string()),
+                additional_extension_paths: parsed.extensions.clone().unwrap_or_default(),
+                ..Default::default()
+            },
+        )?;
+        Ok(RuntimeFactoryResult {
+            services,
+            session_manager: input.session_manager,
+            session_start_reason: input.session_start_reason,
+            previous_session_file: input.previous_session_file,
+            diagnostics: Vec::new(),
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl RpcRuntimeHost for CliRuntimeHost {
+    async fn new_session(
+        &self,
+        parent_session: Option<&str>,
+    ) -> Result<(SessionReplacement, Option<Arc<AgentSession>>), String> {
+        let runtime = self.runtime_for_current()?;
+        let previous = runtime
+            .session_manager()
+            .session_file()
+            .map(|path| path.to_string_lossy().to_string());
+        let (outcome, runtime) = {
+            let mut hooks = RuntimeHooks::default();
+            let agent_dir = agent_dir();
+            let mut factory = replacement_factory(&self.parsed, &agent_dir);
+            runtime.new_session(parent_session, &mut hooks, &mut factory)?
+        };
+        if outcome.cancelled {
+            return Ok((
+                SessionReplacement {
+                    cancelled: true,
+                    selected_text: None,
+                },
+                None,
+            ));
+        }
+        let session = self.build_replacement(runtime, "new", previous).await?;
+        Ok((
+            SessionReplacement {
+                cancelled: false,
+                selected_text: None,
+            },
+            Some(session),
+        ))
+    }
+
+    async fn switch_session(
+        &self,
+        session_path: &str,
+    ) -> Result<(SessionReplacement, Option<Arc<AgentSession>>), String> {
+        let runtime = self.runtime_for_current()?;
+        let previous = runtime
+            .session_manager()
+            .session_file()
+            .map(|path| path.to_string_lossy().to_string());
+        let (outcome, runtime) = {
+            let mut hooks = RuntimeHooks::default();
+            let agent_dir = agent_dir();
+            let mut factory = replacement_factory(&self.parsed, &agent_dir);
+            runtime.switch_session(session_path, None, &mut hooks, &mut factory)?
+        };
+        if outcome.cancelled {
+            return Ok((
+                SessionReplacement {
+                    cancelled: true,
+                    selected_text: None,
+                },
+                None,
+            ));
+        }
+        let session = self.build_replacement(runtime, "resume", previous).await?;
+        Ok((
+            SessionReplacement {
+                cancelled: false,
+                selected_text: None,
+            },
+            Some(session),
+        ))
+    }
+
+    async fn fork(
+        &self,
+        entry_id: &str,
+        position: &str,
+    ) -> Result<(SessionReplacement, Option<Arc<AgentSession>>), String> {
+        let runtime = self.runtime_for_current()?;
+        let previous = runtime
+            .session_manager()
+            .session_file()
+            .map(|path| path.to_string_lossy().to_string());
+        let (outcome, runtime) = {
+            let mut hooks = RuntimeHooks::default();
+            let agent_dir = agent_dir();
+            let mut factory = replacement_factory(&self.parsed, &agent_dir);
+            runtime.fork(entry_id, position, &mut hooks, &mut factory)?
+        };
+        if outcome.cancelled {
+            return Ok((
+                SessionReplacement {
+                    cancelled: true,
+                    selected_text: outcome.selected_text,
+                },
+                None,
+            ));
+        }
+        let session = self.build_replacement(runtime, "fork", previous).await?;
+        Ok((
+            SessionReplacement {
+                cancelled: false,
+                selected_text: outcome.selected_text,
+            },
+            Some(session),
+        ))
     }
 }
 

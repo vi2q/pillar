@@ -11,6 +11,7 @@ name = "pillar"
 path = "src/main.rs"
 
 [dependencies]
+async-trait = "0.1"
 pillar-coding-agent = { path = "../pillar-coding-agent" }
 pillar-extensions = { path = "../pillar-extensions" }
 tokio = { version = "1.47", features = ["rt", "macros"] }

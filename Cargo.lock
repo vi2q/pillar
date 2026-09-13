@@ -999,6 +999,7 @@ dependencies = [
 name = "pillar-cli"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "pillar-coding-agent",
  "pillar-extensions",
  "tokio",
