@@ -2423,7 +2423,8 @@ async fn rpc_mode_dispatches_core_commands() {
         "export_html should reject in-memory sessions"
     );
 
-    // unsupported commands fail explicitly
+    // Session replacement needs a runtime host; without one the mode says so
+    // explicitly instead of failing silently.
     let response = mode
         .handle_command(command_envelope(
             json!({ "id": "25", "type": "fork", "entryId": "missing" }),
@@ -2434,13 +2435,176 @@ async fn rpc_mode_dispatches_core_commands() {
         response
             .error
             .unwrap_or_default()
-            .contains("not supported yet")
+            .contains("no runtime host configured"),
+        "fork without a host must report the missing host"
     );
 
     // events were written as JSON lines
     let written = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
     assert!(written.contains("\"type\":\"agent_start\""), "{written}");
     assert!(written.contains("\"type\":\"message_end\""), "{written}");
+}
+
+/// A host that always hands back one prepared session.
+struct FakeRuntimeHost {
+    session: Arc<AgentSession>,
+    calls: Mutex<Vec<String>>,
+}
+
+#[async_trait::async_trait]
+impl pillar_coding_agent::modes::rpc::rpc_mode::RpcRuntimeHost for FakeRuntimeHost {
+    async fn new_session(
+        &self,
+        parent_session: Option<&str>,
+    ) -> Result<
+        (
+            pillar_coding_agent::modes::rpc::rpc_mode::SessionReplacement,
+            Option<Arc<AgentSession>>,
+        ),
+        String,
+    > {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("new_session:{}", parent_session.unwrap_or("")));
+        Ok((Default::default(), Some(Arc::clone(&self.session))))
+    }
+
+    async fn switch_session(
+        &self,
+        session_path: &str,
+    ) -> Result<
+        (
+            pillar_coding_agent::modes::rpc::rpc_mode::SessionReplacement,
+            Option<Arc<AgentSession>>,
+        ),
+        String,
+    > {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("switch_session:{session_path}"));
+        Ok((Default::default(), Some(Arc::clone(&self.session))))
+    }
+
+    async fn fork(
+        &self,
+        entry_id: &str,
+        position: &str,
+    ) -> Result<
+        (
+            pillar_coding_agent::modes::rpc::rpc_mode::SessionReplacement,
+            Option<Arc<AgentSession>>,
+        ),
+        String,
+    > {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("fork:{entry_id}:{position}"));
+        Ok((
+            pillar_coding_agent::modes::rpc::rpc_mode::SessionReplacement {
+                cancelled: false,
+                selected_text: Some(format!("{entry_id}@{position}")),
+            },
+            Some(Arc::clone(&self.session)),
+        ))
+    }
+}
+
+#[tokio::test]
+async fn rpc_mode_session_replacement_rebinds_to_the_new_session() {
+    use pillar_coding_agent::modes::rpc::rpc_mode::{RpcMode, RpcRuntimeHost};
+    use serde_json::json;
+
+    let (session, _) = make_session(
+        threshold_compaction_stream(),
+        serde_json::json!({ "retry": { "enabled": false } }),
+    );
+    let (replacement, _) = make_session(
+        threshold_compaction_stream(),
+        serde_json::json!({ "retry": { "enabled": false } }),
+    );
+    // Give the replacement a leaf so `clone` has a position to fork at.
+    replacement
+        .set_session_name("replacement")
+        .expect("session name");
+    let host = Arc::new(FakeRuntimeHost {
+        session: Arc::clone(&replacement),
+        calls: Mutex::new(Vec::new()),
+    });
+
+    let buffer = Arc::new(Mutex::new(Vec::new()));
+    let out: Arc<Mutex<Box<dyn std::io::Write + Send>>> =
+        Arc::new(Mutex::new(Box::new(SharedBuf(Arc::clone(&buffer)))));
+    let mode = RpcMode::new_with_host(
+        Arc::clone(&session),
+        out,
+        Some(Arc::clone(&host) as Arc<dyn RpcRuntimeHost>),
+    );
+
+    // new_session swaps the bound session.
+    let response = mode
+        .handle_command(command_envelope(
+            json!({ "id": "1", "type": "new_session" }),
+        ))
+        .await;
+    assert!(response.success, "{response:?}");
+    assert_eq!(response.data.expect("data")["cancelled"], json!(false));
+
+    let response = mode
+        .handle_command(command_envelope(json!({ "id": "2", "type": "get_state" })))
+        .await;
+    assert_eq!(
+        response.data.expect("state")["sessionId"],
+        json!(replacement.session_id())
+    );
+
+    // switch_session / fork / clone drive the host and report upstream shapes.
+    let response = mode
+        .handle_command(command_envelope(
+            json!({ "id": "3", "type": "switch_session", "sessionPath": "/tmp/other.jsonl" }),
+        ))
+        .await;
+    assert!(response.success, "{response:?}");
+
+    let response = mode
+        .handle_command(command_envelope(
+            json!({ "id": "4", "type": "fork", "entryId": "entry-1" }),
+        ))
+        .await;
+    assert_eq!(
+        response.data.expect("fork data"),
+        json!({ "text": "entry-1@before", "cancelled": false })
+    );
+
+    let response = mode
+        .handle_command(command_envelope(json!({ "id": "5", "type": "clone" })))
+        .await;
+    assert!(response.success, "{response:?}");
+    assert_eq!(
+        response.data.expect("clone data")["cancelled"],
+        json!(false)
+    );
+
+    let calls = host.calls.lock().unwrap().clone();
+    assert_eq!(
+        calls,
+        vec![
+            "new_session:".to_string(),
+            "switch_session:/tmp/other.jsonl".to_string(),
+            "fork:entry-1:before".to_string(),
+            format!(
+                "fork:{}:at",
+                replacement
+                    .session_manager()
+                    .lock()
+                    .unwrap()
+                    .get_leaf_id()
+                    .unwrap()
+            ),
+        ]
+    );
 }
 
 fn command_envelope(

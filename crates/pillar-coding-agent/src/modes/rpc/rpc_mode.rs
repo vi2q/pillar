@@ -1,12 +1,9 @@
 //! Port of packages/coding-agent/src/modes/rpc/rpc-mode.ts (pi v0.84.3):
-//! headless JSON-lines RPC over stdin/stdout.
-//!
-//! divergence: the port covers the command subset whose session/model APIs
-//! exist today; session-tree commands (new_session/switch_session/fork/
-//! clone/get_entries/get_tree/get_fork_messages/export_html) and bash/cycle
-//! commands return a `success: false` response with "not supported yet".
-//! Extension UI requests are host-rendered (no UI bridge here), so
-//! `extension_ui_response` lines are accepted and ignored.
+//! headless JSON-lines RPC over stdin/stdout. Every `RpcCommand` is handled;
+//! session replacement (`new_session` / `switch_session` / `fork` / `clone`)
+//! needs a [`RpcRuntimeHost`] and reports an explicit error when the host
+//! configured none. Extension UI requests are host-rendered (no UI bridge
+//! here), so `extension_ui_response` lines are accepted and ignored.
 
 use std::io::{BufRead, Write};
 use std::path::Path;
@@ -14,7 +11,9 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 
-use crate::core::agent_session_class::{AgentSession, PromptOptions, StreamingBehavior};
+use crate::core::agent_session_class::{
+    AgentSession, ExtensionBindings, PromptOptions, StreamingBehavior,
+};
 use crate::core::messages::CodingAgentMessage;
 use crate::core::model_mutation::CycleDirection;
 use crate::core::session_entries::SessionEntry;
@@ -27,30 +26,116 @@ use crate::modes::rpc::rpc_types::{
     RpcCommand, RpcCommandEnvelope, RpcExtensionUiResponse, RpcResponse, RpcSessionState,
 };
 
-/// The RPC session host: the session plus the stdout sink.
+/// A replacement request outcome reported by the host (upstream
+/// `{ cancelled, selectedText? }`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SessionReplacement {
+    pub cancelled: bool,
+    pub selected_text: Option<String>,
+}
+
+/// The runtime host the RPC mode drives for session replacement (upstream
+/// `runtimeHost`): `newSession` / `switchSession` / `fork` / `dispose`.
+///
+/// The host owns session construction and teardown; the mode only swaps the
+/// session it is bound to and re-subscribes its event sink. Returning `Ok`
+/// with no session means the host produced nothing (treat like cancelled).
+#[async_trait::async_trait]
+pub trait RpcRuntimeHost: Send + Sync {
+    /// Start a new session (upstream `newSession`).
+    async fn new_session(
+        &self,
+        parent_session: Option<&str>,
+    ) -> Result<(SessionReplacement, Option<Arc<AgentSession>>), String>;
+
+    /// Switch to an existing session file (upstream `switchSession`).
+    async fn switch_session(
+        &self,
+        session_path: &str,
+    ) -> Result<(SessionReplacement, Option<Arc<AgentSession>>), String>;
+
+    /// Fork from an entry (upstream `fork`). `position` is `"before"` or
+    /// `"at"` (clone).
+    async fn fork(
+        &self,
+        entry_id: &str,
+        position: &str,
+    ) -> Result<(SessionReplacement, Option<Arc<AgentSession>>), String>;
+}
+
+/// The RPC session host: the current session plus the stdout sink.
 pub struct RpcMode {
-    session: Arc<AgentSession>,
+    session: Mutex<Arc<AgentSession>>,
     out: Arc<Mutex<Box<dyn Write + Send>>>,
     unsubscribe: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    host: Option<Arc<dyn RpcRuntimeHost>>,
 }
 
 impl RpcMode {
     /// Create the mode and subscribe to session events (written as JSON
     /// lines, upstream `session.subscribe` in `runRpcMode`).
     pub fn new(session: Arc<AgentSession>, out: Arc<Mutex<Box<dyn Write + Send>>>) -> Self {
-        let sink = Arc::clone(&out);
-        let unsubscribe = session.subscribe(Arc::new(move |event| {
+        Self::new_with_host(session, out, None)
+    }
+
+    /// Create the mode with a runtime host able to replace the session.
+    pub fn new_with_host(
+        session: Arc<AgentSession>,
+        out: Arc<Mutex<Box<dyn Write + Send>>>,
+        host: Option<Arc<dyn RpcRuntimeHost>>,
+    ) -> Self {
+        let mode = Self {
+            session: Mutex::new(Arc::clone(&session)),
+            out,
+            unsubscribe: Mutex::new(None),
+            host,
+        };
+        mode.subscribe_session(&session);
+        mode
+    }
+
+    /// The session commands currently run against.
+    fn current_session(&self) -> Arc<AgentSession> {
+        Arc::clone(&self.session.lock().expect("session lock"))
+    }
+
+    /// The event sink written as JSON lines for every session event.
+    fn event_listener(&self) -> crate::core::agent_session_class::AgentSessionEventListener {
+        let sink = Arc::clone(&self.out);
+        Arc::new(move |event| {
             if let Ok(value) = to_json_event(event) {
                 if let Ok(mut writer) = sink.lock() {
                     let _ = writeln!(writer, "{value}");
                 }
             }
-        }));
-        Self {
-            session,
-            out,
-            unsubscribe: Mutex::new(Some(unsubscribe)),
+        })
+    }
+
+    fn subscribe_session(&self, session: &Arc<AgentSession>) {
+        let unsubscribe = session.subscribe(self.event_listener());
+        let previous = self
+            .unsubscribe
+            .lock()
+            .expect("unsubscribe lock")
+            .replace(unsubscribe);
+        if let Some(previous) = previous {
+            previous();
         }
+    }
+
+    /// Bind to a replacement session (upstream `rebindSession`): drop the
+    /// old listeners, follow the new session's events, and re-bind the
+    /// extension UI mode.
+    async fn rebind_session(&self, session: Arc<AgentSession>) {
+        self.subscribe_session(&session);
+        *self.session.lock().expect("session lock") = Arc::clone(&session);
+        session
+            .bind_extensions(ExtensionBindings {
+                ui_context: Some(false),
+                mode: Some("rpc".to_string()),
+                on_error: None,
+            })
+            .await;
     }
 
     /// Write one response line (upstream `writeResponse`).
@@ -65,6 +150,7 @@ impl RpcMode {
     /// Dispatch one command and return its response (upstream the command
     /// switch in `runRpcMode`).
     pub async fn handle_command(&self, envelope: RpcCommandEnvelope) -> RpcResponse {
+        let session = self.current_session();
         let id = envelope.id.clone();
         let command = command_name(&envelope.command);
         match envelope.command {
@@ -74,8 +160,7 @@ impl RpcMode {
                 ..
             } => {
                 let behavior = streaming_behavior.as_deref().and_then(parse_behavior);
-                match self
-                    .session
+                match session
                     .prompt(
                         &message,
                         Some(&PromptOptions {
@@ -89,22 +174,20 @@ impl RpcMode {
                     Err(error) => RpcResponse::failure(id, command, error),
                 }
             }
-            RpcCommand::Steer { message, .. } => match self.session.steer(&message, None).await {
+            RpcCommand::Steer { message, .. } => match session.steer(&message, None).await {
                 Ok(()) => RpcResponse::success(id, command, None),
                 Err(error) => RpcResponse::failure(id, command, error),
             },
-            RpcCommand::FollowUp { message, .. } => {
-                match self.session.follow_up(&message, None).await {
-                    Ok(()) => RpcResponse::success(id, command, None),
-                    Err(error) => RpcResponse::failure(id, command, error),
-                }
-            }
+            RpcCommand::FollowUp { message, .. } => match session.follow_up(&message, None).await {
+                Ok(()) => RpcResponse::success(id, command, None),
+                Err(error) => RpcResponse::failure(id, command, error),
+            },
             RpcCommand::Abort => {
-                self.session.abort().await;
+                session.abort().await;
                 RpcResponse::success(id, command, None)
             }
             RpcCommand::ClearQueue => {
-                let (steering, follow_up) = self.session.clear_queue();
+                let (steering, follow_up) = session.clear_queue();
                 RpcResponse::success(
                     id,
                     command,
@@ -113,8 +196,8 @@ impl RpcMode {
             }
             RpcCommand::GetState => RpcResponse::success(id, command, Some(self.session_state())),
             RpcCommand::SetModel { provider, model_id } => {
-                match self.session.model_runtime().get_model(&provider, &model_id) {
-                    Some(model) => match self.session.set_model(model.clone(), false).await {
+                match session.model_runtime().get_model(&provider, &model_id) {
+                    Some(model) => match session.set_model(model.clone(), false).await {
                         Ok(()) => RpcResponse::success(
                             id,
                             command,
@@ -130,8 +213,7 @@ impl RpcMode {
                 }
             }
             RpcCommand::GetAvailableModels => {
-                let models: Vec<Value> = self
-                    .session
+                let models: Vec<Value> = session
                     .model_runtime()
                     .get_available_snapshot()
                     .iter()
@@ -140,16 +222,15 @@ impl RpcMode {
                 RpcResponse::success(id, command, Some(json!({ "models": models })))
             }
             RpcCommand::SetThinkingLevel { level } => {
-                self.session.set_thinking_level(&level, false);
+                session.set_thinking_level(&level, false);
                 RpcResponse::success(id, command, None)
             }
             RpcCommand::GetAvailableThinkingLevels => RpcResponse::success(
                 id,
                 command,
-                Some(json!({ "levels": self.session.available_thinking_levels() })),
+                Some(json!({ "levels": session.available_thinking_levels() })),
             ),
-            RpcCommand::CycleModel => match self.session.cycle_model(CycleDirection::Forward).await
-            {
+            RpcCommand::CycleModel => match session.cycle_model(CycleDirection::Forward).await {
                 Ok(Some(outcome)) => RpcResponse::success(
                     id,
                     command,
@@ -162,35 +243,35 @@ impl RpcMode {
                 Ok(None) => RpcResponse::success(id, command, Some(Value::Null)),
                 Err(error) => RpcResponse::failure(id, command, error),
             },
-            RpcCommand::CycleThinkingLevel => match self.session.cycle_thinking_level() {
+            RpcCommand::CycleThinkingLevel => match session.cycle_thinking_level() {
                 Some(level) => RpcResponse::success(id, command, Some(json!({ "level": level }))),
                 None => RpcResponse::success(id, command, Some(Value::Null)),
             },
             RpcCommand::SetSteeringMode { mode } => {
-                self.session.set_steering_mode(parse_queue_mode(&mode));
+                session.set_steering_mode(parse_queue_mode(&mode));
                 self.sync_queue_modes();
                 RpcResponse::success(id, command, None)
             }
             RpcCommand::SetFollowUpMode { mode } => {
-                self.session.set_follow_up_mode(parse_queue_mode(&mode));
+                session.set_follow_up_mode(parse_queue_mode(&mode));
                 self.sync_queue_modes();
                 RpcResponse::success(id, command, None)
             }
             RpcCommand::SetAutoCompaction { enabled } => {
-                self.session.set_auto_compaction_enabled(enabled);
+                session.set_auto_compaction_enabled(enabled);
                 RpcResponse::success(id, command, None)
             }
             RpcCommand::SetAutoRetry { enabled } => {
-                self.session.set_auto_retry_enabled(enabled);
+                session.set_auto_retry_enabled(enabled);
                 RpcResponse::success(id, command, None)
             }
             RpcCommand::AbortRetry => {
-                self.session.abort_retry();
+                session.abort_retry();
                 RpcResponse::success(id, command, None)
             }
             RpcCommand::Compact {
                 custom_instructions,
-            } => match self.session.compact(custom_instructions.as_deref()).await {
+            } => match session.compact(custom_instructions.as_deref()).await {
                 Ok(result) => {
                     RpcResponse::success(id, command, Some(compaction_result_to_json(&result)))
                 }
@@ -205,22 +286,20 @@ impl RpcMode {
                     "type": "user_bash",
                     "command": bash_command,
                     "excludeFromContext": exclude,
-                    "cwd": self.session.cwd(),
+                    "cwd": session.cwd(),
                 });
                 // Extensions may handle the command themselves.
-                let event_result = self.session.emit_user_bash(&event);
+                let event_result = session.emit_user_bash(&event);
                 if let Some(result) = event_result.as_ref().and_then(|value| value.get("result")) {
                     let bash_result = bash_result_from_json(result);
-                    self.session
-                        .record_bash_result(&bash_command, &bash_result, exclude);
+                    session.record_bash_result(&bash_command, &bash_result, exclude);
                     return RpcResponse::success(
                         id,
                         command,
                         Some(bash_result_to_json(&bash_result)),
                     );
                 }
-                match self
-                    .session
+                match session
                     .execute_bash(&bash_command, exclude, id.as_deref())
                     .await
                 {
@@ -231,16 +310,79 @@ impl RpcMode {
                 }
             }
             RpcCommand::AbortBash => {
-                self.session.abort_bash();
+                session.abort_bash();
                 RpcResponse::success(id, command, None)
+            }
+            RpcCommand::NewSession { parent_session } => {
+                let Some(host) = self.host.clone() else {
+                    return RpcResponse::failure(
+                        id,
+                        command,
+                        "new_session: no runtime host configured",
+                    );
+                };
+                match host.new_session(parent_session.as_deref()).await {
+                    Ok((outcome, replacement)) => {
+                        if let Some(replacement) = replacement {
+                            self.rebind_session(replacement).await;
+                        }
+                        RpcResponse::success(
+                            id,
+                            command,
+                            Some(json!({ "cancelled": outcome.cancelled })),
+                        )
+                    }
+                    Err(error) => RpcResponse::failure(id, command, error),
+                }
+            }
+            RpcCommand::SwitchSession { session_path } => {
+                let Some(host) = self.host.clone() else {
+                    return RpcResponse::failure(
+                        id,
+                        command,
+                        "switch_session: no runtime host configured",
+                    );
+                };
+                match host.switch_session(&session_path).await {
+                    Ok((outcome, replacement)) => {
+                        if let Some(replacement) = replacement {
+                            self.rebind_session(replacement).await;
+                        }
+                        RpcResponse::success(
+                            id,
+                            command,
+                            Some(json!({ "cancelled": outcome.cancelled })),
+                        )
+                    }
+                    Err(error) => RpcResponse::failure(id, command, error),
+                }
+            }
+            RpcCommand::Fork { entry_id } => {
+                self.fork_response(id, command, &entry_id, "before", false)
+                    .await
+            }
+            RpcCommand::Clone => {
+                let leaf_id = session
+                    .session_manager()
+                    .lock()
+                    .expect("session lock")
+                    .get_leaf_id()
+                    .map(str::to_string);
+                let Some(leaf_id) = leaf_id else {
+                    return RpcResponse::failure(
+                        id,
+                        command,
+                        "Cannot clone session: no current entry selected",
+                    );
+                };
+                self.fork_response(id, command, &leaf_id, "at", true).await
             }
             RpcCommand::GetSessionStats => {
                 RpcResponse::success(id, command, Some(self.session_stats()))
             }
             RpcCommand::GetEntries { since } => {
                 let (entries, leaf_id) = {
-                    let session_manager =
-                        self.session.session_manager().lock().expect("session lock");
+                    let session_manager = session.session_manager().lock().expect("session lock");
                     (
                         session_manager.get_entries_owned(),
                         session_manager.get_leaf_id().map(str::to_string),
@@ -271,8 +413,7 @@ impl RpcMode {
             }
             RpcCommand::GetTree => {
                 let (tree, leaf_id) = {
-                    let session_manager =
-                        self.session.session_manager().lock().expect("session lock");
+                    let session_manager = session.session_manager().lock().expect("session lock");
                     (
                         session_manager.get_tree(),
                         session_manager.get_leaf_id().map(str::to_string),
@@ -291,21 +432,20 @@ impl RpcMode {
             RpcCommand::GetLastAssistantText => RpcResponse::success(
                 id,
                 command,
-                Some(json!({ "text": self.session.last_assistant_text() })),
+                Some(json!({ "text": session.last_assistant_text() })),
             ),
             RpcCommand::SetSessionName { name } => {
                 let name = name.trim();
                 if name.is_empty() {
                     return RpcResponse::failure(id, command, "Session name cannot be empty");
                 }
-                match self.session.set_session_name(name) {
+                match session.set_session_name(name) {
                     Ok(()) => RpcResponse::success(id, command, None),
                     Err(error) => RpcResponse::failure(id, command, error),
                 }
             }
             RpcCommand::GetForkMessages => {
-                let messages: Vec<Value> = self
-                    .session
+                let messages: Vec<Value> = session
                     .user_messages_for_forking()
                     .into_iter()
                     .map(|(entry_id, text)| json!({ "entryId": entry_id, "text": text }))
@@ -315,7 +455,7 @@ impl RpcMode {
             RpcCommand::GetCommands => RpcResponse::success(id, command, Some(self.commands())),
             RpcCommand::ExportHtml { output_path } => {
                 let resolved = output_path.as_ref().map(Path::new);
-                match self.session.export_to_html(resolved) {
+                match session.export_to_html(resolved) {
                     Ok(path) => RpcResponse::success(
                         id,
                         command,
@@ -325,8 +465,7 @@ impl RpcMode {
                 }
             }
             RpcCommand::GetMessages => {
-                let messages: Vec<Value> = self
-                    .session
+                let messages: Vec<Value> = session
                     .state()
                     .messages
                     .iter()
@@ -334,16 +473,48 @@ impl RpcMode {
                     .collect();
                 RpcResponse::success(id, command, Some(json!({ "messages": messages })))
             }
-            unsupported => RpcResponse::failure(
-                id,
-                command,
-                format!("{}: not supported yet", command_name(&unsupported)),
-            ),
         }
     }
 
     fn sync_queue_modes(&self) {
-        self.session.sync_queue_modes_from_settings();
+        let session = self.current_session();
+        session.sync_queue_modes_from_settings();
+    }
+
+    /// Drive a fork/clone through the host and shape the response
+    /// (upstream the `fork` / `clone` arms).
+    async fn fork_response(
+        &self,
+        id: Option<String>,
+        command: String,
+        entry_id: &str,
+        position: &str,
+        clone: bool,
+    ) -> RpcResponse {
+        let Some(host) = self.host.clone() else {
+            return RpcResponse::failure(
+                id,
+                command,
+                format!(
+                    "{}: no runtime host configured",
+                    if clone { "clone" } else { "fork" }
+                ),
+            );
+        };
+        match host.fork(entry_id, position).await {
+            Ok((outcome, replacement)) => {
+                if let Some(replacement) = replacement {
+                    self.rebind_session(replacement).await;
+                }
+                let data = if clone {
+                    json!({ "cancelled": outcome.cancelled })
+                } else {
+                    json!({ "text": outcome.selected_text, "cancelled": outcome.cancelled })
+                };
+                RpcResponse::success(id, command, Some(data))
+            }
+            Err(error) => RpcResponse::failure(id, command, error),
+        }
     }
 
     /// Upstream `get_commands`: extension commands, prompt templates, and
@@ -353,8 +524,9 @@ impl RpcMode {
     /// from the extension command's source path (the port's
     /// `RegisteredCommand` does not record the loader metadata).
     fn commands(&self) -> Value {
+        let session = self.current_session();
         let mut commands: Vec<Value> = Vec::new();
-        for command in self.session.registered_commands() {
+        for command in session.registered_commands() {
             let source_info = create_synthetic_source_info(
                 &command.source_path,
                 SyntheticSourceOptions {
@@ -371,7 +543,7 @@ impl RpcMode {
                 "sourceInfo": source_info_to_json(&source_info),
             }));
         }
-        for template in self.session.prompt_templates() {
+        for template in session.prompt_templates() {
             commands.push(json!({
                 "name": template.name,
                 "description": template.description,
@@ -379,7 +551,7 @@ impl RpcMode {
                 "sourceInfo": source_info_to_json(&template.source_info),
             }));
         }
-        for skill in self.session.skills() {
+        for skill in session.skills() {
             commands.push(json!({
                 "name": format!("skill:{}", skill.name),
                 "description": skill.description,
@@ -396,8 +568,9 @@ impl RpcMode {
     /// divergence: `contextUsage` is omitted (the port has no
     /// `getContextUsage` equivalent yet).
     fn session_stats(&self) -> Value {
+        let session = self.current_session();
         let (session_file, session_id, entries) = {
-            let session_manager = self.session.session_manager().lock().expect("session lock");
+            let session_manager = session.session_manager().lock().expect("session lock");
             (
                 session_manager
                     .session_file()
@@ -477,12 +650,9 @@ impl RpcMode {
     }
 
     fn session_state(&self) -> Value {
+        let session = self.current_session();
         let (steering_mode, follow_up_mode) = {
-            let settings = self
-                .session
-                .settings_manager()
-                .lock()
-                .expect("settings lock");
+            let settings = session.settings_manager().lock().expect("settings lock");
             (
                 settings.steering_mode().to_string(),
                 settings.follow_up_mode().to_string(),
@@ -492,7 +662,7 @@ impl RpcMode {
         // session manager itself, so holding the guard across it would
         // deadlock.
         let (session_file, session_name) = {
-            let session_manager = self.session.session_manager().lock().expect("session lock");
+            let session_manager = session.session_manager().lock().expect("session lock");
             (
                 session_manager
                     .session_file()
@@ -501,21 +671,20 @@ impl RpcMode {
             )
         };
         let state = RpcSessionState {
-            model: self
-                .session
+            model: session
                 .model()
                 .map(|model| serde_json::to_value(model.to_model()).unwrap_or(Value::Null)),
-            thinking_level: self.session.thinking_level(),
-            is_streaming: self.session.is_streaming(),
-            is_compacting: self.session.is_compacting(),
+            thinking_level: session.thinking_level(),
+            is_streaming: session.is_streaming(),
+            is_compacting: session.is_compacting(),
             steering_mode,
             follow_up_mode,
             session_file,
-            session_id: self.session.session_id(),
+            session_id: session.session_id(),
             session_name,
-            auto_compaction_enabled: self.session.auto_compaction_enabled(),
-            message_count: self.session.state().messages.len() as u64,
-            pending_message_count: self.session.pending_message_count() as u64,
+            auto_compaction_enabled: session.auto_compaction_enabled(),
+            message_count: session.state().messages.len() as u64,
+            pending_message_count: session.pending_message_count() as u64,
         };
         serde_json::to_value(state).unwrap_or(Value::Null)
     }
@@ -536,7 +705,18 @@ pub async fn run_rpc_mode(
     input: impl BufRead,
     out: Arc<Mutex<Box<dyn Write + Send>>>,
 ) -> Result<(), String> {
-    let mode = RpcMode::new(session, out);
+    run_rpc_mode_with_host(session, input, out, None).await
+}
+
+/// Read JSON-lines commands and dispatch them until the input ends
+/// (upstream `runRpcMode`), with a runtime host for session replacement.
+pub async fn run_rpc_mode_with_host(
+    session: Arc<AgentSession>,
+    input: impl BufRead,
+    out: Arc<Mutex<Box<dyn Write + Send>>>,
+    host: Option<Arc<dyn RpcRuntimeHost>>,
+) -> Result<(), String> {
+    let mode = RpcMode::new_with_host(session, out, host);
     for line in input.lines() {
         let line = line.map_err(|error| error.to_string())?;
         let trimmed = line.trim();
