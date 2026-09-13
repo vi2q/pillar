@@ -10,11 +10,12 @@
 //! - the platform decision tree is driven through an injectable
 //!   [`ClipboardRunner`] plus explicit platform/env inputs, so it can be
 //!   tested without touching a real clipboard.
-//! - `isWaylandSession` lives in `clipboard-image.ts` upstream; it is defined
-//!   here until that module lands.
 
 use std::collections::BTreeMap;
 use std::io::Write;
+
+// upstream `clipboard.ts` imports `isWaylandSession` from `clipboard-image.ts`
+pub use crate::utils::clipboard_image::is_wayland_session;
 
 /// Largest accepted base64-encoded OSC 52 payload (upstream
 /// `MAX_OSC52_ENCODED_LENGTH`).
@@ -75,11 +76,6 @@ impl ClipboardEnv {
 /// the terminal clipboard is unreachable, so OSC 52 is preferred.
 pub fn is_remote_session(env: &ClipboardEnv) -> bool {
     env.has("SSH_CONNECTION") || env.has("SSH_CLIENT") || env.has("MOSH_CONNECTION")
-}
-
-/// Whether the session is a Wayland session (upstream `isWaylandSession`).
-pub fn is_wayland_session(env: &ClipboardEnv) -> bool {
-    env.has("WAYLAND_DISPLAY") || env.get("XDG_SESSION_TYPE") == Some("wayland")
 }
 
 /// The OSC 52 escape sequence for `text`, or `None` when the encoded payload
