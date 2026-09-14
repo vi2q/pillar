@@ -79,7 +79,7 @@ fn spacer_renders_empty_lines() {
 #[test]
 fn box_applies_padding_and_background() {
     let mut base = BoxComponent::new(1, 0);
-    base.add_child(Box::new(|_width| vec!["hello".to_string()]));
+    base.add_child(Box::new(Text::new("hello", 0, 0)));
     base.set_bg_fn(Some(Box::new(|t| format!("<{t}>"))));
     let lines = base.render(11);
     assert_eq!(lines, vec!["< hello     >"]);
@@ -88,7 +88,7 @@ fn box_applies_padding_and_background() {
 #[test]
 fn box_top_bottom_padding_and_children() {
     let mut base = BoxComponent::new(1, 1);
-    base.add_child(Box::new(|_width| vec!["content".to_string()]));
+    base.add_child(Box::new(Text::new("content", 0, 0)));
     let lines = base.render(12);
     // paddingY(1) top + content + paddingY(1) bottom; width 12 with
     // paddingX 1 → content width 10, " content  " + pad.
@@ -101,7 +101,7 @@ fn box_top_bottom_padding_and_children() {
 #[test]
 fn box_clear_removes_children() {
     let mut base = BoxComponent::new(1, 0);
-    base.add_child(Box::new(|_width| vec!["x".to_string()]));
+    base.add_child(Box::new(Text::new("x", 0, 0)));
     base.clear();
     assert!(base.render(10).is_empty());
 }
@@ -109,7 +109,7 @@ fn box_clear_removes_children() {
 #[test]
 fn box_cache_tracks_bg_changes_by_sampling() {
     let mut base = BoxComponent::new(1, 0);
-    base.add_child(Box::new(|_width| vec!["x".to_string()]));
+    base.add_child(Box::new(Text::new("x", 0, 0)));
     base.set_bg_fn(Some(Box::new(|t| format!("A{t}A"))));
     let first = base.render(5);
     assert_eq!(first, vec!["A x   A"]);

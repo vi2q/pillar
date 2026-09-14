@@ -493,3 +493,28 @@ pub fn dispatch_input_keybinding(input: &mut Input, data: &str) -> bool {
     }
     false
 }
+
+
+impl crate::tui::Component for Input {
+    fn render(&mut self, width: usize) -> Vec<String> {
+        Input::render(self, width)
+    }
+
+    fn as_focusable(&mut self) -> Option<&mut dyn crate::tui::Focusable> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+}
+
+impl crate::tui::Focusable for Input {
+    fn set_focused(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+
+    fn is_focused(&self) -> bool {
+        self.focused
+    }
+}

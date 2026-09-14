@@ -76,6 +76,16 @@ impl Loader {
         self.update_display();
     }
 
+    /// The raw message (upstream the inherited Text content).
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    /// The composed, styled display text.
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
     pub fn set_indicator(&mut self, indicator: Option<LoaderIndicatorOptions>) {
         self.render_indicator_verbatim = indicator.is_some();
         if let Some(indicator) = indicator {
@@ -568,4 +578,21 @@ pub fn render_text(text: &str, margin_x: usize, margin_y: usize, width: usize) -
 #[allow(dead_code)]
 fn _unused_visible_width(s: &str) -> usize {
     visible_width(s)
+}
+
+
+// ============================================================================
+// Component impls (upstream Loader/CancellableLoader extend Text)
+// ============================================================================
+
+impl crate::tui::Component for Loader {
+    fn render(&mut self, width: usize) -> Vec<String> {
+        Loader::render(self, width)
+    }
+}
+
+impl crate::tui::Component for CancellableLoader {
+    fn render(&mut self, width: usize) -> Vec<String> {
+        Loader::render(self, width)
+    }
 }

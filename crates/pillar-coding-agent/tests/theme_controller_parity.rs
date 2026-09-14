@@ -10,14 +10,12 @@ use std::sync::{Arc, Mutex};
 
 use pillar_coding_agent::core::settings_manager::SettingsManager;
 use pillar_coding_agent::modes::interactive::theme::controller::{
-    InteractiveThemeController, InteractiveThemeControllerOptions, ThemeControllerHost,
-    ThemeResult,
+    InteractiveThemeController, InteractiveThemeControllerOptions, ThemeControllerHost, ThemeResult,
 };
 use pillar_coding_agent::modes::interactive::theme::{
-    ColorMode, TerminalAutoThemeDetector, TerminalBackgroundThemeDetector,
-    TerminalTheme, TerminalThemeConfidence, TerminalThemeDetection, TerminalThemeSource,
-    create_theme, detect_terminal_background_theme, detect_terminal_theme_for_auto,
-    get_theme_by_name, theme,
+    ColorMode, TerminalAutoThemeDetector, TerminalBackgroundThemeDetector, TerminalTheme,
+    TerminalThemeConfidence, TerminalThemeDetection, TerminalThemeSource, create_theme,
+    detect_terminal_background_theme, detect_terminal_theme_for_auto, get_theme_by_name, theme,
 };
 use pillar_tui::terminal_colors::{RgbColor, TerminalColorScheme};
 
@@ -41,14 +39,20 @@ struct FakeDetector {
 }
 
 impl TerminalBackgroundThemeDetector for FakeDetector {
-    fn query_terminal_background_color(&mut self, _timeout: std::time::Duration) -> Option<RgbColor> {
+    fn query_terminal_background_color(
+        &mut self,
+        _timeout: std::time::Duration,
+    ) -> Option<RgbColor> {
         self.in_flight.borrow_mut().push("background");
         self.background
     }
 }
 
 impl TerminalAutoThemeDetector for FakeDetector {
-    fn query_terminal_color_scheme(&mut self, _timeout: std::time::Duration) -> Option<TerminalTheme> {
+    fn query_terminal_color_scheme(
+        &mut self,
+        _timeout: std::time::Duration,
+    ) -> Option<TerminalTheme> {
         self.in_flight.borrow_mut().push("scheme");
         self.scheme
     }
@@ -59,11 +63,7 @@ impl TerminalAutoThemeDetector for FakeDetector {
 #[test]
 fn background_detection_prefers_the_osc11_reply() {
     let mut dark_reply = FakeDetector {
-        background: Some(RgbColor {
-            r: 0,
-            g: 0,
-            b: 0,
-        }),
+        background: Some(RgbColor { r: 0, g: 0, b: 0 }),
         ..Default::default()
     };
     let detection = detect_terminal_background_theme(&mut dark_reply, 100, None);
@@ -105,11 +105,7 @@ fn background_detection_falls_back_to_the_environment() {
 #[test]
 fn auto_detection_asks_the_color_scheme_first() {
     let mut host = FakeDetector {
-        background: Some(RgbColor {
-            r: 0,
-            g: 0,
-            b: 0,
-        }),
+        background: Some(RgbColor { r: 0, g: 0, b: 0 }),
         scheme: Some(TerminalTheme::Light),
         ..Default::default()
     };
@@ -160,13 +156,19 @@ struct FakeHost {
 }
 
 impl TerminalBackgroundThemeDetector for FakeHost {
-    fn query_terminal_background_color(&mut self, timeout: std::time::Duration) -> Option<RgbColor> {
+    fn query_terminal_background_color(
+        &mut self,
+        timeout: std::time::Duration,
+    ) -> Option<RgbColor> {
         self.detector.query_terminal_background_color(timeout)
     }
 }
 
 impl TerminalAutoThemeDetector for FakeHost {
-    fn query_terminal_color_scheme(&mut self, timeout: std::time::Duration) -> Option<TerminalTheme> {
+    fn query_terminal_color_scheme(
+        &mut self,
+        timeout: std::time::Duration,
+    ) -> Option<TerminalTheme> {
         self.detector.query_terminal_color_scheme(timeout)
     }
 }
@@ -301,7 +303,10 @@ fn controller_prefers_the_terminal_background_when_no_setting_exists() {
 
     // A high-confidence detection is persisted to the settings.
     assert_eq!(theme().name(), Some("light"));
-    assert_eq!(settings.lock().unwrap().theme_setting().as_deref(), Some("light"));
+    assert_eq!(
+        settings.lock().unwrap().theme_setting().as_deref(),
+        Some("light")
+    );
     assert!(!controller.auto_sync_enabled());
 }
 
@@ -316,7 +321,9 @@ fn controller_falls_back_to_dark_and_reports_failures() {
         &mut host,
         Arc::clone(&settings),
         InteractiveThemeControllerOptions {
-            show_error: Box::new(move |message: &str| sink.lock().unwrap().push(message.to_string())),
+            show_error: Box::new(move |message: &str| {
+                sink.lock().unwrap().push(message.to_string())
+            }),
             on_changed: Box::new(|| {}),
             initial_theme_setting: None,
         },
@@ -324,12 +331,21 @@ fn controller_falls_back_to_dark_and_reports_failures() {
 
     let result: ThemeResult = controller.set_theme_name(&mut host, "does-not-exist", true);
     assert!(!result.success);
-    assert!(result.error.as_deref().unwrap_or("").starts_with("Theme not found:"));
+    assert!(
+        result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .starts_with("Theme not found:")
+    );
     assert_eq!(theme().name(), Some("dark"), "fell back to dark");
     assert_eq!(controller.get_theme_selection().as_deref(), Some("dark"));
     let errors = errors.lock().unwrap();
     assert_eq!(errors.len(), 1);
-    assert!(errors[0].contains("Failed to load theme \"does-not-exist\""), "{errors:?}");
+    assert!(
+        errors[0].contains("Failed to load theme \"does-not-exist\""),
+        "{errors:?}"
+    );
     assert!(errors[0].contains("Fell back to dark theme."), "{errors:?}");
 
     // A successful switch records the new name as the choice.
@@ -367,7 +383,10 @@ fn controller_installs_an_in_memory_theme_and_disables_auto_sync() {
     assert_eq!(host.notifications, vec![true, false]);
     // `getThemeSelection` still reports the remembered setting; the active
     // theme is the installed instance.
-    assert_eq!(controller.get_theme_selection().as_deref(), Some("light/dark"));
+    assert_eq!(
+        controller.get_theme_selection().as_deref(),
+        Some("light/dark")
+    );
     assert_eq!(
         pillar_coding_agent::modes::interactive::theme::current_theme_name().as_deref(),
         Some("<in-memory>")
@@ -391,7 +410,10 @@ fn controller_ignores_scheme_reports_while_auto_sync_is_off() {
 
     host.report_scheme(TerminalColorScheme::Light);
     controller.pump(&mut host);
-    assert_eq!(theme().name(), Some(get_theme_by_name("dark").unwrap().name().unwrap()));
+    assert_eq!(
+        theme().name(),
+        Some(get_theme_by_name("dark").unwrap().name().unwrap())
+    );
     assert_eq!(controller.get_terminal_theme(), TerminalTheme::Dark);
 
     // Disabling auto-sync stops applying reports.

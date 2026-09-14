@@ -17,10 +17,10 @@ use std::sync::LazyLock;
 use std::time::Duration;
 
 use pillar_tui::editor::EditorTheme;
-use pillar_tui::terminal_colors::{RgbColor, TerminalColorScheme};
 use pillar_tui::markdown::MarkdownTheme;
 use pillar_tui::select_list::SelectListTheme;
 use pillar_tui::settings_list::SettingsListTheme;
+use pillar_tui::terminal_colors::{RgbColor, TerminalColorScheme};
 use serde_json::Value;
 
 use crate::core::source_info::SourceInfo;
@@ -1134,7 +1134,11 @@ pub fn get_available_themes_with_paths() -> Vec<ThemeInfo> {
     for name in builtin_themes().keys() {
         add(ThemeInfo {
             name: name.clone(),
-            path: Some(format!("{}/{}.json", themes_dir.trim_end_matches('/'), name)),
+            path: Some(format!(
+                "{}/{}.json",
+                themes_dir.trim_end_matches('/'),
+                name
+            )),
         });
     }
     for info in custom_theme_infos() {
@@ -1310,10 +1314,11 @@ impl TerminalBackgroundThemeDetector for pillar_tui::tui::TuiBase {
 
 impl TerminalAutoThemeDetector for pillar_tui::tui::TuiBase {
     fn query_terminal_color_scheme(&mut self, timeout: Duration) -> Option<TerminalTheme> {
-        pillar_tui::tui::TuiBase::query_terminal_color_scheme(self, timeout).map(|scheme| match scheme
-        {
-            TerminalColorScheme::Light => TerminalTheme::Light,
-            TerminalColorScheme::Dark => TerminalTheme::Dark,
+        pillar_tui::tui::TuiBase::query_terminal_color_scheme(self, timeout).map(|scheme| {
+            match scheme {
+                TerminalColorScheme::Light => TerminalTheme::Light,
+                TerminalColorScheme::Dark => TerminalTheme::Dark,
+            }
         })
     }
 }

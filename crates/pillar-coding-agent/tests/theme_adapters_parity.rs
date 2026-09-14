@@ -125,10 +125,7 @@ fn select_list_theme_maps_the_active_theme() {
     let _guard = THEME_LOCK.lock().expect("theme lock");
     let dark = install_dark();
     let select_list = get_select_list_theme();
-    assert_eq!(
-        (select_list.selected_prefix)("x"),
-        dark.fg("accent", "x")
-    );
+    assert_eq!((select_list.selected_prefix)("x"), dark.fg("accent", "x"));
     assert_eq!((select_list.selected_text)("x"), dark.fg("accent", "x"));
     assert_eq!((select_list.description)("x"), dark.fg("muted", "x"));
     assert_eq!((select_list.scroll_info)("x"), dark.fg("muted", "x"));
@@ -241,7 +238,10 @@ fn registered_themes_join_the_catalogue_with_their_source_path() {
     assert_eq!(zeta.path.as_deref(), Some("/tmp/zeta.json"));
     // Sorted: built-ins first alphabetically, the registered theme last here.
     assert_eq!(
-        infos.iter().map(|info| info.name.as_str()).collect::<Vec<_>>(),
+        infos
+            .iter()
+            .map(|info| info.name.as_str())
+            .collect::<Vec<_>>(),
         vec!["dark", "light", "zeta"]
     );
 

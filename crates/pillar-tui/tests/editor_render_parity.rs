@@ -135,10 +135,7 @@ fn render_scroll_indicators_stay_within_width_and_keep_their_color() {
     let lines = editor.render(width);
     let top = lines.first().expect("top border");
     let bottom = lines.last().expect("bottom border");
-    assert!(
-        strip_ansi(top).contains("─── ↑"),
-        "top indicator: {top:?}"
-    );
+    assert!(strip_ansi(top).contains("─── ↑"), "top indicator: {top:?}");
     assert!(
         strip_ansi(bottom).contains("─── ↓"),
         "bottom indicator: {bottom:?}"
@@ -166,15 +163,28 @@ fn render_scroll_indicators_stay_within_width_and_keep_their_color() {
     let lines = editor.render(24);
     let top = strip_ansi(lines.first().expect("top"));
     let bottom = strip_ansi(lines.last().expect("bottom"));
-    assert_eq!(top, format!("─── ↑ 9 more {}", "─".repeat(24 - 13)), "{top:?}");
-    assert_eq!(bottom, format!("─── ↓ 4 more {}", "─".repeat(24 - 13)), "{bottom:?}");
+    assert_eq!(
+        top,
+        format!("─── ↑ 9 more {}", "─".repeat(24 - 13)),
+        "{top:?}"
+    );
+    assert_eq!(
+        bottom,
+        format!("─── ↓ 4 more {}", "─".repeat(24 - 13)),
+        "{bottom:?}"
+    );
 }
 
 #[test]
 fn render_limits_visible_lines_to_thirty_percent_of_the_terminal() {
     let mut editor = Editor::new();
     editor.terminal_rows = 40;
-    editor.set_text(&(0..40).map(|i| format!("l{i}")).collect::<Vec<_>>().join("\n"));
+    editor.set_text(
+        &(0..40)
+            .map(|i| format!("l{i}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
     let lines = editor.render(20);
     // 30% of 40 rows = 12 visible lines, plus two borders.
     assert_eq!(lines.len(), 14, "{lines:?}");
@@ -193,7 +203,11 @@ fn render_composites_the_autocomplete_dropdown() {
     let list: SelectList = create_autocomplete_list(
         "/mo",
         &[
-            ("/model".to_string(), "/model".to_string(), Some("pick a model".to_string())),
+            (
+                "/model".to_string(),
+                "/model".to_string(),
+                Some("pick a model".to_string()),
+            ),
             ("/mode".to_string(), "/mode".to_string(), None),
         ],
         5,
@@ -207,7 +221,10 @@ fn render_composites_the_autocomplete_dropdown() {
     // frame (border + 1 content + border) + dropdown rows.
     assert!(lines.len() > 3, "{lines:?}");
     let dropdown = &lines[3..];
-    assert!(dropdown.iter().any(|line| line.contains("/model")), "{dropdown:?}");
+    assert!(
+        dropdown.iter().any(|line| line.contains("/model")),
+        "{dropdown:?}"
+    );
     // Descriptions only render above 40 columns (upstream's
     // MIN_DESCRIPTION_WIDTH guard).
     assert!(
@@ -266,9 +283,7 @@ fn the_editor_is_a_focusable_component() {
     // Component::render delegates to the editor render.
     assert_eq!(Component::render(&mut editor, 10).len(), 3);
     assert!(editor.as_focusable().is_some());
-    let focused = editor
-        .as_focusable()
-        .expect("focus interface");
+    let focused = editor.as_focusable().expect("focus interface");
     focused.set_focused(true);
     assert!(editor.focused);
     assert!(Focusable::is_focused(&editor));

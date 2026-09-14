@@ -287,3 +287,70 @@ mod tests {
         }
     }
 }
+
+// ============================================================================
+// UI-facing extension types (upstream types.ts: markdown transforms, custom
+// entry renderers, working-indicator options)
+// ============================================================================
+
+/// Which kind of message a Markdown transformer is rendering (upstream
+/// `MarkdownTransformContext["messageType"]`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkdownMessageType {
+    User,
+    Assistant,
+    AssistantThinking,
+}
+
+impl MarkdownMessageType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Assistant => "assistant",
+            Self::AssistantThinking => "assistant-thinking",
+        }
+    }
+}
+
+/// Context handed to a Markdown transformer (upstream
+/// `MarkdownTransformContext`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MarkdownTransformContext {
+    pub message_type: MarkdownMessageType,
+    pub is_streaming: bool,
+    pub available_width: usize,
+}
+
+/// Rewrites Markdown source before rendering (upstream `MarkdownTransformer`).
+/// Returning `None` keeps the current source, mirroring upstream's
+/// `typeof transformed === "string"` check.
+pub type MarkdownTransformer =
+    Box<dyn Fn(&str, &MarkdownTransformContext) -> Option<String> + Send + Sync>;
+
+/// Options for rendering a custom session entry (upstream
+/// `EntryRenderOptions`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct EntryRenderOptions {
+    pub expanded: bool,
+}
+
+/// Renders a custom session entry (upstream `EntryRenderer`). The renderer
+/// owns the returned component; failures are reported by the caller.
+pub type EntryRenderer = Box<
+    dyn Fn(
+            &crate::core::session_entries::CustomEntry,
+            &EntryRenderOptions,
+            &crate::modes::interactive::theme::Theme,
+        ) -> Option<Box<dyn pillar_tui::tui::Component>>
+        + Send
+        + Sync,
+>;
+
+/// Working-indicator animation options (upstream `WorkingIndicatorOptions`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WorkingIndicatorOptions {
+    /// Animation frames; an empty list hides the indicator.
+    pub frames: Option<Vec<String>>,
+    /// Frame interval in milliseconds.
+    pub interval_ms: Option<u64>,
+}

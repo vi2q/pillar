@@ -26,8 +26,8 @@ use pillar_tui::tui::TuiBase;
 use crate::core::settings_manager::SettingsManager;
 
 use super::{
-    TerminalAutoThemeDetector, TerminalTheme, detect_terminal_theme_for_auto,
-    init_theme, parse_auto_theme_setting, resolve_theme_setting, set_theme, set_theme_instance,
+    TerminalAutoThemeDetector, TerminalTheme, detect_terminal_theme_for_auto, init_theme,
+    parse_auto_theme_setting, resolve_theme_setting, set_theme, set_theme_instance,
 };
 
 /// The outcome of a theme change (upstream the `ThemeResult` object).
@@ -140,12 +140,11 @@ impl InteractiveThemeController {
         )
         .theme;
         let current_theme_setting = options.initial_theme_setting;
-        let settings_theme = settings
-            .lock()
-            .expect("settings lock")
-            .theme_setting();
+        let settings_theme = settings.lock().expect("settings lock").theme_setting();
         let active_theme_name = resolve_theme_setting(
-            current_theme_setting.as_deref().or(settings_theme.as_deref()),
+            current_theme_setting
+                .as_deref()
+                .or(settings_theme.as_deref()),
             terminal_theme,
         );
         if let Some(name) = active_theme_name.as_deref() {
@@ -213,7 +212,10 @@ impl InteractiveThemeController {
 
         let detection = super::detect_terminal_background_theme(host, QUERY_TIMEOUT_MS, None);
         self.terminal_theme = detection.theme;
-        if !self.apply_theme_name(host, detection.theme.as_str(), false).success {
+        if !self
+            .apply_theme_name(host, detection.theme.as_str(), false)
+            .success
+        {
             return;
         }
         if detection.confidence == super::TerminalThemeConfidence::High {
@@ -251,11 +253,7 @@ impl InteractiveThemeController {
 
     /// Adopt a theme setting (including `light/dark` pairs) and apply it
     /// (upstream `setThemeSetting`).
-    pub fn set_theme_setting(
-        &mut self,
-        host: &mut dyn ThemeControllerHost,
-        theme_setting: &str,
-    ) {
+    pub fn set_theme_setting(&mut self, host: &mut dyn ThemeControllerHost, theme_setting: &str) {
         self.current_theme_setting = Some(theme_setting.to_string());
         self.apply_from_settings(host);
     }

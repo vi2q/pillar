@@ -1,0 +1,523 @@
+//! Parity tests for the interactive components ported in the first slice
+//! (pi v0.84.3 modes/interactive/components): keybinding hints, dynamic
+//! borders, visual truncation, countdown timer, markdown transforms, diff
+//! rendering, status indicators, the bordered loader and custom entries.
+
+use std::sync::{Arc, Mutex};
+
+use pillar_coding_agent::core::extensions_types::{
+    EntryRenderOptions, MarkdownMessageType, MarkdownTransformContext, WorkingIndicatorOptions,
+};
+use pillar_coding_agent::core::session_entries::{CustomEntry, SessionEntryBase};
+use pillar_coding_agent::modes::interactive::components::bordered_loader::BorderedLoader;
+use pillar_coding_agent::modes::interactive::components::countdown_timer::{
+    CountdownTimer, simple_countdown,
+};
+use pillar_coding_agent::modes::interactive::components::custom_entry::CustomEntryComponent;
+use pillar_coding_agent::modes::interactive::components::diff::{RenderDiffOptions, render_diff};
+use pillar_coding_agent::modes::interactive::components::dynamic_border::DynamicBorder;
+use pillar_coding_agent::modes::interactive::components::keybinding_hints::{
+    KeyTextFormatOptions, format_key_text, key_display_text, key_hint, key_text, raw_key_hint,
+};
+use pillar_coding_agent::modes::interactive::components::markdown_transform::create_markdown_transform;
+use pillar_coding_agent::modes::interactive::components::status_indicator::{
+    CompactionStatusReason, IdleStatus, StatusIndicatorKind, branch_summary_status_indicator,
+    compaction_status_indicator, working_status_indicator,
+};
+use pillar_coding_agent::modes::interactive::components::visual_truncate::truncate_to_visual_lines;
+use pillar_coding_agent::modes::interactive::theme;
+use pillar_tui::components::Text;
+use pillar_tui::tui::Component;
+
+static THEME_LOCK: Mutex<()> = Mutex::new(());
+
+fn install_dark() {
+    theme::init_theme(Some("dark"));
+}
+
+fn strip_ansi(text: &str) -> String {
+    pillar_tui::text_utils::strip_terminal_sequences(text)
+}
+
+// --- keybinding hints -----------------------------------------------------------------------------
+
+#[test]
+fn key_text_formatting_matches_upstream() {
+    assert_eq!(
+        format_key_text("ctrl+a", KeyTextFormatOptions::default()),
+        "ctrl+a"
+    );
+    // "/" separates alternative keys, "+" joins modifiers.
+    // macOS capitalizes "option" in the display form.
+    // Every part is capitalized (upstream capitalizes the first character of
+    // each part).
+    let capitalised = if cfg!(target_os = "macos") {
+        "Ctrl+A/Option+B"
+    } else {
+        "Ctrl+A/Alt+B"
+    };
+    assert_eq!(
+        format_key_text("ctrl+a/alt+b", KeyTextFormatOptions { capitalize: true }),
+        capitalised
+    );
+    // macOS shows "option" for alt.
+    let alt = format_key_text("alt+x", KeyTextFormatOptions::default());
+    if cfg!(target_os = "macos") {
+        assert_eq!(alt, "option+x");
+        assert_eq!(
+            format_key_text("ctrl+a/alt+b", KeyTextFormatOptions::default()),
+            "ctrl+a/option+b"
+        );
+    } else {
+        assert_eq!(alt, "alt+x");
+        assert_eq!(
+            format_key_text("ctrl+a/alt+b", KeyTextFormatOptions::default()),
+            "ctrl+a/alt+b"
+        );
+    }
+    assert_eq!(format_key_text("", KeyTextFormatOptions::default()), "");
+}
+
+#[test]
+fn key_hints_use_the_theme_and_bound_keys() {
+    let _guard = THEME_LOCK.lock().expect("theme lock");
+    install_dark();
+    let dark = theme::get_theme_by_name("dark").expect("dark");
+
+    // `tui.select.cancel` is bound to escape and ctrl+c (upstream defaults).
+    assert_eq!(key_text("tui.select.cancel"), "escape/ctrl+c");
+    assert_eq!(key_display_text("tui.select.cancel"), "Escape/Ctrl+C");
+    assert_eq!(
+        key_hint("tui.select.cancel", "cancel"),
+        format!(
+            "{}{}",
+            dark.fg("dim", "escape/ctrl+c"),
+            dark.fg("muted", " cancel")
+        )
+    );
+    assert_eq!(
+        raw_key_hint("ctrl+c", "quit"),
+        format!("{}{}", dark.fg("dim", "ctrl+c"), dark.fg("muted", " quit"))
+    );
+    // An unbound keybinding formats to an empty key list.
+    assert_eq!(key_text("does.not.exist"), "");
+}
+
+// --- dynamic border -------------------------------------------------------------------------------
+
+#[test]
+fn dynamic_border_stretches_to_the_width() {
+    let _guard = THEME_LOCK.lock().expect("theme lock");
+    install_dark();
+    let mut plain = DynamicBorder::with_color(Box::new(|text| text.to_string()));
+    assert_eq!(plain.render(5), vec!["─────".to_string()]);
+    // Zero width still draws one column (upstream `Math.max(1, width)`).
+    assert_eq!(plain.render(0), vec!["─".to_string()]);
+
+    // An explicit colour function is applied verbatim.
+    let mut coloured = DynamicBorder::with_color(Box::new(|text| format!("[{text}]")));
+    assert_eq!(coloured.render(3), vec!["[───]".to_string()]);
+    coloured.invalidate();
+
+    // The themed border wraps the rule in the `border` colour.
+    let dark = theme::get_theme_by_name("dark").expect("dark");
+    let mut themed = DynamicBorder::new();
+    assert_eq!(themed.render(2), vec![dark.fg("border", "──")]);
+}
+
+// --- visual truncation ----------------------------------------------------------------------------
+
+#[test]
+fn visual_truncation_keeps_the_last_lines() {
+    let result = truncate_to_visual_lines("", 3, 20, 0);
+    assert!(result.visual_lines.is_empty());
+    assert_eq!(result.skipped_count, 0);
+
+    // Fits: nothing is skipped.
+    let result = truncate_to_visual_lines("one\ntwo", 3, 20, 0);
+    assert_eq!(result.skipped_count, 0);
+    assert_eq!(result.visual_lines.len(), 2);
+
+    // Wrapping is accounted for: 20 columns with padding 0 wraps each word.
+    let text = (1..=10).map(|i| format!("line{i}")).collect::<Vec<_>>().join("\n");
+    let result = truncate_to_visual_lines(&text, 3, 20, 0);
+    assert_eq!(result.visual_lines.len(), 3);
+    assert_eq!(result.skipped_count, 7);
+    assert!(result.visual_lines[0].contains("line8"), "{:?}", result.visual_lines);
+    assert!(result.visual_lines[2].contains("line10"), "{:?}", result.visual_lines);
+
+    // Padding comes from the Text component (1 here).
+    let padded = truncate_to_visual_lines("x", 5, 10, 1);
+    assert_eq!(padded.visual_lines[0], " x        ");
+}
+
+// --- countdown timer ------------------------------------------------------------------------------
+
+#[test]
+fn countdown_reports_every_second_and_expires() {
+    let (mut timer, ticks) = simple_countdown(2_500);
+    // The constructor reports the ceil of the timeout immediately.
+    assert_eq!(timer.remaining_seconds(), 3);
+    assert_eq!(ticks.lock().unwrap().as_slice(), [3]);
+
+    assert!(timer.tick());
+    assert_eq!(timer.remaining_seconds(), 2);
+    assert!(timer.tick());
+    assert_eq!(timer.remaining_seconds(), 1);
+    assert!(!timer.is_disposed());
+
+    // Reaching zero disposes the timer; later ticks do nothing.
+    assert!(timer.tick());
+    assert!(timer.is_disposed());
+    assert_eq!(ticks.lock().unwrap().as_slice(), [3, 2, 1, 0]);
+    assert!(!timer.tick());
+}
+
+#[test]
+fn countdown_fires_on_expire_once() {
+    let expired = Arc::new(Mutex::new(0usize));
+    let sink = Arc::clone(&expired);
+    let mut timer = CountdownTimer::new(
+        1_000,
+        Box::new(|_seconds| {}),
+        Box::new(move || {
+            *sink.lock().unwrap() += 1;
+        }),
+    );
+    timer.tick();
+    assert_eq!(*expired.lock().unwrap(), 1);
+    timer.tick();
+    assert_eq!(*expired.lock().unwrap(), 1, "disposed timers stay quiet");
+}
+
+// --- markdown transform ---------------------------------------------------------------------------
+
+#[test]
+fn markdown_transforms_chain_and_keep_the_source_on_none() {
+    let transformers: Vec<pillar_coding_agent::core::extensions_types::MarkdownTransformer> = vec![
+        Box::new(|markdown: &str, context: &MarkdownTransformContext| {
+            assert_eq!(context.message_type, MarkdownMessageType::Assistant);
+            assert!(!context.is_streaming);
+            assert_eq!(context.available_width, 40);
+            Some(markdown.replace("foo", "bar"))
+        }),
+        // Returning None keeps the previous result.
+        Box::new(|_markdown: &str, _context: &MarkdownTransformContext| None),
+        Box::new(|markdown: &str, _context: &MarkdownTransformContext| {
+            Some(format!("{markdown}!"))
+        }),
+    ];
+    let transform = create_markdown_transform(MarkdownMessageType::Assistant, false, transformers);
+    assert_eq!(transform("foo baz", 40), "bar baz!");
+
+    // No transformers: the source is returned unchanged.
+    let identity = create_markdown_transform(MarkdownMessageType::User, true, Vec::new());
+    assert_eq!(identity("keep me", 10), "keep me");
+}
+
+// --- diff rendering -------------------------------------------------------------------------------
+
+#[test]
+fn render_diff_colours_lines_and_highlights_edits() {
+    let _guard = THEME_LOCK.lock().expect("theme lock");
+    install_dark();
+    let dark = theme::get_theme_by_name("dark").expect("dark");
+
+    // Two added lines: the block path shows whole lines without intra-line
+    // highlighting (upstream only diffs 1:1 modifications).
+    let diff = " 1 context\n-2 old value\n+2 new value\n+3 added";
+    let rendered = render_diff(diff, RenderDiffOptions::default());
+    let lines: Vec<&str> = rendered.split('\n').collect();
+    assert_eq!(lines.len(), 4, "{rendered:?}");
+    assert!(
+        lines[0].starts_with(&format!("{} 1 context", dark.fg_ansi("toolDiffContext"))),
+        "{:?}",
+        lines[0]
+    );
+    assert!(
+        lines[1].starts_with(&format!("{}-2 ", dark.fg_ansi("toolDiffRemoved"))),
+        "{:?}",
+        lines[1]
+    );
+    assert!(
+        lines[2].starts_with(&format!("{}+2 ", dark.fg_ansi("toolDiffAdded"))),
+        "{:?}",
+        lines[2]
+    );
+    assert_eq!(lines[3], dark.fg("toolDiffAdded", "+3 added"));
+    assert!(!lines[1].contains(&dark.inverse("old")), "{:?}", lines[1]);
+
+    // A 1:1 modification highlights the changed tokens with inverse video and
+    // leaves the shared text plain.
+    let single = render_diff(
+        "-2 old value\n+2 new value",
+        RenderDiffOptions::default(),
+    );
+    let single_lines: Vec<&str> = single.split('\n').collect();
+    assert_eq!(single_lines.len(), 2, "{single:?}");
+    let stripped = strip_ansi(&single);
+    assert!(stripped.contains("-2 old value"), "{stripped:?}");
+    assert!(stripped.contains("+2 new value"), "{stripped:?}");
+    assert!(single_lines[0].contains(&dark.inverse("old")), "{:?}", single_lines[0]);
+    assert!(single_lines[1].contains(&dark.inverse("new")), "{:?}", single_lines[1]);
+    // The shared " value" suffix stays unhighlighted.
+    assert!(!single_lines[0].contains(&dark.inverse(" value")), "{:?}", single_lines[0]);
+
+    // A block replacement keeps whole lines (no intra-line diff).
+    let block = render_diff("-1 a\n-2 b\n+1 c\n+2 d", RenderDiffOptions::default());
+    let block_lines: Vec<&str> = block.split('\n').collect();
+    assert_eq!(block_lines.len(), 4);
+    assert!(!block_lines[0].contains(&dark.inverse("a")), "{:?}", block_lines[0]);
+    assert_eq!(strip_ansi(block_lines[1]), "-2 b");
+    assert_eq!(strip_ansi(block_lines[2]), "+1 c");
+
+    // Text that is not diff-shaped is a context line.
+    let plain = render_diff("hello", RenderDiffOptions::default());
+    assert_eq!(plain, dark.fg("toolDiffContext", "hello"));
+
+    // Tabs become three spaces.
+    let tabs = render_diff("+1 a\tb", RenderDiffOptions::default());
+    assert!(strip_ansi(&tabs).contains("a   b"), "{tabs:?}");
+}
+
+// --- status indicators ----------------------------------------------------------------------------
+
+#[test]
+fn working_status_indicator_renders_the_spinner() {
+    let _guard = THEME_LOCK.lock().expect("theme lock");
+    install_dark();
+    let dark = theme::get_theme_by_name("dark").expect("dark");
+    let mut indicator = working_status_indicator("Thinking", None);
+    assert_eq!(indicator.kind(), StatusIndicatorKind::Working);
+
+    let lines = indicator.render(20);
+    // The loader renders a leading blank line plus its text line.
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert_eq!(lines[0], "");
+    assert!(lines[1].contains(&dark.fg("muted", "Thinking")), "{:?}", lines[1]);
+
+    // Ticking advances the spinner frame.
+    let before = indicator.render(20);
+    indicator.tick();
+    let after = indicator.render(20);
+    assert_ne!(before, after);
+    indicator.dispose();
+}
+
+#[test]
+fn custom_indicator_frames_are_rendered_verbatim() {
+    let _guard = THEME_LOCK.lock().expect("theme lock");
+    install_dark();
+    let mut indicator = working_status_indicator(
+        "Busy",
+        Some(WorkingIndicatorOptions {
+            frames: Some(vec!["1".to_string(), "2".to_string()]),
+            interval_ms: Some(50),
+        }),
+    );
+    // Custom frames skip the spinner colour and appear verbatim (the loader
+    // still applies the Text margin).
+    assert_eq!(strip_ansi(&indicator.render(10)[1]).trim(), "1 Busy");
+    indicator.tick();
+    assert_eq!(strip_ansi(&indicator.render(10)[1]).trim(), "2 Busy");
+    indicator.tick();
+    assert_eq!(strip_ansi(&indicator.render(10)[1]).trim(), "1 Busy");
+}
+
+#[test]
+fn compaction_and_branch_indicators_use_the_upstream_labels() {
+    let _guard = THEME_LOCK.lock().expect("theme lock");
+    install_dark();
+    let manual = compaction_status_indicator(CompactionStatusReason::Manual);
+    assert_eq!(manual.kind(), StatusIndicatorKind::Compaction);
+    assert!(
+        manual.loader().message().starts_with("Compacting context..."),
+        "{:?}",
+        manual.loader().message()
+    );
+
+    let overflow = compaction_status_indicator(CompactionStatusReason::Overflow);
+    assert!(
+        overflow
+            .loader()
+            .message()
+            .starts_with("Context overflow detected, Auto-compacting..."),
+        "{:?}",
+        overflow.loader().message()
+    );
+
+    let branch = branch_summary_status_indicator();
+    assert_eq!(branch.kind(), StatusIndicatorKind::BranchSummary);
+    assert!(branch.loader().message().starts_with("Summarizing branch..."));
+    // Every label carries the interrupt hint.
+    assert!(manual.loader().message().contains("to cancel)"));
+}
+
+#[test]
+fn idle_status_renders_two_blank_rows() {
+    let mut idle = IdleStatus;
+    assert_eq!(idle.render(4), vec!["    ".to_string(), "    ".to_string()]);
+}
+
+// --- bordered loader ------------------------------------------------------------------------------
+
+#[test]
+fn bordered_loader_frames_the_loader_and_can_abort() {
+    let _guard = THEME_LOCK.lock().expect("theme lock");
+    install_dark();
+    let dark = theme::get_theme_by_name("dark").expect("dark");
+    let mut loader = BorderedLoader::new(&dark, "Loading things", true);
+    assert!(loader.is_cancellable());
+    assert!(!loader.aborted());
+
+    // Wide enough that the message and the cancel hint are not wrapped.
+    let lines = loader.render(40);
+    assert!(lines.len() >= 5, "{lines:?}");
+    assert_eq!(strip_ansi(&lines[0]), "─".repeat(40), "top border");
+    assert_eq!(
+        strip_ansi(lines.last().expect("bottom border")),
+        "─".repeat(40)
+    );
+    assert!(
+        lines.iter().any(|line| line.contains("Loading things")),
+        "{lines:?}"
+    );
+    assert!(
+        lines.iter().any(|line| line.contains("cancel")),
+        "cancel hint: {lines:?}"
+    );
+
+    // The abort callback fires once per abort.
+    let aborted = Arc::new(Mutex::new(0usize));
+    let sink = Arc::clone(&aborted);
+    loader.set_on_abort(Some(Box::new(move || {
+        *sink.lock().unwrap() += 1;
+    })));
+    loader.handle_abort_key(false);
+    assert!(!loader.aborted(), "other keys do not abort");
+    loader.handle_abort_key(true);
+    assert!(loader.aborted());
+    assert_eq!(*aborted.lock().unwrap(), 1);
+
+    loader.dispose();
+    loader.loader_mut().set_message("Still loading");
+    assert!(loader.message().contains("Still loading"));
+}
+
+#[test]
+fn a_non_cancellable_loader_hides_the_hint_and_ignores_abort() {
+    let _guard = THEME_LOCK.lock().expect("theme lock");
+    install_dark();
+    let dark = theme::get_theme_by_name("dark").expect("dark");
+    let mut loader = BorderedLoader::new(&dark, "Working", false);
+    assert!(!loader.is_cancellable());
+    let lines = loader.render(12);
+    assert!(
+        !lines.iter().any(|line| line.contains("cancel")),
+        "{lines:?}"
+    );
+    loader.handle_abort_key(true);
+    assert!(!loader.aborted());
+    // Without the hint the frame is the two rules, the spinner block and its
+    // spacer (upstream adds the spacer unconditionally).
+    assert_eq!(lines.len(), 5, "{lines:?}");
+}
+
+// --- custom entries -------------------------------------------------------------------------------
+
+fn custom_entry(custom_type: &str) -> CustomEntry {
+    CustomEntry {
+        base: SessionEntryBase {
+            id: "entry-1".to_string(),
+            parent_id: None,
+            timestamp: 1_767_225_600_000,
+        },
+        custom_type: custom_type.to_string(),
+        data: Some(serde_json::json!({"value": 1})),
+    }
+}
+
+#[test]
+fn custom_entry_renders_through_the_renderer_and_toggles_expanded() {
+    let _guard = THEME_LOCK.lock().expect("theme lock");
+    install_dark();
+    let seen: Arc<Mutex<Vec<(String, bool)>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&seen);
+    let renderer: pillar_coding_agent::core::extensions_types::EntryRenderer =
+        Box::new(move |entry: &CustomEntry, options: &EntryRenderOptions, _theme| {
+            sink.lock()
+                .unwrap()
+                .push((entry.custom_type.clone(), options.expanded));
+            Some(Box::new(Text::new(
+                if options.expanded { "expanded" } else { "collapsed" },
+                0,
+                0,
+            )))
+        });
+
+    let mut component = CustomEntryComponent::new(custom_entry("note"), renderer);
+    assert!(component.has_content());
+    assert!(!component.is_expanded());
+    let lines = component.render(20);
+    // A spacer precedes the rendered entry (upstream adds one).
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert_eq!(lines[0], "");
+    assert!(lines[1].contains("collapsed"), "{:?}", lines[1]);
+    assert_eq!(
+        seen.lock().unwrap().as_slice(),
+        [("note".to_string(), false)]
+    );
+
+    // Expanding rebuilds the renderer output.
+    component.set_expanded(true);
+    assert!(component.is_expanded());
+    let lines = component.render(20);
+    assert!(lines[1].contains("expanded"), "{:?}", lines[1]);
+    assert_eq!(seen.lock().unwrap().as_slice(), [
+        ("note".to_string(), false),
+        ("note".to_string(), true)
+    ]);
+    // Setting the same value does not rebuild.
+    component.set_expanded(true);
+    assert_eq!(seen.lock().unwrap().len(), 2);
+
+    // Invalidate re-runs the renderer (upstream `invalidate`).
+    component.invalidate();
+    assert_eq!(seen.lock().unwrap().len(), 3);
+}
+
+#[test]
+fn custom_entry_without_renderer_output_has_no_content() {
+    let _guard = THEME_LOCK.lock().expect("theme lock");
+    install_dark();
+    let renderer: pillar_coding_agent::core::extensions_types::EntryRenderer =
+        Box::new(|_entry: &CustomEntry, _options: &EntryRenderOptions, _theme| None);
+    let mut component = CustomEntryComponent::new(custom_entry("hidden"), renderer);
+    assert!(!component.has_content());
+    assert!(component.render(20).is_empty());
+
+    // The failure notice the host shows when a renderer throws.
+    let error = component.error_component("boom");
+    let mut error = error;
+    let lines = error.render(40);
+    assert!(
+        lines.iter().any(|line| line.contains("[hidden] renderer failed: boom")),
+        "{lines:?}"
+    );
+}
+
+#[test]
+fn container_composition_preserves_child_order() {
+    // DynamicBorder + Text inside a Container render in order (upstream's
+    // composition pattern).
+    let mut container = pillar_tui::tui::Container::new();
+    container.add_child(Box::new(DynamicBorder::with_color(Box::new(|text| {
+        text.to_string()
+    }))));
+    container.add_child(Box::new(Text::new("body", 0, 0)));
+    container.add_child(Box::new(DynamicBorder::with_color(Box::new(|text| {
+        text.to_string()
+    }))));
+    let lines = container.render(4);
+    assert_eq!(lines, vec!["────", "body", "────"]);
+}

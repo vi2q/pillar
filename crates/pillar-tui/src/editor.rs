@@ -1531,7 +1531,6 @@ fn find_word_forward_with_markers(text: &str, cursor: usize, valid_ids: &[u32]) 
     find_word_forward(text, cursor, None)
 }
 
-
 // ============================================================================
 // Rendering (upstream Editor.render and its accessors)
 // ============================================================================
@@ -1656,7 +1655,11 @@ impl Editor {
                 let cursor_pos = cursor_pos.min(display_text.len());
                 let before = display_text[..cursor_pos].to_string();
                 let after = display_text[cursor_pos..].to_string();
-                let marker = if emit_cursor_marker { CURSOR_MARKER } else { "" };
+                let marker = if emit_cursor_marker {
+                    CURSOR_MARKER
+                } else {
+                    ""
+                };
 
                 if !after.is_empty() {
                     // The cursor sits on a grapheme: replace it with the

@@ -9,6 +9,7 @@
 
 type BgFn = Box<dyn Fn(&str) -> String + Send + Sync>;
 
+use crate::tui::Component;
 use crate::text_utils::{
     apply_background_to_line, truncate_to_width, visible_width, wrap_text_with_ansi,
 };
@@ -163,13 +164,9 @@ impl Spacer {
 // ============================================================================}
 
 /// A container applying padding and background to children (upstream
-/// `Box`). Children are function-driven since the port's components have
-/// heterogeneous types: each child is a closure receiving the content
-/// width.
-type ChildRender = Box<dyn Fn(usize) -> Vec<String> + Send>;
-
+/// `Box`).
 pub struct BoxComponent {
-    children: Vec<Box<dyn Fn(usize) -> Vec<String> + Send>>,
+    children: Vec<Box<dyn Component>>,
     padding_x: usize,
     padding_y: usize,
     bg_fn: Option<BgFn>,
@@ -194,9 +191,8 @@ impl BoxComponent {
         }
     }
 
-    /// Add a child as a render closure (upstream `addChild` with a
-    /// `Component` instance).
-    pub fn add_child(&mut self, child: ChildRender) {
+    /// Add a child component (upstream `addChild`).
+    pub fn add_child(&mut self, child: Box<dyn Component>) {
         self.children.push(child);
         self.cache = None;
     }
@@ -233,8 +229,8 @@ impl BoxComponent {
         let left_pad = " ".repeat(self.padding_x);
 
         let mut child_lines: Vec<String> = Vec::new();
-        for child in &self.children {
-            for line in child(content_width) {
+        for child in self.children.iter_mut() {
+            for line in child.render(content_width) {
                 child_lines.push(format!("{left_pad}{line}"));
             }
         }
@@ -468,5 +464,55 @@ impl Image {
         self.cached_lines = Some(lines.clone());
         self.cached_width = Some(width);
         lines
+    }
+}
+
+// ============================================================================
+// Component impls (upstream these classes implement `Component`)
+// ============================================================================
+
+impl Component for Text {
+    fn render(&mut self, width: usize) -> Vec<String> {
+        Text::render(self, width)
+    }
+
+    fn invalidate(&mut self) {
+        Text::invalidate(self);
+    }
+}
+
+impl Component for Spacer {
+    fn render(&mut self, width: usize) -> Vec<String> {
+        Spacer::render(self, width)
+    }
+}
+
+impl Component for BoxComponent {
+    fn render(&mut self, width: usize) -> Vec<String> {
+        BoxComponent::render(self, width)
+    }
+
+    fn invalidate(&mut self) {
+        BoxComponent::invalidate(self);
+    }
+}
+
+impl Component for TruncatedText {
+    fn render(&mut self, width: usize) -> Vec<String> {
+        TruncatedText::render(self, width)
+    }
+}
+
+impl Component for Image {
+    fn render(&mut self, width: usize) -> Vec<String> {
+        Image::render(self, width)
+    }
+
+    fn invalidate(&mut self) {
+        Image::invalidate(self);
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 }
