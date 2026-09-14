@@ -73,6 +73,11 @@ impl SizeValue {
             Self::Percent(tenths) => (reference * *tenths as usize) / 1000,
         }
     }
+
+    /// Resolve against a reference size (upstream `parseSizeValue`).
+    pub fn resolve_size(&self, reference: usize) -> usize {
+        self.resolve(reference)
+    }
 }
 
 /// Overlay margins (upstream `OverlayMargin`).
@@ -85,7 +90,7 @@ pub struct OverlayMargin {
 }
 
 /// Overlay positioning and sizing options (upstream `OverlayOptions`).
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct OverlayOptions {
     pub width: Option<SizeValue>,
     pub min_width: Option<usize>,
@@ -96,6 +101,46 @@ pub struct OverlayOptions {
     pub row: Option<SizeValue>,
     pub col: Option<SizeValue>,
     pub margin: Option<OverlayMargin>,
+    /// Only render when this answers true for the terminal size (upstream
+    /// `options.visible`).
+    pub visible: Option<std::sync::Arc<dyn Fn(usize, usize) -> bool + Send + Sync>>,
+    /// Do not capture keyboard focus when shown (upstream `nonCapturing`).
+    pub non_capturing: bool,
+}
+
+impl std::fmt::Debug for OverlayOptions {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("OverlayOptions")
+            .field("width", &self.width)
+            .field("min_width", &self.min_width)
+            .field("max_height", &self.max_height)
+            .field("anchor", &self.anchor)
+            .field("offset_x", &self.offset_x)
+            .field("offset_y", &self.offset_y)
+            .field("row", &self.row)
+            .field("col", &self.col)
+            .field("margin", &self.margin)
+            .field("visible", &self.visible.is_some())
+            .field("non_capturing", &self.non_capturing)
+            .finish()
+    }
+}
+
+impl OverlayOptions {
+    /// The effective anchor (upstream defaults to `center`).
+    pub fn resolved_anchor(&self) -> OverlayAnchor {
+        self.anchor.unwrap_or_default()
+    }
+
+    /// Whether the overlay is visible at this terminal size (upstream calls
+    /// `options.visible` each render).
+    pub fn is_visible(&self, term_width: usize, term_height: usize) -> bool {
+        match &self.visible {
+            Some(visible) => visible(term_width, term_height),
+            None => true,
+        }
+    }
 }
 
 /// Resolved overlay layout (upstream the resolveOverlayLayout result).

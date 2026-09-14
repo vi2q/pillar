@@ -427,6 +427,11 @@ impl OverlayFocusMachine {
     }
 
     /// Whether any visible overlay exists (upstream `hasOverlay`).
+    /// The topmost overlay id (upstream the last stack entry).
+    pub fn topmost_overlay_id(&self) -> Option<u64> {
+        self.stack.last().map(|entry| entry.component_id)
+    }
+
     pub fn has_overlay(&self) -> bool {
         self.stack.iter().any(|e| self.is_overlay_visible(e))
     }
