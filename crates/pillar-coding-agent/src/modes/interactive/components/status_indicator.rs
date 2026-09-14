@@ -1,9 +1,9 @@
 //! Port of components/status-indicator.ts: the transcript's spinner rows.
 
 use crate::core::extensions_types::WorkingIndicatorOptions;
-use crate::modes::interactive::theme::theme;
 use crate::modes::interactive::components::countdown_timer::CountdownTimer;
 use crate::modes::interactive::components::keybinding_hints::key_text;
+use crate::modes::interactive::theme::theme;
 use pillar_tui::loaders::{Loader, LoaderIndicatorOptions};
 use pillar_tui::tui::Component;
 
@@ -128,11 +128,7 @@ impl RetryStatusIndicator {
             &message,
             None,
         );
-        let countdown = CountdownTimer::new(
-            delay_ms,
-            Box::new(|_seconds| {}),
-            Box::new(|| {}),
-        );
+        let countdown = CountdownTimer::new(delay_ms, Box::new(|_seconds| {}), Box::new(|| {}));
         Self {
             indicator,
             countdown: Some(countdown),

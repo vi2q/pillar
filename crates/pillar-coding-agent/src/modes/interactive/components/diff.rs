@@ -148,10 +148,9 @@ pub fn render_diff(diff_text: &str, _options: RenderDiffOptions) -> String {
                     "toolDiffRemoved",
                     &format!("-{} {}", removed[0].0, removed_line),
                 ));
-                result.push(theme_handle.fg(
-                    "toolDiffAdded",
-                    &format!("+{} {}", added[0].0, added_line),
-                ));
+                result.push(
+                    theme_handle.fg("toolDiffAdded", &format!("+{} {}", added[0].0, added_line)),
+                );
             } else {
                 for (line_num, content) in &removed {
                     result.push(theme_handle.fg(

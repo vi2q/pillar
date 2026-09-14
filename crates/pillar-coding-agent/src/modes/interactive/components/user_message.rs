@@ -95,10 +95,7 @@ impl Component for UserMessageComponent {
         }
         lines[0] = format!("{OSC133_ZONE_START}{}", lines[0]);
         let last = lines.len() - 1;
-        lines[last] = format!(
-            "{OSC133_ZONE_END}{OSC133_ZONE_FINAL}{}",
-            lines[last]
-        );
+        lines[last] = format!("{OSC133_ZONE_END}{OSC133_ZONE_FINAL}{}", lines[last]);
         lines
     }
 

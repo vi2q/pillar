@@ -65,9 +65,7 @@ impl CountdownTimer {
 
 /// Convenience: build a timer whose ticks are recorded in a shared counter and
 /// whose expiry flips a flag (used by tests and simple hosts).
-pub fn simple_countdown(
-    timeout_ms: u64,
-) -> (CountdownTimer, Arc<std::sync::Mutex<Vec<i64>>>) {
+pub fn simple_countdown(timeout_ms: u64) -> (CountdownTimer, Arc<std::sync::Mutex<Vec<i64>>>) {
     let ticks = Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink = Arc::clone(&ticks);
     let timer = CountdownTimer::new(

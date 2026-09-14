@@ -69,20 +69,31 @@ fn read_call_and_line_range() {
         &theme_handle,
     );
     assert_eq!(strip(&range), ":10-14");
-    assert!(range.contains(&theme_handle.fg_ansi("warning")), "{range:?}");
+    assert!(
+        range.contains(&theme_handle.fg_ansi("warning")),
+        "{range:?}"
+    );
 
     let call = format_read_call(
         &serde_json::json!({"file_path": "/tmp/a.rs"}),
         &theme_handle,
         "/tmp",
     );
-    assert!(strip(&call).starts_with("read /tmp/a.rs"), "{:?}", strip(&call));
+    assert!(
+        strip(&call).starts_with("read /tmp/a.rs"),
+        "{:?}",
+        strip(&call)
+    );
     // A nullish path has no file to name; a non-string one is an invalid
     // argument.
     let missing = format_read_call(&serde_json::json!({}), &theme_handle, "/tmp");
     assert_eq!(strip(&missing), "read ...");
     let invalid = format_read_call(&serde_json::json!({"file_path": 42}), &theme_handle, "/tmp");
-    assert!(strip(&invalid).contains("[invalid arg]"), "{:?}", strip(&invalid));
+    assert!(
+        strip(&invalid).contains("[invalid arg]"),
+        "{:?}",
+        strip(&invalid)
+    );
 }
 
 #[test]
@@ -121,7 +132,11 @@ fn read_result_previews_and_reports_truncation() {
     };
     let body = format_read_result(&args, &result, &options(false), &theme_handle, true, true);
     assert!(strip(&body).contains("line1"), "{:?}", strip(&body));
-    assert!(strip(&body).contains("... (5 more lines,"), "{:?}", strip(&body));
+    assert!(
+        strip(&body).contains("... (5 more lines,"),
+        "{:?}",
+        strip(&body)
+    );
     assert!(strip(&body).contains("to expand)"), "{:?}", strip(&body));
 
     // The truncation footer follows the details.
@@ -182,7 +197,11 @@ fn compact_read_classification_matches_upstream() {
     assert_eq!(classification.kind, "skill");
     assert_eq!(classification.label, "commit");
     let call = format_compact_read_call(&classification, &serde_json::json!({}), &theme_handle);
-    assert!(strip(&call).starts_with("[skill] commit"), "{:?}", strip(&call));
+    assert!(
+        strip(&call).starts_with("[skill] commit"),
+        "{:?}",
+        strip(&call)
+    );
 
     // Resource files inside the cwd get the relative label.
     let classification = get_compact_read_classification(
@@ -193,12 +212,19 @@ fn compact_read_classification_matches_upstream() {
     assert_eq!(classification.kind, "resource");
     assert_eq!(classification.label, "AGENTS.md");
     let call = format_compact_read_call(&classification, &serde_json::json!({}), &theme_handle);
-    assert!(strip(&call).starts_with("read resource AGENTS.md"), "{:?}", strip(&call));
+    assert!(
+        strip(&call).starts_with("read resource AGENTS.md"),
+        "{:?}",
+        strip(&call)
+    );
 
     // Ordinary files have no compact form.
     assert!(
-        get_compact_read_classification(&serde_json::json!({"path": "/work/project/src/main.rs"}), cwd)
-            .is_none()
+        get_compact_read_classification(
+            &serde_json::json!({"path": "/work/project/src/main.rs"}),
+            cwd
+        )
+        .is_none()
     );
     // Missing/empty paths classify to nothing.
     assert!(get_compact_read_classification(&serde_json::json!({}), cwd).is_none());
@@ -212,13 +238,26 @@ fn read_renderer_prefers_the_compact_call_when_collapsed() {
     let mut renderer = ReadToolRenderer;
     let args = serde_json::json!({"file_path": "/work/project/AGENTS.md"});
 
-    let collapsed = renderer.render_call(&args, &theme_handle, &context(args.clone(), "/work/project"));
-    assert!(strip(&collapsed[0]).starts_with("read resource"), "{:?}", collapsed);
+    let collapsed = renderer.render_call(
+        80,
+        &args,
+        &theme_handle,
+        &context(args.clone(), "/work/project"),
+    );
+    assert!(
+        strip(&collapsed[0]).starts_with("read resource"),
+        "{:?}",
+        collapsed
+    );
 
     let mut expanded_context = context(args.clone(), "/work/project");
     expanded_context.expanded = true;
-    let expanded = renderer.render_call(&args, &theme_handle, &expanded_context);
-    assert!(strip(&expanded[0]).starts_with("read /work/project/AGENTS.md"), "{:?}", expanded);
+    let expanded = renderer.render_call(80, &args, &theme_handle, &expanded_context);
+    assert!(
+        strip(&expanded[0]).starts_with("read /work/project/AGENTS.md"),
+        "{:?}",
+        expanded
+    );
 }
 
 // --- write ----------------------------------------------------------------------------------------
@@ -237,8 +276,16 @@ fn write_call_previews_content_and_flags_bad_arguments() {
         &theme_handle,
         "/tmp",
     );
-    assert!(strip(&call).starts_with("write /tmp/out.txt\n\nline1"), "{:?}", strip(&call));
-    assert!(strip(&call).contains("... (2 more lines, 12 total,"), "{:?}", strip(&call));
+    assert!(
+        strip(&call).starts_with("write /tmp/out.txt\n\nline1"),
+        "{:?}",
+        strip(&call)
+    );
+    assert!(
+        strip(&call).contains("... (2 more lines, 12 total,"),
+        "{:?}",
+        strip(&call)
+    );
 
     let expanded = format_write_call(
         &serde_json::json!({"path": "/tmp/out.txt", "content": "only\n"}),
@@ -247,7 +294,11 @@ fn write_call_previews_content_and_flags_bad_arguments() {
         "/tmp",
     );
     assert!(strip(&expanded).contains("only"), "{:?}", strip(&expanded));
-    assert!(!strip(&expanded).contains("more lines"), "{:?}", strip(&expanded));
+    assert!(
+        !strip(&expanded).contains("more lines"),
+        "{:?}",
+        strip(&expanded)
+    );
 
     // A nullish content argument shows only the path.
     let missing = format_write_call(
@@ -321,7 +372,10 @@ fn grep_and_find_calls_render_pattern_and_scope() {
     assert!(plain.contains(" limit 20"), "{plain:?}");
 
     // An empty path defaults to ".".
-    let grep = format_grep_call(&serde_json::json!({"pattern": "x", "path": ""}), &theme_handle);
+    let grep = format_grep_call(
+        &serde_json::json!({"pattern": "x", "path": ""}),
+        &theme_handle,
+    );
     assert!(strip(&grep).contains(" in ."), "{:?}", strip(&grep));
     // A nullish pattern coerces to "" (upstream `str`), so it renders `//`;
     // only a non-string argument is an invalid argument.
@@ -360,14 +414,34 @@ fn result_previews_share_the_same_shape() {
     };
 
     // grep previews 15, find and ls preview 20 (upstream).
-    let grep = strip(&format_grep_result(&result, &options(false), &theme_handle, true));
+    let grep = strip(&format_grep_result(
+        &result,
+        &options(false),
+        &theme_handle,
+        true,
+    ));
     assert!(grep.contains("... (10 more lines,"), "{grep:?}");
-    let find = strip(&format_find_result(&result, &options(false), &theme_handle, true));
+    let find = strip(&format_find_result(
+        &result,
+        &options(false),
+        &theme_handle,
+        true,
+    ));
     assert!(find.contains("... (5 more lines,"), "{find:?}");
-    let ls = strip(&format_ls_result(&result, &options(false), &theme_handle, true));
+    let ls = strip(&format_ls_result(
+        &result,
+        &options(false),
+        &theme_handle,
+        true,
+    ));
     assert!(ls.contains("... (5 more lines,"), "{ls:?}");
     // Expanded shows everything.
-    let expanded = strip(&format_ls_result(&result, &options(true), &theme_handle, true));
+    let expanded = strip(&format_ls_result(
+        &result,
+        &options(true),
+        &theme_handle,
+        true,
+    ));
     assert!(!expanded.contains("more lines"), "{expanded:?}");
     assert!(expanded.contains("hit25"), "{expanded:?}");
 }
@@ -388,7 +462,12 @@ fn limit_warnings_name_the_reached_limit() {
         details: &grep_details,
         is_error: false,
     };
-    let text = strip(&format_grep_result(&result, &options(false), &theme_handle, true));
+    let text = strip(&format_grep_result(
+        &result,
+        &options(false),
+        &theme_handle,
+        true,
+    ));
     assert!(
         text.contains("[Truncated: 100 matches limit, 50.0KB limit, some lines truncated]"),
         "{text:?}"
@@ -400,7 +479,12 @@ fn limit_warnings_name_the_reached_limit() {
         details: &find_details,
         is_error: false,
     };
-    let text = strip(&format_find_result(&result, &options(false), &theme_handle, true));
+    let text = strip(&format_find_result(
+        &result,
+        &options(false),
+        &theme_handle,
+        true,
+    ));
     assert!(text.contains("[Truncated: 200 results limit]"), "{text:?}");
 
     let ls_details = serde_json::json!({"entryLimitReached": 500});
@@ -409,7 +493,12 @@ fn limit_warnings_name_the_reached_limit() {
         details: &ls_details,
         is_error: false,
     };
-    let text = strip(&format_ls_result(&result, &options(false), &theme_handle, true));
+    let text = strip(&format_ls_result(
+        &result,
+        &options(false),
+        &theme_handle,
+        true,
+    ));
     assert!(text.contains("[Truncated: 500 entries limit]"), "{text:?}");
 }
 
@@ -421,7 +510,11 @@ fn edit_call_and_result_render_the_diff() {
     let theme_handle = dark();
     let args = serde_json::json!({"file_path": "/tmp/a.rs"});
     let call = format_edit_call(&args, &theme_handle, "/tmp");
-    assert!(strip(&call).starts_with("edit /tmp/a.rs"), "{:?}", strip(&call));
+    assert!(
+        strip(&call).starts_with("edit /tmp/a.rs"),
+        "{:?}",
+        strip(&call)
+    );
 
     let details = serde_json::json!({"diff": " 1 context\n-2 old\n+2 new"});
     let content = text_content("Successfully replaced 1 block(s) in /tmp/a.rs.");
@@ -452,7 +545,10 @@ fn edit_call_and_result_render_the_diff() {
         details: &serde_json::json!({}),
         is_error: false,
     };
-    assert_eq!(format_edit_result(&args, &empty, &theme_handle, false), None);
+    assert_eq!(
+        format_edit_result(&args, &empty, &theme_handle, false),
+        None
+    );
 }
 
 // --- bash -----------------------------------------------------------------------------------------
@@ -461,7 +557,11 @@ fn edit_call_and_result_render_the_diff() {
 fn shell_call_and_duration_formatting() {
     let _guard = THEME_LOCK.lock().expect("theme lock");
     let theme_handle = dark();
-    let call = format_shell_call(&serde_json::json!({"command": "ls -la"}), "!", &theme_handle);
+    let call = format_shell_call(
+        &serde_json::json!({"command": "ls -la"}),
+        "!",
+        &theme_handle,
+    );
     assert!(strip(&call).starts_with("! ls -la"), "{:?}", strip(&call));
 
     let with_timeout = format_shell_call(
@@ -469,7 +569,11 @@ fn shell_call_and_duration_formatting() {
         "!",
         &theme_handle,
     );
-    assert!(strip(&with_timeout).contains("(timeout 5s)"), "{:?}", strip(&with_timeout));
+    assert!(
+        strip(&with_timeout).contains("(timeout 5s)"),
+        "{:?}",
+        strip(&with_timeout)
+    );
 
     // A nullish or empty command shows the placeholder; a non-string one is
     // an invalid argument.
@@ -478,7 +582,11 @@ fn shell_call_and_duration_formatting() {
     let empty = format_shell_call(&serde_json::json!({"command": ""}), "!", &theme_handle);
     assert!(strip(&empty).ends_with("! ..."), "{:?}", strip(&empty));
     let invalid = format_shell_call(&serde_json::json!({"command": 5}), "!", &theme_handle);
-    assert!(strip(&invalid).contains("[invalid arg]"), "{:?}", strip(&invalid));
+    assert!(
+        strip(&invalid).contains("[invalid arg]"),
+        "{:?}",
+        strip(&invalid)
+    );
 
     assert_eq!(format_duration(0.0), "0.0s");
     assert_eq!(format_duration(1234.0), "1.2s");
@@ -495,7 +603,7 @@ fn bash_renderer_tracks_timings_and_truncation() {
     let mut partial_context = context(args.clone(), "/tmp");
     partial_context.execution_started = true;
     partial_context.is_partial = true;
-    renderer.render_call(&args, &theme_handle, &partial_context);
+    renderer.render_call(80, &args, &theme_handle, &partial_context);
     assert!(renderer.started_at().is_some(), "start time recorded");
 
     let details = serde_json::json!({
@@ -510,6 +618,7 @@ fn bash_renderer_tracks_timings_and_truncation() {
     };
     let partial = renderer
         .render_result(
+            80,
             &result,
             &ToolRenderResultOptions {
                 expanded: true,
@@ -524,12 +633,7 @@ fn bash_renderer_tracks_timings_and_truncation() {
     assert!(renderer.ended_at().is_none(), "still running");
 
     let finished = renderer
-        .render_result(
-            &result,
-            &options(true),
-            &theme_handle,
-            &partial_context,
-        )
+        .render_result(80, &result, &options(true), &theme_handle, &partial_context)
         .expect("finished result");
     let text = strip(&finished.join("\n"));
     assert!(text.contains("Took "), "{text:?}");
@@ -553,6 +657,7 @@ fn bash_renderer_tracks_timings_and_truncation() {
     };
     let collapsed = renderer
         .render_result(
+            80,
             &result,
             &ToolRenderResultOptions {
                 expanded: false,
@@ -575,13 +680,23 @@ fn renderer_registry_covers_the_built_in_tools() {
     let theme_handle = dark();
     let renderers = create_all_tool_renderers("/tmp");
     let names: Vec<&str> = renderers.keys().map(String::as_str).collect();
-    assert_eq!(names, vec!["bash", "edit", "find", "grep", "ls", "read", "write"]);
+    assert_eq!(
+        names,
+        vec!["bash", "edit", "find", "grep", "ls", "read", "write"]
+    );
 
     // Unknown tools have no renderer (the component then uses its fallback).
     assert!(create_tool_renderer("nope", "/tmp").is_none());
-    // Every built-in renderer answers a call line.
+    // Every built-in renderer answers a call line. Only edit frames itself
+    // (upstream edit.ts `renderShell: "self"`); the rest use the default
+    // background box.
     for (name, mut renderer) in renderers {
-        assert_eq!(renderer.render_shell(), ToolRenderShell::Default);
+        let expected_shell = if name == "edit" {
+            ToolRenderShell::SelfRendered
+        } else {
+            ToolRenderShell::Default
+        };
+        assert_eq!(renderer.render_shell(), expected_shell);
         let args = serde_json::json!({
             "command": "ls",
             "path": "/tmp",
@@ -589,7 +704,8 @@ fn renderer_registry_covers_the_built_in_tools() {
             "pattern": "x",
             "content": "hi",
         });
-        let rendered = renderer.render_call(&args, &theme_handle, &context(args.clone(), "/tmp"));
+        let rendered =
+            renderer.render_call(80, &args, &theme_handle, &context(args.clone(), "/tmp"));
         assert!(!rendered.is_empty(), "{name} rendered nothing");
     }
 

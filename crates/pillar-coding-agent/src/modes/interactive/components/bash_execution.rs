@@ -48,16 +48,17 @@ pub struct BashExecutionComponent {
 impl BashExecutionComponent {
     pub fn new(theme_obj: &Theme, command: &str, exclude_from_context: bool) -> Self {
         // Excluded-from-context commands (the `!!` prefix) use the dim border.
-        let color_key = if exclude_from_context { "dim" } else { "bashMode" };
+        let color_key = if exclude_from_context {
+            "dim"
+        } else {
+            "bashMode"
+        };
         let loader_theme = theme_obj.clone();
         let message_theme = theme_obj.clone();
         let loader = Loader::new(
             Box::new(move |spinner: &str| loader_theme.fg(color_key, spinner)),
             Box::new(move |text: &str| message_theme.fg("muted", text)),
-            &format!(
-                "Running... ({} to cancel)",
-                key_text("tui.select.cancel")
-            ),
+            &format!("Running... ({} to cancel)", key_text("tui.select.cancel")),
             None,
         );
         Self {
@@ -164,10 +165,8 @@ impl BashExecutionComponent {
             "bashMode"
         };
         let theme_handle = theme();
-        DynamicBorder::with_color(Box::new(move |text: &str| {
-            theme_handle.fg(color_key, text)
-        }))
-        .render(width)
+        DynamicBorder::with_color(Box::new(move |text: &str| theme_handle.fg(color_key, text)))
+            .render(width)
     }
 }
 
@@ -182,10 +181,7 @@ impl Component for BashExecutionComponent {
         // Upstream's `updateDisplay` always colours the header with `bashMode`
         // (only the constructor uses the dim colour for `!!`), which the port
         // keeps for parity.
-        let header = format!(
-            "$ {}",
-            self.command
-        );
+        let header = format!("$ {}", self.command);
         let header_text = theme_handle.fg("bashMode", &theme_handle.bold(&header));
         let mut header_component = Text::new(&header_text, 1, 0);
         lines.extend(header_component.render(width));
@@ -206,7 +202,9 @@ impl Component for BashExecutionComponent {
         } else {
             available_lines.clone()
         };
-        let hidden_line_count = available_lines.len().saturating_sub(preview_logical_lines.len());
+        let hidden_line_count = available_lines
+            .len()
+            .saturating_sub(preview_logical_lines.len());
 
         if !available_lines.is_empty() {
             if self.expanded {
@@ -231,7 +229,8 @@ impl Component for BashExecutionComponent {
                         cached_lines.clone()
                     }
                     _ => {
-                        let result = truncate_to_visual_lines(&styled_input, PREVIEW_LINES, width, 1);
+                        let result =
+                            truncate_to_visual_lines(&styled_input, PREVIEW_LINES, width, 1);
                         self.cached_preview = Some((width, result.visual_lines.clone()));
                         result.visual_lines
                     }

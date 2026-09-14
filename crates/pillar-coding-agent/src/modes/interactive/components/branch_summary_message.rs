@@ -20,7 +20,10 @@ pub struct BranchSummaryMessageComponent {
 }
 
 impl BranchSummaryMessageComponent {
-    pub fn new(message: BranchSummaryMessage, markdown_theme: Option<MarkdownThemeFactory>) -> Self {
+    pub fn new(
+        message: BranchSummaryMessage,
+        markdown_theme: Option<MarkdownThemeFactory>,
+    ) -> Self {
         let mut component = Self {
             box_component: BoxComponent::new(1, 1),
             expanded: false,
@@ -49,11 +52,9 @@ impl BranchSummaryMessageComponent {
     fn update_display(&mut self) {
         self.box_component.clear();
         let theme_handle = theme();
-        let label = theme_handle.fg(
-            "customMessageLabel",
-            "\u{1b}[1m[branch]\u{1b}[22m",
-        );
-        self.box_component.add_child(Box::new(Text::new(&label, 0, 0)));
+        let label = theme_handle.fg("customMessageLabel", "\u{1b}[1m[branch]\u{1b}[22m");
+        self.box_component
+            .add_child(Box::new(Text::new(&label, 0, 0)));
         self.box_component.add_child(Box::new(Spacer::new(1)));
 
         if self.expanded {
@@ -64,9 +65,7 @@ impl BranchSummaryMessageComponent {
                 0,
                 (self.markdown_theme)(),
                 Some(DefaultTextStyle {
-                    color: Some(Box::new(|text: &str| {
-                        theme().fg("customMessageText", text)
-                    })),
+                    color: Some(Box::new(|text: &str| theme().fg("customMessageText", text))),
                     ..Default::default()
                 }),
                 Default::default(),
@@ -78,7 +77,8 @@ impl BranchSummaryMessageComponent {
                 theme_handle.fg("dim", &key_text("app.tools.expand")),
                 theme_handle.fg("customMessageText", " to expand)")
             );
-            self.box_component.add_child(Box::new(Text::new(&hint, 0, 0)));
+            self.box_component
+                .add_child(Box::new(Text::new(&hint, 0, 0)));
         }
     }
 }

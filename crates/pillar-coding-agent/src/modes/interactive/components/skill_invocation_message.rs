@@ -20,7 +20,10 @@ pub struct SkillInvocationMessageComponent {
 }
 
 impl SkillInvocationMessageComponent {
-    pub fn new(skill_block: ParsedSkillBlock, markdown_theme: Option<MarkdownThemeFactory>) -> Self {
+    pub fn new(
+        skill_block: ParsedSkillBlock,
+        markdown_theme: Option<MarkdownThemeFactory>,
+    ) -> Self {
         let mut component = Self {
             box_component: BoxComponent::new(1, 1),
             expanded: false,
@@ -55,7 +58,8 @@ impl SkillInvocationMessageComponent {
         let theme_handle = theme();
         if self.expanded {
             let label = theme_handle.fg("customMessageLabel", "\u{1b}[1m[skill]\u{1b}[22m");
-            self.box_component.add_child(Box::new(Text::new(&label, 0, 0)));
+            self.box_component
+                .add_child(Box::new(Text::new(&label, 0, 0)));
             let header = format!("**{}**\n\n", self.skill_block.name);
             self.box_component.add_child(Box::new(Markdown::new(
                 &format!("{header}{}", self.skill_block.content),
@@ -63,9 +67,7 @@ impl SkillInvocationMessageComponent {
                 0,
                 (self.markdown_theme)(),
                 Some(DefaultTextStyle {
-                    color: Some(Box::new(|text: &str| {
-                        theme().fg("customMessageText", text)
-                    })),
+                    color: Some(Box::new(|text: &str| theme().fg("customMessageText", text))),
                     ..Default::default()
                 }),
                 Default::default(),
@@ -80,7 +82,8 @@ impl SkillInvocationMessageComponent {
                     &format!(" ({} to expand)", key_text("app.tools.expand"))
                 )
             );
-            self.box_component.add_child(Box::new(Text::new(&line, 0, 0)));
+            self.box_component
+                .add_child(Box::new(Text::new(&line, 0, 0)));
         }
     }
 }

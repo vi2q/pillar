@@ -56,6 +56,16 @@ fn normalize_display_text_strips_carriage_returns() {
 
 // --- getTextOutput -----------------------------------------------------------------------
 
+use pillar_tui::terminal_image::{TerminalCapabilities, set_capabilities};
+
+fn caps_without_images() {
+    set_capabilities(TerminalCapabilities {
+        images: None,
+        true_color: true,
+        hyperlinks: false,
+    });
+}
+
 #[test]
 fn get_text_output_joins_text_blocks_sanitized() {
     let blocks = vec![
@@ -69,7 +79,8 @@ fn get_text_output_joins_text_blocks_sanitized() {
 }
 
 #[test]
-fn get_text_output_appends_image_indicators() {
+fn get_text_output_appends_image_fallback_lines() {
+    caps_without_images();
     let blocks = vec![
         ToolResultBlock::Text("output".to_string()),
         ToolResultBlock::Image {
@@ -78,14 +89,24 @@ fn get_text_output_appends_image_indicators() {
         },
     ];
     let output = get_text_output(&blocks, false);
-    assert_eq!(output, "output\n[image: image/png]");
+    // Upstream imageFallback without a probed size (the data is not an image).
+    assert_eq!(output, "output\n[Image: [image/png]]");
 
     // Empty text with image only -> just the indicator.
     let blocks = vec![ToolResultBlock::Image {
         data: "abc".to_string(),
         mime_type: "image/jpeg".to_string(),
     }];
-    assert_eq!(get_text_output(&blocks, false), "[image: image/jpeg]");
+    assert_eq!(get_text_output(&blocks, false), "[Image: [image/jpeg]]");
+
+    // A probed image reports its dimensions.
+    // 1x1 transparent PNG, base64.
+    let png_data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+    let blocks = vec![ToolResultBlock::Image {
+        data: png_data.to_string(),
+        mime_type: "image/png".to_string(),
+    }];
+    assert_eq!(get_text_output(&blocks, false), "[Image: [image/png] 1x1]");
 }
 
 #[test]

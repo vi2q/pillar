@@ -22,5 +22,6 @@ pub mod keybinding_hints;
 pub mod markdown_transform;
 pub mod skill_invocation_message;
 pub mod status_indicator;
+pub mod tool_execution;
 pub mod user_message;
 pub mod visual_truncate;

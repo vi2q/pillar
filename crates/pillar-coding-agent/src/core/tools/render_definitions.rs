@@ -16,16 +16,16 @@ use pillar_ai::types::Content;
 
 use crate::core::tools::path_utils::resolve_to_cwd;
 use crate::core::tools::render_utils::{
-    format_path_relative_to_cwd_or_absolute, get_readme_path, get_text_output, invalid_arg_text,
-    normalize_display_text, render_tool_path, replace_tabs, shorten_path,
-    trim_trailing_empty_lines, ToolResultBlock,
+    ToolResultBlock, format_path_relative_to_cwd_or_absolute, get_readme_path, get_text_output,
+    invalid_arg_text, normalize_display_text, render_tool_path, replace_tabs, shorten_path,
+    trim_trailing_empty_lines,
 };
 use crate::core::truncate::{DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, format_size};
 use crate::modes::interactive::components::diff::{RenderDiffOptions, render_diff};
 use crate::modes::interactive::components::keybinding_hints::{key_hint, key_text};
 use crate::modes::interactive::components::visual_truncate::truncate_to_visual_lines;
 use crate::modes::interactive::theme::{Theme, get_language_from_path, highlight_code};
-use pillar_tui::text_utils::truncate_to_width;
+use pillar_tui::text_utils::{apply_background_to_line, truncate_to_width};
 
 /// Line limits used by the collapsed previews (upstream's inline constants).
 pub const READ_PREVIEW_LINES: usize = 10;
@@ -102,11 +102,15 @@ impl ToolRenderResult<'_> {
     }
 
     fn detail_usize(&self, key: &str) -> Option<usize> {
-        self.detail(key).and_then(|value| value.as_u64()).map(|v| v as usize)
+        self.detail(key)
+            .and_then(|value| value.as_u64())
+            .map(|v| v as usize)
     }
 
     fn detail_bool(&self, key: &str) -> bool {
-        self.detail(key).and_then(|value| value.as_bool()).unwrap_or(false)
+        self.detail(key)
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
     }
 
     fn detail_str(&self, key: &str) -> Option<String> {
@@ -172,12 +176,19 @@ pub trait ToolRenderer: Send {
     }
 
     /// Render the tool call (upstream `renderCall`).
-    fn render_call(&mut self, args: &serde_json::Value, theme: &Theme, context: &ToolRenderContext) -> Vec<String>;
+    fn render_call(
+        &mut self,
+        width: usize,
+        args: &serde_json::Value,
+        theme: &Theme,
+        context: &ToolRenderContext,
+    ) -> Vec<String>;
 
     /// Render the tool result, or `None` when there is nothing to show
     /// (upstream `renderResult` answering `undefined`).
     fn render_result(
         &mut self,
+        _width: usize,
         result: &ToolRenderResult<'_>,
         options: &ToolRenderResultOptions,
         theme: &Theme,
@@ -186,6 +197,19 @@ pub trait ToolRenderer: Send {
 
     /// Whether the renderer has state (used by tests/hosts).
     fn invalidate(&mut self) {}
+
+    /// Whether this renderer defines a call renderer (upstream checking
+    /// `renderCall` for `undefined`); lets the component fall back to the
+    /// built-in per method.
+    fn has_render_call(&self) -> bool {
+        true
+    }
+
+    /// Whether this renderer defines a result renderer (upstream checking
+    /// `renderResult` for `undefined`).
+    fn has_render_result(&self) -> bool {
+        true
+    }
 }
 
 /// Coerce a tool argument to a string, mirroring upstream's `str()` behind a
@@ -298,7 +322,8 @@ pub fn get_compact_read_classification(
             let label = relative
                 .to_string_lossy()
                 .replace(std::path::MAIN_SEPARATOR, "/");
-            if label == "README.md" || label.starts_with("docs/") || label.starts_with("examples/") {
+            if label == "README.md" || label.starts_with("docs/") || label.starts_with("examples/")
+            {
                 return Some(CompactReadClassification {
                     kind: "docs",
                     label,
@@ -451,6 +476,7 @@ pub struct ReadToolRenderer;
 impl ToolRenderer for ReadToolRenderer {
     fn render_call(
         &mut self,
+        _width: usize,
         args: &serde_json::Value,
         theme: &Theme,
         context: &ToolRenderContext,
@@ -467,6 +493,7 @@ impl ToolRenderer for ReadToolRenderer {
 
     fn render_result(
         &mut self,
+        _width: usize,
         result: &ToolRenderResult<'_>,
         options: &ToolRenderResultOptions,
         theme: &Theme,
@@ -514,7 +541,9 @@ pub fn format_write_call(
         Some(content) => {
             let lang = raw_path.as_deref().and_then(get_language_from_path);
             let rendered_lines: Vec<String> = match lang {
-                Some(lang) => highlight_code(&replace_tabs(&normalize_display_text(&content)), Some(lang)),
+                Some(lang) => {
+                    highlight_code(&replace_tabs(&normalize_display_text(&content)), Some(lang))
+                }
                 None => normalize_display_text(&content)
                     .split('\n')
                     .map(str::to_string)
@@ -585,6 +614,7 @@ pub struct WriteToolRenderer;
 impl ToolRenderer for WriteToolRenderer {
     fn render_call(
         &mut self,
+        _width: usize,
         args: &serde_json::Value,
         theme: &Theme,
         context: &ToolRenderContext,
@@ -602,6 +632,7 @@ impl ToolRenderer for WriteToolRenderer {
 
     fn render_result(
         &mut self,
+        _width: usize,
         result: &ToolRenderResult<'_>,
         _options: &ToolRenderResultOptions,
         theme: &Theme,
@@ -721,6 +752,7 @@ pub struct GrepToolRenderer;
 impl ToolRenderer for GrepToolRenderer {
     fn render_call(
         &mut self,
+        _width: usize,
         args: &serde_json::Value,
         theme: &Theme,
         _context: &ToolRenderContext,
@@ -730,6 +762,7 @@ impl ToolRenderer for GrepToolRenderer {
 
     fn render_result(
         &mut self,
+        _width: usize,
         result: &ToolRenderResult<'_>,
         options: &ToolRenderResultOptions,
         theme: &Theme,
@@ -842,6 +875,7 @@ pub struct FindToolRenderer;
 impl ToolRenderer for FindToolRenderer {
     fn render_call(
         &mut self,
+        _width: usize,
         args: &serde_json::Value,
         theme: &Theme,
         _context: &ToolRenderContext,
@@ -851,6 +885,7 @@ impl ToolRenderer for FindToolRenderer {
 
     fn render_result(
         &mut self,
+        _width: usize,
         result: &ToolRenderResult<'_>,
         options: &ToolRenderResultOptions,
         theme: &Theme,
@@ -955,6 +990,7 @@ pub struct LsToolRenderer;
 impl ToolRenderer for LsToolRenderer {
     fn render_call(
         &mut self,
+        _width: usize,
         args: &serde_json::Value,
         theme: &Theme,
         context: &ToolRenderContext,
@@ -964,6 +1000,7 @@ impl ToolRenderer for LsToolRenderer {
 
     fn render_result(
         &mut self,
+        _width: usize,
         result: &ToolRenderResult<'_>,
         options: &ToolRenderResultOptions,
         theme: &Theme,
@@ -1032,24 +1069,48 @@ pub fn format_edit_result(
 pub struct EditToolRenderer;
 
 impl ToolRenderer for EditToolRenderer {
+    /// upstream edit.ts: `renderShell: "self"` — the edit block frames itself
+    /// (no tool background box).
+    fn render_shell(&self) -> ToolRenderShell {
+        ToolRenderShell::SelfRendered
+    }
+
     fn render_call(
         &mut self,
+        width: usize,
         args: &serde_json::Value,
         theme: &Theme,
         context: &ToolRenderContext,
     ) -> Vec<String> {
-        vec![format_edit_call(args, theme, &context.cwd)]
+        // upstream `buildEditCallComponent`: a Box(0,0) whose bg follows the
+        // preview/settled state around `Text(formatEditCall)`. The port has no
+        // async preview yet, so the header keeps the pending colour (error
+        // once the result settled with an error) and fills the row width.
+        let bg_key = if context.is_error {
+            "toolErrorBg"
+        } else {
+            "toolPendingBg"
+        };
+        let header = apply_background_to_line(
+            &format_edit_call(args, theme, &context.cwd),
+            width,
+            &|text| theme.bg(bg_key, text),
+        );
+        vec![header]
     }
 
     fn render_result(
         &mut self,
+        _width: usize,
         result: &ToolRenderResult<'_>,
         _options: &ToolRenderResultOptions,
         theme: &Theme,
         context: &ToolRenderContext,
     ) -> Option<Vec<String>> {
+        // upstream `renderResult`: Container with `Spacer(1)` and
+        // `Text(output, 1, 0)`.
         format_edit_result(&context.args, result, theme, context.is_error)
-            .map(|text| vec![text])
+            .map(|text| vec![String::new(), format!(" {text}")])
     }
 }
 
@@ -1135,7 +1196,8 @@ impl BashToolRenderer {
             // Drop the "full output" footer the bash tool appends to the text
             // and re-add it as a warning line below.
             if let Some(footer_start) = output.rfind("\n\n[") {
-                if output[footer_start..].contains(full_output_path.as_deref().unwrap_or_default()) {
+                if output[footer_start..].contains(full_output_path.as_deref().unwrap_or_default())
+                {
                     output = output[..footer_start].trim_end().to_string();
                 }
             }
@@ -1150,15 +1212,13 @@ impl BashToolRenderer {
                 .join("\n");
             if options.expanded {
                 lines.push(String::new());
-                lines.extend(
-                    format!("\n{styled_output}")
-                        .split('\n')
-                        .map(str::to_string),
-                );
+                lines.extend(format!("\n{styled_output}").split('\n').map(str::to_string));
             } else {
                 let width = width.unwrap_or(80);
                 let cached = match &self.cached_preview {
-                    Some((cached_width, cached_lines, cached_skipped)) if *cached_width == width => {
+                    Some((cached_width, cached_lines, cached_skipped))
+                        if *cached_width == width =>
+                    {
                         Some((cached_lines.clone(), *cached_skipped))
                     }
                     _ => None,
@@ -1166,7 +1226,8 @@ impl BashToolRenderer {
                 let (preview_lines, skipped) = match cached {
                     Some(cached) => cached,
                     None => {
-                        let preview = truncate_to_visual_lines(&styled_output, BASH_PREVIEW_LINES, width, 0);
+                        let preview =
+                            truncate_to_visual_lines(&styled_output, BASH_PREVIEW_LINES, width, 0);
                         self.cached_preview =
                             Some((width, preview.visual_lines.clone(), preview.skipped_count));
                         (preview.visual_lines, preview.skipped_count)
@@ -1215,7 +1276,11 @@ impl BashToolRenderer {
         }
 
         if let Some(started_at) = self.started_at {
-            let label = if options.is_partial { "Elapsed" } else { "Took" };
+            let label = if options.is_partial {
+                "Elapsed"
+            } else {
+                "Took"
+            };
             let end_time = self.ended_at.unwrap_or_else(Instant::now);
             lines.push(String::new());
             lines.push(theme.fg(
@@ -1234,6 +1299,7 @@ impl BashToolRenderer {
 impl ToolRenderer for BashToolRenderer {
     fn render_call(
         &mut self,
+        _width: usize,
         args: &serde_json::Value,
         theme: &Theme,
         context: &ToolRenderContext,
@@ -1247,6 +1313,7 @@ impl ToolRenderer for BashToolRenderer {
 
     fn render_result(
         &mut self,
+        _width: usize,
         result: &ToolRenderResult<'_>,
         options: &ToolRenderResultOptions,
         theme: &Theme,

@@ -148,9 +148,8 @@ impl AssistantMessageComponent {
 
                     if !thinking_blocks.is_empty() {
                         // Spacing only when another visible block follows.
-                        let has_visible_content_after = message.content[next..]
-                            .iter()
-                            .any(|content| match content {
+                        let has_visible_content_after =
+                            message.content[next..].iter().any(|content| match content {
                                 Content::Text { text, .. } => !text.trim().is_empty(),
                                 Content::Thinking { thinking, .. } => !thinking.trim().is_empty(),
                                 _ => false,
@@ -159,10 +158,9 @@ impl AssistantMessageComponent {
                         if self.hide_thinking_block {
                             let theme_handle = theme();
                             self.container.add_child(Box::new(Text::new(
-                                &theme_handle.italic(&theme_handle.fg(
-                                    "thinkingText",
-                                    &self.hidden_thinking_label,
-                                )),
+                                &theme_handle.italic(
+                                    &theme_handle.fg("thinkingText", &self.hidden_thinking_label),
+                                ),
                                 self.output_pad,
                                 0,
                             )));

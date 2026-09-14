@@ -67,7 +67,8 @@ impl CompactionSummaryMessageComponent {
         let theme_handle = theme();
         let token_str = format_tokens(self.message.tokens_before);
         let label = theme_handle.fg("customMessageLabel", "\u{1b}[1m[compaction]\u{1b}[22m");
-        self.box_component.add_child(Box::new(Text::new(&label, 0, 0)));
+        self.box_component
+            .add_child(Box::new(Text::new(&label, 0, 0)));
         self.box_component.add_child(Box::new(Spacer::new(1)));
 
         if self.expanded {
@@ -78,9 +79,7 @@ impl CompactionSummaryMessageComponent {
                 0,
                 (self.markdown_theme)(),
                 Some(DefaultTextStyle {
-                    color: Some(Box::new(|text: &str| {
-                        theme().fg("customMessageText", text)
-                    })),
+                    color: Some(Box::new(|text: &str| theme().fg("customMessageText", text))),
                     ..Default::default()
                 }),
                 Default::default(),
@@ -95,7 +94,8 @@ impl CompactionSummaryMessageComponent {
                 theme_handle.fg("dim", &key_text("app.tools.expand")),
                 theme_handle.fg("customMessageText", " to expand)")
             );
-            self.box_component.add_child(Box::new(Text::new(&hint, 0, 0)));
+            self.box_component
+                .add_child(Box::new(Text::new(&hint, 0, 0)));
         }
     }
 }

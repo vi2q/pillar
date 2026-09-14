@@ -59,12 +59,7 @@ pub fn key_text(keybinding: &str) -> String {
 /// [`key_text`] with capitalized parts (upstream `keyDisplayText`).
 pub fn key_display_text(keybinding: &str) -> String {
     let keys = with_global_keybindings(|keybindings| keybindings.get_keys(keybinding));
-    format_keys(
-        &keys,
-        KeyTextFormatOptions {
-            capitalize: true,
-        },
-    )
+    format_keys(&keys, KeyTextFormatOptions { capitalize: true })
 }
 
 /// Dim keys plus a muted description (upstream `keyHint`).
@@ -82,7 +77,10 @@ pub fn raw_key_hint(key: &str, description: &str) -> String {
     let theme = theme();
     format!(
         "{}{}",
-        theme.fg("dim", &format_key_text(key, KeyTextFormatOptions::default())),
+        theme.fg(
+            "dim",
+            &format_key_text(key, KeyTextFormatOptions::default())
+        ),
         theme.fg("muted", &format!(" {description}"))
     )
 }

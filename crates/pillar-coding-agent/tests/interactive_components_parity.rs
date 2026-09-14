@@ -1021,12 +1021,20 @@ fn bash_execution_streams_output_and_reports_status() {
     let mut failed = bash_component(false);
     failed.set_complete(Some(3), false, None, None);
     assert_eq!(failed.status(), BashExecutionStatus::Error);
-    assert!(plain_lines(&failed.render(40)).join("\n").contains("(exit 3)"));
+    assert!(
+        plain_lines(&failed.render(40))
+            .join("\n")
+            .contains("(exit 3)")
+    );
 
     let mut cancelled = bash_component(false);
     cancelled.set_complete(None, true, None, None);
     assert_eq!(cancelled.status(), BashExecutionStatus::Cancelled);
-    assert!(plain_lines(&cancelled.render(40)).join("\n").contains("(cancelled)"));
+    assert!(
+        plain_lines(&cancelled.render(40))
+            .join("\n")
+            .contains("(cancelled)")
+    );
 
     let _ = TruncationOptions::default();
 }
@@ -1075,7 +1083,12 @@ fn bash_execution_reports_context_and_tool_truncation() {
         },
     );
     assert!(truncated.truncated, "{truncated:?}");
-    component.set_complete(Some(0), false, Some(truncated), Some("/tmp/full.log".to_string()));
+    component.set_complete(
+        Some(0),
+        false,
+        Some(truncated),
+        Some("/tmp/full.log".to_string()),
+    );
     let body = plain_lines(&component.render(80)).join("\n");
     assert!(
         body.contains("Output truncated. Full output: /tmp/full.log"),
@@ -1119,11 +1132,436 @@ fn bash_execution_uses_the_dim_border_for_excluded_commands() {
     );
     // The header colour follows upstream's `updateDisplay`, which always uses
     // the bash-mode colour (even for `!!`).
-    assert!(excluded_lines[2].contains(&dark.fg_ansi("bashMode")), "{:?}", excluded_lines[2]);
+    assert!(
+        excluded_lines[2].contains(&dark.fg_ansi("bashMode")),
+        "{:?}",
+        excluded_lines[2]
+    );
 
     // The preview cache is dropped when the expanded state changes.
     excluded.set_expanded(true);
     excluded.invalidate();
     let body = plain_lines(&excluded.render(20)).join("\n");
     assert!(body.contains("$ echo hi"), "{body:?}");
+}
+
+// --- tool execution -----------------------------------------------------------------------------
+
+use pillar_coding_agent::core::tools::render_definitions::{
+    ToolRenderContext, ToolRenderResult, ToolRenderResultOptions, ToolRenderShell, ToolRenderer,
+};
+use pillar_coding_agent::modes::interactive::components::tool_execution::{
+    ToolExecutionComponent, ToolExecutionOptions, ToolExecutionResult,
+};
+use pillar_tui::terminal_image::{ImageProtocol, TerminalCapabilities, set_capabilities};
+
+fn caps_without_images() {
+    set_capabilities(TerminalCapabilities {
+        images: None,
+        true_color: true,
+        hyperlinks: false,
+    });
+}
+
+#[test]
+fn tool_execution_renders_the_builtin_call_and_switches_background() {
+    let _guard = THEME_LOCK.lock().expect("theme lock");
+    install_dark();
+    caps_without_images();
+    let dark = theme::get_theme_by_name("dark").expect("dark");
+
+    let mut component = ToolExecutionComponent::new(
+        "read",
+        "call-1",
+        serde_json::json!({"file_path": "/tmp/a.rs"}),
+        ToolExecutionOptions::default(),
+        None,
+        "/tmp",
+    );
+    let lines = component.render(60);
+    // The leading spacer comes first, then the background box.
+    assert_eq!(plain_lines(&lines)[0], "", "{lines:?}");
+    assert!(
+        plain_lines(&lines).join("\n").contains("read /tmp/a.rs"),
+        "{lines:?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains(&dark.bg_ansi("toolPendingBg"))),
+        "{lines:?}"
+    );
+
+    // A successful result switches the background and renders the output.
+    // Collapsed read results render no body (upstream `formatReadResult`),
+    // so expand first.
+    component.set_expanded(true);
+    component.update_result(
+        ToolExecutionResult {
+            content: vec![Content::text("line one\nline two")],
+            details: serde_json::json!({}),
+            is_error: false,
+        },
+        false,
+    );
+    let lines = component.render(60);
+    let body = plain_lines(&lines).join("\n");
+    assert!(body.contains("line one"), "{body:?}");
+    assert!(body.contains("line two"), "{body:?}");
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains(&dark.bg_ansi("toolSuccessBg"))),
+        "{lines:?}"
+    );
+
+    // An error result switches to the error background.
+    component.update_result(
+        ToolExecutionResult {
+            content: vec![Content::text("boom")],
+            details: serde_json::json!({}),
+            is_error: true,
+        },
+        false,
+    );
+    let lines = component.render(60);
+    let body = plain_lines(&lines).join("\n");
+    assert!(body.contains("boom"), "{body:?}");
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains(&dark.bg_ansi("toolErrorBg"))),
+        "{lines:?}"
+    );
+}
+
+#[test]
+fn tool_execution_unknown_tool_uses_the_generic_fallback() {
+    let _guard = THEME_LOCK.lock().expect("theme lock");
+    install_dark();
+    caps_without_images();
+    let dark = theme::get_theme_by_name("dark").expect("dark");
+
+    let mut component = ToolExecutionComponent::new(
+        "nope",
+        "call-2",
+        serde_json::json!({"a": 1}),
+        ToolExecutionOptions::default(),
+        None,
+        "/tmp",
+    );
+    let lines = component.render(60);
+    let body = plain_lines(&lines).join("\n");
+    // `formatToolExecution`: the bold tool name, the pretty-printed args and
+    // no output yet.
+    // (The box pads every wrapped line to full width, so assert on the
+    // pieces rather than the joined JSON.)
+    assert!(body.contains("nope"), "{body:?}");
+    assert!(body.contains("\"a\": 1"), "{body:?}");
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains(&dark.bg_ansi("toolPendingBg"))),
+        "{lines:?}"
+    );
+
+    // The result text is appended after the args.
+    component.update_result(
+        ToolExecutionResult {
+            content: vec![Content::text("the output")],
+            details: serde_json::Value::Null,
+            is_error: false,
+        },
+        false,
+    );
+    let body = plain_lines(&component.render(60)).join("\n");
+    assert!(body.contains("the output"), "{body:?}");
+}
+
+#[test]
+fn tool_execution_expands_the_fallback_preview() {
+    let _guard = THEME_LOCK.lock().expect("theme lock");
+    install_dark();
+    caps_without_images();
+
+    let output = (0..15)
+        .map(|i| format!("line{i}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    // The preview truncation belongs to the result fallback, which runs when
+    // a renderer definition exists but no result renderer answers (upstream
+    // `createResultFallback`).
+    let mut component = ToolExecutionComponent::new(
+        "nope",
+        "call-3",
+        serde_json::json!({}),
+        ToolExecutionOptions::default(),
+        Some(Box::new(StubRenderer {
+            shell: ToolRenderShell::Default,
+            serve_call: false,
+            serve_result: false,
+        })),
+        "/tmp",
+    );
+    component.update_result(
+        ToolExecutionResult {
+            content: vec![Content::text(output)],
+            details: serde_json::Value::Null,
+            is_error: false,
+        },
+        false,
+    );
+
+    // Collapsed: the first 10 lines plus the muted "more lines" hint.
+    let body = plain_lines(&component.render(60)).join("\n");
+    assert!(body.contains("line9"), "{body:?}");
+    assert!(!body.contains("line10"), "{body:?}");
+    assert!(body.contains("... (5 more lines,"), "{body:?}");
+
+    // Expanded: the full output.
+    component.set_expanded(true);
+    let body = plain_lines(&component.render(60)).join("\n");
+    assert!(body.contains("line14"), "{body:?}");
+    assert!(!body.contains("more lines"), "{body:?}");
+}
+
+struct StubRenderer {
+    shell: ToolRenderShell,
+    serve_call: bool,
+    serve_result: bool,
+}
+
+impl ToolRenderer for StubRenderer {
+    fn render_shell(&self) -> ToolRenderShell {
+        self.shell
+    }
+
+    fn render_call(
+        &mut self,
+        _width: usize,
+        _args: &serde_json::Value,
+        _theme: &theme::Theme,
+        _context: &ToolRenderContext,
+    ) -> Vec<String> {
+        vec!["custom call".to_string()]
+    }
+
+    fn render_result(
+        &mut self,
+        _width: usize,
+        _result: &ToolRenderResult<'_>,
+        _options: &ToolRenderResultOptions,
+        _theme: &theme::Theme,
+        _context: &ToolRenderContext,
+    ) -> Option<Vec<String>> {
+        Some(vec!["custom result".to_string()])
+    }
+
+    fn has_render_call(&self) -> bool {
+        self.serve_call
+    }
+
+    fn has_render_result(&self) -> bool {
+        self.serve_result
+    }
+}
+
+#[test]
+fn tool_execution_prefers_the_custom_renderer_and_self_shell() {
+    let _guard = THEME_LOCK.lock().expect("theme lock");
+    install_dark();
+    caps_without_images();
+
+    let custom = Box::new(StubRenderer {
+        shell: ToolRenderShell::SelfRendered,
+        serve_call: true,
+        serve_result: true,
+    });
+    let mut component = ToolExecutionComponent::new(
+        "nope",
+        "call-4",
+        serde_json::json!({}),
+        ToolExecutionOptions::default(),
+        Some(custom),
+        "/tmp",
+    );
+    component.update_result(
+        ToolExecutionResult {
+            content: vec![],
+            details: serde_json::Value::Null,
+            is_error: false,
+        },
+        false,
+    );
+    let lines = component.render(40);
+    // The self-render shell: one leading blank line, then the renderer's own
+    // framing — no tool background box.
+    assert_eq!(plain_lines(&lines)[0], "", "{lines:?}");
+    let body = plain_lines(&lines).join("\n");
+    assert!(body.contains("custom call"), "{body:?}");
+    assert!(body.contains("custom result"), "{body:?}");
+    assert!(
+        !lines.iter().any(|line| line.contains(
+            &theme::get_theme_by_name("dark")
+                .expect("dark")
+                .bg_ansi("toolPendingBg")
+        )),
+        "self-rendered block must not paint the default box: {lines:?}"
+    );
+
+    // A custom renderer without a result renderer falls back to the
+    // built-in's (upstream `renderResult ?? builtInToolDefinition.renderResult`).
+    let custom = Box::new(StubRenderer {
+        shell: ToolRenderShell::Default,
+        serve_call: true,
+        serve_result: false,
+    });
+    let mut component = ToolExecutionComponent::new(
+        "read",
+        "call-5",
+        serde_json::json!({"file_path": "/tmp/a.rs"}),
+        ToolExecutionOptions::default(),
+        Some(custom),
+        "/tmp",
+    );
+    component.update_result(
+        ToolExecutionResult {
+            content: vec![Content::text("saved")],
+            details: serde_json::json!({}),
+            is_error: false,
+        },
+        false,
+    );
+    let body = plain_lines(&component.render(60)).join("\n");
+    assert!(body.contains("custom call"), "{body:?}");
+    // The read renderer's result output (the built-in fallback). Collapsed
+    // read results render nothing (upstream `formatReadResult`), so expand
+    // first; the body then shows the result text, not the call line.
+    component.set_expanded(true);
+    let body = plain_lines(&component.render(60)).join("\n");
+    assert!(body.contains("saved"), "{body:?}");
+}
+
+struct PanickyRenderer;
+
+impl ToolRenderer for PanickyRenderer {
+    fn render_call(
+        &mut self,
+        _width: usize,
+        _args: &serde_json::Value,
+        _theme: &theme::Theme,
+        _context: &ToolRenderContext,
+    ) -> Vec<String> {
+        panic!("boom");
+    }
+
+    fn render_result(
+        &mut self,
+        _width: usize,
+        _result: &ToolRenderResult<'_>,
+        _options: &ToolRenderResultOptions,
+        _theme: &theme::Theme,
+        _context: &ToolRenderContext,
+    ) -> Option<Vec<String>> {
+        panic!("boom");
+    }
+}
+
+#[test]
+fn tool_execution_falls_back_when_the_renderer_panics() {
+    let _guard = THEME_LOCK.lock().expect("theme lock");
+    install_dark();
+    caps_without_images();
+
+    let mut component = ToolExecutionComponent::new(
+        "mytool",
+        "call-6",
+        serde_json::json!({}),
+        ToolExecutionOptions::default(),
+        Some(Box::new(PanickyRenderer)),
+        "/tmp",
+    );
+    component.update_result(
+        ToolExecutionResult {
+            content: vec![Content::text("result text")],
+            details: serde_json::Value::Null,
+            is_error: false,
+        },
+        false,
+    );
+    // Both renderers panic: the call falls back to the tool name, the result
+    // to the text output (upstream's catch blocks).
+    let body = plain_lines(&component.render(60)).join("\n");
+    assert!(body.contains("mytool"), "{body:?}");
+    assert!(body.contains("result text"), "{body:?}");
+}
+
+#[test]
+fn tool_execution_renders_image_blocks_per_protocol() {
+    let _guard = THEME_LOCK.lock().expect("theme lock");
+    install_dark();
+    let png_1x1 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+    let jpeg = "fake-jpeg-data";
+
+    let image_result = |data: &str, mime: &str| ToolExecutionResult {
+        content: vec![Content::Image {
+            data: data.to_string(),
+            mime_type: mime.to_string(),
+        }],
+        details: serde_json::Value::Null,
+        is_error: false,
+    };
+
+    // iTerm2: the image is appended after a spacer.
+    set_capabilities(TerminalCapabilities {
+        images: Some(ImageProtocol::Iterm2),
+        true_color: true,
+        hyperlinks: false,
+    });
+    let mut component = ToolExecutionComponent::new(
+        "nope",
+        "call-7",
+        serde_json::json!({}),
+        ToolExecutionOptions::default(),
+        None,
+        "/tmp",
+    );
+    component.update_result(image_result(png_1x1, "image/png"), false);
+    let lines = component.render(40);
+    assert!(
+        lines.iter().any(|line| line.contains("\u{1b}]1337;File=")),
+        "iterm2 image line: {lines:?}"
+    );
+
+    // `showImages` off: no image child.
+    component.set_show_images(false);
+    let lines = component.render(40);
+    assert!(
+        !lines.iter().any(|line| line.contains("\u{1b}]1337;File=")),
+        "{lines:?}"
+    );
+
+    // Kitty requires PNG; without a converter a JPEG is skipped.
+    set_capabilities(TerminalCapabilities {
+        images: Some(ImageProtocol::Kitty),
+        true_color: true,
+        hyperlinks: false,
+    });
+    component.set_show_images(true);
+    component.update_result(image_result(jpeg, "image/jpeg"), false);
+    let lines = component.render(40);
+    assert!(
+        !lines.iter().any(|line| line.contains("\u{1b}_G")),
+        "kitty skips unconvertible images: {lines:?}"
+    );
+
+    // A PNG passes through and is uploaded on kitty.
+    component.update_result(image_result(png_1x1, "image/png"), false);
+    let lines = component.render(40);
+    assert!(
+        lines.iter().any(|line| line.contains("\u{1b}_G")),
+        "kitty image line: {lines:?}"
+    );
+
+    caps_without_images();
 }

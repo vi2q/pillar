@@ -107,9 +107,7 @@ impl CustomMessageComponent {
             0,
             (self.markdown_theme)(),
             Some(DefaultTextStyle {
-                color: Some(Box::new(|text: &str| {
-                    theme().fg("customMessageText", text)
-                })),
+                color: Some(Box::new(|text: &str| theme().fg("customMessageText", text))),
                 ..Default::default()
             }),
             Default::default(),
