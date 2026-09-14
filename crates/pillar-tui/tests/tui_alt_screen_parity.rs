@@ -564,10 +564,7 @@ fn dragging_selects_text_and_copy_on_select_copies_it() {
 #[test]
 fn multi_line_drag_joins_rows_case() {
     let terminal = RecorderTerminal::new(20, 3);
-    let mut screen = screen(
-        &terminal,
-        &["alpha bravo", "charlie delta", "echo"],
-    );
+    let mut screen = screen(&terminal, &["alpha bravo", "charlie delta", "echo"]);
     screen.start();
     screen.do_render().expect("frame");
 
@@ -597,27 +594,19 @@ fn double_and_triple_click_select_word_then_line() {
     assert!(!screen.has_active_selection());
 
     // Second click within the double-click window selects the word.
-    screen.handle_selection_mouse_event_at(
-        &mouse_event(&point),
-        base + Duration::from_millis(100),
-    );
+    screen.handle_selection_mouse_event_at(&mouse_event(&point), base + Duration::from_millis(100));
     assert_eq!(screen.active_selection_text().as_deref(), Some("alpha"));
 
     // Third click selects the line.
-    screen.handle_selection_mouse_event_at(
-        &mouse_event(&point),
-        base + Duration::from_millis(200),
-    );
+    screen.handle_selection_mouse_event_at(&mouse_event(&point), base + Duration::from_millis(200));
     assert_eq!(
         screen.active_selection_text().as_deref(),
         Some("alpha bravo")
     );
 
     // Outside the window the count restarts at a caret.
-    screen.handle_selection_mouse_event_at(
-        &mouse_event(&point),
-        base + Duration::from_millis(5_000),
-    );
+    screen
+        .handle_selection_mouse_event_at(&mouse_event(&point), base + Duration::from_millis(5_000));
     assert!(!screen.has_active_selection());
 }
 
@@ -631,10 +620,7 @@ fn word_selection_keeps_paths_and_kebab_tokens_whole() {
     let base = Instant::now();
     let point = sgr_press(6, 0);
     subject.handle_selection_mouse_event_at(&mouse_event(&point), base);
-    subject.handle_selection_mouse_event_at(
-        &mouse_event(&point),
-        base + Duration::from_millis(50),
-    );
+    subject.handle_selection_mouse_event_at(&mouse_event(&point), base + Duration::from_millis(50));
     // `/` and `-` join segments, so the path stays whole.
     assert_eq!(
         subject.active_selection_text().as_deref(),
@@ -670,7 +656,9 @@ fn clicking_an_osc8_link_activates_it() {
         },
     );
     screen.base_mut().add_child(Box::new(Lines {
-        lines: vec![format!("\u{1b}]8;;https://example.com\u{7}link\u{1b}]8;;\u{7} tail")],
+        lines: vec![format!(
+            "\u{1b}]8;;https://example.com\u{7}link\u{1b}]8;;\u{7} tail"
+        )],
     }));
     screen.start();
     screen.do_render().expect("frame");
@@ -728,10 +716,7 @@ fn selection_respects_the_scroll_view_geometry() {
 #[test]
 fn search_highlights_and_the_overlay_reach_the_frame() {
     let terminal = RecorderTerminal::new(60, 4);
-    let mut screen = screen(
-        &terminal,
-        &["needle one", "two", "needle three"],
-    );
+    let mut screen = screen(&terminal, &["needle one", "two", "needle three"]);
     screen.start();
     screen.do_render().expect("frame");
 
@@ -775,9 +760,10 @@ fn a_focused_overlay_defers_viewport_keybindings() {
             vec![]
         }
     }
-    let id = screen
-        .base_mut()
-        .show_overlay(Box::new(Plain), pillar_tui::overlay::OverlayOptions::default());
+    let id = screen.base_mut().show_overlay(
+        Box::new(Plain),
+        pillar_tui::overlay::OverlayOptions::default(),
+    );
     assert!(screen.base().overlay_is_focused(id));
     assert!(screen.handle_viewport_input("\u{1b}[H").is_none());
     assert_eq!(screen.viewport_top(), top);

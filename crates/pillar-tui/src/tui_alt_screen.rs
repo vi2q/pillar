@@ -851,7 +851,9 @@ impl TuiAltScreen {
         }
         SelectionPoint {
             row: event.y.min(self.base.terminal().rows().saturating_sub(1)),
-            col: event.x.min(self.base.terminal().columns().saturating_sub(1)),
+            col: event
+                .x
+                .min(self.base.terminal().columns().saturating_sub(1)),
             in_viewport: false,
             boundary: false,
         }
@@ -1160,8 +1162,16 @@ impl TuiAltScreen {
             None
         } else {
             let row = event.y.min(self.base.terminal().rows().saturating_sub(1));
-            let col = event.x.min(self.base.terminal().columns().saturating_sub(1));
-            get_osc8_link_at_column(self.previous_screen.get(row).map(String::as_str).unwrap_or(""), col)
+            let col = event
+                .x
+                .min(self.base.terminal().columns().saturating_sub(1));
+            get_osc8_link_at_column(
+                self.previous_screen
+                    .get(row)
+                    .map(String::as_str)
+                    .unwrap_or(""),
+                col,
+            )
         };
         self.base.request_render(false);
     }
@@ -1177,8 +1187,8 @@ impl TuiAltScreen {
         if anchor.row == focus.row && anchor.col == focus.col {
             return None;
         }
-        let anchor_before_focus = anchor.row < focus.row
-            || (anchor.row == focus.row && anchor.col < focus.col);
+        let anchor_before_focus =
+            anchor.row < focus.row || (anchor.row == focus.row && anchor.col < focus.col);
         Some(if anchor_before_focus {
             SelectionRange {
                 start: anchor,
@@ -1294,7 +1304,9 @@ impl TuiAltScreen {
                 continue;
             };
             if index > plain_start {
-                result.push_str(&style(&chars[plain_start..index].iter().collect::<String>()));
+                result.push_str(&style(
+                    &chars[plain_start..index].iter().collect::<String>(),
+                ));
             }
             result.push_str(&ansi.code);
             index += ansi.length;
@@ -1348,9 +1360,7 @@ impl TuiAltScreen {
                     Some(entry) => entry,
                     None => {
                         ranges_by_row.push((row, Vec::new()));
-                        ranges_by_row
-                            .last_mut()
-                            .expect("just pushed the row entry")
+                        ranges_by_row.last_mut().expect("just pushed the row entry")
                     }
                 };
                 entry.1.push(SearchHighlightRange {
@@ -1380,7 +1390,8 @@ impl TuiAltScreen {
                 }
                 let before = slice_by_column(&line, 0, start_col, true);
                 let highlighted = slice_by_column(&line, start_col, end_col - start_col, true);
-                let after = slice_by_column(&line, end_col, line_width.saturating_sub(end_col), true);
+                let after =
+                    slice_by_column(&line, end_col, line_width.saturating_sub(end_col), true);
                 line = format!(
                     "{before}{}{after}",
                     self.apply_search_text_highlight(&highlighted, range.current)
@@ -1473,13 +1484,12 @@ impl TuiAltScreen {
                 }
                 let before = slice_by_column(&line, 0, columns.0, true);
                 let selected = slice_by_column(&line, columns.0, columns.1 - columns.0, true);
-                let after = slice_by_column(
-                    &line,
-                    columns.1,
-                    line_width.saturating_sub(columns.1),
-                    true,
-                );
-                format!("{before}{}{after}", Self::apply_selection_highlight(&selected))
+                let after =
+                    slice_by_column(&line, columns.1, line_width.saturating_sub(columns.1), true);
+                format!(
+                    "{before}{}{after}",
+                    Self::apply_selection_highlight(&selected)
+                )
             })
             .collect()
     }
@@ -1556,7 +1566,11 @@ impl TuiAltScreen {
     /// Open the viewport search (upstream `openSearch`).
     pub fn open_search(&mut self) {
         if self.active_search.is_some() {
-            if let Some(id) = self.active_search.as_ref().and_then(|search| search.overlay_id) {
+            if let Some(id) = self
+                .active_search
+                .as_ref()
+                .and_then(|search| search.overlay_id)
+            {
                 self.base.focus_overlay(id);
             }
             return;
