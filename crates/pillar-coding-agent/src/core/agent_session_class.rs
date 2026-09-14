@@ -33,7 +33,8 @@ use pillar_ai::types::{
 use serde_json::Value;
 
 use crate::core::agent_session::{
-    CustomDelivery, CustomMessagePlan, plan_custom_message, will_retry_after_agent_end,
+    ContextUsage, CustomDelivery, CustomMessagePlan, compute_context_usage, plan_custom_message,
+    will_retry_after_agent_end,
 };
 use crate::core::auth_guidance::{
     format_no_api_key_found_message, format_no_model_selected_message,
@@ -586,6 +587,25 @@ impl AgentSession {
     /// Full agent state snapshot (upstream `state`).
     pub fn state(&self) -> pillar_agent::agent::AgentState {
         self.inner.agent.state()
+    }
+
+    /// Context usage from the session (upstream `getContextUsage`): after a
+    /// compaction, tokens are unknown until the next LLM response.
+    pub fn context_usage(&self) -> Option<ContextUsage> {
+        let model = self.model()?;
+        let context_window = model.context_window;
+        if context_window == 0 {
+            return None;
+        }
+        let branch: Vec<crate::core::session_entries::SessionEntry> = self
+            .session_manager()
+            .lock()
+            .expect("session manager")
+            .get_branch(None)
+            .into_iter()
+            .cloned()
+            .collect();
+        compute_context_usage(&branch, context_window)
     }
 
     /// Current model, if selected (upstream `model`).

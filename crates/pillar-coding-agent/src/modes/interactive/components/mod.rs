@@ -18,6 +18,7 @@ pub mod custom_entry;
 pub mod custom_message;
 pub mod diff;
 pub mod dynamic_border;
+pub mod footer;
 pub mod keybinding_hints;
 pub mod markdown_transform;
 pub mod skill_invocation_message;
