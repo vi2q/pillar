@@ -27,4 +27,5 @@ pub mod terminal;
 pub mod terminal_colors;
 pub mod terminal_image;
 pub mod text_utils;
+pub mod tui;
 pub mod virtual_terminal;
