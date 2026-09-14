@@ -567,6 +567,7 @@ fn container_composition_preserves_child_order() {
 
 // --- message components ---------------------------------------------------------------------------
 
+use pillar_ai::types::{AssistantMessage, Content, StopReason};
 use pillar_coding_agent::core::messages::{
     BranchSummaryMessage, CompactionSummaryMessage, CustomContent, CustomMessage,
 };
@@ -576,7 +577,6 @@ use pillar_coding_agent::modes::interactive::components::compaction_summary_mess
 use pillar_coding_agent::modes::interactive::components::custom_message::CustomMessageComponent;
 use pillar_coding_agent::modes::interactive::components::skill_invocation_message::SkillInvocationMessageComponent;
 use pillar_coding_agent::modes::interactive::components::user_message::UserMessageComponent;
-use pillar_ai::types::{AssistantMessage, Content, StopReason};
 
 const OSC_START: &str = "\u{1b}]133;A\u{7}";
 const OSC_END: &str = "\u{1b}]133;B\u{7}";
@@ -620,17 +620,25 @@ fn user_message_wraps_the_zone_markers_and_paints_the_background() {
     // display).
     assert!(lines[0].starts_with(OSC_START), "{:?}", lines[0]);
     let last = lines.last().expect("last line");
-    assert!(last.starts_with(&format!("{OSC_END}{OSC_FINAL}")), "{last:?}");
+    assert!(
+        last.starts_with(&format!("{OSC_END}{OSC_FINAL}")),
+        "{last:?}"
+    );
     // The text is rendered on the user-message background.
     let body = plain_lines(&lines).join("\n");
     assert!(body.contains("hello"), "{body:?}");
     assert!(body.contains("world"), "{body:?}");
     assert!(
-        lines.iter().any(|line| line.contains(&dark.bg_ansi("userMessageBg"))),
+        lines
+            .iter()
+            .any(|line| line.contains(&dark.bg_ansi("userMessageBg"))),
         "background applied: {lines:?}"
     );
     // Bold text is rendered with the theme's bold sequences.
-    assert!(lines.iter().any(|line| line.contains("\u{1b}[1m")), "{lines:?}");
+    assert!(
+        lines.iter().any(|line| line.contains("\u{1b}[1m")),
+        "{lines:?}"
+    );
 
     // Changing the output pad rebuilds with the new padding.
     message.set_output_pad(3);
@@ -652,7 +660,8 @@ fn assistant_message_renders_text_thinking_and_notices() {
         ],
         StopReason::Stop,
     );
-    let mut component = AssistantMessageComponent::new(Some(message), false, None, "Thinking...", 1, Vec::new());
+    let mut component =
+        AssistantMessageComponent::new(Some(message), false, None, "Thinking...", 1, Vec::new());
     assert!(!component.has_tool_calls());
     let lines = component.render(40);
     let body = plain_lines(&lines).join("\n");
@@ -677,11 +686,18 @@ fn assistant_message_renders_text_thinking_and_notices() {
     assert!(body.contains("Thinking..."), "{body:?}");
     assert!(!body.contains("secret reasoning"), "{body:?}");
     hidden.set_hidden_thinking_label("Reasoning...");
-    assert!(plain_lines(&hidden.render(40)).join("\n").contains("Reasoning..."));
+    assert!(
+        plain_lines(&hidden.render(40))
+            .join("\n")
+            .contains("Reasoning...")
+    );
 
     // A length stop surfaces the truncation notice.
     let mut truncated = AssistantMessageComponent::new(
-        Some(assistant_message(vec![Content::text("partial")], StopReason::Length)),
+        Some(assistant_message(
+            vec![Content::text("partial")],
+            StopReason::Length,
+        )),
         false,
         None,
         "Thinking...",
@@ -705,16 +721,31 @@ fn assistant_message_renders_text_thinking_and_notices() {
         1,
         Vec::new(),
     );
-    assert!(plain_lines(&aborted.render(40)).join("\n").contains("Operation aborted"));
+    assert!(
+        plain_lines(&aborted.render(40))
+            .join("\n")
+            .contains("Operation aborted")
+    );
 
     let mut errored = assistant_message(vec![Content::text("hi")], StopReason::Error);
     errored.error_message = Some("boom".to_string());
-    let mut error_component =
-        AssistantMessageComponent::new(Some(errored.clone()), false, None, "Thinking...", 1, Vec::new());
-    assert!(plain_lines(&error_component.render(40)).join("\n").contains("Error: boom"));
+    let mut error_component = AssistantMessageComponent::new(
+        Some(errored.clone()),
+        false,
+        None,
+        "Thinking...",
+        1,
+        Vec::new(),
+    );
+    assert!(
+        plain_lines(&error_component.render(40))
+            .join("\n")
+            .contains("Error: boom")
+    );
 
     // Streaming state is remembered for the next content update.
-    let mut streaming = AssistantMessageComponent::new(None, false, None, "Thinking...", 1, Vec::new());
+    let mut streaming =
+        AssistantMessageComponent::new(None, false, None, "Thinking...", 1, Vec::new());
     streaming.update_content(
         &assistant_message(vec![Content::text("partial")], StopReason::Pending),
         true,
@@ -745,7 +776,12 @@ fn assistant_message_renders_text_thinking_and_notices() {
     if !lines.is_empty() {
         assert!(!lines[0].starts_with(OSC_START), "{:?}", lines[0]);
     }
-    let _ = (&mut aborted, &mut errored, &mut truncated, &mut error_component);
+    let _ = (
+        &mut aborted,
+        &mut errored,
+        &mut truncated,
+        &mut error_component,
+    );
 }
 
 #[test]
@@ -764,9 +800,15 @@ fn branch_summary_message_collapses_and_expands() {
     assert!(collapsed.contains("[branch]"), "{collapsed:?}");
     assert!(collapsed.contains("Branch summary ("), "{collapsed:?}");
     assert!(collapsed.contains("to expand)"), "{collapsed:?}");
-    assert!(!collapsed.contains("The branch did things."), "{collapsed:?}");
     assert!(
-        component.render(60).iter().any(|line| line.contains(&dark.bg_ansi("customMessageBg"))),
+        !collapsed.contains("The branch did things."),
+        "{collapsed:?}"
+    );
+    assert!(
+        component
+            .render(60)
+            .iter()
+            .any(|line| line.contains(&dark.bg_ansi("customMessageBg"))),
         "box background"
     );
 
@@ -776,7 +818,11 @@ fn branch_summary_message_collapses_and_expands() {
     assert!(expanded.contains("Branch Summary"), "{expanded:?}");
     assert!(expanded.contains("The branch did things."), "{expanded:?}");
     component.invalidate();
-    assert!(plain_lines(&component.render(60)).join("\n").contains("Branch Summary"));
+    assert!(
+        plain_lines(&component.render(60))
+            .join("\n")
+            .contains("Branch Summary")
+    );
 }
 
 #[test]
@@ -795,7 +841,10 @@ fn compaction_summary_message_shows_the_token_count() {
 
     component.set_expanded(true);
     let expanded = plain_lines(&component.render(60)).join("\n");
-    assert!(expanded.contains("Compacted from 1,234,567 tokens"), "{expanded:?}");
+    assert!(
+        expanded.contains("Compacted from 1,234,567 tokens"),
+        "{expanded:?}"
+    );
     assert!(expanded.contains("Earlier context."), "{expanded:?}");
 }
 
@@ -891,7 +940,10 @@ fn custom_message_prefers_the_registered_renderer() {
     assert!(component.used_custom_renderer());
     let body = plain_lines(&component.render(40)).join("\n");
     assert!(body.contains("custom!"), "{body:?}");
-    assert!(!body.contains("[note]"), "default rendering is skipped: {body:?}");
+    assert!(
+        !body.contains("[note]"),
+        "default rendering is skipped: {body:?}"
+    );
     assert_eq!(
         seen.lock().unwrap().as_slice(),
         [("note".to_string(), false, 3)]
@@ -907,5 +959,171 @@ fn custom_message_prefers_the_registered_renderer() {
         1,
     );
     assert!(!fallback.used_custom_renderer());
-    assert!(plain_lines(&fallback.render(40)).join("\n").contains("[note]"));
+    assert!(
+        plain_lines(&fallback.render(40))
+            .join("\n")
+            .contains("[note]")
+    );
+}
+
+// --- bash execution -------------------------------------------------------------------------------
+
+use pillar_coding_agent::core::truncate::{TruncationOptions, truncate_tail};
+use pillar_coding_agent::modes::interactive::components::bash_execution::{
+    BashExecutionComponent, BashExecutionStatus,
+};
+
+fn bash_component(exclude_from_context: bool) -> BashExecutionComponent {
+    let dark = theme::get_theme_by_name("dark").expect("dark");
+    BashExecutionComponent::new(&dark, "echo hi", exclude_from_context)
+}
+
+#[test]
+fn bash_execution_streams_output_and_reports_status() {
+    let _guard = THEME_LOCK.lock().expect("theme lock");
+    install_dark();
+    let mut component = bash_component(false);
+    assert_eq!(component.get_command(), "echo hi");
+    assert_eq!(component.status(), BashExecutionStatus::Running);
+
+    // Running: spacer, borders, header and the loader line.
+    let lines = component.render(40);
+    let body = plain_lines(&lines).join("\n");
+    assert!(body.contains("$ echo hi"), "{body:?}");
+    assert!(body.contains("Running..."), "{body:?}");
+    assert!(body.contains("to cancel"), "{body:?}");
+    assert_eq!(lines[0], "", "leading spacer");
+    assert_eq!(
+        strip_ansi(lines.last().expect("bottom border")),
+        "─".repeat(40),
+        "bottom border"
+    );
+
+    // Streaming: ANSI is stripped, \r\n and \r normalize to \n, and an
+    // unterminated chunk continues the previous line.
+    component.append_output("\u{1b}[31mfirst\u{1b}[0m");
+    component.append_output(" continued\nsecond\r\nthird\rfourth");
+    assert_eq!(
+        component.get_output(),
+        "first continued\nsecond\nthird\nfourth"
+    );
+    let body = plain_lines(&component.render(40)).join("\n");
+    assert!(body.contains("first continued"), "{body:?}");
+    assert!(body.contains("fourth"), "{body:?}");
+
+    // Completion: the loader is replaced by the status parts.
+    component.set_complete(Some(0), false, None, None);
+    assert_eq!(component.status(), BashExecutionStatus::Complete);
+    let body = plain_lines(&component.render(40)).join("\n");
+    assert!(!body.contains("Running..."), "{body:?}");
+
+    // A non-zero exit reports the code; cancellation reports (cancelled).
+    let mut failed = bash_component(false);
+    failed.set_complete(Some(3), false, None, None);
+    assert_eq!(failed.status(), BashExecutionStatus::Error);
+    assert!(plain_lines(&failed.render(40)).join("\n").contains("(exit 3)"));
+
+    let mut cancelled = bash_component(false);
+    cancelled.set_complete(None, true, None, None);
+    assert_eq!(cancelled.status(), BashExecutionStatus::Cancelled);
+    assert!(plain_lines(&cancelled.render(40)).join("\n").contains("(cancelled)"));
+
+    let _ = TruncationOptions::default();
+}
+
+#[test]
+fn bash_execution_collapses_long_output_and_expands() {
+    let _guard = THEME_LOCK.lock().expect("theme lock");
+    install_dark();
+    let mut component = bash_component(false);
+    let output = (0..60)
+        .map(|index| format!("line{index}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    component.append_output(&output);
+    component.set_complete(Some(0), false, None, None);
+
+    // Collapsed: the last 20 logical lines are previewed and the hidden count
+    // is reported.
+    let collapsed = plain_lines(&component.render(60)).join("\n");
+    assert!(collapsed.contains("line59"), "{collapsed:?}");
+    assert!(!collapsed.contains("line0\n"), "{collapsed:?}");
+    assert!(collapsed.contains("... 40 more lines ("), "{collapsed:?}");
+    assert!(collapsed.contains("to expand)"), "{collapsed:?}");
+
+    // Expanded: every line is shown and the hint flips to collapse.
+    component.set_expanded(true);
+    let expanded = plain_lines(&component.render(60)).join("\n");
+    assert!(expanded.contains("line0"), "{expanded:?}");
+    assert!(expanded.contains("line59"), "{expanded:?}");
+    assert!(expanded.contains("to collapse)"), "{expanded:?}");
+    assert!(!expanded.contains("more lines"), "{expanded:?}");
+}
+
+#[test]
+fn bash_execution_reports_context_and_tool_truncation() {
+    let _guard = THEME_LOCK.lock().expect("theme lock");
+    install_dark();
+    let mut component = bash_component(false);
+    component.append_output("some output");
+    // A result that really was truncated (three lines cut to one).
+    let truncated = truncate_tail(
+        "one\ntwo\nthree",
+        TruncationOptions {
+            max_lines: Some(1),
+            max_bytes: Some(1024),
+        },
+    );
+    assert!(truncated.truncated, "{truncated:?}");
+    component.set_complete(Some(0), false, Some(truncated), Some("/tmp/full.log".to_string()));
+    let body = plain_lines(&component.render(80)).join("\n");
+    assert!(
+        body.contains("Output truncated. Full output: /tmp/full.log"),
+        "{body:?}"
+    );
+
+    // Without a full-output path the warning is suppressed (upstream).
+    let mut without_path = bash_component(false);
+    without_path.append_output("some output");
+    let truncated = truncate_tail(
+        "one\ntwo",
+        TruncationOptions {
+            max_lines: Some(1),
+            max_bytes: Some(1024),
+        },
+    );
+    without_path.set_complete(Some(0), false, Some(truncated), None);
+    let body = plain_lines(&without_path.render(80)).join("\n");
+    assert!(!body.contains("Output truncated"), "{body:?}");
+}
+
+#[test]
+fn bash_execution_uses_the_dim_border_for_excluded_commands() {
+    let _guard = THEME_LOCK.lock().expect("theme lock");
+    install_dark();
+    let dark = theme::get_theme_by_name("dark").expect("dark");
+    let mut included = bash_component(false);
+    let mut excluded = bash_component(true);
+
+    let included_lines = included.render(20);
+    let excluded_lines = excluded.render(20);
+    assert!(
+        included_lines[1].contains(&dark.fg_ansi("bashMode")),
+        "included border: {:?}",
+        included_lines[1]
+    );
+    assert!(
+        excluded_lines[1].contains(&dark.fg_ansi("dim")),
+        "excluded border: {:?}",
+        excluded_lines[1]
+    );
+    // The header colour follows upstream's `updateDisplay`, which always uses
+    // the bash-mode colour (even for `!!`).
+    assert!(excluded_lines[2].contains(&dark.fg_ansi("bashMode")), "{:?}", excluded_lines[2]);
+
+    // The preview cache is dropped when the expanded state changes.
+    excluded.set_expanded(true);
+    excluded.invalidate();
+    let body = plain_lines(&excluded.render(20)).join("\n");
+    assert!(body.contains("$ echo hi"), "{body:?}");
 }
