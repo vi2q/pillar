@@ -324,8 +324,11 @@ pub struct MarkdownTransformContext {
 /// Rewrites Markdown source before rendering (upstream `MarkdownTransformer`).
 /// Returning `None` keeps the current source, mirroring upstream's
 /// `typeof transformed === "string"` check.
+///
+/// divergence: upstream passes the transformer list by reference; the port
+/// holds it in an `Arc` so components can rebuild their children.
 pub type MarkdownTransformer =
-    Box<dyn Fn(&str, &MarkdownTransformContext) -> Option<String> + Send + Sync>;
+    std::sync::Arc<dyn Fn(&str, &MarkdownTransformContext) -> Option<String> + Send + Sync>;
 
 /// Options for rendering a custom session entry (upstream
 /// `EntryRenderOptions`).
@@ -354,3 +357,23 @@ pub struct WorkingIndicatorOptions {
     /// Frame interval in milliseconds.
     pub interval_ms: Option<u64>,
 }
+
+/// Options for rendering a custom message (upstream `MessageRenderOptions`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MessageRenderOptions {
+    pub expanded: bool,
+    /// Horizontal padding from the `outputPad` setting.
+    pub output_pad: usize,
+}
+
+/// Renders a custom message (upstream `MessageRenderer`). A renderer that
+/// answers `None` falls back to the default message rendering.
+pub type MessageRenderer = Box<
+    dyn Fn(
+            &crate::core::messages::CustomMessage,
+            &MessageRenderOptions,
+            &crate::modes::interactive::theme::Theme,
+        ) -> Option<Box<dyn pillar_tui::tui::Component>>
+        + Send
+        + Sync,
+>;

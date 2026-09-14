@@ -6,6 +6,18 @@ use crate::core::extensions_types::{
 };
 use pillar_tui::markdown::TransformFn;
 
+/// Builds a fresh [`pillar_tui::markdown::MarkdownTheme`] on demand.
+///
+/// divergence: upstream shares one `MarkdownTheme` object; the port's theme
+/// closures read the global theme per call, so a factory is equivalent (and
+/// lets components rebuild their Markdown children).
+pub type MarkdownThemeFactory = Box<dyn Fn() -> pillar_tui::markdown::MarkdownTheme + Send + Sync>;
+
+/// The default factory: the active theme's Markdown theme.
+pub fn default_markdown_theme_factory() -> MarkdownThemeFactory {
+    Box::new(crate::modes::interactive::theme::get_markdown_theme)
+}
+
 /// Build a `Markdown` transform hook for one message (upstream
 /// `createMarkdownTransform`).
 pub fn create_markdown_transform(

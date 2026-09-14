@@ -494,7 +494,6 @@ pub fn dispatch_input_keybinding(input: &mut Input, data: &str) -> bool {
     false
 }
 
-
 impl crate::tui::Component for Input {
     fn render(&mut self, width: usize) -> Vec<String> {
         Input::render(self, width)
