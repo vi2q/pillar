@@ -95,7 +95,7 @@ pub type CopySelectionCallback = Box<dyn Fn(&str) -> bool + Send>;
 pub struct TuiAltScreenOptions {
     /// Logical lines moved per wheel event (upstream `wheelScrollLines`).
     pub wheel_scroll_lines: Option<usize>,
-    /// Capture mouse events (deferred; used for the enable sequence).
+    /// Capture mouse events for viewport scrolling and text selection.
     pub mouse: Option<bool>,
     /// Style a non-current search match.
     pub search_match_style: Option<SearchMatchStyle>,
