@@ -715,14 +715,15 @@ impl TuiBase {
 
     // --- rendering -------------------------------------------------------
 
-    /// Render the mounted roots (upstream `TuiBase.render`); overlays are
-    /// composited by the screen renderer via [`Self::overlays`].
+    /// Render the mounted roots (upstream `TuiBase.render`). Overlays are
+    /// composited and line resets applied by the screen renderer, exactly as
+    /// upstream splits it.
     pub fn render(&mut self, width: usize) -> Vec<String> {
         let mut lines = Vec::new();
         for (_, component) in &mut self.roots {
             lines.extend(component.render(width));
         }
-        apply_line_resets(lines)
+        lines
     }
 
     /// Find and strip [`CURSOR_MARKER`], returning the hardware cursor
