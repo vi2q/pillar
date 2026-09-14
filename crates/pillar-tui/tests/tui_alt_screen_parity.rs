@@ -188,7 +188,9 @@ fn search_selects_matches_and_scrolls_to_reveal_them() {
     screen.do_render().expect("frame");
 
     screen.open_search();
-    screen.update_search_query("needle");
+    // Type into the overlay's input, the way `handleTerminalInput` would
+    // dispatch to the focused search component.
+    screen.base_mut().handle_terminal_input("needle");
     screen.do_render().expect("search frame");
 
     let search = screen.active_search().expect("active search");
@@ -227,11 +229,14 @@ fn an_empty_query_clears_search_state() {
     screen.do_render().expect("frame");
 
     screen.open_search();
-    screen.update_search_query("needle");
+    screen.base_mut().handle_terminal_input("needle");
     screen.do_render().expect("search frame");
     assert_eq!(screen.active_search().expect("search").matches.len(), 1);
 
-    screen.update_search_query("   ");
+    // Backspacing the query away clears the matches.
+    for _ in 0.."needle".len() {
+        screen.base_mut().handle_terminal_input("\u{7f}");
+    }
     screen.do_render().expect("empty query frame");
     let search = screen.active_search().expect("search");
     assert!(search.matches.is_empty());
@@ -239,7 +244,7 @@ fn an_empty_query_clears_search_state() {
 }
 
 #[test]
-fn flashes_render_on_the_last_rows_and_expire() {
+fn flashes_composite_right_aligned_and_expire() {
     let terminal = RecorderTerminal::new(30, 4);
     let mut screen = screen(&terminal, &["content"]);
     screen.start();
@@ -247,7 +252,14 @@ fn flashes_render_on_the_last_rows_and_expire() {
     screen.flash("saved!", Some(50));
     screen.do_render().expect("flash frame");
     let written = terminal.written();
+    // The flash keeps the row's content and lands right-aligned on the first
+    // viewport row (upstream `compositeFlashes`).
     assert!(written.contains("saved!"), "{written:?}");
+    let flash_row = written
+        .split("\u{1b}[2K")
+        .find(|segment| segment.contains("saved!"))
+        .expect("flash row");
+    assert!(flash_row.starts_with("content"), "{flash_row:?}");
 
     // Expiry is host-driven.
     assert!(screen.expire_flashes(Instant::now() + Duration::from_millis(100)));
@@ -475,4 +487,298 @@ fn start_enables_mouse_tracking_when_configured() {
         "{:?}",
         plain.written()
     );
+}
+
+// --- text selection (upstream the selection state machine) ---------------------------------------
+
+fn sgr_press(x: usize, y: usize) -> String {
+    format!("\u{1b}[<0;{};{}M", x + 1, y + 1)
+}
+
+fn sgr_motion(x: usize, y: usize) -> String {
+    format!("\u{1b}[<32;{};{}M", x + 1, y + 1)
+}
+
+fn sgr_release(x: usize, y: usize) -> String {
+    format!("\u{1b}[<0;{};{}m", x + 1, y + 1)
+}
+
+fn mouse_event(sequence: &str) -> pillar_tui::tui_alt_screen::SgrMouseEvent {
+    parse_sgr_mouse_event(sequence).expect("mouse event")
+}
+
+#[test]
+fn dragging_selects_text_and_copy_on_select_copies_it() {
+    let copied: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&copied);
+    let terminal = RecorderTerminal::new(20, 3);
+    let mut screen = TuiAltScreen::new(
+        Box::new(terminal.clone()),
+        TuiAltScreenOptions {
+            copy_selection: Some(Box::new(move |text: &str| {
+                sink.lock().unwrap().push(text.to_string());
+                true
+            })),
+            ..Default::default()
+        },
+    );
+    screen.base_mut().add_child(Box::new(Lines {
+        lines: vec![
+            "alpha bravo".to_string(),
+            "charlie delta".to_string(),
+            "echo".to_string(),
+        ],
+    }));
+    screen.start();
+    screen.do_render().expect("frame");
+    assert!(!screen.has_active_selection());
+
+    // Press at column 0, drag to column 4, release: "alpha" is selected.
+    screen.handle_viewport_input(&sgr_press(0, 0));
+    screen.handle_viewport_input(&sgr_motion(4, 0));
+    assert_eq!(screen.active_selection_text().as_deref(), Some("alpha"));
+    screen.handle_viewport_input(&sgr_release(4, 0));
+
+    assert_eq!(copied.lock().unwrap().as_slice(), ["alpha".to_string()]);
+    // Copy-on-select flashes its result.
+    assert_eq!(screen.active_selection_text().as_deref(), Some("alpha"));
+
+    // The frame inverse-videos the selected slice.
+    terminal.clear_writes();
+    screen.do_render().expect("selection frame");
+    let written = terminal.written();
+    assert!(written.contains("\u{1b}[7malpha\u{1b}[27m"), "{written:?}");
+
+    // A focus-out only clears an in-progress drag (upstream checks
+    // `selectionPressActive`), so the finished selection survives.
+    screen.handle_viewport_input("\u{1b}[O");
+    assert!(screen.has_active_selection());
+
+    // Starting a new drag and losing focus drops the selection.
+    screen.handle_viewport_input(&sgr_press(0, 0));
+    screen.handle_viewport_input(&sgr_motion(4, 0));
+    screen.handle_viewport_input("\u{1b}[O");
+    assert!(!screen.has_active_selection());
+}
+
+#[test]
+fn multi_line_drag_joins_rows_case() {
+    let terminal = RecorderTerminal::new(20, 3);
+    let mut screen = screen(
+        &terminal,
+        &["alpha bravo", "charlie delta", "echo"],
+    );
+    screen.start();
+    screen.do_render().expect("frame");
+
+    // From column 6 of row 0 ("bravo" onwards) to column 2 of row 1. The
+    // grapheme under the release column is included (upstream rounds the
+    // end up to a grapheme cell range).
+    screen.handle_viewport_input(&sgr_press(6, 0));
+    screen.handle_viewport_input(&sgr_motion(2, 1));
+    assert_eq!(
+        screen.active_selection_text().as_deref(),
+        Some("bravo\ncha")
+    );
+}
+
+#[test]
+fn double_and_triple_click_select_word_then_line() {
+    let terminal = RecorderTerminal::new(20, 3);
+    let mut screen = screen(&terminal, &["alpha bravo", "charlie", "echo"]);
+    screen.start();
+    screen.do_render().expect("frame");
+
+    let base = Instant::now();
+    let point = sgr_press(2, 0);
+
+    // First click: a caret, not a selection.
+    screen.handle_selection_mouse_event_at(&mouse_event(&point), base);
+    assert!(!screen.has_active_selection());
+
+    // Second click within the double-click window selects the word.
+    screen.handle_selection_mouse_event_at(
+        &mouse_event(&point),
+        base + Duration::from_millis(100),
+    );
+    assert_eq!(screen.active_selection_text().as_deref(), Some("alpha"));
+
+    // Third click selects the line.
+    screen.handle_selection_mouse_event_at(
+        &mouse_event(&point),
+        base + Duration::from_millis(200),
+    );
+    assert_eq!(
+        screen.active_selection_text().as_deref(),
+        Some("alpha bravo")
+    );
+
+    // Outside the window the count restarts at a caret.
+    screen.handle_selection_mouse_event_at(
+        &mouse_event(&point),
+        base + Duration::from_millis(5_000),
+    );
+    assert!(!screen.has_active_selection());
+}
+
+#[test]
+fn word_selection_keeps_paths_and_kebab_tokens_whole() {
+    let terminal = RecorderTerminal::new(40, 3);
+    let mut subject = screen(&terminal, &["see src/a-b/c here"]);
+    subject.start();
+    subject.do_render().expect("frame");
+
+    let base = Instant::now();
+    let point = sgr_press(6, 0);
+    subject.handle_selection_mouse_event_at(&mouse_event(&point), base);
+    subject.handle_selection_mouse_event_at(
+        &mouse_event(&point),
+        base + Duration::from_millis(50),
+    );
+    // `/` and `-` join segments, so the path stays whole.
+    assert_eq!(
+        subject.active_selection_text().as_deref(),
+        Some("src/a-b/c")
+    );
+
+    // A `.` is not a joiner (upstream `TERMINAL_WORD_SELECTION_JOINERS`).
+    let dotted_terminal = RecorderTerminal::new(40, 3);
+    let mut dotted = screen(&dotted_terminal, &["see a-b.c here"]);
+    dotted.start();
+    dotted.do_render().expect("frame");
+    let dotted_point = sgr_press(4, 0);
+    dotted.handle_selection_mouse_event_at(&mouse_event(&dotted_point), base);
+    dotted.handle_selection_mouse_event_at(
+        &mouse_event(&dotted_point),
+        base + Duration::from_millis(50),
+    );
+    assert_eq!(dotted.active_selection_text().as_deref(), Some("a-b"));
+}
+
+#[test]
+fn clicking_an_osc8_link_activates_it() {
+    let opened: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&opened);
+    let terminal = RecorderTerminal::new(30, 3);
+    let mut screen = TuiAltScreen::new(
+        Box::new(terminal.clone()),
+        TuiAltScreenOptions {
+            open_url: Some(Box::new(move |url: &str| {
+                sink.lock().unwrap().push(url.to_string());
+            })),
+            ..Default::default()
+        },
+    );
+    screen.base_mut().add_child(Box::new(Lines {
+        lines: vec![format!("\u{1b}]8;;https://example.com\u{7}link\u{1b}]8;;\u{7} tail")],
+    }));
+    screen.start();
+    screen.do_render().expect("frame");
+
+    screen.handle_viewport_input(&sgr_press(1, 0));
+    screen.handle_viewport_input(&sgr_release(1, 0));
+    assert_eq!(
+        opened.lock().unwrap().as_slice(),
+        ["https://example.com".to_string()]
+    );
+    // Activating a link clears the selection it started from.
+    assert!(!screen.has_active_selection());
+}
+
+#[test]
+fn dragging_past_the_viewport_edge_arms_auto_scroll() {
+    let terminal = RecorderTerminal::new(20, 2);
+    let mut screen = screen(&terminal, &["l0", "l1", "l2", "l3", "l4"]);
+    screen.start();
+    screen.do_render().expect("frame");
+    assert_eq!(screen.viewport_top(), 3, "at the end");
+
+    screen.handle_viewport_input(&sgr_press(0, 0));
+    // Dragging above the viewport top arms an upward auto-scroll.
+    screen.handle_viewport_input(&sgr_motion(0, 0));
+    assert!(screen.selection_auto_scroll_active());
+
+    screen.auto_scroll_selection();
+    assert_eq!(screen.viewport_top(), 2);
+    assert!(screen.selection_auto_scroll_active());
+
+    screen.stop_selection_auto_scroll();
+    assert!(!screen.selection_auto_scroll_active());
+    assert!(!screen.has_active_selection());
+}
+
+#[test]
+fn selection_respects_the_scroll_view_geometry() {
+    let terminal = RecorderTerminal::new(20, 2);
+    let mut screen = screen(&terminal, &["l0", "l1", "l2", "l3", "l4"]);
+    screen.start();
+    screen.do_render().expect("frame");
+    // At the end, the top row of the viewport is content row 3.
+    assert_eq!(screen.viewport_top(), 3);
+
+    // Press on the viewport's first row and drag to its last row.
+    screen.handle_viewport_input(&sgr_press(0, 0));
+    screen.handle_viewport_input(&sgr_motion(3, 1));
+    // The screen rows are the viewport rows, not content rows.
+    assert_eq!(screen.active_selection_text().as_deref(), Some("l3\nl4"));
+}
+
+// --- search highlights and the overlay -----------------------------------------------------------
+
+#[test]
+fn search_highlights_and_the_overlay_reach_the_frame() {
+    let terminal = RecorderTerminal::new(60, 4);
+    let mut screen = screen(
+        &terminal,
+        &["needle one", "two", "needle three"],
+    );
+    screen.start();
+    screen.do_render().expect("frame");
+
+    screen.open_search();
+    assert!(screen.search_component_mut().is_some(), "overlay component");
+    screen.base_mut().handle_terminal_input("needle");
+    terminal.clear_writes();
+    screen.do_render().expect("search frame");
+
+    let written = terminal.written();
+    // Matches are underlined; the selected match is bold + reversed.
+    assert!(written.contains("\u{1b}[4m"), "match style: {written:?}");
+    assert!(
+        written.contains("\u{1b}[1;7m"),
+        "current match style: {written:?}"
+    );
+    // The search overlay renders its label and result count.
+    assert!(written.contains("Find transcript"), "{written:?}");
+    assert!(written.contains("1/2"), "{written:?}");
+
+    // Closing the search drops the overlay again.
+    screen.close_search();
+    terminal.clear_writes();
+    screen.do_render().expect("closed frame");
+    let written = terminal.written();
+    assert!(!written.contains("Find transcript"), "{written:?}");
+}
+
+#[test]
+fn a_focused_overlay_defers_viewport_keybindings() {
+    let terminal = RecorderTerminal::new(60, 4);
+    let mut screen = screen(&terminal, &["a", "b", "c", "d", "e", "f", "g", "h"]);
+    screen.start();
+    screen.do_render().expect("frame");
+    let top = screen.viewport_top();
+
+    // With an unrelated overlay focused the viewport yields.
+    struct Plain;
+    impl Component for Plain {
+        fn render(&mut self, _width: usize) -> Vec<String> {
+            vec![]
+        }
+    }
+    let id = screen
+        .base_mut()
+        .show_overlay(Box::new(Plain), pillar_tui::overlay::OverlayOptions::default());
+    assert!(screen.base().overlay_is_focused(id));
+    assert!(screen.handle_viewport_input("\u{1b}[H").is_none());
+    assert_eq!(screen.viewport_top(), top);
 }

@@ -2,8 +2,9 @@
 //! extraction, visible width, SGR tracking, and ANSI-preserving wrapping.
 
 use pillar_tui::text_utils::{
-    AnsiCodeTracker, apply_background_to_line, extract_ansi_code, grapheme_width,
-    strip_terminal_sequences, visible_width, wrap_text_with_ansi,
+    AnsiCodeTracker, apply_background_to_line, extract_ansi_code, get_grapheme_cell_range,
+    get_osc8_link_at_column, grapheme_width, strip_terminal_sequences, visible_width,
+    wrap_text_with_ansi,
 };
 
 fn codes(text: &str) -> Vec<String> {
@@ -195,4 +196,63 @@ fn wrap_handles_newlines_with_style_carry() {
 fn apply_background_pads_to_width() {
     let result = apply_background_to_line("ab", 5, &|text| format!("[{text}]"));
     assert_eq!(result, "[ab   ]");
+}
+
+// --- grapheme cell ranges (upstream getGraphemeCellRange) ----------------------------------------
+
+#[test]
+fn grapheme_cell_range_maps_columns_to_cells() {
+    assert_eq!(get_grapheme_cell_range("abc", 0), Some((0, 1)));
+    assert_eq!(get_grapheme_cell_range("abc", 2), Some((2, 3)));
+    // Out-of-range columns have no grapheme.
+    assert_eq!(get_grapheme_cell_range("abc", 3), None);
+    // Escape sequences occupy no cells.
+    assert_eq!(get_grapheme_cell_range("\u{1b}[31mab", 1), Some((1, 2)));
+    // A double-width grapheme spans two cells.
+    assert_eq!(get_grapheme_cell_range("中x", 0), Some((0, 2)));
+    assert_eq!(get_grapheme_cell_range("中x", 1), Some((0, 2)));
+    assert_eq!(get_grapheme_cell_range("中x", 2), Some((2, 3)));
+    assert_eq!(get_grapheme_cell_range("", 0), None);
+}
+
+// --- OSC 8 hyperlinks (upstream getOsc8LinkAtColumn) --------------------------------------------
+
+fn link(url: &str, text: &str) -> String {
+    format!("\u{1b}]8;;{url}\u{7}{text}\u{1b}]8;;\u{7}")
+}
+
+#[test]
+fn osc8_link_lookup_follows_open_and_close() {
+    let line = format!("{}rest", link("https://example.com", "click"));
+    assert_eq!(
+        get_osc8_link_at_column(&line, 0),
+        Some("https://example.com".to_string())
+    );
+    assert_eq!(
+        get_osc8_link_at_column(&line, 4),
+        Some("https://example.com".to_string())
+    );
+    // Past the closing sequence the link is cleared.
+    assert_eq!(get_osc8_link_at_column(&line, 5), None);
+    assert_eq!(get_osc8_link_at_column(&line, 8), None);
+}
+
+#[test]
+fn osc8_link_lookup_handles_st_terminator_and_absent_links() {
+    let line = "\u{1b}]8;;https://a.example\u{1b}\\hi";
+    assert_eq!(
+        get_osc8_link_at_column(line, 1),
+        Some("https://a.example".to_string())
+    );
+    assert_eq!(get_osc8_link_at_column("plain", 1), None);
+    // An empty URL closes the current link.
+    let closed = format!("{}\u{1b}]8;;\u{7}", link("https://b.example", "x"));
+    assert_eq!(get_osc8_link_at_column(&closed, 1), None);
+    // Tabs occupy three cells (upstream's special case).
+    let tabbed = "\u{1b}]8;;https://c.example\u{7}\t".to_string();
+    assert_eq!(
+        get_osc8_link_at_column(&tabbed, 2),
+        Some("https://c.example".to_string())
+    );
+    assert_eq!(get_osc8_link_at_column(&tabbed, 3), None);
 }

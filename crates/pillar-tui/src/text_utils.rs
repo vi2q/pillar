@@ -1208,3 +1208,81 @@ pub fn truncate_to_width(text: &str, max_width: usize, ellipsis: &str, pad: bool
         pad,
     )
 }
+
+/// The terminal-cell range occupied by the grapheme at a visible column
+/// (upstream `getGraphemeCellRange`).
+pub fn get_grapheme_cell_range(line: &str, column: usize) -> Option<(usize, usize)> {
+    let chars: Vec<char> = line.chars().collect();
+    let mut current_col = 0usize;
+    let mut i = 0usize;
+    while i < chars.len() {
+        if let Some(ansi) = extract_ansi_code(&chars, i) {
+            i += ansi.length;
+            continue;
+        }
+        let mut text_end = i;
+        while text_end < chars.len() && extract_ansi_code(&chars, text_end).is_none() {
+            text_end += 1;
+        }
+        let text: String = chars[i..text_end].iter().collect();
+        for segment in grapheme_clusters(&text) {
+            let width = grapheme_width(&segment);
+            if width > 0 && column >= current_col && column < current_col + width {
+                return Some((current_col, current_col + width));
+            }
+            current_col += width;
+        }
+        i = text_end;
+    }
+    None
+}
+
+/// Parse an OSC 8 hyperlink sequence into its URI (upstream the regex in
+/// `getOsc8LinkAtColumn`). An empty URI closes the link.
+fn parse_osc8_code(code: &str) -> Option<String> {
+    let rest = code.strip_prefix("\u{1b}]8;")?;
+    let rest = rest
+        .strip_suffix('\u{7}')
+        .or_else(|| rest.strip_suffix("\u{1b}\\"))?;
+    let uri = rest.split_once(';')?.1;
+    if uri.contains('\u{7}') || uri.contains('\u{1b}') {
+        return None;
+    }
+    Some(uri.to_string())
+}
+
+/// The OSC 8 hyperlink covering a visible terminal column (upstream
+/// `getOsc8LinkAtColumn`).
+pub fn get_osc8_link_at_column(line: &str, column: usize) -> Option<String> {
+    let chars: Vec<char> = line.chars().collect();
+    let mut active_url: Option<String> = None;
+    let mut current_col = 0usize;
+    let mut i = 0usize;
+    while i < chars.len() {
+        if let Some(ansi) = extract_ansi_code(&chars, i) {
+            if let Some(uri) = parse_osc8_code(&ansi.code) {
+                active_url = if uri.is_empty() { None } else { Some(uri) };
+            }
+            i += ansi.length;
+            continue;
+        }
+        let mut text_end = i;
+        while text_end < chars.len() && extract_ansi_code(&chars, text_end).is_none() {
+            text_end += 1;
+        }
+        let text: String = chars[i..text_end].iter().collect();
+        for segment in grapheme_clusters(&text) {
+            let width = if segment == "\t" {
+                3
+            } else {
+                grapheme_width(&segment)
+            };
+            if width > 0 && column >= current_col && column < current_col + width {
+                return active_url;
+            }
+            current_col += width;
+        }
+        i = text_end;
+    }
+    None
+}

@@ -4,10 +4,15 @@
 //! to single separators), case-insensitive query matching, and segment
 //! coalescing back to row/column spans.
 //!
-//! divergences: the interactive search UI component (Input + highlight
-//! rendering) stays host-side; the port covers the pure match functions.
-//! Grapheme segmentation maps to char iteration (the corpus is
-//! width-mapped the same way).
+//! divergences: the port covers the pure match functions plus the
+//! `AltScreenSearchComponent` overlay (single-line `Input` + result status
+//! line); keybinding dispatch into the input is explicit
+//! (`input::dispatch_input_keybinding`). Grapheme segmentation maps to char
+//! iteration (the corpus is width-mapped the same way).
+
+use crate::input::Input;
+use crate::text_utils::{truncate_to_width, visible_width};
+use crate::tui::{Component, Focusable};
 
 /// A mapped source span (upstream `SearchSourceSpan` / segment).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,7 +78,8 @@ pub fn strip_terminal_sequences(text: &str) -> String {
     out
 }
 
-fn visible_width(text: &str) -> usize {
+/// Corpus width stand-in for grapheme width (single-cell approximation).
+fn corpus_width(text: &str) -> usize {
     text.chars().count()
 }
 
@@ -96,7 +102,7 @@ fn build_search_corpus(lines: &[&str]) -> (String, Vec<Option<SearchSegment>>) {
         for grapheme in stripped.split("").filter(|s| !s.is_empty()) {
             // char-level iteration stands in for grapheme segmentation.
             let text = grapheme.to_string();
-            let width = visible_width(&text);
+            let width = corpus_width(&text);
             if is_whitespace_text(&text) {
                 if !corpus_text.is_empty() {
                     pending_separator = true;
@@ -188,5 +194,110 @@ pub fn get_alt_screen_search_match_key(matched: &AltScreenSearchMatch) -> String
             )
         }
         _ => String::new(),
+    }
+}
+
+/// The transcript-search overlay (upstream `AltScreenSearchComponent`): a
+/// single-line input plus a reversed status line showing the match count.
+pub struct AltScreenSearchComponent {
+    input: Input,
+    result_count: usize,
+    result_index: i64,
+    focused: bool,
+}
+
+impl AltScreenSearchComponent {
+    pub fn new() -> Self {
+        Self {
+            input: Input::new(),
+            result_count: 0,
+            result_index: -1,
+            focused: false,
+        }
+    }
+
+    /// The current query (upstream `input.getValue()`).
+    pub fn query(&self) -> &str {
+        self.input.get_value()
+    }
+
+    pub fn input(&self) -> &Input {
+        &self.input
+    }
+
+    pub fn input_mut(&mut self) -> &mut Input {
+        &mut self.input
+    }
+
+    /// Report the selected match index and the match count (upstream
+    /// `setResult`).
+    pub fn set_result(&mut self, index: i64, count: usize) {
+        self.result_index = index;
+        self.result_count = count;
+    }
+
+    pub fn result_index(&self) -> i64 {
+        self.result_index
+    }
+
+    pub fn result_count(&self) -> usize {
+        self.result_count
+    }
+}
+
+impl Default for AltScreenSearchComponent {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Component for AltScreenSearchComponent {
+    fn render(&mut self, width: usize) -> Vec<String> {
+        let safe_width = width.max(1);
+        let label = " Find transcript";
+        let query = self.input.get_value();
+        let status = if query.is_empty() {
+            String::new()
+        } else if self.result_count == 0 {
+            "No matches ".to_string()
+        } else {
+            format!("{}/{} ", self.result_index + 1, self.result_count)
+        };
+        let label_width = visible_width(label);
+        let status_width = visible_width(&status);
+        let gap = " ".repeat(safe_width.saturating_sub(label_width + status_width).max(1));
+        let title = truncate_to_width(&format!("{label}{gap}{status}"), safe_width, "", false);
+        let padding = " ".repeat(safe_width.saturating_sub(visible_width(&title)));
+        let mut lines = vec![format!("\u{1b}[7m{title}{padding}\u{1b}[27m")];
+        lines.extend(self.input.render(safe_width));
+        lines
+    }
+
+    fn handle_input(&mut self, data: &str) {
+        if crate::input::dispatch_input_keybinding(&mut self.input, data) {
+            return;
+        }
+        self.input.handle_input(data);
+    }
+
+    fn invalidate(&mut self) {}
+
+    fn as_focusable(&mut self) -> Option<&mut dyn Focusable> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+}
+
+impl Focusable for AltScreenSearchComponent {
+    fn set_focused(&mut self, focused: bool) {
+        self.focused = focused;
+        self.input.focused = focused;
+    }
+
+    fn is_focused(&self) -> bool {
+        self.focused
     }
 }

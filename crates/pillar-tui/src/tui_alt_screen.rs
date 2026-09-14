@@ -1,42 +1,57 @@
-//! Port of packages/tui/src/tui-alt-screen.ts (pi v0.84.3), first slice: the
+//! Port of packages/tui/src/tui-alt-screen.ts (pi v0.84.3): the
 //! alternate-screen renderer's frame pipeline, viewport scrolling, search
-//! state and flashes.
+//! state, mouse handling, and application-owned text selection with
+//! copy-on-select.
 //!
-//! Deferred to the next slices (recorded in docs/TASKS.md): mouse handling
-//! (wheel / SGR / scrollbar), text selection with copy-on-select, and the
-//! search overlay component (`AltScreenSearchComponent`). External layout
-//! roots need the component → `LayoutNode` bridge, which the port does not
-//! have yet, so only the implicit scroll view is supported.
+//! Not ported (recorded in docs/TASKS.md): the kitty image upload/cache and
+//! the crash/debug logs.
 //!
 //! divergences:
 //! - upstream stores the rendered `LayoutFrame` between frames and slices the
 //!   viewport through it; the port's frame borrows its layout node, so the
 //!   implicit viewport is sliced directly from the scroll state
-//!   (`update_layout` + `scroll_top`/`viewport_height`) and only the derived
-//!   state (rendered lines, scroll positions) is kept.
+//!   (`update_layout` + `scroll_top`/`viewport_height`) and the derived
+//!   state (rendered lines, scroll positions, hit geometry) is kept in
+//!   [`ScrollHitSnapshot`]. External layout roots (`setLayoutRoot`) need the
+//!   component → `LayoutNode` bridge, which the port does not have yet, so
+//!   only the implicit scroll view is supported.
 //! - kitty image upload/caching is not ported: images render as-is and the
 //!   `evictedImageDeletion` step is a no-op.
-//! - `TERM`/`TMUX`/`ZELLIJ` multiplexer detection chooses the mouse-motion
-//!   sequence; mouse reporting is deferred, so only alt-screen entry/exit and
-//!   autowrap toggling are emitted.
+//! - the selection auto-scroll interval is host-driven: upstream sets a 50 ms
+//!   `setInterval`; the port exposes [`TuiAltScreen::selection_auto_scroll_active`]
+//!   and [`TuiAltScreen::auto_scroll_selection`] for the host's timer.
+//! - upstream registers its input listener in the constructor; Rust cannot
+//!   self-register a `&mut self` listener, so the host registers one that
+//!   delegates to [`TuiAltScreen::handle_viewport_input`].
+//! - clipboard writes use the injected `copy_selection` callback or a bare
+//!   OSC 52 write (upstream's fallback); `utils/clipboard` lives in
+//!   pillar-coding-agent, which pillar-tui must not depend on.
 
 use std::cell::RefCell;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+use base64::Engine as _;
 
 use crate::alt_screen::{AltScreenDiff, classify_alt_screen_diff, rows_to_paint};
 use crate::alt_screen_search::{
-    AltScreenSearchMatch, find_alt_screen_search_matches, get_alt_screen_search_match_key,
+    AltScreenSearchComponent, AltScreenSearchMatch, find_alt_screen_search_matches,
+    get_alt_screen_search_match_key,
 };
+use crate::edit_support::segment_words;
 use crate::keybindings::with_global_keybindings;
 use crate::layout::{LayoutNode, ScrollbarGeometry, get_scrollbar_geometry, render_layout_frame};
 use crate::loaders::{AltScreenFlashContainer, ScrollView, ScrollViewOptions};
 use crate::overlay::{
-    apply_line_resets, composite_overlays, extract_cursor_position, prepare_overlay,
+    OverlayAnchor, OverlayMargin, OverlayOptions, SizeValue, apply_line_resets, composite_overlays,
+    extract_cursor_position, prepare_overlay,
 };
 use crate::process_terminal::Terminal;
-use crate::stack_layout::slice_by_column;
+use crate::stack_layout::{composite_tui_line, slice_by_column};
 use crate::terminal_image::is_image_line;
-use crate::text_utils::visible_width;
+use crate::text_utils::{
+    extract_ansi_code, get_grapheme_cell_range, get_osc8_link_at_column, strip_terminal_sequences,
+    visible_width,
+};
 use crate::tui::{InputListenerResult, TuiBase, TuiMode, TuiStopOptions};
 
 const ENTER_ALT_SCREEN: &str = "\u{1b}[?1049h";
@@ -54,6 +69,13 @@ const FOCUS_IN: &str = "\u{1b}[I";
 const FOCUS_OUT: &str = "\u{1b}[O";
 /// Lines of overlap when scrolling by a page (upstream `PAGE_SCROLL_OVERLAP`).
 const PAGE_SCROLL_OVERLAP: usize = 4;
+/// Double-click window for word/line selection (upstream
+/// `DOUBLE_CLICK_INTERVAL_MS`).
+const DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(500);
+/// Multi-character tokens kept whole by word selection, mirroring common
+/// terminal behavior for paths and kebab-case identifiers (upstream
+/// `TERMINAL_WORD_SELECTION_JOINERS`).
+const TERMINAL_WORD_SELECTION_JOINERS: [&str; 2] = ["/", "-"];
 const OSC133_ZONE_PREFIX: &str = "\u{1b}]133;";
 const OSC133_PROMPT_START: &str = "\u{1b}]133;A";
 
@@ -63,6 +85,10 @@ pub type SearchMatchStyle = Box<dyn Fn(&str) -> String + Send>;
 pub type OpenUrlCallback = Box<dyn Fn(&str) + Send>;
 /// Handles a secondary-button press for clipboard paste.
 pub type RightClickPasteCallback = Box<dyn Fn() + Send>;
+/// Copies selected text to the system clipboard, answering whether it
+/// succeeded (upstream `copySelection`). When omitted, a bare OSC 52 write is
+/// used.
+pub type CopySelectionCallback = Box<dyn Fn(&str) -> bool + Send>;
 
 /// Options for [`TuiAltScreen`] (upstream `TuiAltScreenOptions`).
 #[derive(Default)]
@@ -75,12 +101,14 @@ pub struct TuiAltScreenOptions {
     pub search_match_style: Option<SearchMatchStyle>,
     /// Style the current search match.
     pub search_current_match_style: Option<SearchMatchStyle>,
-    /// Open an OSC 8 hyperlink activated with a primary click (deferred).
+    /// Open an OSC 8 hyperlink activated with a primary click.
     pub open_url: Option<OpenUrlCallback>,
-    /// Handle a secondary-button press for paste (deferred).
+    /// Handle a secondary-button press for paste.
     pub on_right_click_paste: Option<RightClickPasteCallback>,
-    /// Copy the selection on release (deferred; default true).
+    /// Copy the selection on release (default true).
     pub copy_on_select: Option<bool>,
+    /// Copy selected text to the system clipboard (default: OSC 52 write).
+    pub copy_selection: Option<CopySelectionCallback>,
 }
 
 /// How the search selected its current match (upstream `selectionMode`).
@@ -97,14 +125,11 @@ pub enum SearchSelectionMode {
     Retain,
 }
 
-/// The active viewport search (upstream `ActiveSearch` minus the overlay).
+/// The active viewport search (upstream `ActiveSearch`).
 #[derive(Debug, Clone, Default)]
 pub struct ActiveSearch {
-    /// The overlay hosting the search input, when one is shown (the overlay
-    /// component itself is a later slice).
+    /// The overlay hosting the search input, when one is shown.
     pub overlay_id: Option<u64>,
-    /// Whether the search overlay currently owns focus.
-    pub focused: bool,
     pub query: String,
     pub matches: Vec<AltScreenSearchMatch>,
     pub selected_index: Option<usize>,
@@ -137,11 +162,63 @@ struct ScrollbarDrag {
     grab_offset: usize,
 }
 
+/// The granularity a selection snapshots to (upstream `SelectionGranularity`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SelectionGranularity {
+    #[default]
+    Character,
+    Word,
+    Line,
+}
+
+/// A point in the selection space (upstream `SelectionPoint`). When
+/// `in_viewport` is false the coordinates are terminal cells (overlay
+/// selection); otherwise they are scroll-content row/column coordinates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SelectionPoint {
+    pub row: usize,
+    pub col: usize,
+    /// Whether this point lies in the viewport's scroll content.
+    pub in_viewport: bool,
+    /// Whether this point lies between terminal cells rather than on a cell.
+    pub boundary: bool,
+}
+
+/// A selection range (upstream `SelectionRange`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SelectionRange {
+    pub start: SelectionPoint,
+    pub end: SelectionPoint,
+}
+
+/// The previous click, for double/triple-click detection (upstream
+/// `ClickTarget`).
+#[derive(Debug, Clone, Copy)]
+struct ClickTarget {
+    timestamp: Instant,
+    count: usize,
+    row: usize,
+    in_viewport: bool,
+    word_start: usize,
+    word_end: usize,
+}
+
+/// A search highlight span within a rendered row (upstream
+/// `SearchHighlightRange`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SearchHighlightRange {
+    start_col: usize,
+    end_col: usize,
+    current: bool,
+}
+
 /// The primary scroll view's hit-test geometry from the last frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScrollHitSnapshot {
     pub rect: (usize, usize, usize, usize),
+    pub clip: (usize, usize, usize, usize),
     pub scrollbar: Option<ScrollbarGeometry>,
+    pub scroll_top: usize,
 }
 
 /// Parse an SGR mouse event (upstream `parseSgrMouseEvent`).
@@ -228,7 +305,13 @@ pub struct TuiAltScreen {
     wheel_scroll_lines: usize,
     mouse_enabled: bool,
     copy_on_select: bool,
-    /// The scroll content lines of the last frame (search input).
+    copy_selection: Option<CopySelectionCallback>,
+    search_match_style: SearchMatchStyle,
+    search_current_match_style: SearchMatchStyle,
+    open_url: Option<OpenUrlCallback>,
+    on_right_click_paste: Option<RightClickPasteCallback>,
+    /// The scroll content lines of the last frame (search and selection
+    /// source).
     last_content_lines: Vec<String>,
     /// Hit-test geometry of the primary scroll view from the last frame.
     scroll_hit: Option<ScrollHitSnapshot>,
@@ -236,7 +319,16 @@ pub struct TuiAltScreen {
     scrollbar_hover_active: bool,
     mouse_sequence: String,
     selection_press_active: bool,
-    on_right_click_paste: Option<RightClickPasteCallback>,
+    selection_anchor: Option<SelectionPoint>,
+    selection_focus: Option<SelectionPoint>,
+    selection_granularity: SelectionGranularity,
+    selection_initial_range: Option<SelectionRange>,
+    last_click: Option<ClickTarget>,
+    selection_drag_pointer: Option<(usize, usize)>,
+    selection_auto_scroll_direction: i8,
+    selection_auto_scroll_active: bool,
+    selection_dragged: bool,
+    pressed_url: Option<String>,
 }
 
 impl TuiAltScreen {
@@ -257,13 +349,31 @@ impl TuiAltScreen {
             wheel_scroll_lines: options.wheel_scroll_lines.unwrap_or(1).max(1),
             mouse_enabled: options.mouse.unwrap_or(true),
             copy_on_select: options.copy_on_select.unwrap_or(true),
+            copy_selection: options.copy_selection,
+            search_match_style: options
+                .search_match_style
+                .unwrap_or_else(|| Box::new(|text: &str| format!("\u{1b}[4m{text}\u{1b}[24m"))),
+            search_current_match_style: options.search_current_match_style.unwrap_or_else(|| {
+                Box::new(|text: &str| format!("\u{1b}[1;7m{text}\u{1b}[22;27m"))
+            }),
+            open_url: options.open_url,
+            on_right_click_paste: options.on_right_click_paste,
             last_content_lines: Vec::new(),
             scroll_hit: None,
             scrollbar_drag: None,
             scrollbar_hover_active: false,
             mouse_sequence: mouse_sequence(),
             selection_press_active: false,
-            on_right_click_paste: options.on_right_click_paste,
+            selection_anchor: None,
+            selection_focus: None,
+            selection_granularity: SelectionGranularity::Character,
+            selection_initial_range: None,
+            last_click: None,
+            selection_drag_pointer: None,
+            selection_auto_scroll_direction: 0,
+            selection_auto_scroll_active: false,
+            selection_dragged: false,
+            pressed_url: None,
         }
     }
 
@@ -291,6 +401,32 @@ impl TuiAltScreen {
 
     pub fn set_copy_on_select(&mut self, enabled: bool) {
         self.copy_on_select = enabled;
+    }
+
+    /// Whether the viewport has a non-empty active text selection (upstream
+    /// `hasActiveSelection`).
+    pub fn has_active_selection(&self) -> bool {
+        self.get_active_selection_text().is_some()
+    }
+
+    /// The active selection's text, if any.
+    pub fn active_selection_text(&self) -> Option<String> {
+        self.get_active_selection_text()
+    }
+
+    /// Copy the active selection using the configured clipboard path
+    /// (upstream `copyActiveSelectionToClipboard`).
+    pub fn copy_active_selection_to_clipboard(&mut self) -> bool {
+        let Some(text) = self.get_active_selection_text() else {
+            return false;
+        };
+        self.copy_text_to_clipboard(&text)
+    }
+
+    /// Whether the host should run a 50 ms auto-scroll tick (upstream the
+    /// `selectionAutoScrollTimer`).
+    pub fn selection_auto_scroll_active(&self) -> bool {
+        self.selection_auto_scroll_active
     }
 
     pub fn wheel_scroll_lines(&self) -> usize {
@@ -330,12 +466,24 @@ impl TuiAltScreen {
     pub fn handle_viewport_input(&mut self, data: &str) -> Option<InputListenerResult> {
         if data == FOCUS_OUT {
             let had_active_selection = self.selection_press_active;
+            let had_non_empty_active_selection =
+                had_active_selection && self.get_selection_bounds().is_some();
             self.selection_press_active = false;
+            self.stop_selection_auto_scroll();
             self.stop_scrollbar_hover();
             self.stop_scrollbar_drag();
+            self.pressed_url = None;
+            self.selection_dragged = false;
             if had_active_selection {
-                self.base.request_render(false);
+                self.selection_anchor = None;
+                self.selection_focus = None;
+                self.selection_granularity = SelectionGranularity::Character;
+                self.selection_initial_range = None;
+                if had_non_empty_active_selection {
+                    self.base.request_render(false);
+                }
             }
+            self.last_click = None;
             return Some(InputListenerResult {
                 consume: true,
                 data: None,
@@ -370,8 +518,9 @@ impl TuiAltScreen {
             if self.scrollbar_drag.is_none() {
                 self.update_scrollbar_hover(event.x, event.y);
             }
-            // Text selection handling is the next slice.
-            let _ = handled;
+            if !handled {
+                self.handle_selection_mouse_event_at(&event, Instant::now());
+            }
             return Some(InputListenerResult {
                 consume: true,
                 data: None,
@@ -402,7 +551,8 @@ impl TuiAltScreen {
         let search_focused = self
             .active_search
             .as_ref()
-            .is_some_and(|search| search.focused);
+            .and_then(|search| search.overlay_id)
+            .is_some_and(|id| self.base.overlay_is_focused(id));
         if search_focused {
             if matches("tui.altScreen.searchNext") {
                 if !is_release {
@@ -502,13 +652,18 @@ impl TuiAltScreen {
     /// Whether an overlay other than the search owns focus (upstream
     /// `shouldDeferViewportInputToOverlay`).
     fn should_defer_viewport_input_to_overlay(&self) -> bool {
-        self.base.focused().is_some_and(|focused| {
-            self.base.overlay_options(focused).is_some()
-                && !self
-                    .active_search
-                    .as_ref()
-                    .is_some_and(|search| search.focused && search.overlay_id == Some(focused))
-        })
+        let Some(focused) = self.base.focused() else {
+            return false;
+        };
+        if self.base.overlay_options(focused).is_none() {
+            return false;
+        }
+        let search_overlay_focused = self
+            .active_search
+            .as_ref()
+            .and_then(|search| search.overlay_id)
+            .is_some_and(|id| id == focused && self.base.overlay_is_focused(id));
+        !search_overlay_focused
     }
 
     /// Route a wheel event to the primary scroll view (upstream `routeWheel`
@@ -622,11 +777,711 @@ impl TuiAltScreen {
             return false;
         };
         self.selection_press_active = false;
+        self.selection_anchor = None;
+        self.selection_focus = None;
+        self.selection_granularity = SelectionGranularity::Character;
+        self.selection_initial_range = None;
+        self.last_click = None;
+        self.pressed_url = None;
+        self.selection_dragged = false;
+        self.stop_selection_auto_scroll();
         self.set_scrollbar_hover(true);
         self.scrollbar_drag = Some(ScrollbarDrag {
             grab_offset: event.y.saturating_sub(geometry.thumb_top),
         });
         true
+    }
+
+    // --- text selection --------------------------------------------------
+
+    /// The scroll view under a pointer position, if any (upstream
+    /// `getScrollViewsAt(...)[0]`). With no external layout root the implicit
+    /// viewport fills the screen, so only overlays can take the pointer out of
+    /// it.
+    fn scroll_view_at(&self, x: usize, y: usize) -> bool {
+        if self.base.has_overlay() {
+            return false;
+        }
+        self.scroll_hit.is_some_and(|hit| {
+            let (rx, ry, rw, rh) = hit.rect;
+            let (cx, cy, cw, ch) = hit.clip;
+            x >= rx.max(cx)
+                && x < (rx + rw).min(cx + cw)
+                && y >= ry.max(cy)
+                && y < (ry + rh).min(cy + ch)
+        })
+    }
+
+    /// Map a pointer position to scroll-content coordinates (upstream
+    /// `getScrollSelectionPoint`).
+    fn get_scroll_selection_point(&self, x: usize, y: usize) -> Option<SelectionPoint> {
+        let hit = self.scroll_hit?;
+        let (rx, ry, rw, rh) = hit.rect;
+        let (_, cy, _, ch) = hit.clip;
+        if rh == 0 || ch == 0 {
+            return None;
+        }
+        let visible_top = ry.max(cy);
+        let visible_bottom = (self.base.terminal().rows().saturating_sub(1))
+            .min((ry + rh).saturating_sub(1))
+            .min((cy + ch).saturating_sub(1));
+        if visible_bottom < visible_top {
+            return None;
+        }
+        let pointer_row = y.clamp(visible_top, visible_bottom);
+        let max_content_row = self.last_content_lines.len().saturating_sub(1);
+        Some(SelectionPoint {
+            row: hit
+                .scroll_top
+                .saturating_add(pointer_row.saturating_sub(ry))
+                .min(max_content_row),
+            col: x.saturating_sub(rx).min(rw.saturating_sub(1)),
+            in_viewport: true,
+            boundary: false,
+        })
+    }
+
+    /// Convert a mouse event into a selection point (upstream
+    /// `getSelectionPoint`).
+    fn get_selection_point(&self, event: &SgrMouseEvent, in_viewport: bool) -> SelectionPoint {
+        if in_viewport {
+            if let Some(point) = self.get_scroll_selection_point(event.x, event.y) {
+                return point;
+            }
+        }
+        SelectionPoint {
+            row: event.y.min(self.base.terminal().rows().saturating_sub(1)),
+            col: event.x.min(self.base.terminal().columns().saturating_sub(1)),
+            in_viewport: false,
+            boundary: false,
+        }
+    }
+
+    /// The source line a selection point refers to (upstream
+    /// `getSelectionSourceLine`).
+    fn get_selection_source_line(&self, point: SelectionPoint) -> String {
+        if point.in_viewport {
+            return self
+                .last_content_lines
+                .get(point.row)
+                .cloned()
+                .unwrap_or_default();
+        }
+        self.previous_screen
+            .get(point.row)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// The word (or joiner-joined token) range containing a point (upstream
+    /// `getWordSelection`).
+    fn get_word_selection(&self, point: SelectionPoint) -> Option<SelectionRange> {
+        let line = strip_terminal_sequences(&self.get_selection_source_line(point));
+        struct Segment {
+            start: usize,
+            end: usize,
+            selectable: bool,
+            joiner: bool,
+        }
+        let mut segments: Vec<Segment> = Vec::new();
+        let mut start = 0usize;
+        for segment in segment_words(&line) {
+            let end = start + visible_width(&segment.text);
+            let joiner = TERMINAL_WORD_SELECTION_JOINERS.contains(&segment.text.as_str());
+            segments.push(Segment {
+                start,
+                end,
+                selectable: segment.word_like || joiner,
+                joiner,
+            });
+            start = end;
+        }
+        let clicked = segments
+            .iter()
+            .position(|segment| point.col >= segment.start && point.col < segment.end)?;
+
+        let can_join = |left: &Segment, right: &Segment| {
+            left.selectable && right.selectable && (left.joiner || right.joiner)
+        };
+        let mut selection_start = segments[clicked].start;
+        let mut selection_end = segments[clicked].end;
+        let mut index = clicked;
+        while index > 0 && can_join(&segments[index - 1], &segments[index]) {
+            selection_start = segments[index - 1].start;
+            index -= 1;
+        }
+        let mut index = clicked;
+        while index < segments.len() - 1 && can_join(&segments[index], &segments[index + 1]) {
+            selection_end = segments[index + 1].end;
+            index += 1;
+        }
+        Some(SelectionRange {
+            start: SelectionPoint {
+                col: selection_start,
+                ..point
+            },
+            end: SelectionPoint {
+                col: selection_end,
+                boundary: true,
+                ..point
+            },
+        })
+    }
+
+    /// The whole line at a point (upstream `getLineSelection`).
+    fn get_line_selection(&self, point: SelectionPoint) -> SelectionRange {
+        SelectionRange {
+            start: SelectionPoint { col: 0, ..point },
+            end: SelectionPoint {
+                col: visible_width(&self.get_selection_source_line(point)),
+                boundary: true,
+                ..point
+            },
+        }
+    }
+
+    /// Move the selection's focus, honoring a word/line granularity (upstream
+    /// `updateSelectionFocus`).
+    fn update_selection_focus(&mut self, point: SelectionPoint) {
+        let Some(initial) = self.selection_initial_range else {
+            self.selection_focus = Some(point);
+            return;
+        };
+        if self.selection_granularity == SelectionGranularity::Character {
+            self.selection_focus = Some(point);
+            return;
+        }
+        let range = match self.selection_granularity {
+            SelectionGranularity::Word => self.get_word_selection(point),
+            _ => Some(self.get_line_selection(point)),
+        };
+        let Some(range) = range else {
+            return;
+        };
+        let target_before_initial = range.start.row < initial.start.row
+            || (range.start.row == initial.start.row && range.start.col < initial.start.col);
+        if target_before_initial {
+            self.selection_anchor = Some(initial.end);
+            self.selection_focus = Some(range.start);
+        } else {
+            self.selection_anchor = Some(initial.start);
+            self.selection_focus = Some(range.end);
+        }
+    }
+
+    /// Count repeated clicks on the same word (upstream `getClickCount`).
+    fn get_click_count(
+        &mut self,
+        point: SelectionPoint,
+        word: Option<SelectionRange>,
+        now: Instant,
+    ) -> usize {
+        let previous = self.last_click;
+        let count = match (word, previous) {
+            (Some(word), Some(previous))
+                if now.saturating_duration_since(previous.timestamp) <= DOUBLE_CLICK_INTERVAL
+                    && previous.row == point.row
+                    && previous.in_viewport == point.in_viewport
+                    && previous.word_start == word.start.col
+                    && previous.word_end == word.end.col =>
+            {
+                (previous.count % 3) + 1
+            }
+            _ => 1,
+        };
+        self.last_click = word.map(|word| ClickTarget {
+            timestamp: now,
+            count,
+            row: point.row,
+            in_viewport: point.in_viewport,
+            word_start: word.start.col,
+            word_end: word.end.col,
+        });
+        count
+    }
+
+    /// Track the drag pointer and arm/disarm auto-scroll (upstream
+    /// `updateSelectionAutoScroll`).
+    fn update_selection_auto_scroll(&mut self, event: &SgrMouseEvent) {
+        if self.selection_anchor.map(|point| point.in_viewport) != Some(true) {
+            self.stop_selection_auto_scroll();
+            return;
+        }
+        let Some(hit) = self.scroll_hit else {
+            self.stop_selection_auto_scroll();
+            return;
+        };
+        let (_, ry, _, rh) = hit.rect;
+        let (_, cy, _, ch) = hit.clip;
+        if rh == 0 || ch == 0 {
+            self.stop_selection_auto_scroll();
+            return;
+        }
+        let visible_top = ry.max(cy);
+        let visible_bottom = (self.base.terminal().rows().saturating_sub(1))
+            .min((ry + rh).saturating_sub(1))
+            .min((cy + ch).saturating_sub(1));
+        self.selection_drag_pointer = Some((event.x, event.y));
+        self.selection_auto_scroll_direction = if event.y <= visible_top {
+            -1
+        } else if event.y >= visible_bottom {
+            1
+        } else {
+            0
+        };
+        if self.selection_auto_scroll_direction == 0 {
+            self.stop_selection_auto_scroll();
+            return;
+        }
+        // Upstream holds a 50 ms interval; the port lets the host drive it.
+        self.selection_auto_scroll_active = true;
+    }
+
+    /// One auto-scroll tick (upstream the `setInterval` callback).
+    pub fn auto_scroll_selection(&mut self) {
+        let direction = self.selection_auto_scroll_direction;
+        let Some(pointer) = self.selection_drag_pointer else {
+            self.stop_selection_auto_scroll();
+            return;
+        };
+        if direction == 0 || self.selection_anchor.map(|point| point.in_viewport) != Some(true) {
+            self.stop_selection_auto_scroll();
+            return;
+        }
+        let remaining = self.scroll.borrow_mut().scroll_by(direction as isize);
+        if remaining == direction as isize {
+            self.stop_selection_auto_scroll();
+            return;
+        }
+        if let Some(point) = self.get_scroll_selection_point(pointer.0, pointer.1) {
+            self.update_selection_focus(point);
+        }
+        self.base.request_render(false);
+    }
+
+    /// Disarm auto-scroll (upstream `stopSelectionAutoScroll`).
+    pub fn stop_selection_auto_scroll(&mut self) {
+        self.selection_auto_scroll_active = false;
+        self.selection_auto_scroll_direction = 0;
+        self.selection_drag_pointer = None;
+    }
+
+    /// Handle a mouse event for text selection (upstream
+    /// `handleSelectionMouseEvent`), using the current time for click counting.
+    pub fn handle_selection_mouse_event(&mut self, event: &SgrMouseEvent) {
+        self.handle_selection_mouse_event_at(event, Instant::now());
+    }
+
+    /// [`Self::handle_selection_mouse_event`] with an explicit clock.
+    pub fn handle_selection_mouse_event_at(&mut self, event: &SgrMouseEvent, now: Instant) {
+        let button = event.button & 3;
+        if button != 0 && !(event.release && button == 3) {
+            return;
+        }
+        let anchor_in_viewport = self
+            .selection_anchor
+            .map(|point| point.in_viewport)
+            .unwrap_or(false);
+        let point = self.get_selection_point(event, anchor_in_viewport);
+
+        if event.release {
+            if !self.selection_press_active {
+                return;
+            }
+            self.selection_press_active = false;
+            self.stop_selection_auto_scroll();
+            let Some(anchor) = self.selection_anchor else {
+                return;
+            };
+            self.update_selection_focus(point);
+            let clicked_url = if !self.selection_dragged
+                && anchor.in_viewport == point.in_viewport
+                && anchor.row == point.row
+                && anchor.col == point.col
+            {
+                self.pressed_url.clone()
+            } else {
+                None
+            };
+            self.pressed_url = None;
+            if let Some(url) = clicked_url {
+                if let Some(open_url) = self.open_url.as_ref() {
+                    self.selection_anchor = None;
+                    self.selection_focus = None;
+                    // URL activation is best-effort.
+                    open_url(&url);
+                    self.base.request_render(false);
+                    return;
+                }
+            }
+            if self.copy_on_select {
+                self.copy_selection_to_clipboard();
+            }
+            self.base.request_render(false);
+            return;
+        }
+
+        if (event.button & 32) != 0 {
+            if !self.selection_press_active || self.selection_anchor.is_none() {
+                return;
+            }
+            self.selection_dragged = true;
+            self.last_click = None;
+            self.pressed_url = None;
+            self.update_selection_focus(point);
+            self.update_selection_auto_scroll(event);
+            self.base.request_render(false);
+            return;
+        }
+
+        self.stop_selection_auto_scroll();
+        self.selection_press_active = true;
+        let in_viewport = self.scroll_view_at(event.x, event.y);
+        let anchor = self.get_selection_point(event, in_viewport);
+        let word = self.get_word_selection(anchor);
+        let click_count = self.get_click_count(anchor, word, now);
+        let range = if click_count == 2 {
+            word
+        } else if click_count == 3 {
+            Some(self.get_line_selection(anchor))
+        } else {
+            None
+        };
+        self.selection_granularity = match (range, click_count) {
+            (Some(_), 2) => SelectionGranularity::Word,
+            (Some(_), _) => SelectionGranularity::Line,
+            (None, _) => SelectionGranularity::Character,
+        };
+        self.selection_initial_range = range;
+        self.selection_anchor = Some(range.map(|range| range.start).unwrap_or(anchor));
+        self.selection_focus = Some(range.map(|range| range.end).unwrap_or(anchor));
+        self.selection_dragged = false;
+        self.pressed_url = if range.is_some() {
+            None
+        } else {
+            let row = event.y.min(self.base.terminal().rows().saturating_sub(1));
+            let col = event.x.min(self.base.terminal().columns().saturating_sub(1));
+            get_osc8_link_at_column(self.previous_screen.get(row).map(String::as_str).unwrap_or(""), col)
+        };
+        self.base.request_render(false);
+    }
+
+    /// The ordered selection bounds, if the selection is non-empty (upstream
+    /// `getSelectionBounds`).
+    fn get_selection_bounds(&self) -> Option<SelectionRange> {
+        let anchor = self.selection_anchor?;
+        let focus = self.selection_focus?;
+        if anchor.in_viewport != focus.in_viewport {
+            return None;
+        }
+        if anchor.row == focus.row && anchor.col == focus.col {
+            return None;
+        }
+        let anchor_before_focus = anchor.row < focus.row
+            || (anchor.row == focus.row && anchor.col < focus.col);
+        Some(if anchor_before_focus {
+            SelectionRange {
+                start: anchor,
+                end: focus,
+            }
+        } else {
+            SelectionRange {
+                start: focus,
+                end: anchor,
+            }
+        })
+    }
+
+    /// The selected columns within one line (upstream `getSelectionColumns`).
+    fn get_selection_columns(
+        &self,
+        line: &str,
+        row: usize,
+        selection: &SelectionRange,
+        min_column: usize,
+        max_column: usize,
+    ) -> (usize, usize) {
+        let line_width = visible_width(line);
+        let mut start = min_column;
+        let mut end = line_width.min(max_column);
+        if row == selection.start.row {
+            start = get_grapheme_cell_range(line, selection.start.col)
+                .map(|range| range.0)
+                .unwrap_or_else(|| selection.start.col.min(line_width));
+        }
+        if row == selection.end.row {
+            end = if selection.end.boundary {
+                selection.end.col.min(line_width)
+            } else {
+                get_grapheme_cell_range(line, selection.end.col)
+                    .map(|range| range.1)
+                    .unwrap_or_else(|| (selection.end.col + 1).min(line_width))
+            };
+        }
+        (start.max(min_column), end.min(max_column))
+    }
+
+    /// The active selection's text (upstream `getActiveSelectionText`).
+    fn get_active_selection_text(&self) -> Option<String> {
+        let selection = self.get_selection_bounds()?;
+        let source_lines: Vec<String> = if selection.start.in_viewport {
+            self.last_content_lines.clone()
+        } else {
+            self.previous_screen.clone()
+        };
+        let mut lines: Vec<String> = Vec::new();
+        for row in selection.start.row..=selection.end.row {
+            let line = source_lines.get(row).cloned().unwrap_or_default();
+            let (start, end) =
+                self.get_selection_columns(&line, row, &selection, 0, visible_width(&line));
+            lines.push(
+                strip_terminal_sequences(&slice_by_column(
+                    &line,
+                    start,
+                    end.saturating_sub(start),
+                    true,
+                ))
+                .trim_end()
+                .to_string(),
+            );
+        }
+        let text = lines.join("\n");
+        if text.is_empty() { None } else { Some(text) }
+    }
+
+    fn copy_selection_to_clipboard(&mut self) -> bool {
+        let Some(text) = self.get_active_selection_text() else {
+            return false;
+        };
+        self.copy_text_to_clipboard(&text)
+    }
+
+    /// Copy text through the injected clipboard callback, or a bare OSC 52
+    /// write (upstream `copyTextToClipboard`). A bare OSC 52 write can report
+    /// success while leaving the clipboard untouched, so only the injected path
+    /// is verified.
+    fn copy_text_to_clipboard(&mut self, text: &str) -> bool {
+        if let Some(callback) = self.copy_selection.as_ref() {
+            let ok = callback(text);
+            self.flash(if ok { "Copied!" } else { "Copy failed" }, None);
+            return ok;
+        }
+        let encoded = base64::engine::general_purpose::STANDARD.encode(text);
+        self.base
+            .terminal_mut()
+            .write(&format!("\u{1b}]52;c;{encoded}\u{7}"));
+        self.flash("Copied!", None);
+        true
+    }
+
+    // --- highlight compositing -------------------------------------------
+
+    /// Wrap the non-ANSI runs of a line in the search match style (upstream
+    /// `applySearchTextHighlight`).
+    fn apply_search_text_highlight(&self, text: &str, current: bool) -> String {
+        let style: &SearchMatchStyle = if current {
+            &self.search_current_match_style
+        } else {
+            &self.search_match_style
+        };
+        let chars: Vec<char> = text.chars().collect();
+        let mut result = String::new();
+        let mut plain_start = 0usize;
+        let mut index = 0usize;
+        while index < chars.len() {
+            let Some(ansi) = extract_ansi_code(&chars, index) else {
+                index += 1;
+                continue;
+            };
+            if index > plain_start {
+                result.push_str(&style(&chars[plain_start..index].iter().collect::<String>()));
+            }
+            result.push_str(&ansi.code);
+            index += ansi.length;
+            plain_start = index;
+        }
+        if plain_start < chars.len() {
+            result.push_str(&style(&chars[plain_start..].iter().collect::<String>()));
+        }
+        result
+    }
+
+    /// Highlight the visible search matches in a frame (upstream
+    /// `applySearchHighlights`).
+    fn apply_search_highlights(&self, screen: Vec<String>, width: usize) -> Vec<String> {
+        let Some(search) = self.active_search.as_ref() else {
+            return screen;
+        };
+        let Some(selected_index) = search.selected_index else {
+            return screen;
+        };
+        if search.matches.is_empty() {
+            return screen;
+        }
+        let Some(hit) = self.scroll_hit else {
+            return screen;
+        };
+        let (rx, ry, rw, rh) = hit.rect;
+        let (cx, cy, cw, ch) = hit.clip;
+        let scrollbar_column = hit.scrollbar.map(|geometry| geometry.column);
+        let min_row = ry.max(cy);
+        let max_row = screen.len().min(ry + rh).min(cy + ch);
+        let min_column = rx.max(cx);
+        let max_column = width
+            .min(rx + rw)
+            .min(cx + cw)
+            .min(scrollbar_column.unwrap_or(usize::MAX));
+
+        let mut ranges_by_row: Vec<(usize, Vec<SearchHighlightRange>)> = Vec::new();
+        for (match_index, matched) in search.matches.iter().enumerate() {
+            for segment in &matched.segments {
+                let row = (ry + segment.row).saturating_sub(hit.scroll_top);
+                if row < min_row || row >= max_row {
+                    continue;
+                }
+                let start_col = min_column.max(rx + segment.start_col);
+                let end_col = max_column.min(rx + segment.end_col);
+                if end_col <= start_col {
+                    continue;
+                }
+                let entry = match ranges_by_row.iter_mut().find(|(row_, _)| *row_ == row) {
+                    Some(entry) => entry,
+                    None => {
+                        ranges_by_row.push((row, Vec::new()));
+                        ranges_by_row
+                            .last_mut()
+                            .expect("just pushed the row entry")
+                    }
+                };
+                entry.1.push(SearchHighlightRange {
+                    start_col,
+                    end_col,
+                    current: match_index == selected_index,
+                });
+            }
+        }
+
+        let mut result = screen;
+        for (row, mut ranges) in ranges_by_row {
+            let Some(current) = result.get(row).cloned() else {
+                continue;
+            };
+            if is_image_line(&current) {
+                continue;
+            }
+            let line_width = visible_width(&current);
+            let mut line = current;
+            ranges.sort_by(|a, b| b.start_col.cmp(&a.start_col));
+            for range in ranges {
+                let start_col = range.start_col.min(line_width);
+                let end_col = range.end_col.min(line_width);
+                if end_col <= start_col {
+                    continue;
+                }
+                let before = slice_by_column(&line, 0, start_col, true);
+                let highlighted = slice_by_column(&line, start_col, end_col - start_col, true);
+                let after = slice_by_column(&line, end_col, line_width.saturating_sub(end_col), true);
+                line = format!(
+                    "{before}{}{after}",
+                    self.apply_search_text_highlight(&highlighted, range.current)
+                );
+            }
+            if let Some(slot) = result.get_mut(row) {
+                *slot = line;
+            }
+        }
+        result
+    }
+
+    /// Inverse-video a selected slice, re-asserting the attribute after every
+    /// SGR reset (upstream `applySelectionHighlight`).
+    fn apply_selection_highlight(text: &str) -> String {
+        let chars: Vec<char> = text.chars().collect();
+        let mut result = String::from("\u{1b}[7m");
+        let mut index = 0usize;
+        while index < chars.len() {
+            let Some(ansi) = extract_ansi_code(&chars, index) else {
+                result.push(chars[index]);
+                index += 1;
+                continue;
+            };
+            result.push_str(&ansi.code);
+            if ansi.code.ends_with('m') {
+                result.push_str("\u{1b}[7m");
+            }
+            index += ansi.length;
+        }
+        format!("{result}\u{1b}[27m")
+    }
+
+    /// Apply the active selection to a frame (upstream `applySelection`).
+    fn apply_selection(&self, screen: Vec<String>) -> Vec<String> {
+        let Some(selection) = self.get_selection_bounds() else {
+            return screen;
+        };
+        let mut min_row = 0usize;
+        let mut max_row = screen.len().saturating_sub(1);
+        let mut min_column = 0usize;
+        let mut max_column = self.base.terminal().columns();
+        let mut screen_selection = selection;
+        if selection.start.in_viewport {
+            let Some(hit) = self.scroll_hit else {
+                return screen;
+            };
+            let (rx, ry, rw, rh) = hit.rect;
+            let (cx, cy, cw, ch) = hit.clip;
+            min_row = ry.max(cy);
+            max_row = screen
+                .len()
+                .saturating_sub(1)
+                .min((ry + rh).saturating_sub(1))
+                .min((cy + ch).saturating_sub(1));
+            min_column = rx.max(cx);
+            max_column = self.base.terminal().columns().min(rx + rw).min(cx + cw);
+            let translate = |point: SelectionPoint| SelectionPoint {
+                row: (ry + point.row).saturating_sub(hit.scroll_top),
+                col: rx + point.col,
+                ..point
+            };
+            screen_selection = SelectionRange {
+                start: translate(selection.start),
+                end: translate(selection.end),
+            };
+        }
+        screen
+            .into_iter()
+            .enumerate()
+            .map(|(row, line)| {
+                if row < min_row
+                    || row > max_row
+                    || row < screen_selection.start.row
+                    || row > screen_selection.end.row
+                    || is_image_line(&line)
+                {
+                    return line;
+                }
+                let line_width = visible_width(&line);
+                let columns = self.get_selection_columns(
+                    &line,
+                    row,
+                    &screen_selection,
+                    min_column,
+                    max_column,
+                );
+                if columns.1 <= columns.0 {
+                    return line;
+                }
+                let before = slice_by_column(&line, 0, columns.0, true);
+                let selected = slice_by_column(&line, columns.0, columns.1 - columns.0, true);
+                let after = slice_by_column(
+                    &line,
+                    columns.1,
+                    line_width.saturating_sub(columns.1),
+                    true,
+                );
+                format!("{before}{}{after}", Self::apply_selection_highlight(&selected))
+            })
+            .collect()
     }
 
     pub fn flash(&mut self, message: &str, duration_ms: Option<u64>) {
@@ -677,24 +1532,66 @@ impl TuiAltScreen {
 
     // --- search ----------------------------------------------------------
 
-    /// Open the viewport search (upstream `openSearch`; the overlay component
-    /// itself is deferred).
+    /// The search overlay's typed component, when one is shown. The component
+    /// belongs to the overlay stack, so it is reached by downcast (upstream
+    /// holds a direct reference).
+    pub fn search_component_mut(&mut self) -> Option<&mut AltScreenSearchComponent> {
+        let id = self.active_search.as_ref()?.overlay_id?;
+        self.base
+            .overlay_component_mut(id)?
+            .as_any_mut()?
+            .downcast_mut::<AltScreenSearchComponent>()
+    }
+
+    /// Pick up query keystrokes the overlay's input consumed (upstream the
+    /// component's `onQueryChange` callback). The port syncs before each frame
+    /// because the callback cannot borrow the alt-screen.
+    fn sync_search_query(&mut self) {
+        let Some(query) = self.search_component_mut().map(|c| c.query().to_string()) else {
+            return;
+        };
+        self.update_search_query(&query);
+    }
+
+    /// Open the viewport search (upstream `openSearch`).
     pub fn open_search(&mut self) {
         if self.active_search.is_some() {
+            if let Some(id) = self.active_search.as_ref().and_then(|search| search.overlay_id) {
+                self.base.focus_overlay(id);
+            }
             return;
         }
+        let anchor_row = self.viewport_top();
+        let id = self.base.show_overlay(
+            Box::new(AltScreenSearchComponent::new()),
+            OverlayOptions {
+                anchor: Some(OverlayAnchor::TopRight),
+                width: Some(SizeValue::Percent(400)),
+                min_width: Some(24),
+                margin: Some(OverlayMargin {
+                    top: 1,
+                    right: 1,
+                    bottom: 1,
+                    left: 1,
+                }),
+                ..Default::default()
+            },
+        );
         self.active_search = Some(ActiveSearch {
-            anchor_row: self.viewport_top(),
-            // Without the overlay component the search owns focus directly.
-            focused: true,
+            overlay_id: Some(id),
+            anchor_row,
             ..Default::default()
         });
     }
 
     pub fn close_search(&mut self) {
-        if self.active_search.take().is_some() {
-            self.base.request_render(false);
+        let Some(search) = self.active_search.take() else {
+            return;
+        };
+        if let Some(id) = search.overlay_id {
+            self.base.remove_overlay(id);
         }
+        self.base.request_render(false);
     }
 
     pub fn update_search_query(&mut self, query: &str) {
@@ -714,6 +1611,9 @@ impl TuiAltScreen {
             .unwrap_or(top);
         search.query = query.to_string();
         search.selection_mode = SearchSelectionMode::Query;
+        if let Some(component) = self.search_component_mut() {
+            component.set_result(-1, 0);
+        }
         self.base.request_render(false);
     }
 
@@ -744,6 +1644,9 @@ impl TuiAltScreen {
             search.selected_index = None;
             search.selected_key = None;
             search.selection_mode = SearchSelectionMode::Retain;
+            if let Some(component) = self.search_component_mut() {
+                component.set_result(-1, 0);
+            }
             return false;
         }
 
@@ -815,6 +1718,11 @@ impl TuiAltScreen {
         search.matches = matches;
         search.selected_index = selected_index;
         search.selection_mode = SearchSelectionMode::Retain;
+        let result_index = selected_index.map(|index| index as i64).unwrap_or(-1);
+        let result_count = search.matches.len();
+        if let Some(component) = self.search_component_mut() {
+            component.set_result(result_index, result_count);
+        }
         if !should_reveal {
             return false;
         }
@@ -849,7 +1757,20 @@ impl TuiAltScreen {
     // --- lifecycle -------------------------------------------------------
 
     pub fn start(&mut self) {
+        // Upstream `beforeTerminalStart` drops all transient state.
+        self.stop_selection_auto_scroll();
+        self.selection_press_active = false;
+        self.stop_scrollbar_hover();
+        self.stop_scrollbar_drag();
+        self.flashes.dispose();
         self.alt_screen_active = true;
+        self.selection_anchor = None;
+        self.selection_focus = None;
+        self.selection_granularity = SelectionGranularity::Character;
+        self.selection_initial_range = None;
+        self.last_click = None;
+        self.pressed_url = None;
+        self.selection_dragged = false;
         self.reset_render_state();
         // Multiplexers lag when every pointer movement is forwarded, so the
         // enable sequence depends on the environment (upstream's check).
@@ -866,6 +1787,12 @@ impl TuiAltScreen {
 
     pub fn stop(&mut self, options: TuiStopOptions) {
         self.close_search();
+        // Upstream `beforeTerminalStop` drops all transient state.
+        self.stop_selection_auto_scroll();
+        self.selection_press_active = false;
+        self.stop_scrollbar_hover();
+        self.stop_scrollbar_drag();
+        self.flashes.dispose();
         if !self.alt_screen_active {
             self.base.stop(options);
             return;
@@ -897,6 +1824,9 @@ impl TuiAltScreen {
         let width = self.base.terminal().columns().max(1);
         let height = self.base.terminal().rows().max(1);
 
+        // Pick up query keystrokes the search overlay consumed.
+        self.sync_search_query();
+
         let mut screen = self.render_frame(width, height);
         if self.refresh_search() {
             screen = self.render_frame(width, height);
@@ -906,11 +1836,13 @@ impl TuiAltScreen {
             .iter()
             .map(|line| line.replace(OSC133_ZONE_PREFIX, ""))
             .collect();
+        screen = self.apply_search_highlights(screen, width);
         screen = self.compose_overlays(screen, width, height);
         if screen.len() > height {
             let excess = screen.len() - height;
             screen.drain(..excess);
         }
+        screen = self.apply_selection(screen);
         screen = self.composite_flashes(screen, width, height);
 
         let cursor_pos = extract_cursor_position(&mut screen, height);
@@ -1011,7 +1943,14 @@ impl TuiAltScreen {
                 frame.root.rect.width,
                 frame.root.rect.height,
             ),
+            clip: (
+                frame.root.clip.x,
+                frame.root.clip.y,
+                frame.root.clip.width,
+                frame.root.clip.height,
+            ),
             scrollbar: get_scrollbar_geometry(&frame.root),
+            scroll_top: self.scroll.borrow().scroll_top(),
         };
         drop(frame);
         self.scroll_hit = Some(snapshot);
@@ -1029,10 +1968,14 @@ impl TuiAltScreen {
             if !options.is_visible(width, height) {
                 continue;
             }
+            // The overlay renders at its resolved width, not the terminal
+            // width (upstream `resolveOverlayLayout(options, 0, ...)`).
+            let overlay_width =
+                crate::overlay::resolve_overlay_layout(Some(&options), 0, width, height).width;
             let Some(component) = self.base.overlay_component_mut(id) else {
                 continue;
             };
-            let overlay_lines = component.render(width);
+            let overlay_lines = component.render(overlay_width);
             overlays.push(prepare_overlay(
                 Some(&options),
                 overlay_lines,
@@ -1049,10 +1992,14 @@ impl TuiAltScreen {
         width: usize,
         height: usize,
     ) -> Vec<String> {
-        if self.flashes.is_empty() {
-            return lines;
-        }
         let flash_lines = self.flashes.render(width);
+        // Upstream keeps the last `height` entries and composites them
+        // right-aligned into the top rows.
+        let flash_lines: Vec<String> = if flash_lines.len() > height {
+            flash_lines[flash_lines.len() - height..].to_vec()
+        } else {
+            flash_lines
+        };
         if flash_lines.is_empty() {
             return lines;
         }
@@ -1060,11 +2007,23 @@ impl TuiAltScreen {
         while result.len() < height {
             result.push(String::new());
         }
-        // Flashes sit on the last rows of the viewport.
-        let start = height.saturating_sub(flash_lines.len());
-        for (offset, line) in flash_lines.iter().enumerate() {
-            if start + offset < result.len() {
-                result[start + offset] = line.clone();
+        for (row, line) in flash_lines.iter().enumerate() {
+            let flash_width = visible_width(line);
+            if flash_width == 0 {
+                continue;
+            }
+            let Some(current) = result.get(row).cloned() else {
+                continue;
+            };
+            let composited = composite_tui_line(
+                &current,
+                line,
+                width.saturating_sub(flash_width),
+                flash_width,
+                width,
+            );
+            if let Some(slot) = result.get_mut(row) {
+                *slot = composited;
             }
         }
         result

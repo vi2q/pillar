@@ -88,6 +88,12 @@ pub trait Component: Send {
     fn as_focusable(&mut self) -> Option<&mut dyn Focusable> {
         None
     }
+
+    /// Downcast hook for hosts that own a concrete component type (the port
+    /// reaches the alt-screen search overlay's query state through it).
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        None
+    }
 }
 
 /// A component that can receive focus and show the hardware cursor (upstream

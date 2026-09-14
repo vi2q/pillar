@@ -3,9 +3,11 @@
 //! matching, segment coalescing, and match keys.
 
 use pillar_tui::alt_screen_search::{
-    find_alt_screen_search_matches, get_alt_screen_search_match_key, normalize_query,
-    strip_terminal_sequences,
+    AltScreenSearchComponent, find_alt_screen_search_matches, get_alt_screen_search_match_key,
+    normalize_query, strip_terminal_sequences,
 };
+use pillar_tui::text_utils::strip_terminal_sequences as strip_sequences;
+use pillar_tui::tui::{Component, Focusable};
 
 #[test]
 fn terminal_sequences_stripped() {
@@ -100,4 +102,57 @@ fn repeated_matches_do_not_overlap() {
     assert_eq!(matches.len(), 2);
     assert_eq!(matches[0].segments[0].start_col, 0);
     assert_eq!(matches[1].segments[0].start_col, 2);
+}
+
+// --- AltScreenSearchComponent (upstream the overlay component) -----------------------------------
+
+#[test]
+fn search_component_renders_label_status_and_input() {
+    let mut component = AltScreenSearchComponent::new();
+    let lines = component.render(24);
+    assert_eq!(lines.len(), 2, "status line + input line");
+    // The status line is reversed and pads to the full width.
+    assert!(lines[0].starts_with("\u{1b}[7m"), "{:?}", lines[0]);
+    assert!(lines[0].ends_with("\u{1b}[27m"), "{:?}", lines[0]);
+    let plain = strip_sequences(&lines[0]);
+    assert_eq!(plain, format!(" Find transcript{}", " ".repeat(24 - 16)));
+    // The input line carries the `> ` prompt.
+    assert!(lines[1].starts_with("> "), "{:?}", lines[1]);
+}
+
+#[test]
+fn search_component_status_shows_the_selected_match() {
+    let mut component = AltScreenSearchComponent::new();
+    component.handle_input("needle");
+    assert_eq!(component.query(), "needle");
+
+    // No results yet.
+    let plain = strip_sequences(&component.render(30)[0]);
+    assert!(plain.contains("No matches"), "{plain:?}");
+
+    // Second of three matches.
+    component.set_result(1, 3);
+    assert_eq!(component.result_index(), 1);
+    assert_eq!(component.result_count(), 3);
+    let plain = strip_sequences(&component.render(30)[0]);
+    assert!(plain.contains("2/3"), "{plain:?}");
+
+    // Editing keys reach the input (upstream Input keybindings).
+    component.handle_input("\u{7f}");
+    assert_eq!(component.query(), "needl");
+    component.handle_input("e");
+    assert_eq!(component.query(), "needle");
+}
+
+#[test]
+fn search_component_focus_propagates_to_the_input() {
+    let mut component = AltScreenSearchComponent::new();
+    assert!(!component.is_focused());
+    // The fake cursor only appears while focused.
+    let unfocused = component.render(20)[1].clone();
+    assert!(!unfocused.contains(pillar_tui::input::CURSOR_MARKER));
+    Focusable::set_focused(&mut component, true);
+    assert!(component.is_focused());
+    let focused = component.render(20)[1].clone();
+    assert!(focused.contains(pillar_tui::input::CURSOR_MARKER), "{focused:?}");
 }

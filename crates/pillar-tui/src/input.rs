@@ -10,6 +10,7 @@
 //! dispatch loop.
 
 use crate::edit_support::{KillRing, UndoStack, find_word_backward, find_word_forward};
+use crate::keybindings::with_global_keybindings;
 use crate::keys::decode_printable_key;
 use crate::stack_layout::slice_by_column;
 use crate::text_utils::{grapheme_clusters, visible_width};
@@ -410,4 +411,85 @@ impl Default for Input {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Dispatch the keybinding-driven editing keys of `Input.handleInput`
+/// (upstream the keybinding section of `Input.handleInput`), returning
+/// whether the sequence was consumed. Printable text and bracketed paste
+/// fall through to [`Input::handle_input`].
+///
+/// divergence: upstream dispatches these inside `Input.handleInput`; the port
+/// keeps keybinding dispatch host-side (see the module note), so components
+/// that own an `Input` (the alt-screen search overlay) call this explicitly.
+pub fn dispatch_input_keybinding(input: &mut Input, data: &str) -> bool {
+    let matches = |keybinding: &str| with_global_keybindings(|kb| kb.matches(data, keybinding));
+    // Escape / submit only notify upstream callbacks; without them the key is
+    // still swallowed.
+    if matches("tui.select.cancel") {
+        return true;
+    }
+    if matches("tui.editor.undo") {
+        input.undo();
+        return true;
+    }
+    if matches("tui.input.submit") || data == "\n" {
+        return true;
+    }
+    if matches("tui.editor.deleteCharBackward") {
+        input.backspace();
+        return true;
+    }
+    if matches("tui.editor.deleteCharForward") {
+        input.forward_delete();
+        return true;
+    }
+    if matches("tui.editor.deleteWordBackward") {
+        input.delete_word_backwards();
+        return true;
+    }
+    if matches("tui.editor.deleteWordForward") {
+        input.delete_word_forward();
+        return true;
+    }
+    if matches("tui.editor.deleteToLineStart") {
+        input.delete_to_line_start();
+        return true;
+    }
+    if matches("tui.editor.deleteToLineEnd") {
+        input.delete_to_line_end();
+        return true;
+    }
+    if matches("tui.editor.yank") {
+        input.yank();
+        return true;
+    }
+    if matches("tui.editor.yankPop") {
+        input.yank_pop();
+        return true;
+    }
+    if matches("tui.editor.cursorLeft") {
+        input.cursor_left();
+        return true;
+    }
+    if matches("tui.editor.cursorRight") {
+        input.cursor_right();
+        return true;
+    }
+    if matches("tui.editor.cursorLineStart") {
+        input.cursor_line_start();
+        return true;
+    }
+    if matches("tui.editor.cursorLineEnd") {
+        input.cursor_line_end();
+        return true;
+    }
+    if matches("tui.editor.cursorWordLeft") {
+        input.move_word_backwards();
+        return true;
+    }
+    if matches("tui.editor.cursorWordRight") {
+        input.move_word_forwards();
+        return true;
+    }
+    false
 }
