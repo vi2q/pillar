@@ -3541,7 +3541,9 @@ fn user_content_to_custom_content(content: &UserContent) -> Vec<CustomContent> {
 }
 
 /// Convert a pillar-agent message to the session message union.
-fn agent_message_to_coding(message: pillar_agent::types::AgentMessage) -> CodingAgentMessage {
+pub(crate) fn agent_message_to_coding(
+    message: pillar_agent::types::AgentMessage,
+) -> CodingAgentMessage {
     match message {
         pillar_agent::types::AgentMessage::Message(message) => CodingAgentMessage::Base(message),
         pillar_agent::types::AgentMessage::BashExecution(bash) => {

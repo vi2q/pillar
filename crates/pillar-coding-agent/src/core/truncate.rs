@@ -160,7 +160,7 @@ pub enum TruncatedBy {
 }
 
 /// Truncation result (upstream `TruncationResult`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TruncationResult {
     pub content: String,
     pub truncated: bool,

@@ -580,7 +580,6 @@ fn _unused_visible_width(s: &str) -> usize {
     visible_width(s)
 }
 
-
 // ============================================================================
 // Component impls (upstream Loader/CancellableLoader extend Text)
 // ============================================================================

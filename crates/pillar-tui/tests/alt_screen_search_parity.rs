@@ -154,5 +154,8 @@ fn search_component_focus_propagates_to_the_input() {
     Focusable::set_focused(&mut component, true);
     assert!(component.is_focused());
     let focused = component.render(20)[1].clone();
-    assert!(focused.contains(pillar_tui::input::CURSOR_MARKER), "{focused:?}");
+    assert!(
+        focused.contains(pillar_tui::input::CURSOR_MARKER),
+        "{focused:?}"
+    );
 }

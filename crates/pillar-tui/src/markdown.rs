@@ -1276,7 +1276,6 @@ fn trim_partial_closing_fences(source: &str) -> String {
     result.trim_end_matches('\n').to_string()
 }
 
-
 impl crate::tui::Component for Markdown {
     fn render(&mut self, width: usize) -> Vec<String> {
         Markdown::render(self, width)

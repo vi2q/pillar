@@ -136,6 +136,12 @@ impl Container {
         Some(self.children.remove(index))
     }
 
+    /// Insert a child at `index` (upstream `children.splice(index, 0, x)`).
+    pub fn insert_child(&mut self, index: usize, component: Box<dyn Component>) {
+        let index = index.min(self.children.len());
+        self.children.insert(index, component);
+    }
+
     pub fn clear(&mut self) {
         self.children.clear();
     }

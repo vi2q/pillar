@@ -160,8 +160,9 @@ fn truncated_text_wide_chars() {
 
 use pillar_tui::components::{Image, ImageOptions};
 use pillar_tui::terminal_image::{
-    CellDimensions, ImageDimensions, ImageProtocol, TerminalCapabilities, calculate_image_cell_size,
-    get_cell_dimensions, get_kitty_image_metadata, set_capabilities, set_cell_dimensions,
+    CellDimensions, ImageDimensions, ImageProtocol, TerminalCapabilities,
+    calculate_image_cell_size, get_cell_dimensions, get_kitty_image_metadata, set_capabilities,
+    set_cell_dimensions,
 };
 
 fn caps(images: Option<ImageProtocol>, hyperlinks: bool) -> TerminalCapabilities {
@@ -224,12 +225,7 @@ fn kitty_image_reserves_its_rows() {
     assert!(image.image_id().is_none());
 
     let lines = image.render(80);
-    let expected = calculate_image_cell_size(
-        dimensions,
-        60,
-        None,
-        get_cell_dimensions(),
-    );
+    let expected = calculate_image_cell_size(dimensions, 60, None, get_cell_dimensions());
     assert_eq!(lines.len(), expected.rows, "{lines:?}");
     assert!(lines[0].starts_with("\u{1b}_G"), "{:?}", lines[0]);
     assert!(lines[0].contains("C=1"), "cursor stays put: {:?}", lines[0]);
@@ -242,10 +238,7 @@ fn kitty_image_reserves_its_rows() {
         get_kitty_image_metadata(&lines[0]).map(|metadata| metadata.image_id),
         Some(image_id)
     );
-    assert!(
-        lines[1..].iter().all(|line| line.is_empty()),
-        "{lines:?}"
-    );
+    assert!(lines[1..].iter().all(|line| line.is_empty()), "{lines:?}");
 }
 
 #[test]
@@ -261,17 +254,15 @@ fn iterm2_image_moves_the_cursor_back_up() {
     };
     let mut image = image(Some(dimensions), ImageOptions::default());
     let lines = image.render(80);
-    let expected = calculate_image_cell_size(
-        dimensions,
-        60,
-        None,
-        get_cell_dimensions(),
-    );
+    let expected = calculate_image_cell_size(dimensions, 60, None, get_cell_dimensions());
     assert_eq!(lines.len(), expected.rows);
     // The first rows are blank; the last one moves up and draws the image.
     assert!(lines[..lines.len() - 1].iter().all(|line| line.is_empty()));
     let last = lines.last().expect("last line");
-    assert!(last.starts_with(&format!("\u{1b}[{}A", expected.rows - 1)), "{last:?}");
+    assert!(
+        last.starts_with(&format!("\u{1b}[{}A", expected.rows - 1)),
+        "{last:?}"
+    );
     assert!(last.contains("\u{1b}]1337;File="), "{last:?}");
     assert!(image.image_id().is_none(), "iTerm2 needs no image id");
 }

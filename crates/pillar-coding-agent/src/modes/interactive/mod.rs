@@ -8,3 +8,4 @@ pub mod interactive_mode;
 pub mod model_search;
 pub mod session_share;
 pub mod theme;
+pub mod transcript;

@@ -9,10 +9,10 @@
 
 type BgFn = Box<dyn Fn(&str) -> String + Send + Sync>;
 
-use crate::tui::Component;
 use crate::text_utils::{
     apply_background_to_line, truncate_to_width, visible_width, wrap_text_with_ansi,
 };
+use crate::tui::Component;
 
 // ============================================================================
 // Text
@@ -394,7 +394,10 @@ impl Image {
             }
         }
 
-        let max_width = width.saturating_sub(2).max(1).min(self.options.max_width_cells.unwrap_or(60));
+        let max_width = width
+            .saturating_sub(2)
+            .max(1)
+            .min(self.options.max_width_cells.unwrap_or(60));
         let cell_dimensions = crate::terminal_image::get_cell_dimensions();
         let default_max_height = ((max_width * cell_dimensions.width_px as usize)
             .div_ceil(cell_dimensions.height_px.max(1) as usize))
@@ -415,7 +418,9 @@ impl Image {
         let lines = match capabilities.images {
             None => fallback(),
             Some(protocol) => {
-                if protocol == crate::terminal_image::ImageProtocol::Kitty && self.image_id.is_none() {
+                if protocol == crate::terminal_image::ImageProtocol::Kitty
+                    && self.image_id.is_none()
+                {
                     self.image_id = Some(crate::terminal_image::allocate_image_id());
                 }
                 let rendered = crate::terminal_image::render_image(

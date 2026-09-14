@@ -11,11 +11,14 @@ use pillar_tui::markdown::TransformFn;
 /// divergence: upstream shares one `MarkdownTheme` object; the port's theme
 /// closures read the global theme per call, so a factory is equivalent (and
 /// lets components rebuild their Markdown children).
-pub type MarkdownThemeFactory = Box<dyn Fn() -> pillar_tui::markdown::MarkdownTheme + Send + Sync>;
+/// divergence: upstream passes one shared theme object around; the port
+/// wraps the factory in an `Arc` so many components can hold it.
+pub type MarkdownThemeFactory =
+    std::sync::Arc<dyn Fn() -> pillar_tui::markdown::MarkdownTheme + Send + Sync>;
 
 /// The default factory: the active theme's Markdown theme.
 pub fn default_markdown_theme_factory() -> MarkdownThemeFactory {
-    Box::new(crate::modes::interactive::theme::get_markdown_theme)
+    std::sync::Arc::new(crate::modes::interactive::theme::get_markdown_theme)
 }
 
 /// Build a `Markdown` transform hook for one message (upstream
