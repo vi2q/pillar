@@ -27,6 +27,8 @@ use crate::alt_screen::{AltScreenDiff, classify_alt_screen_diff, rows_to_paint};
 use crate::alt_screen_search::{
     AltScreenSearchMatch, find_alt_screen_search_matches, get_alt_screen_search_match_key,
 };
+use crate::keybindings::with_global_keybindings;
+use crate::layout::{LayoutNode, ScrollbarGeometry, get_scrollbar_geometry, render_layout_frame};
 use crate::loaders::{AltScreenFlashContainer, ScrollView, ScrollViewOptions};
 use crate::overlay::{
     apply_line_resets, composite_overlays, extract_cursor_position, prepare_overlay,
@@ -35,14 +37,23 @@ use crate::process_terminal::Terminal;
 use crate::stack_layout::slice_by_column;
 use crate::terminal_image::is_image_line;
 use crate::text_utils::visible_width;
-use crate::tui::{TuiBase, TuiMode, TuiStopOptions};
+use crate::tui::{InputListenerResult, TuiBase, TuiMode, TuiStopOptions};
 
 const ENTER_ALT_SCREEN: &str = "\u{1b}[?1049h";
 const BEGIN_SYNCHRONIZED_OUTPUT: &str = "\u{1b}[?2026h";
 const END_SYNCHRONIZED_OUTPUT: &str = "\u{1b}[?2026l";
 const DISABLE_AUTOWRAP: &str = "\u{1b}[?7l";
 const ENABLE_AUTOWRAP: &str = "\u{1b}[?7h";
-const DISABLE_MOUSE: &str = "\u{1b}[?1000l\u{1b}[?1002l\u{1b}[?1003l\u{1b}[?1006l";
+const DISABLE_MOUSE: &str = "\u{1b}[?1006l\u{1b}[?1004l\u{1b}[?1003l\u{1b}[?1002l\u{1b}[?1000l";
+/// Button-motion mouse tracking (multiplexers lag when every move is sent).
+const ENABLE_BUTTON_MOTION_MOUSE: &str = "\u{1b}[?1000h\u{1b}[?1002h\u{1b}[?1004h\u{1b}[?1006h";
+/// All-motion mouse tracking.
+const ENABLE_ALL_MOTION_MOUSE: &str =
+    "\u{1b}[?1000h\u{1b}[?1002h\u{1b}[?1003h\u{1b}[?1004h\u{1b}[?1006h";
+const FOCUS_IN: &str = "\u{1b}[I";
+const FOCUS_OUT: &str = "\u{1b}[O";
+/// Lines of overlap when scrolling by a page (upstream `PAGE_SCROLL_OVERLAP`).
+const PAGE_SCROLL_OVERLAP: usize = 4;
 const OSC133_ZONE_PREFIX: &str = "\u{1b}]133;";
 const OSC133_PROMPT_START: &str = "\u{1b}]133;A";
 
@@ -89,12 +100,119 @@ pub enum SearchSelectionMode {
 /// The active viewport search (upstream `ActiveSearch` minus the overlay).
 #[derive(Debug, Clone, Default)]
 pub struct ActiveSearch {
+    /// The overlay hosting the search input, when one is shown (the overlay
+    /// component itself is a later slice).
+    pub overlay_id: Option<u64>,
+    /// Whether the search overlay currently owns focus.
+    pub focused: bool,
     pub query: String,
     pub matches: Vec<AltScreenSearchMatch>,
     pub selected_index: Option<usize>,
     pub selected_key: Option<String>,
     pub anchor_row: usize,
     pub selection_mode: SearchSelectionMode,
+}
+
+/// A parsed SGR mouse event (upstream `SgrMouseEvent`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SgrMouseEvent {
+    pub button: u32,
+    pub x: usize,
+    pub y: usize,
+    pub release: bool,
+}
+
+/// A parsed wheel event (upstream `WheelEvent`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WheelEvent {
+    /// -1 = up, 1 = down.
+    pub direction: i64,
+    pub x: usize,
+    pub y: usize,
+}
+
+/// An in-progress scrollbar drag (upstream `ScrollbarDrag`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ScrollbarDrag {
+    grab_offset: usize,
+}
+
+/// The primary scroll view's hit-test geometry from the last frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScrollHitSnapshot {
+    pub rect: (usize, usize, usize, usize),
+    pub scrollbar: Option<ScrollbarGeometry>,
+}
+
+/// Parse an SGR mouse event (upstream `parseSgrMouseEvent`).
+pub fn parse_sgr_mouse_event(data: &str) -> Option<SgrMouseEvent> {
+    let rest = data.strip_prefix("\u{1b}[<")?;
+    let rest = rest
+        .strip_suffix('m')
+        .map(|inner| (inner, true))
+        .or_else(|| rest.strip_suffix('M').map(|inner| (inner, false)))?;
+    let (inner, release) = rest;
+    let mut parts = inner.split(';');
+    let button = parts.next()?.parse::<u32>().ok()?;
+    let x = parts.next()?.parse::<usize>().ok()?;
+    let y = parts.next()?.parse::<usize>().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(SgrMouseEvent {
+        button,
+        x: x.saturating_sub(1),
+        y: y.saturating_sub(1),
+        release,
+    })
+}
+
+/// Parse a wheel event from SGR or legacy X10 encoding (upstream
+/// `parseWheelEvent`).
+pub fn parse_wheel_event(data: &str) -> Option<WheelEvent> {
+    if let Some(event) = parse_sgr_mouse_event(data) {
+        if event.button & 64 == 0 {
+            return None;
+        }
+        let direction = event.button & 3;
+        if direction != 0 && direction != 1 {
+            return None;
+        }
+        return Some(WheelEvent {
+            direction: if direction == 0 { -1 } else { 1 },
+            x: event.x,
+            y: event.y,
+        });
+    }
+    // Legacy X10 encoding: ESC [ M <button> <x> <y>
+    let bytes = data.as_bytes();
+    if bytes.len() == 6 && data.starts_with("\u{1b}[M") {
+        let button = bytes[3] as i64 - 32;
+        if button & 64 == 0 {
+            return None;
+        }
+        let direction = button & 3;
+        if direction != 0 && direction != 1 {
+            return None;
+        }
+        return Some(WheelEvent {
+            direction: if direction == 0 { -1 } else { 1 },
+            x: (bytes[4] as i64 - 33).max(0) as usize,
+            y: (bytes[5] as i64 - 33).max(0) as usize,
+        });
+    }
+    None
+}
+
+/// Whether the sequence is any mouse report (upstream `isMouseSequence`).
+pub fn is_mouse_sequence(data: &str) -> bool {
+    data.starts_with("\u{1b}[<") || (data.len() == 6 && data.starts_with("\u{1b}[M"))
+}
+
+/// Whether mouse tracking should be enabled in the current environment
+/// (upstream `shouldEnableMouse`).
+pub fn should_enable_mouse() -> bool {
+    !(cfg!(target_os = "linux") && std::env::var("WAYLAND_DISPLAY").is_ok())
 }
 
 /// The alternate-screen renderer (upstream `TuiAltScreen`).
@@ -112,6 +230,13 @@ pub struct TuiAltScreen {
     copy_on_select: bool,
     /// The scroll content lines of the last frame (search input).
     last_content_lines: Vec<String>,
+    /// Hit-test geometry of the primary scroll view from the last frame.
+    scroll_hit: Option<ScrollHitSnapshot>,
+    scrollbar_drag: Option<ScrollbarDrag>,
+    scrollbar_hover_active: bool,
+    mouse_sequence: String,
+    selection_press_active: bool,
+    on_right_click_paste: Option<RightClickPasteCallback>,
 }
 
 impl TuiAltScreen {
@@ -133,6 +258,12 @@ impl TuiAltScreen {
             mouse_enabled: options.mouse.unwrap_or(true),
             copy_on_select: options.copy_on_select.unwrap_or(true),
             last_content_lines: Vec::new(),
+            scroll_hit: None,
+            scrollbar_drag: None,
+            scrollbar_hover_active: false,
+            mouse_sequence: mouse_sequence(),
+            selection_press_active: false,
+            on_right_click_paste: options.on_right_click_paste,
         }
     }
 
@@ -173,6 +304,329 @@ impl TuiAltScreen {
     /// The active search, if any.
     pub fn active_search(&self) -> Option<&ActiveSearch> {
         self.active_search.as_ref()
+    }
+
+    /// The implicit primary scroll view (hosts configure follow/scrollbar
+    /// behaviour here).
+    pub fn scroll_view_mut(&mut self) -> std::cell::RefMut<'_, ScrollView> {
+        self.scroll.borrow_mut()
+    }
+
+    /// The primary scroll view's hit-test geometry from the last frame.
+    pub fn scroll_hit(&self) -> Option<ScrollHitSnapshot> {
+        self.scroll_hit
+    }
+
+    pub fn is_scrollbar_dragging(&self) -> bool {
+        self.scrollbar_drag.is_some()
+    }
+
+    /// Handle viewport input (upstream `handleViewportInput`): focus events,
+    /// wheel, mouse, scrollbar dragging/hover and the viewport keybindings.
+    ///
+    /// divergence: upstream registers this in its constructor; Rust cannot
+    /// self-register a `&mut self` listener, so the host registers one that
+    /// delegates here.
+    pub fn handle_viewport_input(&mut self, data: &str) -> Option<InputListenerResult> {
+        if data == FOCUS_OUT {
+            let had_active_selection = self.selection_press_active;
+            self.selection_press_active = false;
+            self.stop_scrollbar_hover();
+            self.stop_scrollbar_drag();
+            if had_active_selection {
+                self.base.request_render(false);
+            }
+            return Some(InputListenerResult {
+                consume: true,
+                data: None,
+            });
+        }
+        if data == FOCUS_IN {
+            return Some(InputListenerResult {
+                consume: true,
+                data: None,
+            });
+        }
+
+        if let Some(wheel) = parse_wheel_event(data) {
+            if self.should_defer_viewport_input_to_overlay() {
+                return None;
+            }
+            self.route_wheel(wheel);
+            return Some(InputListenerResult {
+                consume: true,
+                data: None,
+            });
+        }
+
+        if let Some(event) = parse_sgr_mouse_event(data) {
+            if self.handle_right_click_paste(&event) {
+                return Some(InputListenerResult {
+                    consume: true,
+                    data: None,
+                });
+            }
+            let handled = self.handle_scrollbar_mouse_event(&event);
+            if self.scrollbar_drag.is_none() {
+                self.update_scrollbar_hover(event.x, event.y);
+            }
+            // Text selection handling is the next slice.
+            let _ = handled;
+            return Some(InputListenerResult {
+                consume: true,
+                data: None,
+            });
+        }
+
+        if is_mouse_sequence(data) {
+            return Some(InputListenerResult {
+                consume: true,
+                data: None,
+            });
+        }
+
+        let matches = |keybinding: &str| {
+            with_global_keybindings(|keybindings| keybindings.matches(data, keybinding))
+        };
+        let is_release = crate::tui::is_key_release(data);
+
+        if matches("tui.altScreen.search") {
+            if !is_release {
+                self.open_search();
+            }
+            return Some(InputListenerResult {
+                consume: true,
+                data: None,
+            });
+        }
+        let search_focused = self
+            .active_search
+            .as_ref()
+            .is_some_and(|search| search.focused);
+        if search_focused {
+            if matches("tui.altScreen.searchNext") {
+                if !is_release {
+                    self.navigate_search(1);
+                }
+                return Some(InputListenerResult {
+                    consume: true,
+                    data: None,
+                });
+            }
+            if matches("tui.altScreen.searchPrevious") {
+                if !is_release {
+                    self.navigate_search(-1);
+                }
+                return Some(InputListenerResult {
+                    consume: true,
+                    data: None,
+                });
+            }
+            if matches("tui.altScreen.searchClose") {
+                if !is_release {
+                    self.close_search();
+                }
+                return Some(InputListenerResult {
+                    consume: true,
+                    data: None,
+                });
+            }
+        }
+
+        if self.should_defer_viewport_input_to_overlay() {
+            return None;
+        }
+
+        let viewport_height = self.scroll.borrow().viewport_height().max(1);
+        let page = viewport_height.saturating_sub(PAGE_SCROLL_OVERLAP).max(1) as i64;
+        let half_page = (viewport_height / 2).max(1) as i64;
+
+        let actions: [(&str, i64); 6] = [
+            ("tui.altScreen.pageUp", -page),
+            ("tui.altScreen.pageDown", page),
+            ("tui.altScreen.halfPageUp", -half_page),
+            ("tui.altScreen.halfPageDown", half_page),
+            ("tui.altScreen.lineUp", -1),
+            ("tui.altScreen.lineDown", 1),
+        ];
+        for (keybinding, delta) in actions {
+            if matches(keybinding) {
+                if !is_release {
+                    self.scroll_by(delta);
+                }
+                return Some(InputListenerResult {
+                    consume: true,
+                    data: None,
+                });
+            }
+        }
+        if matches("tui.altScreen.previousPrompt") {
+            if !is_release {
+                self.scroll_to_prompt(-1);
+            }
+            return Some(InputListenerResult {
+                consume: true,
+                data: None,
+            });
+        }
+        if matches("tui.altScreen.nextPrompt") {
+            if !is_release {
+                self.scroll_to_prompt(1);
+            }
+            return Some(InputListenerResult {
+                consume: true,
+                data: None,
+            });
+        }
+        if matches("tui.altScreen.top") {
+            if !is_release {
+                self.scroll_to_top();
+            }
+            return Some(InputListenerResult {
+                consume: true,
+                data: None,
+            });
+        }
+        if matches("tui.altScreen.bottom") {
+            if !is_release {
+                self.scroll_to_bottom();
+            }
+            return Some(InputListenerResult {
+                consume: true,
+                data: None,
+            });
+        }
+        None
+    }
+
+    /// Whether an overlay other than the search owns focus (upstream
+    /// `shouldDeferViewportInputToOverlay`).
+    fn should_defer_viewport_input_to_overlay(&self) -> bool {
+        self.base.focused().is_some_and(|focused| {
+            self.base.overlay_options(focused).is_some()
+                && !self
+                    .active_search
+                    .as_ref()
+                    .is_some_and(|search| search.focused && search.overlay_id == Some(focused))
+        })
+    }
+
+    /// Route a wheel event to the primary scroll view (upstream `routeWheel`
+    /// for the single-scroll-view case).
+    pub fn route_wheel(&mut self, event: WheelEvent) {
+        let remaining = event.direction * self.wheel_scroll_lines as i64;
+        let leftover = self.scroll.borrow_mut().scroll_by(remaining as isize);
+        let _ = leftover;
+        self.update_scrollbar_hover(event.x, event.y);
+        self.base.request_render(false);
+    }
+
+    /// Paste on a secondary-button press (upstream `handleRightClickPaste`;
+    /// Windows only, and disabled in VS Code's terminal).
+    pub fn handle_right_click_paste(&mut self, event: &SgrMouseEvent) -> bool {
+        let Some(callback) = self.on_right_click_paste.as_mut() else {
+            return false;
+        };
+        if !cfg!(target_os = "windows")
+            || std::env::var("TERM_PROGRAM")
+                .map(|program| program.to_lowercase() == "vscode")
+                .unwrap_or(false)
+            || event.release
+            || event.button != 2
+        {
+            return false;
+        }
+        callback();
+        true
+    }
+
+    fn scrollbar_target_at(&self, x: usize, y: usize) -> bool {
+        let Some(hit) = self.scroll_hit else {
+            return false;
+        };
+        let Some(geometry) = hit.scrollbar else {
+            return false;
+        };
+        x == geometry.column
+            && y >= geometry.thumb_top
+            && y < geometry.thumb_top + geometry.thumb_height
+            && x >= hit.rect.0
+            && x < hit.rect.0 + hit.rect.2
+            && y >= hit.rect.1
+            && y < hit.rect.1 + hit.rect.3
+    }
+
+    fn set_scrollbar_hover(&mut self, hovered: bool) {
+        if hovered == self.scrollbar_hover_active {
+            return;
+        }
+        self.scrollbar_hover_active = hovered;
+        self.scroll.borrow_mut().set_scrollbar_active(hovered);
+    }
+
+    fn update_scrollbar_hover(&mut self, x: usize, y: usize) {
+        let hovered = self.scrollbar_target_at(x, y);
+        self.set_scrollbar_hover(hovered);
+    }
+
+    fn stop_scrollbar_hover(&mut self) {
+        self.set_scrollbar_hover(false);
+    }
+
+    fn stop_scrollbar_drag(&mut self) {
+        self.scrollbar_drag = None;
+    }
+
+    /// Handle scrollbar dragging (upstream `handleScrollbarMouseEvent`).
+    pub fn handle_scrollbar_mouse_event(&mut self, event: &SgrMouseEvent) -> bool {
+        if let Some(drag) = self.scrollbar_drag {
+            if event.release {
+                self.stop_scrollbar_drag();
+                return true;
+            }
+            let Some(hit) = self.scroll_hit else {
+                return true;
+            };
+            let Some(geometry) = hit.scrollbar else {
+                return true;
+            };
+            let max_thumb_offset = geometry.track_height.saturating_sub(geometry.thumb_height);
+            let thumb_offset = event
+                .y
+                .saturating_sub(geometry.track_top)
+                .saturating_sub(drag.grab_offset)
+                .min(max_thumb_offset);
+            let scroll_top = if max_thumb_offset == 0 {
+                0
+            } else {
+                ((thumb_offset * geometry.max_scroll_top) as f64 / max_thumb_offset as f64).round()
+                    as usize
+            };
+            self.scroll
+                .borrow_mut()
+                .scroll_to(scroll_top as isize, false);
+            self.base.request_render(false);
+            return true;
+        }
+
+        if event.release || (event.button & 32) != 0 || (event.button & 3) != 0 {
+            return false;
+        }
+        if !self.scrollbar_target_at(event.x, event.y) {
+            return false;
+        }
+        let Some(hit) = self.scroll_hit else {
+            return false;
+        };
+        let Some(geometry) = hit.scrollbar else {
+            return false;
+        };
+        self.selection_press_active = false;
+        self.set_scrollbar_hover(true);
+        self.scrollbar_drag = Some(ScrollbarDrag {
+            grab_offset: event.y.saturating_sub(geometry.thumb_top),
+        });
+        true
     }
 
     pub fn flash(&mut self, message: &str, duration_ms: Option<u64>) {
@@ -231,6 +685,8 @@ impl TuiAltScreen {
         }
         self.active_search = Some(ActiveSearch {
             anchor_row: self.viewport_top(),
+            // Without the overlay component the search owns focus directly.
+            focused: true,
             ..Default::default()
         });
     }
@@ -395,7 +851,15 @@ impl TuiAltScreen {
     pub fn start(&mut self) {
         self.alt_screen_active = true;
         self.reset_render_state();
-        let sequence = format!("{ENTER_ALT_SCREEN}{DISABLE_AUTOWRAP}\u{1b}[2J\u{1b}[H\u{1b}[?25l");
+        // Multiplexers lag when every pointer movement is forwarded, so the
+        // enable sequence depends on the environment (upstream's check).
+        let mouse = if self.mouse_enabled && should_enable_mouse() {
+            self.mouse_sequence.as_str()
+        } else {
+            ""
+        };
+        let sequence =
+            format!("{ENTER_ALT_SCREEN}{DISABLE_AUTOWRAP}{mouse}\u{1b}[2J\u{1b}[H\u{1b}[?25l");
         self.base.terminal_mut().write(&sequence);
         self.base.start();
     }
@@ -407,7 +871,12 @@ impl TuiAltScreen {
             return;
         }
         let sequence = format!(
-            "{BEGIN_SYNCHRONIZED_OUTPUT}{DISABLE_MOUSE}{ENABLE_AUTOWRAP}{END_SYNCHRONIZED_OUTPUT}"
+            "{BEGIN_SYNCHRONIZED_OUTPUT}{}{ENABLE_AUTOWRAP}{END_SYNCHRONIZED_OUTPUT}",
+            if self.mouse_enabled {
+                DISABLE_MOUSE
+            } else {
+                ""
+            }
         );
         self.base.terminal_mut().write(&sequence);
         self.alt_screen_active = false;
@@ -522,35 +991,31 @@ impl TuiAltScreen {
         Ok(())
     }
 
-    /// Lay out the implicit scroll view over the registered children.
+    /// Lay out the implicit scroll view over the registered children
+    /// (upstream `renderLayoutFrame` + `getScrollViewBox`) and record the
+    /// primary scroll view's hit-test geometry.
     fn render_frame(&mut self, width: usize, height: usize) -> Vec<String> {
-        let mut lines: Vec<String> = Vec::new();
-        {
-            // The child renders through the base's component tree.
-            let rendered = self.base.render(width);
-            lines.extend(rendered);
-            self.last_content_lines = lines.clone();
-        }
-        // Scroll state update + viewport slicing (the layout frame's job).
-        let viewport_height = {
-            let mut scroll = self.scroll.borrow_mut();
-            scroll.update_layout(lines.len(), height);
-            scroll.viewport_height()
+        let content = self.base.render(width);
+        self.last_content_lines = content.clone();
+
+        let mut node = LayoutNode::Scroll {
+            child: Box::new(LayoutNode::Leaf(Box::new(move |_width| content.clone()))),
+            state: &self.scroll,
         };
-        let scroll_top = self.scroll.borrow().scroll_top();
-        let viewport_height = if viewport_height == 0 {
-            height
-        } else {
-            viewport_height
+        let mut frame = render_layout_frame(&mut node, width, height);
+        let lines = std::mem::take(&mut frame.lines);
+        let snapshot = ScrollHitSnapshot {
+            rect: (
+                frame.root.rect.x,
+                frame.root.rect.y,
+                frame.root.rect.width,
+                frame.root.rect.height,
+            ),
+            scrollbar: get_scrollbar_geometry(&frame.root),
         };
-        let start = scroll_top.min(lines.len().saturating_sub(1).max(0));
-        let end = (start + viewport_height).min(lines.len());
-        let mut visible: Vec<String> = lines[start..end].to_vec();
-        while visible.len() < height {
-            visible.push(String::new());
-        }
-        visible.truncate(height);
-        visible
+        drop(frame);
+        self.scroll_hit = Some(snapshot);
+        lines
     }
 
     fn compose_overlays(&mut self, lines: Vec<String>, width: usize, height: usize) -> Vec<String> {
@@ -603,5 +1068,21 @@ impl TuiAltScreen {
             }
         }
         result
+    }
+}
+
+/// The mouse-tracking enable sequence for this environment (upstream the
+/// multiplexer check in `beforeTerminalStart`).
+pub fn mouse_sequence() -> String {
+    let term = std::env::var("TERM").unwrap_or_default().to_lowercase();
+    let multiplexer = std::env::var("TMUX").is_ok()
+        || std::env::var("ZELLIJ").is_ok()
+        || std::env::var("STY").is_ok()
+        || term.starts_with("tmux")
+        || term.starts_with("screen");
+    if multiplexer {
+        ENABLE_BUTTON_MOTION_MOUSE.to_string()
+    } else {
+        ENABLE_ALL_MOTION_MOUSE.to_string()
     }
 }

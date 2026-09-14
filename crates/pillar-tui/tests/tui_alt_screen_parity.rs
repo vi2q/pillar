@@ -6,7 +6,10 @@ use std::time::{Duration, Instant};
 
 use pillar_tui::process_terminal::Terminal;
 use pillar_tui::tui::{Component, TuiStopOptions};
-use pillar_tui::tui_alt_screen::{SearchSelectionMode, TuiAltScreen, TuiAltScreenOptions};
+use pillar_tui::tui_alt_screen::{
+    SearchSelectionMode, TuiAltScreen, TuiAltScreenOptions, is_mouse_sequence,
+    parse_sgr_mouse_event, parse_wheel_event,
+};
 
 #[derive(Default, Clone)]
 struct RecorderTerminal {
@@ -283,4 +286,193 @@ fn osc133_prompt_markers_drive_scroll_to_prompt_and_are_stripped() {
     // Zone prefixes never reach the terminal.
     let written = terminal.written();
     assert!(!written.contains("\u{1b}]133;"), "stripped: {written:?}");
+}
+
+#[test]
+fn wheel_and_sgr_mouse_sequences_parse_like_upstream() {
+    // SGR wheel up (button 64) at 1-based (10, 5) -> 0-based (9, 4).
+    assert_eq!(
+        parse_wheel_event("\u{1b}[<64;10;5M"),
+        Some(pillar_tui::tui_alt_screen::WheelEvent {
+            direction: -1,
+            x: 9,
+            y: 4
+        })
+    );
+    // SGR wheel down (button 65).
+    assert_eq!(
+        parse_wheel_event("\u{1b}[<65;1;1M").map(|event| event.direction),
+        Some(1)
+    );
+    // A non-wheel SGR button is not a wheel event.
+    assert!(parse_wheel_event("\u{1b}[<0;10;5M").is_none());
+    // Legacy X10 encoding: ESC [ M <button> <x> <y>.
+    let legacy = format!(
+        "\u{1b}[M{}{}{}",
+        char::from_u32(64 + 32).expect("button"),
+        char::from_u32(33 + 3).expect("x"),
+        char::from_u32(33 + 2).expect("y")
+    );
+    assert_eq!(
+        parse_wheel_event(&legacy),
+        Some(pillar_tui::tui_alt_screen::WheelEvent {
+            direction: -1,
+            x: 3,
+            y: 2
+        })
+    );
+
+    let press = parse_sgr_mouse_event("\u{1b}[<0;5;2M").expect("press");
+    assert_eq!(press.button, 0);
+    assert_eq!((press.x, press.y), (4, 1));
+    assert!(!press.release);
+    let release = parse_sgr_mouse_event("\u{1b}[<0;5;2m").expect("release");
+    assert!(release.release);
+
+    assert!(is_mouse_sequence("\u{1b}[<0;5;2M"));
+    assert!(is_mouse_sequence("\u{1b}[M\u{20}\u{21}\u{22}"));
+    assert!(!is_mouse_sequence("\u{1b}[A"));
+}
+
+#[test]
+fn wheel_routing_scrolls_the_viewport_and_consumes_input() {
+    let terminal = RecorderTerminal::new(20, 2);
+    let mut screen = screen(&terminal, &["l0", "l1", "l2", "l3", "l4"]);
+    screen.start();
+    screen.do_render().expect("frame");
+    assert!(screen.is_following_output());
+
+    // Wheel up scrolls back one line per notch and consumes the sequence.
+    // (5 lines in a 2-row viewport: the end is at the top of 3.)
+    let consumed = screen.handle_viewport_input("\u{1b}[<64;1;1M");
+    assert!(consumed.is_some_and(|result| result.consume));
+    assert!(!screen.is_following_output());
+    assert_eq!(screen.viewport_top(), 2);
+
+    // Wheel down returns to the end.
+    screen.handle_viewport_input("\u{1b}[<65;1;1M");
+    assert_eq!(screen.viewport_top(), 3);
+}
+
+#[test]
+fn viewport_keybindings_scroll_and_are_consumed() {
+    let terminal = RecorderTerminal::new(20, 3);
+    let mut screen = screen(&terminal, &["l0", "l1", "l2", "l3", "l4", "l5", "l6", "l7"]);
+    screen.start();
+    screen.do_render().expect("frame");
+    let bottom = screen.viewport_top();
+    assert!(bottom > 0);
+
+    // PageUp scrolls by viewport height minus the 4-line overlap.
+    let consumed = screen.handle_viewport_input("\u{1b}[5~");
+    assert!(consumed.is_some_and(|result| result.consume));
+    assert!(screen.viewport_top() < bottom);
+
+    // Home jumps to the top; End returns to the end.
+    screen.handle_viewport_input("\u{1b}[H");
+    assert_eq!(screen.viewport_top(), 0);
+    screen.handle_viewport_input("\u{1b}[F");
+    assert_eq!(screen.viewport_top(), bottom);
+
+    // A plain key is not consumed by the viewport.
+    assert!(screen.handle_viewport_input("x").is_none());
+}
+
+#[test]
+fn focus_events_are_consumed_and_clear_transient_state() {
+    let terminal = RecorderTerminal::new(20, 3);
+    let mut screen = screen(&terminal, &["a", "b", "c"]);
+    screen.start();
+    screen.do_render().expect("frame");
+
+    let consumed = screen.handle_viewport_input("\u{1b}[O");
+    assert!(consumed.is_some_and(|result| result.consume));
+    assert!(!screen.is_scrollbar_dragging());
+    let consumed = screen.handle_viewport_input("\u{1b}[I");
+    assert!(consumed.is_some_and(|result| result.consume));
+}
+
+#[test]
+fn the_frame_records_scrollbar_hit_geometry() {
+    let terminal = RecorderTerminal::new(20, 4);
+    let mut screen = screen(
+        &terminal,
+        &["l0", "l1", "l2", "l3", "l4", "l5", "l6", "l7", "l8", "l9"],
+    );
+    // Hidden scrollbars are not hittable, so make it always visible the way
+    // the interactive mode configures its viewport.
+    screen
+        .scroll_view_mut()
+        .set_scrollbar(pillar_tui::loaders::ScrollViewScrollbar::Always);
+    screen.start();
+    screen.do_render().expect("frame");
+
+    let hit = screen.scroll_hit().expect("hit snapshot");
+    assert_eq!(hit.rect.2, 20, "viewport width");
+    assert_eq!(hit.rect.3, 4, "viewport height");
+    let geometry = hit.scrollbar.expect("scrollbar geometry");
+
+    // A primary-button press inside the thumb starts a drag.
+    let press = format!(
+        "\u{1b}[<0;{};{}M",
+        geometry.column + 1,
+        geometry.thumb_top + 1
+    );
+    let consumed = screen.handle_viewport_input(&press);
+    assert!(consumed.is_some_and(|result| result.consume));
+    assert!(screen.is_scrollbar_dragging());
+
+    // Motion drags the thumb; release ends the drag.
+    let motion = format!(
+        "\u{1b}[<32;{};{}M",
+        geometry.column + 1,
+        geometry.track_top + geometry.track_height
+    );
+    screen.handle_viewport_input(&motion);
+    let release = format!(
+        "\u{1b}[<0;{};{}m",
+        geometry.column + 1,
+        geometry.thumb_top + 1
+    );
+    screen.handle_viewport_input(&release);
+    assert!(!screen.is_scrollbar_dragging());
+}
+
+#[test]
+fn start_enables_mouse_tracking_when_configured() {
+    let terminal = RecorderTerminal::new(20, 3);
+    let mut screen = TuiAltScreen::new(
+        Box::new(terminal.clone()),
+        TuiAltScreenOptions {
+            mouse: Some(true),
+            ..Default::default()
+        },
+    );
+    screen.base_mut().add_child(Box::new(Lines {
+        lines: vec!["a".to_string()],
+    }));
+    screen.start();
+    let written = terminal.written();
+    // Either the button-motion or the all-motion sequence, depending on the
+    // multiplexer detection of this environment.
+    assert!(
+        written.contains("\u{1b}[?1006h") && written.contains("\u{1b}[?1000h"),
+        "{written:?}"
+    );
+
+    // A disabled mouse leaves tracking alone.
+    let plain = RecorderTerminal::new(20, 3);
+    let mut screen = TuiAltScreen::new(
+        Box::new(plain.clone()),
+        TuiAltScreenOptions {
+            mouse: Some(false),
+            ..Default::default()
+        },
+    );
+    screen.start();
+    assert!(
+        !plain.written().contains("\u{1b}[?1000h"),
+        "{:?}",
+        plain.written()
+    );
 }

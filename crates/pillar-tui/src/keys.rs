@@ -140,8 +140,8 @@ fn legacy_sequences(key: &str) -> &'static [&'static str] {
         "end" => END,
         "insert" => INSERT,
         "delete" => DELETE,
-        "pageUp" => PAGE_UP,
-        "pageDown" => PAGE_DOWN,
+        "pageup" => PAGE_UP,
+        "pagedown" => PAGE_DOWN,
         "clear" => CLEAR,
         "f1" => F1,
         "f2" => F2,
@@ -180,8 +180,8 @@ fn legacy_shift_sequences(key: &str) -> &'static [&'static str] {
         "clear" => CLEAR,
         "insert" => INSERT,
         "delete" => DELETE,
-        "pageUp" => PAGE_UP,
-        "pageDown" => PAGE_DOWN,
+        "pageup" => PAGE_UP,
+        "pagedown" => PAGE_DOWN,
         "home" => HOME,
         "end" => END,
         _ => &[],
@@ -209,8 +209,8 @@ fn legacy_ctrl_sequences(key: &str) -> &'static [&'static str] {
         "clear" => CLEAR,
         "insert" => INSERT,
         "delete" => DELETE,
-        "pageUp" => PAGE_UP,
-        "pageDown" => PAGE_DOWN,
+        "pageup" => PAGE_UP,
+        "pagedown" => PAGE_DOWN,
         "home" => HOME,
         "end" => END,
         _ => &[],
@@ -644,22 +644,22 @@ pub fn matches_key(data: &str, key_id: &str) -> bool {
             }
             matches_kitty_sequence(data, FUNCTIONAL_END, modifier)
         }
-        "pageUp" => {
+        "pageup" => {
             if modifier == 0 {
-                return MATCHES_LEGACY_SEQUENCE(data, legacy_sequences("pageUp"))
+                return MATCHES_LEGACY_SEQUENCE(data, legacy_sequences("pageup"))
                     || matches_kitty_sequence(data, FUNCTIONAL_PAGE_UP, 0);
             }
-            if matches_legacy_modifier_sequence(data, "pageUp", modifier) {
+            if matches_legacy_modifier_sequence(data, "pageup", modifier) {
                 return true;
             }
             matches_kitty_sequence(data, FUNCTIONAL_PAGE_UP, modifier)
         }
-        "pageDown" => {
+        "pagedown" => {
             if modifier == 0 {
-                return MATCHES_LEGACY_SEQUENCE(data, legacy_sequences("pageDown"))
+                return MATCHES_LEGACY_SEQUENCE(data, legacy_sequences("pagedown"))
                     || matches_kitty_sequence(data, FUNCTIONAL_PAGE_DOWN, 0);
             }
-            if matches_legacy_modifier_sequence(data, "pageDown", modifier) {
+            if matches_legacy_modifier_sequence(data, "pagedown", modifier) {
                 return true;
             }
             matches_kitty_sequence(data, FUNCTIONAL_PAGE_DOWN, modifier)
