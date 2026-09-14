@@ -321,3 +321,152 @@ impl TruncatedText {
         result
     }
 }
+
+// ============================================================================
+// Image (upstream components/image.ts)
+// ============================================================================
+
+/// Fallback styling for terminals without image support (upstream
+/// `ImageTheme`).
+pub type ImageTheme = Box<dyn Fn(&str) -> String + Send>;
+
+/// Image options (upstream `ImageOptions`).
+#[derive(Debug, Clone, Default)]
+pub struct ImageOptions {
+    pub max_width_cells: Option<usize>,
+    pub max_height_cells: Option<usize>,
+    pub filename: Option<String>,
+    /// Kitty image ID to reuse (animations/updates).
+    pub image_id: Option<u32>,
+}
+
+/// Renders an image through the terminal's image protocol, falling back to a
+/// styled placeholder (upstream `Image`).
+pub struct Image {
+    base64_data: String,
+    mime_type: String,
+    dimensions: crate::terminal_image::ImageDimensions,
+    theme: ImageTheme,
+    options: ImageOptions,
+    image_id: Option<u32>,
+    cached_lines: Option<Vec<String>>,
+    cached_width: Option<usize>,
+}
+
+impl Image {
+    pub fn new(
+        base64_data: &str,
+        mime_type: &str,
+        theme: ImageTheme,
+        options: ImageOptions,
+        dimensions: Option<crate::terminal_image::ImageDimensions>,
+    ) -> Self {
+        let dimensions = dimensions
+            .or_else(|| crate::terminal_image::get_image_dimensions(base64_data, mime_type))
+            .unwrap_or(crate::terminal_image::ImageDimensions {
+                width_px: 800,
+                height_px: 600,
+            });
+        let image_id = options.image_id;
+        Self {
+            base64_data: base64_data.to_string(),
+            mime_type: mime_type.to_string(),
+            dimensions,
+            theme,
+            options,
+            image_id,
+            cached_lines: None,
+            cached_width: None,
+        }
+    }
+
+    /// The Kitty image ID in use, if any (upstream `getImageId`).
+    pub fn image_id(&self) -> Option<u32> {
+        self.image_id
+    }
+
+    /// Drop cached lines (upstream `invalidate`).
+    pub fn invalidate(&mut self) {
+        self.cached_lines = None;
+        self.cached_width = None;
+    }
+
+    pub fn render(&mut self, width: usize) -> Vec<String> {
+        if let (Some(lines), Some(cached_width)) = (&self.cached_lines, self.cached_width) {
+            if cached_width == width {
+                return lines.clone();
+            }
+        }
+
+        let max_width = width.saturating_sub(2).max(1).min(self.options.max_width_cells.unwrap_or(60));
+        let cell_dimensions = crate::terminal_image::get_cell_dimensions();
+        let default_max_height = ((max_width * cell_dimensions.width_px as usize)
+            .div_ceil(cell_dimensions.height_px.max(1) as usize))
+        .max(1);
+        let max_height = self.options.max_height_cells.unwrap_or(default_max_height);
+
+        let capabilities = crate::terminal_image::get_capabilities();
+        let fallback = || {
+            let text = crate::terminal_image::image_fallback(
+                &self.mime_type,
+                Some(self.dimensions),
+                self.options.filename.as_deref(),
+                crate::terminal_image::get_capabilities().hyperlinks,
+            );
+            vec![truncate_to_width(&(self.theme)(&text), width, "", false)]
+        };
+
+        let lines = match capabilities.images {
+            None => fallback(),
+            Some(protocol) => {
+                if protocol == crate::terminal_image::ImageProtocol::Kitty && self.image_id.is_none() {
+                    self.image_id = Some(crate::terminal_image::allocate_image_id());
+                }
+                let rendered = crate::terminal_image::render_image(
+                    &self.base64_data,
+                    self.dimensions,
+                    crate::terminal_image::ImageRenderOptions {
+                        max_width_cells: Some(max_width),
+                        max_height_cells: Some(max_height),
+                        image_id: self.image_id,
+                        move_cursor: Some(false),
+                        ..Default::default()
+                    },
+                );
+                match rendered {
+                    Some(rendered) => {
+                        if rendered.image_id.is_some() {
+                            self.image_id = rendered.image_id;
+                        }
+                        if protocol == crate::terminal_image::ImageProtocol::Kitty {
+                            // C=1 keeps the cursor in place.
+                            let mut lines = vec![rendered.sequence];
+                            for _ in 0..rendered.rows.saturating_sub(1) {
+                                lines.push(String::new());
+                            }
+                            lines
+                        } else {
+                            // iTerm2: the first rows are blank; the last line
+                            // moves up, draws, and leaves the cursor at the
+                            // image's bottom row.
+                            let row_offset = rendered.rows.saturating_sub(1);
+                            let mut lines = vec![String::new(); row_offset];
+                            let move_up = if row_offset > 0 {
+                                format!("\u{1b}[{row_offset}A")
+                            } else {
+                                String::new()
+                            };
+                            lines.push(move_up + &rendered.sequence);
+                            lines
+                        }
+                    }
+                    None => fallback(),
+                }
+            }
+        };
+
+        self.cached_lines = Some(lines.clone());
+        self.cached_width = Some(width);
+        lines
+    }
+}

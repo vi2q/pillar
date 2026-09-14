@@ -565,6 +565,91 @@ pub fn get_image_dimensions(base64_data: &str, mime_type: &str) -> Option<ImageD
     }
 }
 
+/// Options for [`render_image`] (upstream `ImageRenderOptions`).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ImageRenderOptions {
+    pub max_width_cells: Option<usize>,
+    pub max_height_cells: Option<usize>,
+    pub preserve_aspect_ratio: Option<bool>,
+    /// Kitty image ID to reuse/replace.
+    pub image_id: Option<u32>,
+    /// Whether Kitty applies its default cursor movement after placement.
+    pub move_cursor: Option<bool>,
+}
+
+/// A rendered image sequence and its cell footprint (upstream the object
+/// returned by `renderImage`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenderedImage {
+    pub sequence: String,
+    pub columns: usize,
+    pub rows: usize,
+    pub image_id: Option<u32>,
+}
+
+/// Encode an image for the terminal's protocol, answering `None` when images
+/// are unsupported (upstream `renderImage`).
+pub fn render_image(
+    base64_data: &str,
+    image_dimensions: ImageDimensions,
+    options: ImageRenderOptions,
+) -> Option<RenderedImage> {
+    let protocol = get_capabilities().images?;
+    let max_width = options.max_width_cells.unwrap_or(80);
+    let size = calculate_image_cell_size(
+        image_dimensions,
+        max_width,
+        options.max_height_cells,
+        get_cell_dimensions(),
+    );
+
+    match protocol {
+        ImageProtocol::Kitty => {
+            if let Some(image_id) = options.image_id {
+                register_kitty_image_metadata(KittyImageMetadata {
+                    image_id,
+                    columns: size.columns,
+                    rows: size.rows,
+                    width_px: image_dimensions.width_px,
+                    height_px: image_dimensions.height_px,
+                    // The registry bumps the generation itself.
+                    transmission_generation: 0,
+                });
+            }
+            let sequence = encode_kitty(
+                base64_data,
+                Some(size.columns as u32),
+                Some(size.rows as u32),
+                options.image_id,
+                options.move_cursor,
+            );
+            Some(RenderedImage {
+                sequence,
+                columns: size.columns,
+                rows: size.rows,
+                image_id: options.image_id,
+            })
+        }
+        ImageProtocol::Iterm2 => {
+            let width = size.columns.to_string();
+            let sequence = encode_iterm2(
+                base64_data,
+                Some(&width),
+                Some("auto"),
+                None,
+                options.preserve_aspect_ratio.unwrap_or(true),
+                true,
+            );
+            Some(RenderedImage {
+                sequence,
+                columns: size.columns,
+                rows: size.rows,
+                image_id: None,
+            })
+        }
+    }
+}
+
 /// Wrap text in an OSC 8 hyperlink sequence (upstream `hyperlink`).
 pub fn hyperlink(text: &str, url: &str) -> String {
     format!("\u{1b}]8;;{url}\u{1b}\\{text}\u{1b}]8;;\u{1b}\\")

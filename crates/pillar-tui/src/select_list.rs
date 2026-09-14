@@ -54,6 +54,19 @@ pub struct SelectListTheme {
     pub no_match: Box<dyn Fn(&str) -> String + Send>,
 }
 
+impl Default for SelectListTheme {
+    /// Unstyled defaults (port-only): every hook passes its text through.
+    fn default() -> Self {
+        Self {
+            selected_prefix: Box::new(|text| text.to_string()),
+            selected_text: Box::new(|text| text.to_string()),
+            description: Box::new(|text| text.to_string()),
+            scroll_info: Box::new(|text| text.to_string()),
+            no_match: Box::new(|text| text.to_string()),
+        }
+    }
+}
+
 /// Layout overrides (upstream `SelectListLayoutOptions`).
 #[derive(Default)]
 pub struct SelectListLayoutOptions {

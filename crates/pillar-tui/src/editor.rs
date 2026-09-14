@@ -13,9 +13,11 @@
 use std::collections::BTreeMap;
 
 use crate::edit_support::{KillRing, UndoStack, find_word_backward, find_word_forward};
-use crate::select_list::SelectListTheme;
+use crate::input::CURSOR_MARKER;
+use crate::select_list::{SelectList, SelectListTheme};
 use crate::stack_layout::slice_by_column;
 use crate::text_utils::visible_width;
+use crate::tui::{Component, Focusable};
 
 /// Editor state (upstream `EditorState`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,6 +93,15 @@ pub struct Editor {
     snapped_from_cursor_col: Option<usize>,
     undo_stack: UndoStack<EditorSnapshot>,
     pub disable_submit: bool,
+    /// Frame colour + autocomplete dropdown theme (upstream
+    /// `theme`/`borderColor`).
+    theme: EditorTheme,
+    /// The autocomplete dropdown, when one is active (upstream
+    /// `autocompleteState && autocompleteList`). The host builds it through
+    /// `create_autocomplete_list` because the provider plumbing stays
+    /// host-side.
+    autocomplete_list: Option<SelectList>,
+    autocomplete_max_visible: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -161,6 +172,9 @@ impl Editor {
             snapped_from_cursor_col: None,
             undo_stack: UndoStack::new(),
             disable_submit: false,
+            theme: EditorTheme::default(),
+            autocomplete_list: None,
+            autocomplete_max_visible: 5,
         }
     }
 
@@ -1185,6 +1199,34 @@ impl Default for Editor {
     }
 }
 
+impl Component for Editor {
+    fn render(&mut self, width: usize) -> Vec<String> {
+        Editor::render(self, width)
+    }
+
+    fn invalidate(&mut self) {
+        Editor::invalidate(self);
+    }
+
+    fn as_focusable(&mut self) -> Option<&mut dyn Focusable> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+}
+
+impl Focusable for Editor {
+    fn set_focused(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+
+    fn is_focused(&self) -> bool {
+        self.focused
+    }
+}
+
 #[derive(Clone, Copy)]
 pub enum SegmentMode {
     Grapheme,
@@ -1453,6 +1495,16 @@ pub struct EditorTheme {
     pub select_list: SelectListTheme,
 }
 
+impl Default for EditorTheme {
+    /// Unstyled defaults (port-only): the border colour passes through.
+    fn default() -> Self {
+        Self {
+            border_color: Box::new(|text| text.to_string()),
+            select_list: SelectListTheme::default(),
+        }
+    }
+}
+
 /// Upstream renders scroll borders via createScrollBorder.
 pub fn create_scroll_border(direction: char, hidden_line_count: usize, width: usize) -> String {
     let available_width = width;
@@ -1477,4 +1529,186 @@ fn find_word_backward_with_markers(text: &str, cursor: usize, valid_ids: &[u32])
 fn find_word_forward_with_markers(text: &str, cursor: usize, valid_ids: &[u32]) -> usize {
     let _ = valid_ids;
     find_word_forward(text, cursor, None)
+}
+
+
+// ============================================================================
+// Rendering (upstream Editor.render and its accessors)
+// ============================================================================
+
+impl Editor {
+    /// The horizontal padding in use (upstream `getPaddingX`).
+    pub fn get_padding_x(&self) -> usize {
+        self.padding_x
+    }
+
+    /// Set the horizontal padding (upstream `setPaddingX`).
+    pub fn set_padding_x(&mut self, padding: i64) {
+        self.padding_x = if padding < 0 { 0 } else { padding as usize };
+    }
+
+    /// The autocomplete dropdown's row limit (upstream
+    /// `getAutocompleteMaxVisible`).
+    pub fn get_autocomplete_max_visible(&self) -> usize {
+        self.autocomplete_max_visible
+    }
+
+    /// Set the autocomplete dropdown's row limit, clamped to 3..=20 like
+    /// upstream `setAutocompleteMaxVisible`.
+    pub fn set_autocomplete_max_visible(&mut self, max_visible: usize) {
+        self.autocomplete_max_visible = max_visible.clamp(3, 20);
+    }
+
+    /// Install/replace the autocomplete dropdown (upstream `autocompleteList`;
+    /// the host builds it with `create_autocomplete_list`).
+    pub fn set_autocomplete_list(&mut self, list: Option<SelectList>) {
+        self.autocomplete_list = list;
+    }
+
+    /// The active autocomplete dropdown, if any.
+    pub fn autocomplete_list(&self) -> Option<&SelectList> {
+        self.autocomplete_list.as_ref()
+    }
+
+    pub fn autocomplete_list_mut(&mut self) -> Option<&mut SelectList> {
+        self.autocomplete_list.as_mut()
+    }
+
+    /// Replace the editor theme (upstream the constructor's `theme` argument).
+    pub fn set_theme(&mut self, theme: EditorTheme) {
+        self.theme = theme;
+    }
+
+    /// The theme in use.
+    pub fn theme(&self) -> &EditorTheme {
+        &self.theme
+    }
+
+    /// The first visible layout line (upstream `scrollOffset`).
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll_offset
+    }
+
+    /// No cached state to drop (upstream `invalidate`).
+    pub fn invalidate(&mut self) {}
+
+    /// Render the editor frame (upstream `Editor.render`): a horizontal rule
+    /// above and below, the word-wrapped lines between them, the fake cursor
+    /// (with the hardware-cursor marker while focused), scroll indicators when
+    /// content is hidden, and the autocomplete dropdown underneath.
+    pub fn render(&mut self, width: usize) -> Vec<String> {
+        let max_padding = width.saturating_sub(1) / 2;
+        let padding_x = self.padding_x.min(max_padding);
+        let content_width = width.saturating_sub(padding_x * 2).max(1);
+
+        // With padding the cursor may overflow into it; without padding one
+        // column is reserved for the cursor.
+        let layout_width = if padding_x > 0 {
+            content_width.max(1)
+        } else {
+            content_width.saturating_sub(1).max(1)
+        };
+        self.last_width = layout_width;
+
+        let horizontal = (self.theme.border_color)("─");
+        let layout_lines = self.layout_text(layout_width);
+
+        // At most 30% of the terminal height, never fewer than five lines.
+        let max_visible_lines = ((self.terminal_rows * 3) / 10).max(5);
+
+        let cursor_line_index = layout_lines
+            .iter()
+            .position(|line| line.has_cursor)
+            .unwrap_or(0);
+        if cursor_line_index < self.scroll_offset {
+            self.scroll_offset = cursor_line_index;
+        } else if cursor_line_index >= self.scroll_offset + max_visible_lines {
+            self.scroll_offset = (cursor_line_index + 1).saturating_sub(max_visible_lines);
+        }
+        let max_scroll_offset = layout_lines.len().saturating_sub(max_visible_lines);
+        self.scroll_offset = self.scroll_offset.min(max_scroll_offset);
+
+        let visible: Vec<LayoutLine> = layout_lines
+            .iter()
+            .skip(self.scroll_offset)
+            .take(max_visible_lines)
+            .cloned()
+            .collect();
+
+        let mut result: Vec<String> = Vec::new();
+        let left_padding = " ".repeat(padding_x);
+        let right_padding = left_padding.clone();
+
+        if self.scroll_offset > 0 {
+            let border = create_scroll_border('↑', self.scroll_offset, width);
+            result.push((self.theme.border_color)(&border));
+        } else {
+            result.push(horizontal.repeat(width));
+        }
+
+        let emit_cursor_marker = self.focused;
+        for layout_line in &visible {
+            let mut display_text = layout_line.text.clone();
+            let mut line_visible_width = visible_width(&layout_line.text);
+            let mut cursor_in_padding = false;
+
+            if let (true, Some(cursor_pos)) = (layout_line.has_cursor, layout_line.cursor_pos) {
+                let cursor_pos = cursor_pos.min(display_text.len());
+                let before = display_text[..cursor_pos].to_string();
+                let after = display_text[cursor_pos..].to_string();
+                let marker = if emit_cursor_marker { CURSOR_MARKER } else { "" };
+
+                if !after.is_empty() {
+                    // The cursor sits on a grapheme: replace it with the
+                    // highlighted version.
+                    let first = self
+                        .segment(&after, SegmentMode::Grapheme)
+                        .first()
+                        .map(|(segment, _)| segment.clone())
+                        .unwrap_or_default();
+                    let rest_after = after[first.len().min(after.len())..].to_string();
+                    let cursor = format!("\u{1b}[7m{first}\u{1b}[0m");
+                    display_text = format!("{before}{marker}{cursor}{rest_after}");
+                } else {
+                    // At the end: append a highlighted space.
+                    display_text = format!("{before}{marker}\u{1b}[7m \u{1b}[0m");
+                    line_visible_width += 1;
+                    if line_visible_width > content_width && padding_x > 0 {
+                        cursor_in_padding = true;
+                    }
+                }
+            }
+
+            let padding = " ".repeat(content_width.saturating_sub(line_visible_width));
+            let line_right_padding = if cursor_in_padding {
+                right_padding.get(1..).unwrap_or("")
+            } else {
+                right_padding.as_str()
+            };
+            result.push(format!(
+                "{left_padding}{display_text}{padding}{line_right_padding}"
+            ));
+        }
+
+        let lines_below = layout_lines
+            .len()
+            .saturating_sub(self.scroll_offset + visible.len());
+        if lines_below > 0 {
+            let border = create_scroll_border('↓', lines_below, width);
+            result.push((self.theme.border_color)(&border));
+        } else {
+            result.push(horizontal.repeat(width));
+        }
+
+        if let Some(list) = self.autocomplete_list.as_ref() {
+            let lines = list.render(content_width, &self.theme.select_list);
+            for line in lines {
+                let line_width = visible_width(&line);
+                let line_padding = " ".repeat(content_width.saturating_sub(line_width));
+                result.push(format!("{left_padding}{line}{line_padding}{right_padding}"));
+            }
+        }
+
+        result
+    }
 }
