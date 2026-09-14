@@ -3,15 +3,17 @@
 //! word-aware wrapping, sticky-column vertical movement, atomic paste
 //! markers, kill ring, undo, prompt history, and char-jump.
 //!
-//! divergences: the TUI render loop, autocomplete request scheduling
-//! (async provider with debounce/abort), and keybinding-table dispatch
-//! stay host-side; editing primitives and layout are exposed as plain
-//! methods. Intl.Segmenter is replaced by the grapheme helpers in
-//! text_utils plus the paste-marker-aware merge used upstream.
+//! divergences: the TUI render loop (`render` — border frame, scroll
+//! indicators, autocomplete dropdown), the autocomplete request scheduler
+//! (async provider with debounce/abort), and keybinding-table dispatch stay
+//! host-side; editing primitives and layout are exposed as plain methods.
+//! Intl.Segmenter is replaced by the grapheme helpers in text_utils plus the
+//! paste-marker-aware merge used upstream.
 
 use std::collections::BTreeMap;
 
 use crate::edit_support::{KillRing, UndoStack, find_word_backward, find_word_forward};
+use crate::select_list::SelectListTheme;
 use crate::stack_layout::slice_by_column;
 use crate::text_utils::visible_width;
 
@@ -1438,6 +1440,17 @@ pub fn word_wrap_line(
         end_index: line.len(),
     });
     chunks
+}
+
+/// Border colour function (upstream `EditorTheme.borderColor`).
+pub type BorderColorFn = dyn Fn(&str) -> String + Send;
+
+/// Editor theme (upstream `EditorTheme`): the frame colour and the
+/// autocomplete dropdown's select-list theme. Consumed by the editor's
+/// render pipeline, which is not ported yet (see the module note).
+pub struct EditorTheme {
+    pub border_color: Box<BorderColorFn>,
+    pub select_list: SelectListTheme,
 }
 
 /// Upstream renders scroll borders via createScrollBorder.

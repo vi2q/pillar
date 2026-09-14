@@ -755,6 +755,30 @@ impl SettingsManager {
         })
     }
 
+    /// The merged `theme` setting, including `light/dark` pairs (upstream
+    /// `getThemeSetting`).
+    pub fn theme_setting(&self) -> Option<String> {
+        self.settings
+            .get("theme")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    }
+
+    /// The `theme` setting when it is a plain theme name (upstream
+    /// `getTheme`): automatic `light/dark` settings answer `None`.
+    pub fn theme(&self) -> Option<String> {
+        let theme = self.theme_setting()?;
+        if theme.contains('/') {
+            return None;
+        }
+        Some(theme)
+    }
+
+    /// Set the global theme setting (upstream `setTheme`).
+    pub fn set_theme(&mut self, theme: &str) {
+        self.set_global_setting("theme", Value::String(theme.to_string()));
+    }
+
     // --- typed accessors with upstream defaults ---------------------------------
 
     /// Configured shell executable (upstream `getShellPath`).

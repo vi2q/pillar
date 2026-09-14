@@ -12,12 +12,21 @@
 //!   the 256-colour path exactly like upstream (`fgAnsi` only special-cases
 //!   `truecolor`).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::LazyLock;
+use std::time::Duration;
 
+use pillar_tui::editor::EditorTheme;
+use pillar_tui::terminal_colors::{RgbColor, TerminalColorScheme};
+use pillar_tui::markdown::MarkdownTheme;
+use pillar_tui::select_list::SelectListTheme;
+use pillar_tui::settings_list::SettingsListTheme;
 use serde_json::Value;
 
 use crate::core::source_info::SourceInfo;
+use crate::utils::clipboard::ClipboardEnv;
+
+pub mod controller;
 
 /// How many colours the terminal can show (upstream `ColorMode`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -994,3 +1003,368 @@ pub fn on_theme_change(callback: Box<dyn Fn() + Send + Sync>) {
 /// File watching is not ported; provided so callers can mirror upstream
 /// shutdown.
 pub fn stop_theme_watcher() {}
+
+// ============================================================================
+// Component theme adapters + theme catalogue (upstream theme.ts tail)
+// ============================================================================
+
+/// A theme name plus where it was loaded from (upstream `ThemeInfo`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThemeInfo {
+    pub name: String,
+    pub path: Option<String>,
+}
+
+/// The user's agent directory: `PI_CODING_AGENT_DIR` (with `~` expansion) or
+/// `~/.pi/agent` (upstream `config.ts::getAgentDir`).
+pub fn agent_dir() -> String {
+    if let Ok(dir) = std::env::var("PI_CODING_AGENT_DIR") {
+        if !dir.is_empty() {
+            return expand_tilde_path(&dir);
+        }
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| String::from("~"));
+    format!("{}/.pi/agent", home.trim_end_matches('/'))
+}
+
+/// Expand a leading `~` against `$HOME` (upstream `expandTildePath`).
+pub fn expand_tilde_path(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix('~') {
+        if rest.is_empty() || rest.starts_with('/') {
+            let home = std::env::var("HOME").unwrap_or_else(|_| String::from("~"));
+            return format!("{}{}", home.trim_end_matches('/'), rest);
+        }
+    }
+    path.to_string()
+}
+
+/// The user's custom themes directory (upstream `getCustomThemesDir`).
+pub fn custom_themes_dir() -> String {
+    format!("{}/themes", agent_dir().trim_end_matches('/'))
+}
+
+/// The directory holding the shipped theme JSON files (upstream
+/// `getThemesDir`).
+///
+/// divergence: the port embeds `dark.json` / `light.json` with
+/// `include_str!`, so this path is informational (the theme list's `path`)
+/// and resolves next to the executable or `$PI_PACKAGE_DIR`.
+pub fn themes_dir() -> String {
+    if let Ok(dir) = std::env::var("PI_PACKAGE_DIR") {
+        if !dir.is_empty() {
+            return format!("{}/theme", dir.trim_end_matches('/'));
+        }
+    }
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|parent| parent.to_path_buf()))
+        .map(|parent| parent.join("theme").to_string_lossy().to_string())
+        .unwrap_or_else(|| "theme".to_string())
+}
+
+/// Custom theme files in the agent's theme directory (upstream
+/// `getCustomThemeInfos`): invalid files are ignored here, like upstream.
+fn custom_theme_infos() -> Vec<ThemeInfo> {
+    get_custom_theme_infos_in(&custom_themes_dir())
+}
+
+/// [`custom_theme_infos`] for an explicit directory (test seam; upstream
+/// reads the directory from `getCustomThemesDir()`).
+pub fn get_custom_theme_infos_in(dir: &str) -> Vec<ThemeInfo> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut result = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let path_string = path.to_string_lossy().to_string();
+        if let Ok(theme) = load_theme_from_path(&path_string, ColorMode::Truecolor) {
+            if let Some(name) = theme.name() {
+                result.push(ThemeInfo {
+                    name: name.to_string(),
+                    path: Some(path_string),
+                });
+            }
+        }
+    }
+    result
+}
+
+/// The registered (extension-provided) themes as name/path pairs.
+fn registered_theme_infos() -> Vec<ThemeInfo> {
+    REGISTRY
+        .read()
+        .expect("theme registry")
+        .registered
+        .iter()
+        .map(|(name, theme)| ThemeInfo {
+            name: name.clone(),
+            path: theme.source_path().map(str::to_string),
+        })
+        .collect()
+}
+
+/// Every selectable theme name (upstream `getAvailableThemes`).
+pub fn get_available_themes() -> Vec<String> {
+    get_available_themes_with_paths()
+        .into_iter()
+        .map(|info| info.name)
+        .collect()
+}
+
+/// Every selectable theme with its source path (upstream
+/// `getAvailableThemesWithPaths`): built-ins first, then custom files, then
+/// registered themes; duplicates keep their first source.
+///
+/// divergence: upstream sorts with `localeCompare`; the port sorts by code
+/// point (identical for the built-in ASCII names).
+pub fn get_available_themes_with_paths() -> Vec<ThemeInfo> {
+    let themes_dir = themes_dir();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut result: Vec<ThemeInfo> = Vec::new();
+    let mut add = |info: ThemeInfo| {
+        if seen.insert(info.name.clone()) {
+            result.push(info);
+        }
+    };
+
+    for name in builtin_themes().keys() {
+        add(ThemeInfo {
+            name: name.clone(),
+            path: Some(format!("{}/{}.json", themes_dir.trim_end_matches('/'), name)),
+        });
+    }
+    for info in custom_theme_infos() {
+        add(info);
+    }
+    for info in registered_theme_infos() {
+        add(info);
+    }
+    result.sort_by(|a, b| a.name.cmp(&b.name));
+    result
+}
+
+/// Language id for a file path's extension (upstream `getLanguageFromPath`).
+pub fn get_language_from_path(file_path: &str) -> Option<&'static str> {
+    let ext = file_path.rsplit('.').next()?.to_lowercase();
+    let lang = match ext.as_str() {
+        "ts" | "tsx" => "typescript",
+        "js" | "jsx" | "mjs" | "cjs" => "javascript",
+        "py" => "python",
+        "rb" => "ruby",
+        "rs" => "rust",
+        "go" => "go",
+        "java" => "java",
+        "kt" => "kotlin",
+        "swift" => "swift",
+        "c" | "h" => "c",
+        "cpp" | "cc" | "cxx" | "hpp" => "cpp",
+        "cs" => "csharp",
+        "php" => "php",
+        "sh" | "bash" | "zsh" => "bash",
+        "fish" => "fish",
+        "ps1" => "powershell",
+        "sql" => "sql",
+        "html" | "htm" => "html",
+        "css" => "css",
+        "scss" => "scss",
+        "sass" => "sass",
+        "less" => "less",
+        "json" => "json",
+        "yaml" | "yml" => "yaml",
+        "toml" => "toml",
+        "xml" => "xml",
+        "md" | "markdown" => "markdown",
+        "dockerfile" => "dockerfile",
+        "makefile" => "makefile",
+        "cmake" => "cmake",
+        "lua" => "lua",
+        "perl" => "perl",
+        "r" => "r",
+        "scala" => "scala",
+        "clj" => "clojure",
+        "ex" | "exs" => "elixir",
+        "erl" => "erlang",
+        "hs" => "haskell",
+        "ml" => "ocaml",
+        "vim" => "vim",
+        "graphql" => "graphql",
+        "proto" => "protobuf",
+        "tf" | "hcl" => "hcl",
+        _ => return None,
+    };
+    Some(lang)
+}
+
+/// Highlight code for a markdown code block (upstream `highlightCode`).
+///
+/// divergence: upstream highlights with `highlight.js` (`cli-highlight`) and
+/// falls back to painting every line with `mdCodeBlock` when the language is
+/// unknown. No JS/JSX highlighter is ported, so the port always takes that
+/// upstream fallback path; a Rust highlighter (e.g. syntect/tree-sitter) is a
+/// follow-up.
+pub fn highlight_code(code: &str, lang: Option<&str>) -> Vec<String> {
+    let _ = lang;
+    code.split('\n')
+        .map(|line| theme().fg("mdCodeBlock", line))
+        .collect()
+}
+
+/// Markdown theme backed by the active theme (upstream `getMarkdownTheme`).
+///
+/// The closures read the global theme on every call, mirroring upstream's
+/// `theme` proxy, so a theme switch affects components built earlier.
+pub fn get_markdown_theme() -> MarkdownTheme {
+    MarkdownTheme {
+        heading: Box::new(|text| theme().fg("mdHeading", text)),
+        link: Box::new(|text| theme().fg("mdLink", text)),
+        link_url: Box::new(|text| theme().fg("mdLinkUrl", text)),
+        code: Box::new(|text| theme().fg("mdCode", text)),
+        code_block: Box::new(|text| theme().fg("mdCodeBlock", text)),
+        code_block_border: Box::new(|text| theme().fg("mdCodeBlockBorder", text)),
+        quote: Box::new(|text| theme().fg("mdQuote", text)),
+        quote_border: Box::new(|text| theme().fg("mdQuoteBorder", text)),
+        hr: Box::new(|text| theme().fg("mdHr", text)),
+        list_bullet: Box::new(|text| theme().fg("mdListBullet", text)),
+        bold: Box::new(|text| theme().bold(text)),
+        italic: Box::new(|text| theme().italic(text)),
+        underline: Box::new(|text| theme().underline(text)),
+        strikethrough: Box::new(|text| theme().strikethrough(text)),
+        highlight_code: Some(Box::new(highlight_code)),
+        code_block_indent: None,
+    }
+}
+
+/// Select-list theme for the active theme (upstream `getSelectListTheme`).
+pub fn get_select_list_theme() -> SelectListTheme {
+    SelectListTheme {
+        selected_prefix: Box::new(|text| theme().fg("accent", text)),
+        selected_text: Box::new(|text| theme().fg("accent", text)),
+        description: Box::new(|text| theme().fg("muted", text)),
+        scroll_info: Box::new(|text| theme().fg("muted", text)),
+        no_match: Box::new(|text| theme().fg("muted", text)),
+    }
+}
+
+/// Editor theme for the active theme (upstream `getEditorTheme`).
+pub fn get_editor_theme() -> EditorTheme {
+    EditorTheme {
+        border_color: Box::new(|text| theme().fg("borderMuted", text)),
+        select_list: get_select_list_theme(),
+    }
+}
+
+/// Settings-list theme for the active theme (upstream
+/// `getSettingsListTheme`).
+pub fn get_settings_list_theme() -> SettingsListTheme {
+    SettingsListTheme {
+        label: Box::new(|text, selected| {
+            if selected {
+                theme().fg("accent", text)
+            } else {
+                text.to_string()
+            }
+        }),
+        value: Box::new(|text, selected| {
+            if selected {
+                theme().fg("accent", text)
+            } else {
+                theme().fg("muted", text)
+            }
+        }),
+        description: Box::new(|text| theme().fg("dim", text)),
+        cursor: theme().fg("accent", "→ "),
+        hint: Box::new(|text| theme().fg("dim", text)),
+    }
+}
+
+// ============================================================================
+// Terminal theme detection (upstream the detector interfaces + queries)
+// ============================================================================
+
+/// A terminal that answers the OSC 11 background query (upstream
+/// `TerminalBackgroundThemeDetector`).
+pub trait TerminalBackgroundThemeDetector {
+    /// The terminal's background colour, if the terminal replied.
+    fn query_terminal_background_color(&mut self, timeout: Duration) -> Option<RgbColor>;
+}
+
+/// Also answers the color-scheme query (upstream `TerminalAutoThemeDetector`).
+///
+/// divergence: upstream marks `queryTerminalColorScheme` optional (`?.`) and
+/// treats a missing implementation as "no color scheme support"; the port
+/// declares it required, so unsupported hosts return `None`.
+pub trait TerminalAutoThemeDetector: TerminalBackgroundThemeDetector {
+    /// The terminal's light/dark scheme, if the terminal replied.
+    fn query_terminal_color_scheme(&mut self, timeout: Duration) -> Option<TerminalTheme>;
+}
+
+impl TerminalBackgroundThemeDetector for pillar_tui::tui::TuiBase {
+    fn query_terminal_background_color(&mut self, timeout: Duration) -> Option<RgbColor> {
+        pillar_tui::tui::TuiBase::query_terminal_background_color(self, timeout)
+    }
+}
+
+impl TerminalAutoThemeDetector for pillar_tui::tui::TuiBase {
+    fn query_terminal_color_scheme(&mut self, timeout: Duration) -> Option<TerminalTheme> {
+        pillar_tui::tui::TuiBase::query_terminal_color_scheme(self, timeout).map(|scheme| match scheme
+        {
+            TerminalColorScheme::Light => TerminalTheme::Light,
+            TerminalColorScheme::Dark => TerminalTheme::Dark,
+        })
+    }
+}
+
+fn process_env() -> ClipboardEnv {
+    ClipboardEnv::from_process()
+}
+
+/// Detect the terminal background theme by querying OSC 11 and falling back to
+/// the environment (upstream `detectTerminalBackgroundTheme`).
+///
+/// divergence: upstream awaits the query and catches thrown errors; the port's
+/// query is blocking and answers `None`, so the same fallback runs.
+pub fn detect_terminal_background_theme<D: TerminalBackgroundThemeDetector + ?Sized>(
+    ui: &mut D,
+    timeout_ms: u64,
+    env: Option<&ClipboardEnv>,
+) -> TerminalThemeDetection {
+    if let Some(rgb) = ui.query_terminal_background_color(Duration::from_millis(timeout_ms)) {
+        return TerminalThemeDetection {
+            theme: get_theme_for_rgb_color(rgb.r, rgb.g, rgb.b),
+            source: TerminalThemeSource::TerminalBackground,
+            detail: format!("OSC 11 background rgb({}, {}, {})", rgb.r, rgb.g, rgb.b),
+            confidence: TerminalThemeConfidence::High,
+        };
+    }
+    let owned;
+    let env = match env {
+        Some(env) => env,
+        None => {
+            owned = process_env();
+            &owned
+        }
+    };
+    detect_terminal_background_from_env(env)
+}
+
+/// Detect the terminal theme for an automatic (`light/dark`) theme setting
+/// (upstream `detectTerminalThemeForAuto`): the color-scheme report wins, then
+/// the OSC 11 / `COLORFGBG` detection.
+///
+/// divergence: upstream starts both queries concurrently; the port's queries
+/// are blocking, so the color scheme is asked first and the background query
+/// runs only when it reports nothing.
+pub fn detect_terminal_theme_for_auto<D: TerminalAutoThemeDetector + ?Sized>(
+    ui: &mut D,
+    timeout_ms: u64,
+    env: Option<&ClipboardEnv>,
+) -> TerminalTheme {
+    if let Some(scheme) = ui.query_terminal_color_scheme(Duration::from_millis(timeout_ms)) {
+        return scheme;
+    }
+    detect_terminal_background_theme(ui, timeout_ms, env).theme
+}
