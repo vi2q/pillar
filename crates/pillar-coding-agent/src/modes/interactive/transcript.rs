@@ -34,7 +34,7 @@ use std::sync::{Arc, Mutex};
 
 use pillar_ai::types::{Content, StopReason};
 use pillar_tui::components::{Spacer, Text};
-use pillar_tui::tui::{Component, Container};
+use pillar_tui::tui::{Component, Container, Focusable};
 
 use crate::core::agent_session::parse_skill_block;
 use crate::core::agent_session_class::{AgentSessionEvent, agent_message_to_coding};
@@ -156,6 +156,63 @@ impl<C: Component + 'static> Component for Shared<C> {
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
+    }
+}
+
+/// A [`Shared`] handle mounted as a child, forwarding the focus interface.
+///
+/// `Shared<C>` cannot implement `Component::as_focusable` (the returned
+/// `&mut dyn Focusable` cannot borrow out of a temporary mutex guard), so a
+/// focusable shared component is mounted through this wrapper, which locks on
+/// every call. Without it the TUI's `set_focus` silently does nothing and the
+/// component never renders its hardware-cursor marker (which terminal IME
+/// preedit and cursor placement depend on).
+pub struct FocusHandle<C>(Shared<C>);
+
+impl<C> FocusHandle<C> {
+    pub fn new(component: Shared<C>) -> Self {
+        Self(component)
+    }
+
+    /// The shared component this handle mounts.
+    pub fn shared(&self) -> &Shared<C> {
+        &self.0
+    }
+}
+
+impl<C: Component + Focusable + 'static> Component for FocusHandle<C> {
+    fn render(&mut self, width: usize) -> Vec<String> {
+        self.0.lock().render(width)
+    }
+
+    fn handle_input(&mut self, data: &str) {
+        self.0.lock().handle_input(data);
+    }
+
+    fn wants_key_release(&self) -> bool {
+        self.0.lock().wants_key_release()
+    }
+
+    fn invalidate(&mut self) {
+        self.0.lock().invalidate();
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_focusable(&mut self) -> Option<&mut dyn Focusable> {
+        Some(self)
+    }
+}
+
+impl<C: Focusable + Send> Focusable for FocusHandle<C> {
+    fn set_focused(&mut self, focused: bool) {
+        self.0.lock().set_focused(focused);
+    }
+
+    fn is_focused(&self) -> bool {
+        self.0.lock().is_focused()
     }
 }
 

@@ -801,7 +801,12 @@ impl InteractiveMode {
         base.add_child(Box::new(self.transcript.clone()));
         base.add_child(Box::new(self.pending.clone()));
         base.add_child(Box::new(self.status.clone()));
-        let editor = base.add_child(Box::new(self.editor.clone()));
+        // The editor goes through `FocusHandle`: a plain `Shared` cannot
+        // forward `as_focusable`, so the TUI could not focus it (and the
+        // hardware-cursor marker would never be emitted).
+        let editor = base.add_child(Box::new(crate::modes::interactive::transcript::FocusHandle::new(
+            self.editor.clone(),
+        )));
         base.add_child(Box::new(self.footer.clone()));
         editor
     }

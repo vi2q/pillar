@@ -560,3 +560,44 @@ fn message_entries_flow_through_the_transcript() {
         .join("\n");
     assert!(body.contains("a question"), "{body:?}");
 }
+
+/// Mounting must hand the editor a real focus target: `Shared<C>` cannot
+/// forward `as_focusable`, so before `FocusHandle` the TUI's `set_focus` was
+/// a no-op, the editor never rendered its hardware-cursor marker, and the
+/// terminal placed IME preedit / the cursor at the end of the frame.
+#[test]
+fn mount_focuses_the_editor_and_emits_the_cursor_marker() {
+    use pillar_tui::process_terminal::{NullTerminalIo, ProcessTerminal};
+    use pillar_tui::tui::{CURSOR_MARKER, Focusable as _, TuiBase};
+
+    let _guard = THEME_LOCK.lock().expect("lock");
+    install_dark();
+    let session = session();
+    let mode = InteractiveMode::new(
+        Arc::clone(&session),
+        TranscriptSettings::default(),
+        Vec::new(),
+        InteractiveModeOptions {
+            tui_mode: Some(TuiMode::Regular),
+            ..Default::default()
+        },
+    );
+
+    let mut base = TuiBase::new(
+        Box::new(ProcessTerminal::with_io(Box::new(NullTerminalIo))),
+        TuiMode::Regular,
+    );
+    let editor = mode.mount(&mut base);
+    base.set_focus(Some(editor));
+    assert!(
+        mode.editor().lock().is_focused(),
+        "the mounted editor receives focus"
+    );
+
+    let lines = base.render(80);
+    let markers = lines
+        .iter()
+        .filter(|line| line.contains(CURSOR_MARKER))
+        .count();
+    assert_eq!(markers, 1, "one cursor marker in the frame: {lines:?}");
+}
