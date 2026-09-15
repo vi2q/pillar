@@ -2,8 +2,9 @@
 //! v0.84.3): default attribution headers per provider plus the OpenCode
 //! session headers, merged under explicit header sources.
 //!
-//! divergence: the telemetry-enabled check is injected as a bool instead of
-//! reading a `SettingsManager` (the settings manager is not ported yet).
+//! divergence: the telemetry-enabled check is passed in as a resolved bool
+//! (the caller applies `isInstallTelemetryEnabled`, which also reads
+//! `PI_TELEMETRY`).
 
 use pillar_ai::types::{Model, ProviderHeaders};
 

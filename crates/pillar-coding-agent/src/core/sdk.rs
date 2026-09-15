@@ -29,7 +29,40 @@ use crate::core::session_entries::SessionEntry;
 use crate::core::session_manager::SessionManager;
 use crate::core::session_support::{DEFAULT_THINKING_LEVEL, THINKING_LEVEL_OPTIONS};
 use crate::core::settings_manager::{SettingsManager, SettingsManagerCreateOptions};
+use crate::core::provider_attribution::merge_provider_attribution_headers;
+use crate::core::extras::{PI_TELEMETRY_ENV, is_install_telemetry_enabled};
 use crate::core::system_prompt::{BuildSystemPromptOptions, PromptPaths, build_system_prompt};
+
+/// Upstream the `transformHeaders` callback of the session stream function:
+/// attribution headers under the assembled provider/request headers (the
+/// OpenCode session id is the one pi routes requests with).
+fn provider_headers_transform(
+    model: Model,
+    settings: Arc<Mutex<SettingsManager>>,
+    session_id: String,
+) -> pillar_ai::models::HeadersTransform {
+    Arc::new(move |request_headers: pillar_ai::types::ProviderHeaders| {
+        let model = model.clone();
+        let settings = Arc::clone(&settings);
+        let session_id = session_id.clone();
+        Box::pin(async move {
+            let telemetry_enabled = {
+                let settings = settings.lock().expect("settings lock");
+                is_install_telemetry_enabled(
+                    settings.enable_install_telemetry(),
+                    std::env::var(PI_TELEMETRY_ENV).ok().as_deref(),
+                )
+            };
+            merge_provider_attribution_headers(
+                &model,
+                telemetry_enabled,
+                Some(&session_id),
+                &[&request_headers],
+            )
+            .unwrap_or_default()
+        })
+    })
+}
 
 // ============================================================================
 // Model resolution (upstream createAgentSession model restoration)
@@ -543,13 +576,26 @@ pub async fn create_agent_session(
     let stream_fn = options.stream_fn.clone().unwrap_or_else(|| {
         let runtime = Arc::clone(&model_runtime);
         let cell = Arc::clone(&agent_cell);
+        let settings = Arc::clone(&settings_manager);
+        let session_id = session_manager.session_id().to_string();
         StreamFn::new(move |context, _options| {
             let runtime = Arc::clone(&runtime);
+            let settings = Arc::clone(&settings);
+            let session_id = session_id.clone();
             let model = cell.get().map(|agent| agent.state().model);
             async move {
                 match model {
                     Some(model) if model.id != "unknown" => {
-                        runtime.stream_simple(&model.to_model(), &context, None)
+                        let request_model = model.to_model();
+                        let options = pillar_ai::models::ModelsStreamOptions {
+                            transform_headers: Some(provider_headers_transform(
+                                request_model.clone(),
+                                settings,
+                                session_id,
+                            )),
+                            ..Default::default()
+                        };
+                        runtime.stream_simple(&request_model, &context, Some(options))
                     }
                     _ => no_model_stream(),
                 }
