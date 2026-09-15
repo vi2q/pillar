@@ -283,7 +283,9 @@ fn a_buffered_partial_sequence_flushes_once_its_deadline_passes() {
         terminal.feed_input_bytes("A", start),
         vec!["\u{1b}[A".to_string()]
     );
-    assert!(terminal
-        .flush_pending_input(start + Duration::from_secs(1))
-        .is_empty());
+    assert!(
+        terminal
+            .flush_pending_input(start + Duration::from_secs(1))
+            .is_empty()
+    );
 }

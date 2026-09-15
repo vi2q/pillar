@@ -80,9 +80,8 @@ impl RecentModels {
     /// Upstream `recordRecent`: move the model to the front, drop duplicates
     /// and cap the history, then persist.
     pub fn record(&mut self, provider: &str, id: &str) {
-        self.entries.retain(|entry| {
-            !(entry.provider == provider && entry.id == id)
-        });
+        self.entries
+            .retain(|entry| !(entry.provider == provider && entry.id == id));
         self.entries.insert(
             0,
             RecentEntry {
@@ -176,7 +175,10 @@ mod tests {
         recent.record("q", "c");
         assert_eq!(recent.entries().len(), 4);
         assert_eq!(
-            (recent.entries()[0].provider.as_str(), recent.entries()[0].id.as_str()),
+            (
+                recent.entries()[0].provider.as_str(),
+                recent.entries()[0].id.as_str()
+            ),
             ("q", "c")
         );
     }
@@ -220,7 +222,10 @@ mod tests {
     #[test]
     fn malformed_or_missing_history_reads_as_empty() {
         let dir = temp_dir("malformed");
-        assert!(RecentModels::load(&dir).entries().is_empty(), "missing file");
+        assert!(
+            RecentModels::load(&dir).entries().is_empty(),
+            "missing file"
+        );
 
         std::fs::write(RecentModels::path_in(&dir), "{ not json").unwrap();
         assert!(RecentModels::load(&dir).entries().is_empty(), "bad json");

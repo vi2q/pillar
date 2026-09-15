@@ -614,8 +614,8 @@ async fn kitty_protocol_arrows_drive_the_model_picker() {
     // consumed selector key.
     let mut harness = harness(
         vec![
-            "\u{1b}[?7u".to_string(),   // kitty flags reply
-            "/m\r".to_string(),         // open the picker
+            "\u{1b}[?7u".to_string(),    // kitty flags reply
+            "/m\r".to_string(),          // open the picker
             "\u{1b}[1;1:1C".to_string(), // → next category (wraps: one provider)
             "\u{1b}[1;1:3C".to_string(), // → release
             "\u{1b}[1;1:1B".to_string(), // ↓ to sonnet

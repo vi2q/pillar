@@ -370,9 +370,7 @@ impl InteractiveMode {
             }),
             terminal_rows: options
                 .terminal_rows
-                .unwrap_or_else(|| {
-                    std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(24))
-                }),
+                .unwrap_or_else(|| std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(24))),
             agent_dir: options.agent_dir.clone(),
             session,
         }
@@ -1335,7 +1333,8 @@ impl InteractiveMode {
         } else {
             scoped.into_iter().map(|scoped| scoped.model).collect()
         };
-        match crate::core::model_resolver::find_exact_model_reference_match(search, &cached_models) {
+        match crate::core::model_resolver::find_exact_model_reference_match(search, &cached_models)
+        {
             Some(model) => vec![ModeAction::SelectModel {
                 provider: model.provider,
                 id: model.id,
@@ -1491,12 +1490,7 @@ impl InteractiveMode {
             .filter_map(|entry| {
                 groups.iter().find_map(|(provider, _, models)| {
                     (provider == &entry.provider)
-                        .then(|| {
-                            models
-                                .iter()
-                                .find(|model| model.id == entry.id)
-                                .cloned()
-                        })
+                        .then(|| models.iter().find(|model| model.id == entry.id).cloned())
                         .flatten()
                 })
             })
@@ -1555,10 +1549,8 @@ impl InteractiveMode {
         } else {
             scoped.into_iter().map(|scoped| scoped.model).collect()
         };
-        let providers: std::collections::HashSet<&str> = models
-            .iter()
-            .map(|model| model.provider.as_str())
-            .collect();
+        let providers: std::collections::HashSet<&str> =
+            models.iter().map(|model| model.provider.as_str()).collect();
         self.footer
             .lock()
             .footer_data()

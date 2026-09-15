@@ -132,7 +132,10 @@ fn session_with_scoped_models(
     // test's read (the loader then reports "EOF while parsing a value").
     static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let unique = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let dir = std::env::temp_dir().join(format!("pillar-mode-runtime-{}-{unique}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!(
+        "pillar-mode-runtime-{}-{unique}",
+        std::process::id()
+    ));
     let _ = std::fs::create_dir_all(&dir);
     let models_path = dir.join("models.json");
     // A valid empty config: `{}` would leave a `ModelRuntime::get_error()`
@@ -878,7 +881,10 @@ fn model_command_with_an_exact_reference_switches_without_a_selector() {
     );
     assert_eq!(actions, vec![ModeAction::EditorSlotChanged]);
     let body = plain(&mut mode.transcript().lock().chat, 120);
-    assert!(body.contains("No API key for anthropic/claude-opus-5"), "{body:?}");
+    assert!(
+        body.contains("No API key for anthropic/claude-opus-5"),
+        "{body:?}"
+    );
 }
 
 #[test]
@@ -923,7 +929,10 @@ fn model_select_app_action_opens_the_picker() {
 
 /// `make_mode` with an agent directory (where the picker's recent-model
 /// history lives) and a terminal height.
-fn make_mode_with_agent_dir(session: &Arc<AgentSession>, agent_dir: std::path::PathBuf) -> InteractiveMode {
+fn make_mode_with_agent_dir(
+    session: &Arc<AgentSession>,
+    agent_dir: std::path::PathBuf,
+) -> InteractiveMode {
     let _guard = THEME_LOCK.lock().expect("lock");
     install_dark();
     InteractiveMode::new(
@@ -991,7 +1000,13 @@ fn picker_rows(mode: &InteractiveMode, width: usize) -> Vec<String> {
 fn m_opens_the_two_column_picker_and_enter_reports_the_selection() {
     let dir = picker_agent_dir("open");
     // Newest first, like a pi install would leave it.
-    seed_recent(&dir, &[("anthropic", "claude-opus-5"), ("anthropic", "claude-sonnet-4-5")]);
+    seed_recent(
+        &dir,
+        &[
+            ("anthropic", "claude-opus-5"),
+            ("anthropic", "claude-sonnet-4-5"),
+        ],
+    );
     let session = session_with_scoped_models(vec![
         scoped_model("claude-sonnet-4-5"),
         scoped_model("claude-opus-5"),
@@ -1014,7 +1029,10 @@ fn m_opens_the_two_column_picker_and_enter_reports_the_selection() {
         .iter()
         .find(|row| row.contains("RECENT"))
         .unwrap_or_else(|| panic!("recent row in {rows:?}"));
-    assert!(recent_row.contains('›'), "recent is selected: {recent_row:?}");
+    assert!(
+        recent_row.contains('›'),
+        "recent is selected: {recent_row:?}"
+    );
     assert!(recent_row.contains("claude-opus-5"), "{recent_row:?}");
 
     // ↓ moves within the recent category, Enter selects.
@@ -1060,7 +1078,10 @@ fn m_ctrl_s_selects_the_highlighted_model_as_the_default() {
     let actions = mode.complete_model_selection("anthropic", "claude-opus-5", true, None);
     assert_eq!(actions, vec![ModeAction::EditorSlotChanged]);
     let body = plain(&mut mode.transcript().lock().chat, 120);
-    assert!(body.contains("Default model: anthropic/claude-opus-5"), "{body:?}");
+    assert!(
+        body.contains("Default model: anthropic/claude-opus-5"),
+        "{body:?}"
+    );
 }
 
 #[test]

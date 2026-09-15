@@ -156,7 +156,8 @@ impl ModelPickerComponent {
         if count == 0 {
             return;
         }
-        self.category_index = ((self.category_index as i64 + delta).rem_euclid(count as i64)) as usize;
+        self.category_index =
+            ((self.category_index as i64 + delta).rem_euclid(count as i64)) as usize;
         self.model_index = 0;
     }
 
@@ -271,7 +272,10 @@ impl pillar_tui::tui::Component for ModelPickerComponent {
             None => "(no model)".to_string(),
         };
         lines.push(truncate_to_width(
-            &format!(" {}", theme_handle.fg("accent", &theme_handle.bold(&header_text))),
+            &format!(
+                " {}",
+                theme_handle.fg("accent", &theme_handle.bold(&header_text))
+            ),
             width,
             "",
             false,
@@ -297,10 +301,7 @@ impl pillar_tui::tui::Component for ModelPickerComponent {
             .map(|category| category.models.len())
             .unwrap_or(0);
 
-        let selected_left_row = left_rows
-            .iter()
-            .position(|row| row.active)
-            .unwrap_or(0);
+        let selected_left_row = left_rows.iter().position(|row| row.active).unwrap_or(0);
         let left_start = window_start(selected_left_row, left_rows.len(), rows_visible);
         let model_start = window_start(self.model_index, model_count, rows_visible);
         let rows = rows_visible.min(
@@ -499,11 +500,8 @@ mod tests {
 
         let mut without_recent = categories();
         without_recent.remove(0);
-        let picker = ModelPickerComponent::new(
-            without_recent,
-            None,
-            Arc::new(AtomicUsize::new(24)),
-        );
+        let picker =
+            ModelPickerComponent::new(without_recent, None, Arc::new(AtomicUsize::new(24)));
         assert_eq!(picker.category_index(), 0);
         assert_eq!(picker.categories()[0].id, "p1");
     }
@@ -612,4 +610,3 @@ mod tests {
         assert_eq!(picker.model_index(), 0);
     }
 }
-
