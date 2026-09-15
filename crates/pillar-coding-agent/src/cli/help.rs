@@ -208,8 +208,8 @@ Environment Variables:
   AWS_SECRET_ACCESS_KEY            - AWS secret key for Amazon Bedrock
   AWS_BEARER_TOKEN_BEDROCK         - Bedrock API key (bearer token)
   AWS_REGION                       - AWS region for Amazon Bedrock (e.g., us-east-1)
-  %E1% - Config directory (default: ~/%C%/agent)
-  %E2% - Session storage directory (overridden by --session-dir)
+  %E1%          - Config directory (default: ~/%C%/agent)
+  %E2%  - Session storage directory (overridden by --session-dir)
   PILLAR_PACKAGE_DIR               - Override package directory (for Nix/Guix store paths)
   PILLAR_OFFLINE                   - Disable startup network operations when set to 1/true/yes
   PILLAR_TELEMETRY                 - Override install telemetry when set to 1/true/yes or 0/false/no
