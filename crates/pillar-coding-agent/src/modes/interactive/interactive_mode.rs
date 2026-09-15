@@ -161,6 +161,9 @@ use crate::core::session_entries::SessionEntry;
 use crate::core::settings_manager::DoubleEscapeAction;
 use crate::core::truncate::TruncationResult;
 use crate::modes::interactive::components::bash_execution::BashExecutionComponent;
+use crate::modes::interactive::components::thinking_selector::{
+    ThinkingSelectorComponent, ThinkingSelectorOutcome,
+};
 use crate::modes::interactive::components::footer::FooterComponent;
 use crate::modes::interactive::components::status_indicator::{
     CompactionStatusReason, RetryStatusIndicator, StatusIndicatorKind, compaction_status_indicator,
@@ -199,6 +202,9 @@ pub enum ModeAction {
     Abort,
     /// Upstream `session.cycleModel(direction)`.
     CycleModel { forward: bool },
+    /// The editor slot changed (a selector was shown or closed; upstream
+    /// `showSelector`'s `editorContainer` swap + `setFocus`).
+    EditorSlotChanged,
 }
 
 /// Mode-level options (upstream the settings-derived fields of
@@ -243,6 +249,38 @@ pub struct InteractiveMode {
     /// shown in the pending area until the next submission flushes them into
     /// the chat.
     pending_bash_components: std::sync::Mutex<Vec<Shared<BashExecutionComponent>>>,
+    /// Upstream `activeSelectorToken` + the selector in the editor slot.
+    active_selector: std::sync::Mutex<Option<ActiveSelector>>,
+    /// Monotonic token so a stale `done` cannot close a newer selector.
+    next_selector_token: AtomicU64,
+}
+
+/// The selector currently shown in place of the editor (upstream the
+/// `editorContainer` child plus `activeSelectorToken`).
+pub enum ActiveSelector {
+    Thinking {
+        token: u64,
+        component: Shared<ThinkingSelectorComponent>,
+    },
+}
+
+impl ActiveSelector {
+    fn token(&self) -> u64 {
+        match self {
+            ActiveSelector::Thinking { token, .. } => *token,
+        }
+    }
+
+    /// The mountable component (upstream `created.component`).
+    fn mount(&self) -> Box<dyn pillar_tui::tui::Component> {
+        match self {
+            ActiveSelector::Thinking { component, .. } => {
+                Box::new(crate::modes::interactive::transcript::FocusHandle::new(
+                    component.clone(),
+                ))
+            }
+        }
+    }
 }
 
 impl InteractiveMode {
@@ -291,6 +329,8 @@ impl InteractiveMode {
             last_escape_ms: AtomicU64::new(0),
             bash_component: std::sync::Mutex::new(None),
             pending_bash_components: std::sync::Mutex::new(Vec::new()),
+            active_selector: std::sync::Mutex::new(None),
+            next_selector_token: AtomicU64::new(1),
             session,
         }
     }
@@ -631,11 +671,10 @@ impl InteractiveMode {
 
         // Selector-backed commands answer a warning until the selectors
         // land (upstream opens the corresponding selector).
-        const SELECTOR_COMMANDS: [&str; 21] = [
+        const SELECTOR_COMMANDS: [&str; 20] = [
             "/settings",
             "/scoped-models",
             "/model",
-            "/thinking",
             "/export",
             "/import",
             "/share",
@@ -685,6 +724,37 @@ impl InteractiveMode {
                 .map(str::to_string);
             self.editor.lock().set_text("");
             return vec![ModeAction::Compact { instructions }];
+        }
+        if text == "/thinking" || text.starts_with("/thinking ") {
+            let search = text
+                .strip_prefix("/thinking ")
+                .map(str::trim)
+                .filter(|search| !search.is_empty());
+            self.editor.lock().set_text("");
+            return match search {
+                None => self.show_thinking_selector(),
+                Some(search) => {
+                    let available = self.session.available_thinking_levels();
+                    let normalized = search.to_lowercase();
+                    match available
+                        .iter()
+                        .find(|level| level.to_lowercase() == normalized)
+                    {
+                        Some(level) => {
+                            let level = level.clone();
+                            self.select_thinking_level(&level, false);
+                            Vec::new()
+                        }
+                        None => {
+                            self.transcript.lock().show_error(&format!(
+                                "Unknown thinking level \"{search}\". Available levels: {}.",
+                                available.join(", ")
+                            ));
+                            Vec::new()
+                        }
+                    }
+                }
+            };
         }
         if text == "/name" || text.starts_with("/name ") {
             self.handle_name_command(text);
@@ -811,7 +881,10 @@ impl InteractiveMode {
     }
 
     /// Mount the mode's components (upstream `mountInteractiveTui` plus the
-    /// `init` child list). Returns the editor so the host can focus it.
+    /// `init` child list). Returns the editor slot (the editor, or a selector
+    /// when one is active) so the host can focus it; the host swaps it with
+    /// [`InteractiveMode::replace_editor_slot`] when a selector opens or
+    /// closes.
     ///
     /// divergence: the extension widget containers and the header /
     /// loaded-resources containers are not ported yet, so the document half
@@ -1020,21 +1093,12 @@ impl InteractiveMode {
     /// the pending area while the agent streams, in the chat otherwise) and
     /// remember it so streamed chunks and the completion land on it.
     pub fn begin_bash(&self, command: &str, exclude_from_context: bool) {
-        self.begin_bash_deferred(
-            command,
-            exclude_from_context,
-            self.session.is_streaming(),
-        );
+        self.begin_bash_deferred(command, exclude_from_context, self.session.is_streaming());
     }
 
     /// [`begin_bash`] with the deferral decision supplied (upstream reads
     /// `session.isStreaming` at the `handleBashCommand` call site).
-    pub fn begin_bash_deferred(
-        &self,
-        command: &str,
-        exclude_from_context: bool,
-        deferred: bool,
-    ) {
+    pub fn begin_bash_deferred(&self, command: &str, exclude_from_context: bool, deferred: bool) {
         let component = Shared::new(BashExecutionComponent::new(
             &theme(),
             command,
@@ -1061,11 +1125,7 @@ impl InteractiveMode {
 
     /// Upstream the `executeBash` chunk callback: append streamed output.
     pub fn append_bash_output(&self, chunk: &str) {
-        let component = self
-            .bash_component
-            .lock()
-            .expect("bash component")
-            .clone();
+        let component = self.bash_component.lock().expect("bash component").clone();
         let Some(component) = component else {
             return;
         };
@@ -1084,12 +1144,9 @@ impl InteractiveMode {
     ) {
         let component = self.bash_component.lock().expect("bash component").take();
         if let Some(component) = component {
-            component.lock().set_complete(
-                exit_code,
-                cancelled,
-                truncation,
-                full_output_path,
-            );
+            component
+                .lock()
+                .set_complete(exit_code, cancelled, truncation, full_output_path);
         }
         // Upstream resets the `!` mode once the command finished
         // (`isBashMode = false; updateEditorBorderColor()`).
@@ -1106,10 +1163,7 @@ impl InteractiveMode {
     /// (upstream leaves it there until then, which renders it twice).
     pub fn flush_pending_bash_components(&self) {
         let pending = {
-            let mut guard = self
-                .pending_bash_components
-                .lock()
-                .expect("pending bash");
+            let mut guard = self.pending_bash_components.lock().expect("pending bash");
             std::mem::take(&mut *guard)
         };
         if pending.is_empty() {
@@ -1130,6 +1184,113 @@ impl InteractiveMode {
         drop(pending_ui);
         drop(transcript);
         self.mark_dirty();
+    }
+
+    /// The component that belongs in the editor slot (upstream the
+    /// `editorContainer` child): the active selector, else the editor.
+    pub fn editor_slot_component(&self) -> Box<dyn pillar_tui::tui::Component> {
+        let selector = self.active_selector.lock().expect("active selector");
+        match selector.as_ref() {
+            Some(selector) => selector.mount(),
+            None => Box::new(
+                crate::modes::interactive::transcript::FocusHandle::new(self.editor.clone()),
+            ),
+        }
+    }
+
+    /// Whether a selector currently occupies the editor slot.
+    pub fn has_active_selector(&self) -> bool {
+        self.active_selector
+            .lock()
+            .expect("active selector")
+            .is_some()
+    }
+
+    /// Upstream `showSelector`: put `selector` in the editor slot and tell the
+    /// host to re-mount it.
+    fn show_selector(&self, selector: ActiveSelector) -> Vec<ModeAction> {
+        // Upstream `disposeActiveSelector()` before installing the new one.
+        *self.active_selector.lock().expect("active selector") = Some(selector);
+        self.mark_dirty();
+        vec![ModeAction::EditorSlotChanged]
+    }
+
+    /// Upstream the `done` callback: close the active selector (guarded by the
+    /// token so a stale close cannot dismiss a newer selector) and restore the
+    /// editor.
+    fn close_selector(&self, token: Option<u64>) -> Vec<ModeAction> {
+        let mut guard = self.active_selector.lock().expect("active selector");
+        match (guard.as_ref(), token) {
+            (Some(selector), Some(token)) if selector.token() != token => return Vec::new(),
+            (None, _) => return Vec::new(),
+            _ => {}
+        }
+        *guard = None;
+        drop(guard);
+        self.mark_dirty();
+        vec![ModeAction::EditorSlotChanged]
+    }
+
+    /// Upstream the thinking selector factory: build it, remember it, and put
+    /// it in the editor slot.
+    pub fn show_thinking_selector(&self) -> Vec<ModeAction> {
+        let token = self.next_selector_token.fetch_add(1, Ordering::SeqCst);
+        let current = self.session.thinking_level();
+        let default_level = self
+            .session
+            .settings_manager()
+            .lock()
+            .expect("settings lock")
+            .default_thinking_level();
+        let component = Shared::new(ThinkingSelectorComponent::new(
+            &current,
+            &self.session.available_thinking_levels(),
+            default_level.as_deref(),
+        ));
+        self.show_selector(ActiveSelector::Thinking { token, component })
+    }
+
+    /// Upstream `selectThinkingLevel`: apply (and optionally persist) a level.
+    pub fn select_thinking_level(&self, level: &str, persist: bool) {
+        self.session.set_thinking_level(level, persist);
+        self.update_editor_border_color();
+        self.transcript.lock().show_status(&format!(
+            "{} thinking level: {level}",
+            if persist { "Default" } else { "" }
+        ));
+        self.mark_dirty();
+    }
+
+    /// Route a key to the active selector (upstream the selector being the
+    /// focused component).
+    ///
+    /// Returns `Some(actions)` when the key was handled by the selector,
+    /// `None` when no selector is active.
+    pub fn handle_selector_key(&self, data: &str) -> Option<Vec<ModeAction>> {
+        let (token, component) = {
+            let guard = self.active_selector.lock().expect("active selector");
+            match guard.as_ref() {
+                Some(ActiveSelector::Thinking { token, component }) => {
+                    (*token, component.clone())
+                }
+                None => return None,
+            }
+        };
+        let outcome = component.lock().handle_key(data);
+        Some(match outcome {
+            ThinkingSelectorOutcome::Consumed => Vec::new(),
+            ThinkingSelectorOutcome::Select(level) => {
+                self.select_thinking_level(&level, false);
+                
+                self.close_selector(Some(token))
+            }
+            ThinkingSelectorOutcome::SelectAsDefault(level) => {
+                self.select_thinking_level(&level, true);
+                
+                self.close_selector(Some(token))
+            }
+            ThinkingSelectorOutcome::Cancel => self.close_selector(Some(token)),
+        })
     }
 
     /// Upstream `handleDequeue`.

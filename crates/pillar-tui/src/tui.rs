@@ -358,6 +358,21 @@ impl TuiBase {
         Some(self.roots.remove(index).1)
     }
 
+    /// Replace a root child in place, keeping its id and render position
+    /// (the port's stand-in for upstream's stable `editorContainer`, which
+    /// swaps the editor for a selector without moving the slot).
+    pub fn replace_child(
+        &mut self,
+        id: ComponentId,
+        component: Box<dyn Component>,
+    ) -> bool {
+        let Some(index) = self.roots.iter().position(|(candidate, _)| *candidate == id) else {
+            return false;
+        };
+        self.roots[index].1 = component;
+        true
+    }
+
     pub fn clear(&mut self) {
         self.roots.clear();
     }

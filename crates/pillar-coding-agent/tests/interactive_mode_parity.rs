@@ -76,7 +76,7 @@ fn session() -> Arc<AgentSession> {
         api: "anthropic-messages".to_string(),
         provider: "anthropic".to_string(),
         base_url: String::new(),
-        reasoning: false,
+        reasoning: true,
         input: vec!["text".to_string()],
         cost: UsageCost::default(),
         context_window: 200_000,
@@ -633,4 +633,105 @@ fn bash_blocks_render_live_and_flush_from_the_pending_area() {
     assert_eq!(mode.transcript().lock().chat.len(), 1);
     let body = plain(&mut mode.transcript().lock().chat, 60);
     assert!(body.contains("echo pending"), "{body:?}");
+}
+
+// --- thinking selector (upstream `/thinking` + ThinkingSelectorComponent) --------
+
+fn editor_slot_body(mode: &InteractiveMode, width: usize) -> String {
+    let mut slot = mode.editor_slot_component();
+    let lines = slot.render(width);
+    lines
+        .iter()
+        .map(|line| strip_ansi(line))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn thinking_command_shows_the_selector_and_enter_selects_a_level() {
+    let session = session();
+    let mode = make_mode(&session);
+
+    // `/thinking` opens the selector in the editor slot.
+    let actions = mode.handle_submit("/thinking");
+    assert_eq!(actions, vec![ModeAction::EditorSlotChanged]);
+    assert!(mode.has_active_selector());
+    let body = editor_slot_body(&mode, 60);
+    assert!(body.contains("Thinking Level"), "{body:?}");
+    assert!(body.contains("Enter to select"), "{body:?}");
+    assert!(body.contains("high"), "{body:?}");
+
+    // Enter picks the highlighted level (the current one) and closes.
+    let actions = mode.handle_selector_key("\r").expect("selector active");
+    assert_eq!(actions, vec![ModeAction::EditorSlotChanged]);
+    assert!(!mode.has_active_selector());
+    assert_eq!(session.thinking_level(), "off", "current level applied");
+
+    // Down + Enter selects the next level.
+    mode.handle_submit("/thinking");
+    assert_eq!(
+        mode.handle_selector_key("\u{1b}[B").expect("selector active"),
+        Vec::new(),
+        "down"
+    );
+    let actions = mode.handle_selector_key("\r").expect("selector active");
+    assert_eq!(actions, vec![ModeAction::EditorSlotChanged]);
+    assert_eq!(session.thinking_level(), "minimal");
+}
+
+#[test]
+fn thinking_selector_search_filters_and_escape_cancels() {
+    let session = session();
+    let mode = make_mode(&session);
+    let before = session.thinking_level();
+
+    mode.handle_submit("/thinking");
+    // Typing filters the list (fuzzy match on the label).
+    for ch in "min".chars() {
+        assert_eq!(
+            mode.handle_selector_key(&ch.to_string())
+                .expect("selector active"),
+            Vec::new()
+        );
+    }
+    let body = editor_slot_body(&mode, 60);
+    assert!(body.contains("minimal"), "{body:?}");
+    // Fuzzy matching keeps any level whose label/description contains the
+    // query characters; the unrelated ones drop out.
+    assert!(!body.contains("No reasoning"), "off filtered out: {body:?}");
+    assert!(!body.contains("Deep reasoning"), "high filtered out: {body:?}");
+
+    // Escape cancels without changing the level.
+    let actions = mode.handle_selector_key("\u{1b}").expect("selector active");
+    assert_eq!(actions, vec![ModeAction::EditorSlotChanged]);
+    assert!(!mode.has_active_selector());
+    assert_eq!(session.thinking_level(), before);
+}
+
+#[test]
+fn thinking_selector_ctrl_s_persists_the_default_and_command_takes_a_level() {
+    let session = session();
+    let mode = make_mode(&session);
+
+    mode.handle_submit("/thinking");
+    mode.handle_selector_key("\u{1b}[B").expect("selector active"); // down
+    let actions = mode.handle_selector_key("\u{13}").expect("selector active"); // ctrl+s
+    assert_eq!(actions, vec![ModeAction::EditorSlotChanged]);
+    let persisted = session
+        .settings_manager()
+        .lock()
+        .expect("settings")
+        .default_thinking_level();
+    assert_eq!(persisted.as_deref(), Some(session.thinking_level().as_str()));
+
+    // `/thinking <level>` sets it directly without opening the selector.
+    let actions = mode.handle_submit("/thinking low");
+    assert!(actions.is_empty(), "{actions:?}");
+    assert!(!mode.has_active_selector());
+    assert_eq!(session.thinking_level(), "low");
+
+    // An unknown level reports the available ones.
+    mode.handle_submit("/thinking nope");
+    let body = plain(&mut mode.transcript().lock().chat, 100);
+    assert!(body.contains("Unknown thinking level"), "{body:?}");
 }

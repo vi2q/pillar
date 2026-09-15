@@ -162,8 +162,8 @@ pub async fn run_interactive(
     mode.update_terminal_title();
     mode.update_editor_border_color();
 
-    let editor_id = mode.mount(screen.base_mut());
-    screen.base_mut().set_focus(Some(editor_id));
+    let editor_slot = mode.mount(screen.base_mut());
+    screen.base_mut().set_focus(Some(editor_slot));
     screen.base_mut().start();
 
     // Session events are queued for the pump, which owns all mode mutation.
@@ -194,6 +194,7 @@ pub async fn run_interactive(
     let pump_theme_errors = Arc::clone(&theme_errors);
     let pump_theme_changed = Arc::clone(&theme_changed);
     let pump = std::thread::spawn(move || {
+        let mut editor_slot = editor_slot;
         let result = pump_loop(
             screen,
             pump_mode,
@@ -201,6 +202,7 @@ pub async fn run_interactive(
             event_rx,
             pump_actions,
             ui_rx,
+            &mut editor_slot,
             pump_stop,
             pump_title,
             pump_progress,
@@ -336,6 +338,8 @@ async fn execute_action(
             Ok(())
         }
         ModeAction::Shutdown => Ok(()),
+        // Handled by the pump (it owns the TUI); never reaches the executor.
+        ModeAction::EditorSlotChanged => Ok(()),
     }
 }
 
@@ -370,6 +374,7 @@ fn pump_loop(
     mut events: tokio::sync::mpsc::UnboundedReceiver<AgentSessionEvent>,
     actions: tokio::sync::mpsc::UnboundedSender<ModeAction>,
     mut ui_commands: tokio::sync::mpsc::UnboundedReceiver<UiCommand>,
+    editor_slot: &mut pillar_tui::tui::ComponentId,
     shutdown: Arc<AtomicBool>,
     pending_title: Arc<Mutex<Option<String>>>,
     pending_progress: Arc<Mutex<Option<bool>>>,
@@ -401,7 +406,7 @@ fn pump_loop(
             let mut actions_out = Vec::new();
             drain_editor_events(&mode, &mut actions_out);
             for action in actions_out {
-                if dispatch_action(&mode, &actions, action).is_err() {
+                if dispatch_action(&mut screen, &mode, editor_slot, &actions, action).is_err() {
                     break;
                 }
             }
@@ -461,11 +466,13 @@ fn pump_loop(
         let mut requested_shutdown = false;
         let data = screen.base_mut().terminal_mut().read_input(interval);
         if let Some(data) = data {
-            for action in dispatch_input(&mut screen, &mode, &keybindings, &data) {
+            for action in
+                dispatch_input(&mut screen, &mode, editor_slot, &keybindings, &data)
+            {
                 if matches!(action, ModeAction::Shutdown) {
                     requested_shutdown = true;
                 }
-                if dispatch_action(&mode, &actions, action).is_err() {
+                if dispatch_action(&mut screen, &mode, editor_slot, &actions, action).is_err() {
                     break;
                 }
             }
@@ -495,16 +502,26 @@ fn pump_loop(
     result
 }
 
-/// Hand one action to the executor, applying the pump-side bookkeeping first
-/// (upstream creates the bash block inside `handleBashCommand`, before the
-/// command runs).
+/// Hand one action to the executor, applying the pump-side bookkeeping first:
+/// upstream creates the bash block inside `handleBashCommand` (before the
+/// command runs) and swaps the editor slot inside `showSelector` / `done`.
 fn dispatch_action(
+    screen: &mut TuiMainScreen,
     mode: &Arc<InteractiveMode>,
+    editor_slot: &mut pillar_tui::tui::ComponentId,
     actions: &tokio::sync::mpsc::UnboundedSender<ModeAction>,
     action: ModeAction,
 ) -> Result<(), tokio::sync::mpsc::error::SendError<ModeAction>> {
     if let ModeAction::Bash { command, excluded } = &action {
         mode.begin_bash(command, *excluded);
+    }
+    if matches!(action, ModeAction::EditorSlotChanged) {
+        // Upstream `editorContainer.clear()` + `addChild(...)` + `setFocus`.
+        let base = screen.base_mut();
+        base.replace_child(*editor_slot, mode.editor_slot_component());
+        base.set_focus(Some(*editor_slot));
+        base.invalidate();
+        return Ok(());
     }
     actions.send(action)
 }
@@ -514,6 +531,7 @@ fn dispatch_action(
 fn dispatch_input(
     screen: &mut TuiMainScreen,
     mode: &Arc<InteractiveMode>,
+    editor_slot: &mut pillar_tui::tui::ComponentId,
     keybindings: &KeybindingsManager,
     data: &str,
 ) -> Vec<ModeAction> {
@@ -534,7 +552,13 @@ fn dispatch_input(
 
     let mut actions = Vec::new();
     for sequence in forwarded {
-        actions.extend(dispatch_sequence(screen, mode, keybindings, &sequence));
+        actions.extend(dispatch_sequence(
+            screen,
+            mode,
+            editor_slot,
+            keybindings,
+            &sequence,
+        ));
     }
     actions
 }
@@ -544,9 +568,15 @@ fn dispatch_input(
 fn dispatch_sequence(
     screen: &mut TuiMainScreen,
     mode: &Arc<InteractiveMode>,
+    editor_slot: &mut pillar_tui::tui::ComponentId,
     keybindings: &KeybindingsManager,
     data: &str,
 ) -> Vec<ModeAction> {
+    // A selector owns the keyboard while it is open (upstream it is the
+    // focused component); the host app keybindings do not apply.
+    if let Some(actions) = mode.handle_selector_key(data) {
+        return actions;
+    }
     // Upstream checks extension shortcuts and the clipboard-paste binding
     // first; neither is ported (both answer a warning).
     if keybindings.matches(data, "app.clipboard.pasteImage") {
@@ -568,6 +598,7 @@ fn dispatch_sequence(
     {
         return dispatch_to_editor(screen, mode, data);
     }
+    let _ = editor_slot;
     for action in APP_ACTION_PRECEDENCE {
         if keybindings.matches(data, action) {
             return run_app_action(mode, action);
