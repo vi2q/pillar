@@ -28,6 +28,13 @@ use pillar_coding_agent::core::resource_loader::ResourceLoader;
 use pillar_coding_agent::core::sdk::{CreateAgentSessionOptions, create_agent_session};
 use pillar_coding_agent::core::session_manager::SessionManager;
 use pillar_coding_agent::core::settings_manager::SettingsManager;
+use pillar_coding_agent::modes::interactive::interactive_mode::{
+    InteractiveModeOptions, TuiMode as InteractiveTuiMode,
+};
+use pillar_coding_agent::modes::interactive::run::{
+    InteractiveRunOptions, run_interactive_process,
+};
+use pillar_coding_agent::modes::interactive::transcript::TranscriptSettings;
 use pillar_coding_agent::modes::print_mode::{PrintModeMode, PrintModeOptions, run_print_mode};
 use pillar_coding_agent::modes::rpc::rpc_mode::{
     RpcRuntimeHost, SessionReplacement, run_rpc_mode_with_host,
@@ -77,10 +84,7 @@ async fn main() -> ExitCode {
     match app_mode {
         AppMode::Print | AppMode::Json => run_print(&parsed, app_mode).await,
         AppMode::Rpc => run_rpc(&parsed).await,
-        AppMode::Interactive => {
-            eprintln!("Error: `interactive` mode is not ported yet");
-            ExitCode::from(1)
-        }
+        AppMode::Interactive => run_interactive(&parsed).await,
     }
 }
 
@@ -338,6 +342,77 @@ async fn run_rpc(parsed: &Args) -> ExitCode {
     });
     match run_rpc_mode_with_host(session, stdin.lock(), out, Some(host)).await {
         Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("Error: {error}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+/// Run the interactive TUI (upstream `main.ts`'s interactive branch plus the
+/// host loop in [`pillar_coding_agent::modes::interactive::run`]).
+async fn run_interactive(parsed: &Args) -> ExitCode {
+    let (session, _wiring) = match build_session(parsed).await {
+        Ok(built) => built,
+        Err(error) => {
+            eprintln!("Error: {error}");
+            return ExitCode::from(1);
+        }
+    };
+    let session = Arc::new(session);
+    session
+        .bind_extensions(ExtensionBindings {
+            ui_context: Some(false),
+            mode: Some("tui".to_string()),
+            on_error: None,
+        })
+        .await;
+
+    let cwd = std::env::current_dir()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    let transcript = {
+        let settings = session.settings_manager().lock().expect("settings lock");
+        TranscriptSettings {
+            hide_thinking_block: settings.hide_thinking_block(),
+            hidden_thinking_label: "Thinking...".to_string(),
+            output_pad: settings.output_pad() as usize,
+            tool_output_expanded: false,
+            show_images: settings.show_images(),
+            image_width_cells: settings.image_width_cells() as usize,
+            show_cache_miss_notices: settings.show_cache_miss_notices(),
+        }
+    };
+
+    // divergence: the fullscreen (alt-screen) renderer needs the layout-root
+    // bridge, which is not ported; fall back to the regular screen.
+    let tui_mode = match parsed.tui_mode {
+        Some(pillar_coding_agent::cli::args::TuiMode::Fullscreen) => {
+            eprintln!("Warning: fullscreen TUI mode is not ported yet; using the regular screen");
+            Some(InteractiveTuiMode::Regular)
+        }
+        _ => Some(InteractiveTuiMode::Regular),
+    };
+
+    let options = InteractiveRunOptions {
+        mode: InteractiveModeOptions {
+            tui_mode,
+            clear_on_shrink: None,
+            show_terminal_progress: None,
+            version: Some(VERSION.to_string()),
+            on_terminal_title: None,
+            on_terminal_progress: None,
+            cwd_git_paths: None,
+        },
+        transcript,
+        markdown_transformers: Vec::new(),
+        initial_message: prepare_initial_message(parsed, &cwd),
+        agent_dir: PathBuf::from(agent_dir()),
+    };
+
+    match run_interactive_process(session, options).await {
+        Ok(code) => ExitCode::from(code as u8),
         Err(error) => {
             eprintln!("Error: {error}");
             ExitCode::from(1)

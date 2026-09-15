@@ -294,6 +294,45 @@ impl InteractiveTranscript {
         self.settings.tool_output_expanded = expanded;
     }
 
+    /// Whether new tool components render expanded (upstream
+    /// `toolOutputExpanded`).
+    pub fn tool_output_expanded(&self) -> bool {
+        self.settings.tool_output_expanded
+    }
+
+    /// Whether thinking blocks are hidden (upstream `hideThinkingBlock`).
+    pub fn hide_thinking_block(&self) -> bool {
+        self.settings.hide_thinking_block
+    }
+
+    /// Upstream `setToolsExpanded`: replace the default and update every
+    /// existing expandable chat child.
+    pub fn set_all_tools_expanded(&mut self, expanded: bool) {
+        self.settings.tool_output_expanded = expanded;
+        for child in self.chat.children_mut() {
+            let Some(any) = child.as_any_mut() else {
+                continue;
+            };
+            if let Some(tool) = any.downcast_mut::<Shared<ToolExecutionComponent>>() {
+                tool.lock().set_expanded(expanded);
+            }
+        }
+    }
+
+    /// Upstream `updateThinkingBlockVisibility`: replace the default and
+    /// update every assistant message already in the chat.
+    pub fn set_all_hide_thinking_block(&mut self, hide: bool) {
+        self.settings.hide_thinking_block = hide;
+        for child in self.chat.children_mut() {
+            let Some(any) = child.as_any_mut() else {
+                continue;
+            };
+            if let Some(assistant) = any.downcast_mut::<Shared<AssistantMessageComponent>>() {
+                assistant.lock().set_hide_thinking_block(hide);
+            }
+        }
+    }
+
     /// The streaming message, if any (upstream `streamingMessage`).
     pub fn streaming_message(&self) -> Option<&pillar_ai::types::AssistantMessage> {
         self.streaming_message.as_ref()

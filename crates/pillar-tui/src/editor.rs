@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 
 use crate::edit_support::{KillRing, UndoStack, find_word_backward, find_word_forward};
 use crate::input::CURSOR_MARKER;
+use crate::keys::{decode_printable_key, matches_key};
 use crate::select_list::{SelectList, SelectListTheme};
 use crate::stack_layout::slice_by_column;
 use crate::text_utils::visible_width;
@@ -102,6 +103,24 @@ pub struct Editor {
     /// host-side.
     autocomplete_list: Option<SelectList>,
     autocomplete_max_visible: usize,
+    /// Upstream `isInPaste` / `pasteBuffer`.
+    is_in_paste: bool,
+    paste_buffer: String,
+    /// Observable outcomes of [`Editor::handle_input`] since the last
+    /// [`Editor::take_input_events`] (upstream the `onChange` / `onSubmit`
+    /// callbacks the host installs).
+    pending_events: Vec<EditorInputEvent>,
+}
+
+/// What [`Editor::handle_input`] reported to the host (upstream the
+/// `onChange` / `onSubmit` callbacks).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EditorInputEvent {
+    /// Upstream `onChange`: the text changed (the host re-reads it).
+    Changed,
+    /// Upstream `onSubmit`: the editor submitted this text (paste markers
+    /// expanded, trimmed, editor cleared).
+    Submitted(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -175,7 +194,27 @@ impl Editor {
             theme: EditorTheme::default(),
             autocomplete_list: None,
             autocomplete_max_visible: 5,
+            is_in_paste: false,
+            paste_buffer: String::new(),
+            pending_events: Vec::new(),
         }
+    }
+
+    /// Events reported by [`Editor::handle_input`] (upstream the callbacks).
+    pub fn take_input_events(&mut self) -> Vec<EditorInputEvent> {
+        std::mem::take(&mut self.pending_events)
+    }
+
+    /// Whether the autocomplete dropdown is open (upstream
+    /// `isShowingAutocomplete`).
+    pub fn is_showing_autocomplete(&self) -> bool {
+        self.autocomplete_list.is_some()
+    }
+
+    /// Prompt-history index (upstream `historyIndex`; `-1` = editing the
+    /// draft).
+    pub fn history_index(&self) -> isize {
+        self.history_index
     }
 
     fn valid_paste_ids(&self) -> Vec<u32> {
@@ -1199,9 +1238,321 @@ impl Default for Editor {
     }
 }
 
+/// Upstream `Editor.handleInput`: the keybinding dispatch, paste assembly and
+/// character jump mode. Observability is reported through
+/// [`Editor::take_input_events`] instead of the host-installed callbacks.
+///
+/// divergences:
+/// - the autocomplete provider is host-side, so Tab / Enter with an open menu
+///   only closes it (upstream asks the provider to apply the completion) and
+///   Tab without a menu is a no-op (upstream triggers `handleTabCompletion`).
+/// - `onChange` is reported once per call when the text actually changed,
+///   instead of at each inner mutation site.
+impl Editor {
+    /// Handle one input sequence (upstream `handleInput`).
+    pub fn handle_input(&mut self, data: &str) {
+        let before = self.get_text();
+        let first_event = self.pending_events.len();
+        self.handle_input_inner(data);
+        let submitted = self.pending_events[first_event..]
+            .iter()
+            .any(|event| matches!(event, EditorInputEvent::Submitted(_)));
+        if !submitted && self.get_text() != before {
+            self.pending_events.push(EditorInputEvent::Changed);
+        }
+    }
+
+    fn matches_binding(&self, data: &str, keybinding: &str) -> bool {
+        crate::keybindings::with_global_keybindings(|kb| kb.matches(data, keybinding))
+    }
+
+    fn submit(&mut self) {
+        let text = self.submit_value();
+        // Upstream `submitValue` calls `onChange("")` before `onSubmit`.
+        self.pending_events.push(EditorInputEvent::Changed);
+        self.pending_events.push(EditorInputEvent::Submitted(text));
+    }
+
+    fn cancel_autocomplete(&mut self) {
+        self.autocomplete_list = None;
+    }
+
+    fn handle_input_inner(&mut self, data: &str) {
+        let mut data = data.to_string();
+
+        // Character jump mode (awaiting the next character to jump to).
+        if self.jump_mode.is_some() {
+            if self.matches_binding(&data, "tui.editor.jumpForward")
+                || self.matches_binding(&data, "tui.editor.jumpBackward")
+            {
+                self.jump_mode = None;
+                return;
+            }
+            let printable = decode_printable_key(&data).or_else(|| {
+                data.chars()
+                    .next()
+                    .filter(|ch| (*ch as u32) >= 32)
+                    .map(|_| data.clone())
+            });
+            if let Some(printable) = printable {
+                let direction = self.jump_mode.take().expect("checked above");
+                self.jump_to_char(
+                    printable.chars().next().expect("non-empty"),
+                    direction == JumpDirection::Forward,
+                );
+                return;
+            }
+            // Control character - cancel and fall through.
+            self.jump_mode = None;
+        }
+
+        // Bracketed paste.
+        if data.contains("\u{1b}[200~") {
+            self.is_in_paste = true;
+            self.paste_buffer.clear();
+            data = data.replace("\u{1b}[200~", "");
+        }
+        if self.is_in_paste {
+            self.paste_buffer.push_str(&data);
+            if let Some(end) = self.paste_buffer.find("\u{1b}[201~") {
+                let paste_content = self.paste_buffer[..end].to_string();
+                if !paste_content.is_empty() {
+                    self.handle_paste(&paste_content);
+                }
+                self.is_in_paste = false;
+                let remaining = self.paste_buffer[end + 6..].to_string();
+                self.paste_buffer.clear();
+                if !remaining.is_empty() {
+                    self.handle_input(&remaining);
+                }
+            }
+            return;
+        }
+
+        // Ctrl+C - let the parent handle (exit/clear).
+        if self.matches_binding(&data, "tui.input.copy") {
+            return;
+        }
+
+        if self.matches_binding(&data, "tui.editor.undo") {
+            self.undo();
+            return;
+        }
+
+        // Autocomplete menu.
+        if self.autocomplete_list.is_some() {
+            if self.matches_binding(&data, "tui.select.cancel") {
+                self.cancel_autocomplete();
+                return;
+            }
+            if self.matches_binding(&data, "tui.select.up") {
+                if let Some(list) = self.autocomplete_list.as_mut() {
+                    list.move_up();
+                }
+                return;
+            }
+            if self.matches_binding(&data, "tui.select.down") {
+                if let Some(list) = self.autocomplete_list.as_mut() {
+                    list.move_down();
+                }
+                return;
+            }
+            if self.matches_binding(&data, "tui.input.tab")
+                || self.matches_binding(&data, "tui.select.confirm")
+            {
+                // divergence: applying the completion needs the host-side
+                // autocomplete provider; close the menu instead.
+                self.cancel_autocomplete();
+                return;
+            }
+        }
+
+        // Tab without a menu asks the provider (upstream
+        // `handleTabCompletion`); the provider is host-side.
+        if self.matches_binding(&data, "tui.input.tab") {
+            return;
+        }
+
+        // Deletion actions.
+        if self.matches_binding(&data, "tui.editor.deleteToLineEnd") {
+            self.delete_to_end_of_line();
+            return;
+        }
+        if self.matches_binding(&data, "tui.editor.deleteToLineStart") {
+            self.delete_to_start_of_line();
+            return;
+        }
+        if self.matches_binding(&data, "tui.editor.deleteWordBackward") {
+            self.delete_word_backwards();
+            return;
+        }
+        if self.matches_binding(&data, "tui.editor.deleteWordForward") {
+            self.delete_word_forward();
+            return;
+        }
+        if self.matches_binding(&data, "tui.editor.deleteCharBackward")
+            || matches_key(&data, "shift+backspace")
+        {
+            self.backspace();
+            return;
+        }
+        if self.matches_binding(&data, "tui.editor.deleteCharForward")
+            || matches_key(&data, "shift+delete")
+        {
+            self.forward_delete();
+            return;
+        }
+
+        // Kill ring.
+        if self.matches_binding(&data, "tui.editor.yank") {
+            self.yank();
+            return;
+        }
+        if self.matches_binding(&data, "tui.editor.yankPop") {
+            self.yank_pop();
+            return;
+        }
+
+        // Dedicated history actions always browse entries.
+        if self.matches_binding(&data, "tui.editor.historyPrevious") {
+            self.cancel_autocomplete();
+            self.navigate_history(-1);
+            return;
+        }
+        if self.matches_binding(&data, "tui.editor.historyNext") {
+            self.cancel_autocomplete();
+            self.navigate_history(1);
+            return;
+        }
+
+        // Cursor movement.
+        if self.matches_binding(&data, "tui.editor.cursorLineStart") {
+            self.move_to_line_start();
+            return;
+        }
+        if self.matches_binding(&data, "tui.editor.cursorLineEnd") {
+            self.move_to_line_end();
+            return;
+        }
+        if self.matches_binding(&data, "tui.editor.cursorWordLeft") {
+            self.move_word_backwards();
+            return;
+        }
+        if self.matches_binding(&data, "tui.editor.cursorWordRight") {
+            self.move_word_forwards();
+            return;
+        }
+
+        // New line.
+        let first_code = data.chars().next().map(|ch| ch as u32).unwrap_or(0);
+        if self.matches_binding(&data, "tui.input.newLine")
+            || (first_code == 10 && data.chars().count() > 1)
+            || data == "\u{1b}\r"
+            || data == "\u{1b}[13;2~"
+            || (data.chars().count() > 1 && data.contains('\u{1b}') && data.contains('\r'))
+            || data == "\n"
+        {
+            if self.should_submit_on_backslash_enter() {
+                self.backspace();
+                self.submit();
+                return;
+            }
+            self.add_new_line();
+            return;
+        }
+
+        // Submit (Enter).
+        if self.matches_binding(&data, "tui.input.submit") {
+            if self.disable_submit {
+                return;
+            }
+            let current_line = self.state.lines[self.state.cursor_line].clone();
+            if self.state.cursor_col > 0 && current_line[..self.state.cursor_col].ends_with('\\') {
+                self.backspace();
+                self.add_new_line();
+                return;
+            }
+            self.submit();
+            return;
+        }
+
+        // Arrow keys (with history support).
+        if self.matches_binding(&data, "tui.editor.cursorUp") {
+            if self.is_on_first_visual_line()
+                && (self.is_editor_empty() || self.history_index > -1 || self.state.cursor_col == 0)
+            {
+                self.navigate_history(-1);
+            } else if self.is_on_first_visual_line() {
+                self.move_to_line_start();
+            } else {
+                self.move_cursor(-1, 0);
+            }
+            return;
+        }
+        if self.matches_binding(&data, "tui.editor.cursorDown") {
+            if self.history_index > -1 && self.is_on_last_visual_line() {
+                self.navigate_history(1);
+            } else if self.is_on_last_visual_line() {
+                self.move_to_line_end();
+            } else {
+                self.move_cursor(1, 0);
+            }
+            return;
+        }
+        if self.matches_binding(&data, "tui.editor.cursorRight") {
+            self.move_cursor(0, 1);
+            return;
+        }
+        if self.matches_binding(&data, "tui.editor.cursorLeft") {
+            self.move_cursor(0, -1);
+            return;
+        }
+
+        // Page up/down.
+        if self.matches_binding(&data, "tui.editor.pageUp") {
+            self.page_scroll(-1);
+            return;
+        }
+        if self.matches_binding(&data, "tui.editor.pageDown") {
+            self.page_scroll(1);
+            return;
+        }
+
+        // Character jump mode triggers.
+        if self.matches_binding(&data, "tui.editor.jumpForward") {
+            self.jump_mode = Some(JumpDirection::Forward);
+            return;
+        }
+        if self.matches_binding(&data, "tui.editor.jumpBackward") {
+            self.jump_mode = Some(JumpDirection::Backward);
+            return;
+        }
+
+        // Shift+Space inserts a regular space.
+        if matches_key(&data, "shift+space") {
+            self.insert_character(" ");
+            return;
+        }
+
+        if let Some(printable) = decode_printable_key(&data) {
+            self.insert_character(&printable);
+            return;
+        }
+
+        // Regular characters.
+        if first_code >= 32 {
+            self.insert_character(&data);
+        }
+    }
+}
+
 impl Component for Editor {
     fn render(&mut self, width: usize) -> Vec<String> {
         Editor::render(self, width)
+    }
+
+    fn handle_input(&mut self, data: &str) {
+        Editor::handle_input(self, data);
     }
 
     fn invalidate(&mut self) {
@@ -1262,6 +1613,15 @@ pub(crate) fn raw_segment(text: &str, mode: SegmentMode) -> Vec<(String, usize)>
 }
 
 fn paste_marker_spans(text: &str, valid_ids: &[u32]) -> Vec<(usize, usize)> {
+    paste_marker_spans_with(text, |id| valid_ids.contains(&id))
+}
+
+/// Marker spans whose ids satisfy `is_valid` (the id set is a predicate so
+/// whole-registry scans do not materialize one id per possible marker).
+fn paste_marker_spans_with(
+    text: &str,
+    is_valid: impl Fn(u32) -> bool,
+) -> Vec<(usize, usize)> {
     let mut spans = Vec::new();
     let bytes = text.as_bytes();
     let mut search_from = 0usize;
@@ -1280,7 +1640,7 @@ fn paste_marker_spans(text: &str, valid_ids: &[u32]) -> Vec<(usize, usize)> {
                 continue;
             }
         };
-        if !valid_ids.contains(&id) {
+        if !is_valid(id) {
             search_from = abs_start + 8;
             continue;
         }
@@ -1309,7 +1669,7 @@ fn paste_marker_spans(text: &str, valid_ids: &[u32]) -> Vec<(usize, usize)> {
 /// Renumber paste markers with ids greater than `target_id` down by one
 /// (upstream the backspace renumbering map).
 fn renumber_paste_markers(line: &str, target_id: u32) -> String {
-    let spans = paste_marker_spans(line, &(1..=u32::MAX).collect::<Vec<u32>>());
+    let spans = paste_marker_spans_with(line, |_| true);
     if spans.is_empty() {
         return line.to_string();
     }

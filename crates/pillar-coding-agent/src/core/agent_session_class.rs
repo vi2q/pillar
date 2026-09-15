@@ -654,6 +654,14 @@ impl AgentSession {
     }
 
     /// Whether auto-retry is currently in progress (upstream `isRetrying`).
+    pub fn scoped_models(&self) -> Vec<ScopedModel> {
+        self.inner
+            .state
+            .lock()
+            .expect("session state")
+            .scoped_models
+            .clone()
+    }
     pub fn is_retrying(&self) -> bool {
         self.inner
             .state

@@ -12,7 +12,7 @@ use pillar_ai::types::Model;
 use pillar_tui::autocomplete::AutocompleteItem;
 
 use pillar_tui::editor::Editor;
-use pillar_tui::tui::TuiMode;
+pub use pillar_tui::tui::TuiMode;
 
 /// Terminal-title callback (upstream `terminal.setTitle`).
 pub type TerminalTitleCallback = std::sync::Arc<dyn Fn(&str) + Send + Sync>;
@@ -148,15 +148,17 @@ pub fn create_fuzzy_autocomplete_items<T>(
 // InteractiveMode (upstream the class body, assembled over slices)
 // ============================================================================
 
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use pillar_tui::components::{Spacer, Text};
+use pillar_tui::tui::{ComponentId, TuiBase};
 
 use crate::core::agent_session_class::{AgentSession, AgentSessionEvent, StreamingBehavior};
 use crate::core::footer_data_provider::FooterDataProvider;
 use crate::core::messages::{CodingAgentMessage, create_compaction_summary_message};
 use crate::core::resource_loader::GitPaths;
 use crate::core::session_entries::SessionEntry;
+use crate::core::settings_manager::DoubleEscapeAction;
 use crate::modes::interactive::components::footer::FooterComponent;
 use crate::modes::interactive::components::status_indicator::{
     CompactionStatusReason, RetryStatusIndicator, StatusIndicatorKind, compaction_status_indicator,
@@ -191,6 +193,10 @@ pub enum ModeAction {
     /// The normal message submission (upstream
     /// `pendingUserInputs.push(text)` / `onInputCallback`).
     SubmitToLoop(String),
+    /// Upstream `agent.abort()` (Escape while streaming).
+    Abort,
+    /// Upstream `session.cycleModel(direction)`.
+    CycleModel { forward: bool },
 }
 
 /// Mode-level options (upstream the settings-derived fields of
@@ -222,6 +228,13 @@ pub struct InteractiveMode {
     on_terminal_progress: Option<TerminalProgressCallback>,
     /// Upstream `isBashMode` (the `!` prefix toggles the editor border).
     pub bash_mode: AtomicBool,
+    /// Host-driven render dirty flag (upstream `ui.requestRender()` inside
+    /// the event handlers; the port's host polls this).
+    dirty: AtomicBool,
+    /// Upstream `lastSigintTime` (milliseconds).
+    last_sigint_ms: AtomicU64,
+    /// Upstream `lastEscapeTime` (milliseconds).
+    last_escape_ms: AtomicU64,
 }
 
 impl InteractiveMode {
@@ -265,6 +278,9 @@ impl InteractiveMode {
             on_terminal_title: options.on_terminal_title,
             on_terminal_progress: options.on_terminal_progress,
             bash_mode: AtomicBool::new(false),
+            dirty: AtomicBool::new(true),
+            last_sigint_ms: AtomicU64::new(0),
+            last_escape_ms: AtomicU64::new(0),
             session,
         }
     }
@@ -391,6 +407,7 @@ impl InteractiveMode {
             }
             AgentSessionEvent::SessionInfoChanged { .. } => {
                 self.update_terminal_title();
+                self.mark_dirty();
                 Vec::new()
             }
             AgentSessionEvent::ThinkingLevelChanged { .. } => {
@@ -755,6 +772,279 @@ impl InteractiveMode {
             1,
             0,
         )));
+    }
+}
+
+// ============================================================================
+// Host-loop surface (upstream `init` / `run` / the key handlers)
+// ============================================================================
+
+impl InteractiveMode {
+    /// Mark the render tree dirty (upstream `ui.requestRender()` inside the
+    /// event handlers; the port's host polls this).
+    pub fn mark_dirty(&self) {
+        self.dirty.store(true, Ordering::SeqCst);
+    }
+
+    /// Consume the dirty flag.
+    pub fn take_dirty(&self) -> bool {
+        self.dirty.swap(false, Ordering::SeqCst)
+    }
+
+    /// Mount the mode's components (upstream `mountInteractiveTui` plus the
+    /// `init` child list). Returns the editor so the host can focus it.
+    ///
+    /// divergence: the extension widget containers and the header /
+    /// loaded-resources containers are not ported yet, so the document half
+    /// is the transcript itself.
+    pub fn mount(&self, base: &mut TuiBase) -> ComponentId {
+        base.add_child(Box::new(self.transcript.clone()));
+        base.add_child(Box::new(self.pending.clone()));
+        base.add_child(Box::new(self.status.clone()));
+        let editor = base.add_child(Box::new(self.editor.clone()));
+        base.add_child(Box::new(self.footer.clone()));
+        editor
+    }
+
+    /// Advance the host-driven animations (upstream the status indicator's
+    /// own interval). Returns whether anything changed.
+    pub fn tick(&self) -> bool {
+        let changed = self.status.lock().tick();
+        if changed {
+            self.mark_dirty();
+        }
+        changed
+    }
+
+    /// The editor's current text (upstream `this.editor.getText()`).
+    pub fn editor_text(&self) -> String {
+        self.editor.lock().get_text()
+    }
+
+    /// Whether the editor is empty (upstream `!this.editor.getText().trim()`).
+    pub fn editor_is_empty(&self) -> bool {
+        self.editor.lock().get_text().trim().is_empty()
+    }
+
+    /// Upstream the `onChange` handler: track the `!` bash mode and refresh
+    /// the editor border colour when it flips.
+    pub fn on_editor_change(&self) {
+        let was = self.bash_mode.load(Ordering::SeqCst);
+        let is = self.editor.lock().get_text().trim_start().starts_with('!');
+        self.bash_mode.store(is, Ordering::SeqCst);
+        if was != is {
+            self.update_editor_border_color();
+        }
+    }
+
+    /// Upstream `updateEditorBorderColor`.
+    pub fn update_editor_border_color(&self) {
+        let prefix = if self.bash_mode.load(Ordering::SeqCst) {
+            theme().bash_mode_border_color()
+        } else {
+            theme().thinking_border_color(&self.session.thinking_level())
+        };
+        let mut editor_theme = get_editor_theme();
+        editor_theme.border_color = Box::new(move |text: &str| format!("{prefix}{text}\u{1b}[39m"));
+        self.editor.lock().set_theme(editor_theme);
+        self.mark_dirty();
+    }
+
+    /// The merged queue view (upstream `getAllQueuedMessages`).
+    fn update_pending_display(&self) {
+        let (steering, follow_up) = self.session_queues();
+        self.pending.lock().update_display(&steering, &follow_up);
+        self.mark_dirty();
+    }
+
+    /// Upstream `clearAllQueues`: drain the session and compaction queues.
+    fn clear_all_queues(&self) -> (Vec<String>, Vec<String>) {
+        let (mut steering, mut follow_up) = self.session.clear_queue();
+        for (text, mode) in self.pending.lock().take_compaction_queue() {
+            match mode {
+                QueueMode::Steer => steering.push(text),
+                QueueMode::FollowUp => follow_up.push(text),
+            }
+        }
+        (steering, follow_up)
+    }
+
+    /// Upstream `restoreQueuedMessagesToEditor`: put every queued message back
+    /// into the editor, above the current text. Returns how many were restored.
+    pub fn restore_queued_messages_to_editor(&self) -> usize {
+        let (steering, follow_up) = self.clear_all_queues();
+        let all_queued: Vec<String> = steering.into_iter().chain(follow_up).collect();
+        if all_queued.is_empty() {
+            self.update_pending_display();
+            return 0;
+        }
+        let queued_text = all_queued.join("\n\n");
+        let current_text = self.editor.lock().get_text();
+        let combined = [queued_text, current_text]
+            .into_iter()
+            .filter(|text| !text.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        self.editor.lock().set_text(&combined);
+        self.update_pending_display();
+        all_queued.len()
+    }
+
+    /// Upstream `handleCtrlC`: first press clears, a second within 500 ms
+    /// shuts down.
+    pub fn handle_ctrl_c(&self) -> Vec<ModeAction> {
+        let now = now_ms();
+        let last = self.last_sigint_ms.load(Ordering::SeqCst);
+        self.editor.lock().set_text("");
+        self.mark_dirty();
+        if now.saturating_sub(last) < 500 {
+            return vec![ModeAction::Shutdown];
+        }
+        self.last_sigint_ms.store(now, Ordering::SeqCst);
+        Vec::new()
+    }
+
+    /// Upstream `handleCtrlD` (only called with an empty editor).
+    pub fn handle_ctrl_d(&self) -> Vec<ModeAction> {
+        vec![ModeAction::Shutdown]
+    }
+
+    /// Upstream the `onEscape` handler: abort a streaming turn (restoring the
+    /// queued messages), cancel bash, leave bash mode, or arm the
+    /// double-escape action.
+    pub fn handle_escape(&self) -> Vec<ModeAction> {
+        if self.session.is_streaming() {
+            self.restore_queued_messages_to_editor();
+            return vec![ModeAction::Abort];
+        }
+        if self.session.is_bash_running() {
+            self.session.abort_bash();
+            self.transcript.lock().show_status("Bash command cancelled");
+            return Vec::new();
+        }
+        if self.bash_mode.load(Ordering::SeqCst) {
+            self.editor.lock().set_text("");
+            self.bash_mode.store(false, Ordering::SeqCst);
+            self.update_editor_border_color();
+            return Vec::new();
+        }
+        if self.editor_is_empty() {
+            let action = self
+                .session
+                .settings_manager()
+                .lock()
+                .expect("settings lock")
+                .double_escape_action();
+            if action != DoubleEscapeAction::None {
+                let now = now_ms();
+                let last = self.last_escape_ms.load(Ordering::SeqCst);
+                if now.saturating_sub(last) < 500 {
+                    self.last_escape_ms.store(0, Ordering::SeqCst);
+                    self.transcript.lock().show_warning(
+                        "Session tree / fork selectors are not ported yet",
+                    );
+                } else {
+                    self.last_escape_ms.store(now, Ordering::SeqCst);
+                }
+            }
+        }
+        Vec::new()
+    }
+
+    /// Upstream `toggleToolOutputExpansion` / `setToolsExpanded`.
+    pub fn toggle_tool_output_expansion(&self) {
+        let expanded = !self.transcript.lock().tool_output_expanded();
+        self.transcript.lock().set_all_tools_expanded(expanded);
+        self.transcript.lock().show_status(&format!(
+            "Tool output: {}",
+            if expanded { "expanded" } else { "collapsed" }
+        ));
+        self.mark_dirty();
+    }
+
+    /// Upstream `toggleThinkingBlockVisibility` (the settings write is not
+    /// ported; the toggle stays in-memory).
+    pub fn toggle_thinking_block_visibility(&self) {
+        let hide = !self.transcript.lock().hide_thinking_block();
+        self.transcript.lock().set_all_hide_thinking_block(hide);
+        self.transcript.lock().show_status(&format!(
+            "Thinking blocks: {}",
+            if hide { "hidden" } else { "visible" }
+        ));
+        self.mark_dirty();
+    }
+
+    /// Upstream `cycleThinkingLevel`.
+    pub fn cycle_thinking_level(&self) {
+        match self.session.cycle_thinking_level() {
+            None => self
+                .transcript
+                .lock()
+                .show_status("Current model does not support thinking"),
+            Some(level) => {
+                // upstream `this.footer.invalidate()` is a no-op
+                self.update_editor_border_color();
+                self.transcript
+                    .lock()
+                    .show_status(&format!("Thinking level: {level}"));
+            }
+        }
+        self.mark_dirty();
+    }
+
+    /// Upstream `handleDequeue`.
+    pub fn handle_dequeue(&self) {
+        let restored = self.restore_queued_messages_to_editor();
+        if restored == 0 {
+            self.transcript
+                .lock()
+                .show_status("No queued messages to restore");
+        } else {
+            self.transcript.lock().show_status(&format!(
+                "Restored {restored} queued message{} to editor",
+                if restored > 1 { "s" } else { "" }
+            ));
+        }
+        self.mark_dirty();
+    }
+
+    /// Upstream the `CustomEditor` app-action dispatch. Returns the actions the
+    /// host must execute.
+    ///
+    /// divergence: selector-backed actions (model select, session tree / fork /
+    /// resume / new, copy, suspend, clipboard paste, external editor) are not
+    /// ported and answer a warning.
+    pub fn handle_app_action(&self, action: &str) -> Vec<ModeAction> {
+        match action {
+            "app.interrupt" => self.handle_escape(),
+            "app.clear" => self.handle_ctrl_c(),
+            "app.exit" => self.handle_ctrl_d(),
+            "app.tools.expand" => {
+                self.toggle_tool_output_expansion();
+                Vec::new()
+            }
+            "app.thinking.toggle" => {
+                self.toggle_thinking_block_visibility();
+                Vec::new()
+            }
+            "app.thinking.cycle" => {
+                self.cycle_thinking_level();
+                Vec::new()
+            }
+            "app.model.cycleForward" => vec![ModeAction::CycleModel { forward: true }],
+            "app.model.cycleBackward" => vec![ModeAction::CycleModel { forward: false }],
+            "app.message.dequeue" => {
+                self.handle_dequeue();
+                Vec::new()
+            }
+            other => {
+                self.transcript
+                    .lock()
+                    .show_warning(&format!("{other} is not ported yet"));
+                self.mark_dirty();
+                Vec::new()
+            }
+        }
     }
 }
 

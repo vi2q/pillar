@@ -127,7 +127,7 @@ pub struct ProcessTerminal {
 impl ProcessTerminal {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn new() -> Self {
-        Self::with_io(Box::new(ProcessTerminalIo))
+        Self::with_io(Box::<ProcessTerminalIo>::default())
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -207,9 +207,48 @@ impl Default for ProcessTerminal {
 }
 
 /// The real terminal I/O (crossterm + stdio).
+///
+/// divergence: stdin is read by a background thread and handed over a
+/// channel so [`TerminalIo::read_input`] can honour its timeout (upstream
+/// Node gets a `data` callback instead). The thread blocks on stdin for the
+/// process lifetime.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Default)]
-pub struct ProcessTerminalIo;
+pub struct ProcessTerminalIo {
+    input: Option<StdinReader>,
+    pending: std::collections::VecDeque<u8>,
+}
+
+/// The background stdin reader.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug)]
+struct StdinReader {
+    receiver: std::sync::mpsc::Receiver<Vec<u8>>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl ProcessTerminalIo {
+    /// Start (once) and return the background reader.
+    fn reader(&mut self) -> &mut StdinReader {
+        self.input.get_or_insert_with(|| {
+            let (sender, receiver) = std::sync::mpsc::channel::<Vec<u8>>();
+            std::thread::spawn(move || {
+                let mut buffer = [0u8; 4096];
+                loop {
+                    match std::io::stdin().lock().read(&mut buffer) {
+                        Ok(0) | Err(_) => break,
+                        Ok(count) => {
+                            if sender.send(buffer[..count].to_vec()).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+            StdinReader { receiver }
+        })
+    }
+}
 
 #[cfg(not(target_arch = "wasm32"))]
 impl TerminalIo for ProcessTerminalIo {
@@ -234,11 +273,20 @@ impl TerminalIo for ProcessTerminalIo {
         let _ = crossterm::terminal::disable_raw_mode();
     }
 
-    /// Blocking read on stdin. The TUI loop passes a short timeout and the
-    /// OS delivers as soon as a key arrives; hosts that need a hard timeout
-    /// inject their own [`TerminalIo`].
-    fn read_input(&mut self, buffer: &mut [u8], _timeout: Duration) -> Option<usize> {
-        std::io::stdin().lock().read(buffer).ok()
+    /// Read the bytes that arrived within `timeout`, `None` on idle.
+    fn read_input(&mut self, buffer: &mut [u8], timeout: Duration) -> Option<usize> {
+        if self.pending.is_empty() {
+            let chunk = {
+                let reader = self.reader();
+                reader.receiver.recv_timeout(timeout).ok()?
+            };
+            self.pending.extend(chunk);
+        }
+        let count = buffer.len().min(self.pending.len());
+        for slot in buffer.iter_mut().take(count) {
+            *slot = self.pending.pop_front().expect("checked length");
+        }
+        Some(count)
     }
 }
 

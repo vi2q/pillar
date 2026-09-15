@@ -510,6 +510,7 @@ pub fn migrate_keybindings_config(
 /// keybindings.json persistence and reload.
 pub struct KeybindingsManager {
     inner: TuiKeybindingsManager,
+    definitions: BTreeMap<&'static str, KeybindingDefinition>,
     config_path: Option<PathBuf>,
     user_bindings: KeybindingsConfig,
 }
@@ -520,12 +521,21 @@ impl KeybindingsManager {
         user_bindings: KeybindingsConfig,
         config_path: Option<PathBuf>,
     ) -> Self {
-        let inner = TuiKeybindingsManager::new(definitions, user_bindings.clone());
+        let inner = TuiKeybindingsManager::new(definitions.clone(), user_bindings.clone());
         Self {
             inner,
+            definitions,
             config_path,
             user_bindings,
         }
+    }
+
+    /// The TUI-level manager over the same definitions (upstream installs the
+    /// single merged manager through `setKeybindings`; the port keeps the
+    /// app-level manager for its own lookups and installs a TUI-level twin
+    /// globally).
+    pub fn tui_manager(&self) -> TuiKeybindingsManager {
+        TuiKeybindingsManager::new(self.definitions.clone(), self.user_bindings.clone())
     }
 
     /// Upstream `KeybindingsManager.create`: load user overrides from
