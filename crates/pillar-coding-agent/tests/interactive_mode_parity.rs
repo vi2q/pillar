@@ -1050,6 +1050,36 @@ fn m_opens_the_two_column_picker_and_enter_reports_the_selection() {
 }
 
 #[test]
+fn m_ctrl_s_selects_the_highlighted_model_as_the_default() {
+    let session = session_with_scoped_models(vec![
+        scoped_model("claude-sonnet-4-5"),
+        scoped_model("claude-opus-5"),
+    ]);
+    let mode = make_mode_with_agent_dir(&session, picker_agent_dir("default"));
+
+    mode.handle_submit("/m");
+    // Provider category (models sorted by name: opus first), Ctrl+S asks for
+    // the persisted default.
+    assert_eq!(
+        mode.handle_selector_key("\u{1b}[C").expect("selector"),
+        Vec::new()
+    );
+    let actions = mode.handle_selector_key("\u{13}").expect("selector"); // ctrl+s
+    assert_eq!(
+        actions,
+        vec![ModeAction::SelectModel {
+            provider: "anthropic".to_string(),
+            id: "claude-opus-5".to_string(),
+            persist: true,
+        }]
+    );
+    let actions = mode.complete_model_selection("anthropic", "claude-opus-5", true, None);
+    assert_eq!(actions, vec![ModeAction::EditorSlotChanged]);
+    let body = plain(&mut mode.transcript().lock().chat, 120);
+    assert!(body.contains("Default model: anthropic/claude-opus-5"), "{body:?}");
+}
+
+#[test]
 fn m_right_left_switch_categories_and_escape_cancels() {
     // Two providers: without history the picker opens on the first one and
     // →/← walk the categories.

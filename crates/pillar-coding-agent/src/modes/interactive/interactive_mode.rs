@@ -1685,6 +1685,11 @@ impl InteractiveMode {
                     id: model.id.clone(),
                     persist: false,
                 }],
+                ModelPickerOutcome::SelectAsDefault(model) => vec![ModeAction::SelectModel {
+                    provider: model.provider.clone(),
+                    id: model.id.clone(),
+                    persist: true,
+                }],
                 ModelPickerOutcome::Cancel => self.close_selector(Some(token)),
             },
         })

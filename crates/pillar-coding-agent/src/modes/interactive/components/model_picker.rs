@@ -92,6 +92,9 @@ pub enum ModelPickerOutcome {
     Consumed,
     /// Enter: switch to `model` (upstream `onSelect`).
     Select(Box<Model>),
+    /// Ctrl+S: switch to `model` and persist it as the default. The extension
+    /// has no such key (the port adds it, like `/model`'s selector).
+    SelectAsDefault(Box<Model>),
     /// Escape / Ctrl+C (upstream `onCancel`).
     Cancel,
 }
@@ -193,6 +196,11 @@ impl ModelPickerComponent {
                 Some(model) => ModelPickerOutcome::Select(Box::new(model.clone())),
                 None => ModelPickerOutcome::Consumed,
             };
+        } else if matches_key(data, "ctrl+s") {
+            return match self.selected_model() {
+                Some(model) => ModelPickerOutcome::SelectAsDefault(Box::new(model.clone())),
+                None => ModelPickerOutcome::Consumed,
+            };
         } else if matches("tui.select.cancel") {
             return ModelPickerOutcome::Cancel;
         } else {
@@ -273,7 +281,7 @@ impl pillar_tui::tui::Component for ModelPickerComponent {
                 " {}",
                 theme_handle.fg(
                     "dim",
-                    "←→ category   ↑↓ model   Enter select   Esc cancel"
+                    "←→ category   ↑↓ model   Enter select   Ctrl+S default   Esc cancel"
                 )
             ),
             width,
@@ -553,6 +561,12 @@ mod tests {
                 assert_eq!((model.provider.as_str(), model.id.as_str()), ("p2", "m1"));
             }
             other => panic!("expected Select, got {other:?}"),
+        }
+        match picker.handle_key("\u{13}") {
+            ModelPickerOutcome::SelectAsDefault(model) => {
+                assert_eq!(model.id, "m1", "Ctrl+S persists the highlighted model");
+            }
+            other => panic!("expected SelectAsDefault, got {other:?}"),
         }
         assert_eq!(picker.handle_key("\u{1b}"), ModelPickerOutcome::Cancel);
         assert_eq!(picker.handle_key("\u{3}"), ModelPickerOutcome::Cancel);
