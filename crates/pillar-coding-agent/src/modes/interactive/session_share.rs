@@ -32,7 +32,7 @@ pub fn share_tool_definitions(session: &AgentSession) -> Vec<Value> {
 }
 
 /// Export the current branch with presentation metadata for a share link
-/// (upstream `exportSessionForShare`): a trailing `pi.share` custom entry
+/// (upstream `exportSessionForShare`): a trailing `pillar.share` custom entry
 /// carrying the system prompt and tool definitions.
 pub fn export_session_for_share(file_path: &Path, session: &AgentSession) -> Result<(), String> {
     let system_prompt = session.system_prompt();
@@ -43,7 +43,7 @@ pub fn export_session_for_share(file_path: &Path, session: &AgentSession) -> Res
     let trailing = |parent_id: &str, timestamp: &str| -> Vec<Value> {
         vec![json!({
             "type": "custom",
-            "customType": "pi.share",
+            "customType": "pillar.share",
             // Upstream slices a UUID to 8 characters.
             "id": short_id(),
             "parentId": parent_id,

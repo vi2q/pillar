@@ -1224,7 +1224,7 @@ impl DefaultPackageManager {
     }
 
     fn is_offline_mode() -> bool {
-        match std::env::var("PI_OFFLINE") {
+        match std::env::var("PILLAR_OFFLINE") {
             Ok(value) => {
                 let v = value.to_lowercase();
                 v == "1" || v == "true" || v == "yes"
@@ -3385,7 +3385,7 @@ impl DefaultPackageManager {
         };
 
         if project_trusted {
-            // Project extensions from .pi/
+            // Project extensions from .pillar/
             let project_dirs = resource_dirs(project_base_dir);
             add_resources(
                 accumulator,
@@ -3443,7 +3443,7 @@ impl DefaultPackageManager {
             );
         }
 
-        // User resources from ~/.pi/agent/ and ~/.agents/.
+        // User resources from ~/.pillar/agent/ and ~/.agents/.
         let user_dirs = resource_dirs(global_base_dir);
         add_resources(
             accumulator,

@@ -166,9 +166,9 @@ pub fn format_path_relative_to_cwd_or_absolute(file_path: &str, cwd: &str) -> St
 /// [`get_readme_path`] for the `read` tool's compact classification.
 ///
 /// divergence: the port has no bundled package layout, so the directory comes
-/// from `PI_PACKAGE_DIR` or next to the executable.
+/// from `PILLAR_PACKAGE_DIR` or next to the executable.
 pub fn package_dir() -> std::path::PathBuf {
-    if let Ok(dir) = std::env::var("PI_PACKAGE_DIR") {
+    if let Ok(dir) = std::env::var("PILLAR_PACKAGE_DIR") {
         if !dir.is_empty() {
             return std::path::PathBuf::from(dir);
         }

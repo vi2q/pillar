@@ -13,7 +13,7 @@
 //! - `crossterm` provides raw mode, terminal size and Windows console
 //!   handling. Resize is detected by comparing [`Terminal::resize_if_changed`]
 //!   instead of a SIGWINCH/`resize` event.
-//! - `PI_TUI_WRITE_LOG` tracing, the native Windows VT-input helper and the
+//! - `PILLAR_TUI_WRITE_LOG` tracing, the native Windows VT-input helper and the
 //!   native modifier helper (`native-modifiers.ts`) are not ported:
 //!   [`is_native_modifier_pressed`] always answers `false`, which is what
 //!   upstream does when the helper is unavailable.
@@ -139,7 +139,7 @@ impl ProcessTerminal {
     pub fn with_io(io: Box<dyn TerminalIo>) -> Self {
         let (columns, rows) = io.size();
         let escape_timeout_ms = resolve_escape_timeout_ms(
-            std::env::var("PI_TUI_ESC_TIMEOUT").ok().as_deref(),
+            std::env::var("PILLAR_TUI_ESC_TIMEOUT").ok().as_deref(),
             std::env::var("SSH_CONNECTION").is_ok() || std::env::var("SSH_TTY").is_ok(),
         );
         let apple_terminal = is_apple_terminal_session(

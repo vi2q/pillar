@@ -215,9 +215,9 @@ pub fn experimental_tool_sampling() -> Option<serde_json::Value> {
         .then(|| serde_json::json!({"type": "json_schema", "strict": "prefer"}))
 }
 
-/// Upstream `areExperimentalFeaturesEnabled` (`PI_EXPERIMENTAL === "1"`).
+/// Upstream `areExperimentalFeaturesEnabled` (`PILLAR_EXPERIMENTAL === "1"`).
 pub fn are_experimental_features_enabled() -> bool {
-    std::env::var("PI_EXPERIMENTAL").ok().as_deref() == Some("1")
+    std::env::var("PILLAR_EXPERIMENTAL").ok().as_deref() == Some("1")
 }
 
 // ============================================================================

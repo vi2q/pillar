@@ -1015,16 +1015,16 @@ pub struct ThemeInfo {
     pub path: Option<String>,
 }
 
-/// The user's agent directory: `PI_CODING_AGENT_DIR` (with `~` expansion) or
-/// `~/.pi/agent` (upstream `config.ts::getAgentDir`).
+/// The user's agent directory: `PILLAR_CODING_AGENT_DIR` (with `~` expansion) or
+/// `~/.pillar/agent` (upstream `config.ts::getAgentDir`).
 pub fn agent_dir() -> String {
-    if let Ok(dir) = std::env::var("PI_CODING_AGENT_DIR") {
+    if let Ok(dir) = std::env::var("PILLAR_CODING_AGENT_DIR") {
         if !dir.is_empty() {
             return expand_tilde_path(&dir);
         }
     }
     let home = std::env::var("HOME").unwrap_or_else(|_| String::from("~"));
-    format!("{}/.pi/agent", home.trim_end_matches('/'))
+    format!("{}/.pillar/agent", home.trim_end_matches('/'))
 }
 
 /// Expand a leading `~` against `$HOME` (upstream `expandTildePath`).
@@ -1050,7 +1050,7 @@ pub fn custom_themes_dir() -> String {
 /// `include_str!`, so this path is informational (the theme list's `path`)
 /// and resolves next to the executable or `$PI_PACKAGE_DIR`.
 pub fn themes_dir() -> String {
-    if let Ok(dir) = std::env::var("PI_PACKAGE_DIR") {
+    if let Ok(dir) = std::env::var("PILLAR_PACKAGE_DIR") {
         if !dir.is_empty() {
             return format!("{}/theme", dir.trim_end_matches('/'));
         }

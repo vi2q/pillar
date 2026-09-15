@@ -626,7 +626,7 @@ fn get_installed_path_missing_and_local() {
     );
 
     // Local path: exists after resolution.
-    let local = cwd.join(".pi").join("ext-dir");
+    let local = cwd.join(".pillar").join("ext-dir");
     std::fs::create_dir_all(&local).unwrap();
     assert_eq!(
         manager.get_installed_path("./ext-dir", SourceScope::Project),
@@ -638,7 +638,7 @@ fn get_installed_path_missing_and_local() {
 fn resolve_local_entries_and_top_level_paths() {
     let cwd = temp_dir("resolve-cwd");
     let agent_dir = temp_dir("resolve-agent");
-    let config_dir = cwd.join(".pi");
+    let config_dir = cwd.join(".pillar");
     let prompts_dir = config_dir.join("prompts");
     std::fs::create_dir_all(&prompts_dir).unwrap();
     std::fs::write(prompts_dir.join("my-prompt.md"), "prompt").unwrap();
@@ -668,12 +668,12 @@ fn resolve_auto_discovers_project_and_user_resources() {
     let agent_dir = temp_dir("auto-agent");
 
     // Project prompt.
-    let project_prompts = cwd.join(".pi").join("prompts");
+    let project_prompts = cwd.join(".pillar").join("prompts");
     std::fs::create_dir_all(&project_prompts).unwrap();
     std::fs::write(project_prompts.join("project-prompt.md"), "p").unwrap();
 
     // Project extension.
-    let project_exts = cwd.join(".pi").join("extensions");
+    let project_exts = cwd.join(".pillar").join("extensions");
     std::fs::create_dir_all(&project_exts).unwrap();
     std::fs::write(project_exts.join("proj-ext.ts"), "e").unwrap();
 
@@ -733,7 +733,7 @@ fn resolve_local_package_source_collects_resources() {
     let cwd = temp_dir("localpkg-cwd");
     let agent_dir = temp_dir("localpkg-agent");
 
-    let pkg = cwd.join(".pi").join("my-pkg");
+    let pkg = cwd.join(".pillar").join("my-pkg");
     let ext_dir = pkg.join("extensions");
     std::fs::create_dir_all(&ext_dir).unwrap();
     std::fs::write(ext_dir.join("from-pkg.ts"), "x").unwrap();
@@ -920,7 +920,7 @@ fn npm_install_path_uses_managed_location() {
     let project_path = manager.get_npm_install_path(&source, SourceScope::Project);
     assert_eq!(
         project_path,
-        cwd.join(".pi")
+        cwd.join(".pillar")
             .join("npm")
             .join("node_modules")
             .join("some-package")

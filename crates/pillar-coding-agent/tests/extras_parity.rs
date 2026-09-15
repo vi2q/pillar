@@ -2,7 +2,7 @@
 //! telemetry.ts, radius.ts, and output-guard.ts.
 
 use pillar_coding_agent::core::extras::{
-    PI_EXPERIMENTAL_ENV, PI_TELEMETRY_ENV, PREFER_STRICT_TOOL_SAMPLING, RADIUS_PROVIDER_ID,
+    PILLAR_EXPERIMENTAL_ENV, PILLAR_TELEMETRY_ENV, PREFER_STRICT_TOOL_SAMPLING, RADIUS_PROVIDER_ID,
     RAW_STDOUT_RETRY_DELAY_MS, StdoutGuard, are_experimental_features_enabled,
     get_experimental_tool_sampling, is_backpressure_error, is_install_telemetry_enabled,
     is_truthy_env_flag,
@@ -12,7 +12,7 @@ use pillar_coding_agent::core::extras::{
 
 #[test]
 fn experimental_flag_env_var() {
-    assert_eq!(PI_EXPERIMENTAL_ENV, "PI_EXPERIMENTAL");
+    assert_eq!(PILLAR_EXPERIMENTAL_ENV, "PILLAR_EXPERIMENTAL");
     assert!(are_experimental_features_enabled(Some("1")));
     assert!(!are_experimental_features_enabled(Some("true")));
     assert!(!are_experimental_features_enabled(Some("0")));
@@ -36,7 +36,7 @@ fn experimental_tool_sampling_only_when_enabled() {
 
 #[test]
 fn telemetry_env_overrides_setting() {
-    assert_eq!(PI_TELEMETRY_ENV, "PI_TELEMETRY");
+    assert_eq!(PILLAR_TELEMETRY_ENV, "PILLAR_TELEMETRY");
     // Env present: env decides (even when the setting says enabled).
     assert!(!is_install_telemetry_enabled(true, Some("0")));
     assert!(!is_install_telemetry_enabled(true, Some("false")));

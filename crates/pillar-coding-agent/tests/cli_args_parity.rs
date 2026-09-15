@@ -714,5 +714,5 @@ fn help_without_extension_flags_has_no_section() {
     use pillar_coding_agent::cli::help::render_help;
     let text = render_help(&[]);
     assert!(!text.contains("Extension CLI Flags:"));
-    assert!(text.contains("PI_CODING_AGENT_DIR"));
+    assert!(text.contains("PILLAR_CODING_AGENT_DIR"));
 }

@@ -8,7 +8,7 @@
 //! runtime crate.
 //!
 //! divergence: upstream pi discovers `.ts`/`.js` extension files under
-//! `.pi/extensions`; pillar's documented discovery (docs/rules/04) is
+//! `.pillar/extensions`; pillar's documented discovery (docs/rules/04) is
 //! `.luau`/`index.luau` under `.pillar/extensions` with the same
 //! global-first ordering.
 

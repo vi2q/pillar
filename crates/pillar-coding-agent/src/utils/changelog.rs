@@ -6,7 +6,7 @@
 //! - upstream re-exports `getChangelogPath` from `config.ts`, which resolves
 //!   paths relative to the JS package layout (Bun binary / dist / src). The
 //!   port has no package dir, so [`changelog_path`] honours
-//!   `PI_CHANGELOG_PATH`, then a `CHANGELOG.md` next to the executable, then
+//!   `PILLAR_CHANGELOG_PATH`, then a `CHANGELOG.md` next to the executable, then
 //!   `./CHANGELOG.md`.
 //! - the `regex` crate has no lookahead, so the legacy-repo pattern consumes
 //!   its `(?=/|$)` separator into a capture group.
@@ -316,7 +316,7 @@ pub fn get_new_entries(entries: &[ChangelogEntry], last_version: &str) -> Vec<Ch
 /// Path of the bundled CHANGELOG.md (upstream `getChangelogPath`, adapted to
 /// a binary without a JS package layout).
 pub fn changelog_path() -> PathBuf {
-    if let Ok(configured) = std::env::var("PI_CHANGELOG_PATH") {
+    if let Ok(configured) = std::env::var("PILLAR_CHANGELOG_PATH") {
         if !configured.trim().is_empty() {
             return PathBuf::from(configured);
         }

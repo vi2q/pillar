@@ -9,7 +9,7 @@
 //!
 //! divergences:
 //! - upstream writes a crash file on width overflow and optional debug logs
-//!   (`PI_DEBUG_REDRAW`, `PI_TUI_DEBUG`); the port returns `Err` with the same
+//!   (`PILLAR_DEBUG_REDRAW`, `PILLAR_TUI_DEBUG`); the port returns `Err` with the same
 //!   message and writes no files.
 //! - frames are built as bounded chunks and written afterwards (Rust borrow
 //!   rules; the chunking itself matches upstream).

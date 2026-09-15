@@ -256,7 +256,7 @@ fn with_trust_file_lock<T>(
 }
 
 /// Returns true when cwd has project-local resources gated by project trust:
-/// trust-requiring entries under `cwd/.pi`, or `.agents/skills` in cwd or an
+/// trust-requiring entries under `cwd/.pillar`, or `.agents/skills` in cwd or an
 /// ancestor. The user's `~/.agents/skills` is always treated as a trusted
 /// user resource and ignored (upstream
 /// `hasTrustRequiringProjectResources`).

@@ -19,7 +19,7 @@ use serde_json::Value;
 use crate::core::auth_storage::strip_bom;
 use crate::core::http_dispatcher::{DEFAULT_HTTP_IDLE_TIMEOUT_MS, parse_http_idle_timeout_ms};
 
-pub const CONFIG_DIR_NAME: &str = ".pi";
+pub const CONFIG_DIR_NAME: &str = ".pillar";
 
 // ============================================================================
 // Settings values
@@ -202,7 +202,7 @@ pub trait SettingsStorage: Send + Sync {
 }
 
 /// File-backed storage (upstream `FileSettingsStorage`): global settings
-/// live in the agent dir, project settings in `<cwd>/.pi/settings.json`.
+/// live in the agent dir, project settings in `<cwd>/.pillar/settings.json`.
 pub struct FileSettingsStorage {
     global_settings_path: PathBuf,
     project_settings_path: PathBuf,

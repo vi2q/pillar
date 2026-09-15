@@ -598,7 +598,7 @@ fn resolve_cache_retention(
         return cache_retention;
     }
     // Backend defaults apply when unset; only the legacy env opt-in is mapped.
-    (get_provider_env_value("PI_CACHE_RETENTION", env).as_deref() == Some("long"))
+    (get_provider_env_value("PILLAR_CACHE_RETENTION", env).as_deref() == Some("long"))
         .then_some(CacheRetention::Long)
 }
 

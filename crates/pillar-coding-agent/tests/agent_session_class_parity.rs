@@ -2744,7 +2744,7 @@ async fn rpc_mode_bash_records_result() {
 }
 
 #[tokio::test]
-async fn share_export_appends_pi_share_metadata() {
+async fn share_export_appends_pillar_share_metadata() {
     use pillar_coding_agent::modes::interactive::session_share::{
         export_session_for_share, share_tool_definitions,
     };
@@ -2772,7 +2772,7 @@ async fn share_export_appends_pi_share_metadata() {
     let last: serde_json::Value =
         serde_json::from_str(lines.last().expect("last line")).expect("share json");
     assert_eq!(last["type"], serde_json::json!("custom"));
-    assert_eq!(last["customType"], serde_json::json!("pi.share"));
+    assert_eq!(last["customType"], serde_json::json!("pillar.share"));
     assert_eq!(last["id"].as_str().expect("id").len(), 8);
     assert_eq!(
         last["data"]["systemPrompt"],

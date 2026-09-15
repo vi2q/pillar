@@ -55,11 +55,11 @@ Every intentional divergence from upstream carries a `// divergence:` comment in
 | --- | --- | --- |
 | Extension runtime: TypeScript/jiti → Luau on luaur | Project goal | [04-luau-extensions.md](04-luau-extensions.md) |
 | Extension API method names snake_cased | Luau convention; event names and LLM-boundary keys unchanged | [04-luau-extensions.md](04-luau-extensions.md) |
-| Extension discovery paths `.pi` → `.pillar` | Extension files are not pi session/config files; other pi paths unchanged | [04-luau-extensions.md](04-luau-extensions.md) |
+| Identity and paths are `pillar`, not `pi`: `APP_NAME`, `--version`, the system prompt, `~/.pillar/agent`, `CONFIG_DIR_NAME = ".pillar"`, extension discovery, and `PILLAR_*` environment variables | Project goal (user decision 2026-09-15): the agent must not present itself as pi. Session/config *formats* stay pi-compatible, but the old `~/.pi` / `PI_*` locations are not read — migrate by copying `~/.pi/agent` to `~/.pillar/agent` | [02-porting-policy.md](02-porting-policy.md) |
 | No npm package sharing for extensions | Luau modules have no npm graph; git packages still supported | [04-luau-extensions.md](04-luau-extensions.md) |
 
 New divergences require a row here and a test ([05-testing-parity.md](05-testing-parity.md), "Every `// divergence:` comment has a test").
 
 ## Deprecation handling
 
-If upstream removes a strict-layer surface (a CLI flag, an entry type, an event), pillar deprecates it in the same sync: keep reading/writing it, emit a warning, document the removal target. pillar never breaks session compatibility ahead of upstream.
+If upstream removes a strict-layer surface (a CLI flag, an entry type, an event), pillar deprecates it in the same sync: keep reading/writing it, emit a warning, document the removal target. pillar never breaks the session *format* ahead of upstream (the storage location moved to `.pillar`, see the ledger).

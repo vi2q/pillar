@@ -291,8 +291,8 @@ impl TuiBase {
             last_render_at: None,
             stopped: true,
             full_redraws: 0,
-            show_hardware_cursor: std::env::var("PI_HARDWARE_CURSOR").ok().as_deref() == Some("1"),
-            clear_on_shrink: std::env::var("PI_CLEAR_ON_SHRINK").ok().as_deref() == Some("1"),
+            show_hardware_cursor: std::env::var("PILLAR_HARDWARE_CURSOR").ok().as_deref() == Some("1"),
+            clear_on_shrink: std::env::var("PILLAR_CLEAR_ON_SHRINK").ok().as_deref() == Some("1"),
             on_debug: None,
         }
     }

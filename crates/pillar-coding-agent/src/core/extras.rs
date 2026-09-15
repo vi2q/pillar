@@ -1,5 +1,5 @@
 //! Ports of small pi v0.84.3 core modules not yet covered:
-//! - experimental.ts (`PI_EXPERIMENTAL` flag and strict tool sampling)
+//! - experimental.ts (`PILLAR_EXPERIMENTAL` flag and strict tool sampling)
 //! - telemetry.ts (`isInstallTelemetryEnabled`)
 //! - radius.ts (`RADIUS_PROVIDER_ID`)
 //! - output-guard.ts (stdout takeover state machine; the TUI-process
@@ -7,11 +7,11 @@
 //!   and the retry/exit contracts)
 
 /// The experimental features env var name (upstream reads
-/// `process.env.PI_EXPERIMENTAL`).
-pub const PI_EXPERIMENTAL_ENV: &str = "PI_EXPERIMENTAL";
+/// `process.env.PI_EXPERIMENTAL`; the port reads `PILLAR_EXPERIMENTAL`).
+pub const PILLAR_EXPERIMENTAL_ENV: &str = "PILLAR_EXPERIMENTAL";
 
 /// Whether experimental features are enabled (upstream
-/// `areExperimentalFeaturesEnabled`): `PI_EXPERIMENTAL === "1"`.
+/// `areExperimentalFeaturesEnabled`): `PILLAR_EXPERIMENTAL === "1"`.
 pub fn are_experimental_features_enabled(env_value: Option<&str>) -> bool {
     env_value == Some("1")
 }
@@ -29,8 +29,9 @@ pub fn get_experimental_tool_sampling(env_value: Option<&str>) -> Option<&'stati
     }
 }
 
-/// The telemetry env var name (upstream `process.env.PI_TELEMETRY`).
-pub const PI_TELEMETRY_ENV: &str = "PI_TELEMETRY";
+/// The telemetry env var name (upstream `process.env.PI_TELEMETRY`; the port
+/// reads `PILLAR_TELEMETRY`).
+pub const PILLAR_TELEMETRY_ENV: &str = "PILLAR_TELEMETRY";
 
 /// Truthy env flag parsing shared by telemetry and offline checks
 /// (upstream `isTruthyEnvFlag`).

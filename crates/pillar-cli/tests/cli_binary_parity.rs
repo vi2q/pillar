@@ -70,7 +70,7 @@ fn binary_print_mode_without_a_model_fails_cleanly() {
     let output = Command::new(pillar_bin())
         .args(["-p", "hi"])
         .env("HOME", &dir)
-        .env("PI_CODING_AGENT_DIR", &dir)
+        .env("PILLAR_CODING_AGENT_DIR", &dir)
         .output()
         .expect("run pillar");
 
@@ -133,7 +133,7 @@ fn binary_uses_the_configured_default_model_and_custom_provider() {
     let output = Command::new(pillar_bin())
         .args(["-p", "hi"])
         .env("HOME", &dir)
-        .env("PI_CODING_AGENT_DIR", &dir)
+        .env("PILLAR_CODING_AGENT_DIR", &dir)
         .output()
         .expect("run pillar");
 
@@ -153,7 +153,7 @@ fn binary_model_flag_selects_a_configured_model() {
     let output = Command::new(pillar_bin())
         .args(["-p", "hi", "--model", "fake-model"])
         .env("HOME", &dir)
-        .env("PI_CODING_AGENT_DIR", &dir)
+        .env("PILLAR_CODING_AGENT_DIR", &dir)
         .output()
         .expect("run pillar");
 

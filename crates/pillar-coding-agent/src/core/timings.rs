@@ -1,5 +1,5 @@
 //! Port of packages/coding-agent/src/core/timings.ts (pi v0.84.3): central
-//! startup timing instrumentation, enabled with `PI_TIMING=1`.
+//! startup timing instrumentation, enabled with `PILLAR_TIMING=1`.
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -27,7 +27,7 @@ struct TimingNamespace {
 }
 
 fn enabled() -> bool {
-    std::env::var("PI_TIMING").ok().as_deref() == Some("1")
+    std::env::var("PILLAR_TIMING").ok().as_deref() == Some("1")
 }
 
 fn namespaces() -> &'static Mutex<BTreeMap<TimingLabel, TimingNamespace>> {

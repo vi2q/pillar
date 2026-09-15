@@ -63,9 +63,9 @@ fn factory_ref(
 fn services_create_collects_resources_and_system_prompt() {
     let cwd = temp_dir("svc-cwd");
     let agent_dir = temp_dir("svc-agent");
-    std::fs::create_dir_all(cwd.join(".pi")).unwrap();
+    std::fs::create_dir_all(cwd.join(".pillar")).unwrap();
     std::fs::write(cwd.join("AGENTS.md"), "ctx").unwrap();
-    std::fs::write(cwd.join(".pi").join("SYSTEM.md"), "sys").unwrap();
+    std::fs::write(cwd.join(".pillar").join("SYSTEM.md"), "sys").unwrap();
 
     let services = create_agent_session_services(
         &cwd.to_string_lossy(),
@@ -97,8 +97,8 @@ fn services_create_collects_resources_and_system_prompt() {
 fn services_invalid_settings_file_yields_warning_diagnostic() {
     let cwd = temp_dir("svc-bad-cwd");
     let agent_dir = temp_dir("svc-bad-agent");
-    std::fs::create_dir_all(cwd.join(".pi")).unwrap();
-    std::fs::write(cwd.join(".pi").join("settings.json"), "{ invalid json").unwrap();
+    std::fs::create_dir_all(cwd.join(".pillar")).unwrap();
+    std::fs::write(cwd.join(".pillar").join("settings.json"), "{ invalid json").unwrap();
 
     let services = create_agent_session_services(
         &cwd.to_string_lossy(),

@@ -1787,14 +1787,14 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
 }
 
 /// The default session directory path for a cwd (upstream
-/// `getDefaultSessionDirPath`): `~/.pi/agent/sessions/--<encoded-cwd>--`.
+/// `getDefaultSessionDirPath`): `~/.pillar/agent/sessions/--<encoded-cwd>--`.
 pub fn default_session_dir_path(cwd: &str) -> PathBuf {
-    let agent_dir = std::env::var("PI_CODING_AGENT_DIR")
+    let agent_dir = std::env::var("PILLAR_CODING_AGENT_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
             std::env::var("HOME")
-                .map(|home| PathBuf::from(home).join(".pi").join("agent"))
-                .unwrap_or_else(|_| PathBuf::from(".").join(".pi").join("agent"))
+                .map(|home| PathBuf::from(home).join(".pillar").join("agent"))
+                .unwrap_or_else(|_| PathBuf::from(".").join(".pillar").join("agent"))
         });
     let resolved_cwd = cwd.to_string();
     let safe_path = format!(

@@ -283,12 +283,12 @@ fn tilde_expansion_matches_upstream() {
     assert_eq!(expand_tilde_path("~user/themes"), "~user/themes");
     assert_eq!(expand_tilde_path("/abs/path"), "/abs/path");
     // The agent dir honours PI_CODING_AGENT_DIR when it is set.
-    if let Ok(dir) = std::env::var("PI_CODING_AGENT_DIR") {
+    if let Ok(dir) = std::env::var("PILLAR_CODING_AGENT_DIR") {
         if !dir.is_empty() {
             assert_eq!(agent_dir(), expand_tilde_path(&dir));
         }
     } else {
-        assert_eq!(agent_dir(), format!("{home}/.pi/agent"));
+        assert_eq!(agent_dir(), format!("{home}/.pillar/agent"));
     }
     // The global accessor is initialized by the adapters' helpers too.
     let _guard = THEME_LOCK.lock().expect("theme lock");

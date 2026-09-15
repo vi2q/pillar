@@ -170,11 +170,11 @@ fn detect_from_environment(env: &DetectionEnv) -> TerminalCapabilities {
 /// `setCapabilityOverrides`).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CapabilityOverrides {
-    /// PI_HYPERLINKS / override: Some(true) = force on, Some(false) = force off.
+    /// PILLAR_HYPERLINKS / override: Some(true) = force on, Some(false) = force off.
     pub hyperlinks: Option<bool>,
-    /// PI_IMAGE_PROTOCOL: kitty / iterm2 / none.
+    /// PILLAR_IMAGE_PROTOCOL: kitty / iterm2 / none.
     pub image_protocol: Option<Option<ImageProtocol>>,
-    /// PI_TRUE_COLOR.
+    /// PILLAR_TRUE_COLOR.
     pub true_color: Option<bool>,
 }
 

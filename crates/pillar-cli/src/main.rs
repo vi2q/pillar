@@ -93,15 +93,15 @@ async fn main() -> ExitCode {
     }
 }
 
-/// The agent config directory (`~/.pi/agent`, `PI_CODING_AGENT_DIR` override).
+/// The agent config directory (`~/.pillar/agent`, `PILLAR_CODING_AGENT_DIR` override).
 fn agent_dir() -> String {
-    std::env::var("PI_CODING_AGENT_DIR")
+    std::env::var("PILLAR_CODING_AGENT_DIR")
         .ok()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| {
             std::env::var("HOME")
-                .map(|home| format!("{home}/.pi/agent"))
-                .unwrap_or_else(|_| ".pi/agent".to_string())
+                .map(|home| format!("{home}/.pillar/agent"))
+                .unwrap_or_else(|_| ".pillar/agent".to_string())
         })
 }
 
@@ -258,7 +258,7 @@ async fn build_session_with(
     } = input;
 
     let global_extensions = PathBuf::from(&agent_dir).join("extensions");
-    let project_extensions = PathBuf::from(&cwd).join(".pi").join("extensions");
+    let project_extensions = PathBuf::from(&cwd).join(".pillar").join("extensions");
     let configured = parsed.extensions.clone().unwrap_or_default();
     let mut wiring = build_extension_runner(
         &cwd,

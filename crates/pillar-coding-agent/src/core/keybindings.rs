@@ -604,7 +604,7 @@ impl KeybindingsManager {
 /// App definitions for the current platform (upstream `KEYBINDINGS` built
 /// with `process.platform` / `process.env`).
 pub fn app_definitions() -> BTreeMap<&'static str, KeybindingDefinition> {
-    let platform = std::env::var("PI_TEST_PLATFORM").unwrap_or_else(|_| {
+    let platform = std::env::var("PILLAR_TEST_PLATFORM").unwrap_or_else(|_| {
         if cfg!(target_os = "windows") {
             "win32".to_string()
         } else if cfg!(target_os = "macos") {

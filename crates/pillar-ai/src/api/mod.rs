@@ -120,7 +120,7 @@ pub fn resolve_cache_retention(
     if let Some(cache_retention) = cache_retention {
         return cache_retention;
     }
-    if crate::provider_env::get_provider_env_value("PI_CACHE_RETENTION", env).as_deref()
+    if crate::provider_env::get_provider_env_value("PILLAR_CACHE_RETENTION", env).as_deref()
         == Some("long")
     {
         return CacheRetention::Long;

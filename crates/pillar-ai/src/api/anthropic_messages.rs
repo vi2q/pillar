@@ -387,7 +387,7 @@ pub fn resolve_cache_retention_anthropic(
     if let Some(retention) = cache_retention {
         return retention;
     }
-    if crate::provider_env::get_provider_env_value("PI_CACHE_RETENTION", env).as_deref()
+    if crate::provider_env::get_provider_env_value("PILLAR_CACHE_RETENTION", env).as_deref()
         == Some("long")
     {
         return CacheRetention::Long;

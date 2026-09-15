@@ -131,7 +131,7 @@ fn discover_and_load_ordering_project_global_configured() {
     let cwd = temp_dir("order-cwd");
     let agent_dir = temp_dir("order-agent");
 
-    let project_ext = cwd.join(".pi").join("extensions").join("proj.ts");
+    let project_ext = cwd.join(".pillar").join("extensions").join("proj.ts");
     std::fs::create_dir_all(project_ext.parent().unwrap()).unwrap();
     std::fs::write(&project_ext, "").unwrap();
 
@@ -161,7 +161,7 @@ fn discover_and_load_ordering_project_global_configured() {
 fn discover_and_load_dedupes_canonical_paths() {
     let cwd = temp_dir("dedupe-cwd");
     let agent_dir = temp_dir("dedupe-agent");
-    let ext = cwd.join(".pi").join("extensions").join("same.ts");
+    let ext = cwd.join(".pillar").join("extensions").join("same.ts");
     std::fs::create_dir_all(ext.parent().unwrap()).unwrap();
     std::fs::write(&ext, "").unwrap();
 

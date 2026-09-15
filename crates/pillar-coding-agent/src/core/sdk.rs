@@ -30,7 +30,7 @@ use crate::core::session_manager::SessionManager;
 use crate::core::session_support::{DEFAULT_THINKING_LEVEL, THINKING_LEVEL_OPTIONS};
 use crate::core::settings_manager::{SettingsManager, SettingsManagerCreateOptions};
 use crate::core::provider_attribution::merge_provider_attribution_headers;
-use crate::core::extras::{PI_TELEMETRY_ENV, is_install_telemetry_enabled};
+use crate::core::extras::{PILLAR_TELEMETRY_ENV, is_install_telemetry_enabled};
 use crate::core::system_prompt::{BuildSystemPromptOptions, PromptPaths, build_system_prompt};
 
 /// Upstream the `transformHeaders` callback of the session stream function:
@@ -50,7 +50,7 @@ fn provider_headers_transform(
                 let settings = settings.lock().expect("settings lock");
                 is_install_telemetry_enabled(
                     settings.enable_install_telemetry(),
-                    std::env::var(PI_TELEMETRY_ENV).ok().as_deref(),
+                    std::env::var(PILLAR_TELEMETRY_ENV).ok().as_deref(),
                 )
             };
             merge_provider_attribution_headers(
@@ -676,11 +676,11 @@ pub async fn create_agent_session(
 }
 
 fn default_agent_dir_string() -> Option<String> {
-    std::env::var_os("PI_CODING_AGENT_DIR")
+    std::env::var_os("PILLAR_CODING_AGENT_DIR")
         .map(|value| value.to_string_lossy().to_string())
         .or_else(|| {
             std::env::var_os("HOME")
-                .map(|home| Path::new(&home).join(".pi").join("agent"))
+                .map(|home| Path::new(&home).join(".pillar").join("agent"))
                 .map(|path| path.to_string_lossy().to_string())
         })
 }

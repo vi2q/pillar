@@ -26,7 +26,7 @@ pub struct ExtensionWiring {
 
 /// Discover and load Luau extensions for `cwd` and build the runner.
 ///
-/// `global_dir` is the user extension directory (e.g. `~/.pi/agent/...`),
+/// `global_dir` is the user extension directory (e.g. `~/.pillar/agent/...`),
 /// `project_dir` the project-local one; `configured` are explicit
 /// `--extension` paths (files or directories).
 pub fn build_extension_runner(

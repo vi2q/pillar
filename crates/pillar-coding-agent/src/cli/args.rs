@@ -4,7 +4,7 @@
 //! divergence: upstream reads `APP_NAME` / `CONFIG_DIR_NAME` from
 //! `package.json` (`piConfig`) and colorizes help with chalk. The port names
 //! itself `pillar` ([`APP_NAME`]) and reports its own version, but keeps the
-//! pi-compatible config identity ([`CONFIG_DIR_NAME`] = ".pi" and the `PI_*`
+//! pillar config identity ([`CONFIG_DIR_NAME`] = ".pillar" and the `PILLAR_*`
 //! environment variables) so existing sessions, settings, credentials, and
 //! extensions stay interoperable; help renders as plain text.
 
@@ -14,10 +14,10 @@ use std::collections::BTreeMap;
 pub const APP_NAME: &str = "pillar";
 
 /// Agent config directory environment variable (upstream `ENV_AGENT_DIR`).
-pub const ENV_AGENT_DIR: &str = "PI_CODING_AGENT_DIR";
+pub const ENV_AGENT_DIR: &str = "PILLAR_CODING_AGENT_DIR";
 
 /// Session directory environment variable (upstream `ENV_SESSION_DIR`).
-pub const ENV_SESSION_DIR: &str = "PI_CODING_AGENT_SESSION_DIR";
+pub const ENV_SESSION_DIR: &str = "PILLAR_CODING_AGENT_SESSION_DIR";
 
 /// Version reported by `--version` (upstream `VERSION` from package.json).
 /// The port reports its own version (upstream's is pinned in the port notes

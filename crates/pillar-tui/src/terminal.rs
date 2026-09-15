@@ -86,7 +86,7 @@ pub fn normalize_apple_terminal_input(
 }
 
 /// Resolve the escape reassembly timeout (upstream
-/// `resolveEscapeTimeoutMs`): PI_TUI_ESC_TIMEOUT override, then SSH
+/// `resolveEscapeTimeoutMs`): PILLAR_TUI_ESC_TIMEOUT override, then SSH
 /// detection, then the 10ms default.
 pub fn resolve_escape_timeout_ms(pi_tui_esc_timeout: Option<&str>, has_ssh: bool) -> u64 {
     const DEFAULT_ESCAPE_TIMEOUT_MS: u64 = 10;

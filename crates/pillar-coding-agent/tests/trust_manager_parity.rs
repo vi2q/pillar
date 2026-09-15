@@ -167,14 +167,14 @@ fn trust_store_invalid_content_errors_and_get_reports_none() {
 fn trust_resources_detected_in_project_config_dir() {
     let dir = temp_agent_dir("resources");
     let project = dir.join("proj");
-    std::fs::create_dir_all(project.join(".pi").join("skills")).unwrap();
+    std::fs::create_dir_all(project.join(".pillar").join("skills")).unwrap();
     assert!(has_trust_requiring_project_resources(
         &project.to_string_lossy()
     ));
 
-    // Empty .pi dir does not require trust.
+    // Empty .pillar dir does not require trust.
     let project2 = dir.join("proj2");
-    std::fs::create_dir_all(project2.join(".pi")).unwrap();
+    std::fs::create_dir_all(project2.join(".pillar")).unwrap();
     assert!(!has_trust_requiring_project_resources(
         &project2.to_string_lossy()
     ));
@@ -204,8 +204,8 @@ fn user_agents_skills_dir_is_ignored() {
     assert!(!has_trust_requiring_project_resources(
         &home.to_string_lossy()
     ));
-    // But a project .pi resource still gates.
-    std::fs::create_dir_all(home.join(".pi").join("prompts")).unwrap();
+    // But a project .pillar resource still gates.
+    std::fs::create_dir_all(home.join(".pillar").join("prompts")).unwrap();
     assert!(has_trust_requiring_project_resources(
         &home.to_string_lossy()
     ));

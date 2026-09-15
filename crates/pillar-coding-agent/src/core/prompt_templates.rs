@@ -242,7 +242,7 @@ pub struct LoadPromptTemplatesOptions {
 
 /// Load all prompt templates from:
 /// 1. Global: `agent_dir/prompts/`
-/// 2. Project: `cwd/pi/prompts/` (CONFIG_DIR_NAME = "pi")
+/// 2. Project: `cwd/.pillar/prompts/` (CONFIG_DIR_NAME)
 /// 3. Explicit prompt paths
 pub fn load_prompt_templates(options: &LoadPromptTemplatesOptions) -> Vec<PromptTemplate> {
     let resolved_cwd = resolve_path(&options.cwd);

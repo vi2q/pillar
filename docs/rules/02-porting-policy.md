@@ -9,11 +9,11 @@ pillar is a hybrid port: the external boundary of pi is reproduced exactly, the 
 These surfaces must be byte- or schema-identical to pi v0.84.3. Breaking them breaks sessions, tools, and extensions written against pi.
 
 1. **CLI**: every flag (`--model`, `--print`, `--extension`, `--resume`, `--continue`, `--mode`, `--no-session`, …), flag aliases, argument order semantics, exit codes, and the version string format.
-2. **Session files**: JSONL at `~/.pi/agent/sessions/--<path>--/<timestamp>_<uuid>.jsonl`, version-3 tree structure (`id`/`parentId` linking), every entry `type` (`message`, `model_change`, `thinking_level_change`, `compaction`, `branch_summary`, `custom`, `label`, `session_info`, `custom_message`), the `SessionHeader` shape, and v1/v2→v3 migration on load. pillar must read pi sessions and pi must read pillar sessions.
+2. **Session files**: JSONL at `~/.pillar/agent/sessions/--<path>--/<timestamp>_<uuid>.jsonl`, version-3 tree structure (`id`/`parentId` linking), every entry `type` (`message`, `model_change`, `thinking_level_change`, `compaction`, `branch_summary`, `custom`, `label`, `session_info`, `custom_message`), the `SessionHeader` shape, and v1/v2→v3 migration on load. pillar must read pi sessions and pi must read pillar sessions.
 3. **Agent↔tool contract**: built-in tool names (`bash`, `edit`, `find`, `grep`, `ls`, `read`, `write`, `powershell` on Windows), their input schemas, result `content` blocks, and `details` shapes.
 4. **LLM request/response semantics**: provider request bodies, streaming event order, usage accounting, retry/backoff behavior per provider. A provider implementation is correct when pi's own provider tests pass against it.
 5. **CBOR protocol** (`pillar-protocol`): framing, codec, and schema bytes must interoperate with pi's `pi-server`/`pi-client`.
-6. **Settings/config files**: `~/.pi/agent/settings.json` keys and precedence, `AGENTS.md` discovery, skill/theme/prompt-template discovery paths.
+6. **Settings/config files**: `~/.pillar/agent/settings.json` keys and precedence, `AGENTS.md` discovery, skill/theme/prompt-template discovery paths.
 7. **Extension semantics**: event names, firing order, payload shapes, result handling (block/modify), and the full `ExtensionAPI` method surface. The Luau mapping is defined in [04-luau-extensions.md](04-luau-extensions.md) and is itself part of this layer.
 8. **Slash commands and keybindings**: default names and behavior.
 

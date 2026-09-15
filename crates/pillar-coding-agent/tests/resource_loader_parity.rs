@@ -132,7 +132,7 @@ fn loader_discovers_skills_prompts_themes_and_context() {
     let cwd = temp_dir("load-cwd");
     let agent_dir = temp_dir("load-agent");
 
-    let skill_dir = cwd.join(".pi").join("skills").join("my-skill");
+    let skill_dir = cwd.join(".pillar").join("skills").join("my-skill");
     std::fs::create_dir_all(&skill_dir).unwrap();
     std::fs::write(
         skill_dir.join("SKILL.md"),
@@ -140,7 +140,7 @@ fn loader_discovers_skills_prompts_themes_and_context() {
     )
     .unwrap();
 
-    let prompt_dir = cwd.join(".pi").join("prompts");
+    let prompt_dir = cwd.join(".pillar").join("prompts");
     std::fs::create_dir_all(&prompt_dir).unwrap();
     std::fs::write(prompt_dir.join("cmd.md"), "# cmd\nrun it").unwrap();
 
@@ -189,10 +189,10 @@ fn loader_discovers_skills_prompts_themes_and_context() {
 fn loader_context_files_and_system_prompt_discovery() {
     let cwd = temp_dir("sp-cwd");
     let agent_dir = temp_dir("sp-agent");
-    std::fs::create_dir_all(cwd.join(".pi")).unwrap();
-    // Context files live at directory roots (not inside .pi).
+    std::fs::create_dir_all(cwd.join(".pillar")).unwrap();
+    // Context files live at directory roots (not inside .pillar).
     std::fs::write(cwd.join("AGENTS.md"), "project context").unwrap();
-    std::fs::write(cwd.join(".pi").join("SYSTEM.md"), "project system prompt").unwrap();
+    std::fs::write(cwd.join(".pillar").join("SYSTEM.md"), "project system prompt").unwrap();
 
     let settings = make_settings(&cwd, &agent_dir);
     let mut loader = ResourceLoader::new(
@@ -218,15 +218,15 @@ fn loader_context_files_and_system_prompt_discovery() {
             .is_some_and(|s| s.contains("project system prompt"))
     );
     let source = snap.system_prompt_source_path.as_ref().unwrap();
-    assert_eq!(source, &cwd.join(".pi").join("SYSTEM.md"));
+    assert_eq!(source, &cwd.join(".pillar").join("SYSTEM.md"));
 }
 
 #[test]
 fn loader_explicit_system_prompt_takes_precedence() {
     let cwd = temp_dir("spexp-cwd");
     let agent_dir = temp_dir("spexp-agent");
-    std::fs::create_dir_all(cwd.join(".pi")).unwrap();
-    std::fs::write(cwd.join(".pi").join("SYSTEM.md"), "project").unwrap();
+    std::fs::create_dir_all(cwd.join(".pillar")).unwrap();
+    std::fs::write(cwd.join(".pillar").join("SYSTEM.md"), "project").unwrap();
     let custom = temp_dir("spexp-custom");
     std::fs::write(custom.join("CUSTOM.md"), "custom prompt").unwrap();
 
@@ -282,7 +282,7 @@ fn loader_append_system_prompt_from_file() {
 fn loader_no_flags_disable_resource_kinds() {
     let cwd = temp_dir("noflags-cwd");
     let agent_dir = temp_dir("noflags-agent");
-    let skill_dir = cwd.join(".pi").join("skills").join("s");
+    let skill_dir = cwd.join(".pillar").join("skills").join("s");
     std::fs::create_dir_all(&skill_dir).unwrap();
     std::fs::write(
         skill_dir.join("SKILL.md"),
@@ -340,7 +340,7 @@ fn loader_dedupe_prompts_and_themes_with_collisions() {
     let cwd = temp_dir("dup-cwd");
     let agent_dir = temp_dir("dup-agent");
 
-    let prompt_dir = cwd.join(".pi").join("prompts");
+    let prompt_dir = cwd.join(".pillar").join("prompts");
     std::fs::create_dir_all(&prompt_dir).unwrap();
     std::fs::write(
         prompt_dir.join("a.md"),

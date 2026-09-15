@@ -4,7 +4,7 @@
 //! invalidation with tracked event-bus unsubscription, queued provider
 //! registrations, flag values), extension path discovery
 //! (`discoverExtensionsInDir` + `discoverAndLoadExtensions` ordering:
-//! project .pi/extensions, agentDir/extensions, then configured paths
+//! project .pillar/extensions, agentDir/extensions, then configured paths
 //! with manifest/index expansion), and the module cache keyed by cwd +
 //! generation.
 //!
@@ -208,7 +208,7 @@ pub fn discover_extensions_in_dir(dir: &Path) -> Vec<PathBuf> {
 }
 
 /// Discover and order extension paths (upstream
-/// `discoverAndLoadExtensions`): project `.pi/extensions/`, agent
+/// `discoverAndLoadExtensions`): project `.pillar/extensions/`, agent
 /// `extensions/`, then configured paths (directories expand via manifest
 /// entries or directory discovery). Canonical path dedupe.
 pub fn discover_and_load_extension_paths(
@@ -230,7 +230,7 @@ pub fn discover_and_load_extension_paths(
         }
     };
 
-    // 1. Project-local extensions: cwd/.pi/extensions/
+    // 1. Project-local extensions: cwd/.pillar/extensions/
     let local_ext_dir = resolved_cwd.join(CONFIG_DIR_NAME).join("extensions");
     add_paths(
         discover_extensions_in_dir(&local_ext_dir),

@@ -138,10 +138,10 @@ pub fn create_agent_session_services(
 }
 
 fn default_agent_dir() -> PathBuf {
-    std::env::var_os("PI_AGENT_DIR")
+    std::env::var_os("PILLAR_AGENT_DIR")
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".pi").join("agent")))
-        .unwrap_or_else(|| PathBuf::from(".pi").join("agent"))
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".pillar").join("agent")))
+        .unwrap_or_else(|| PathBuf::from(".pillar").join("agent"))
 }
 
 // ============================================================================

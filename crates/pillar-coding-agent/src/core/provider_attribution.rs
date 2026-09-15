@@ -4,7 +4,7 @@
 //!
 //! divergence: the telemetry-enabled check is passed in as a resolved bool
 //! (the caller applies `isInstallTelemetryEnabled`, which also reads
-//! `PI_TELEMETRY`).
+//! `PILLAR_TELEMETRY`).
 
 use pillar_ai::types::{Model, ProviderHeaders};
 
