@@ -13,7 +13,7 @@ use std::sync::Arc;
 use serde_json::{Map, Value, json};
 
 use crate::api::impl_from_request_options;
-use crate::api::{OnPayloadFn, OnResponseFn, get_pi_user_agent, merge_request_headers};
+use crate::api::{OnPayloadFn, OnResponseFn, get_user_agent, merge_request_headers};
 use crate::constrained_sampling::{
     get_json_schema_tool_parameters, resolve_json_schema_strict_sampling,
 };
@@ -363,7 +363,7 @@ fn build_mistral_headers(
     options: &MistralOptions,
 ) -> Vec<(String, String)> {
     let mut defaults = vec![
-        ("User-Agent".to_string(), get_pi_user_agent()),
+        ("User-Agent".to_string(), get_user_agent()),
         ("accept".to_string(), "text/event-stream".to_string()),
         ("authorization".to_string(), format!("Bearer {api_key}")),
         ("content-type".to_string(), "application/json".to_string()),

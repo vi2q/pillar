@@ -101,14 +101,61 @@ pub struct BaseStreamOptions {
     pub metadata: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
-/// Resolved user agent for provider requests (upstream
-/// `getPiUserAgent()`).
+/// The client-name environment variable (`PILLAR_CLIENT_NAME`).
+pub const CLIENT_NAME_ENV: &str = "PILLAR_CLIENT_NAME";
+
+/// The referer-URL environment variable (`PILLAR_REFERER_URL`).
+pub const REFERER_URL_ENV: &str = "PILLAR_REFERER_URL";
+
+/// The default client name sent to providers (upstream hard-codes `pi`).
+pub const DEFAULT_CLIENT_NAME: &str = "pi";
+
+/// The default referer URL (upstream hard-codes `https://pi.dev`).
+pub const DEFAULT_REFERER_URL: &str = "https://pi.dev";
+
+/// Resolve the client name from `PILLAR_CLIENT_NAME` (blank keeps the
+/// default).
+pub fn client_name_with(env: Option<&str>) -> String {
+    env.map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| DEFAULT_CLIENT_NAME.to_string())
+}
+
+/// The client name sent to providers (`PILLAR_CLIENT_NAME`, default `pi`).
+pub fn client_name() -> String {
+    client_name_with(std::env::var(CLIENT_NAME_ENV).ok().as_deref())
+}
+
+/// Resolve the referer URL from `PILLAR_REFERER_URL`; an explicitly empty
+/// value means "send no referer".
+pub fn referer_url_with(env: Option<&str>) -> Option<String> {
+    match env {
+        None => Some(DEFAULT_REFERER_URL.to_string()),
+        Some(value) if value.trim().is_empty() => None,
+        Some(value) => Some(value.trim().to_string()),
+    }
+}
+
+/// The attribution referer URL (`PILLAR_REFERER_URL`, default
+/// `https://pi.dev`; empty disables the header).
+pub fn referer_url() -> Option<String> {
+    referer_url_with(std::env::var(REFERER_URL_ENV).ok().as_deref())
+}
+
+/// The user agent for `client` (upstream `getPiUserAgent()`).
+pub fn user_agent_for(client: &str) -> String {
+    format!("{} ({} {})", client, std::env::consts::OS, std::env::consts::ARCH)
+}
+
+/// Resolved user agent for provider requests (upstream `getPiUserAgent()`).
 ///
 /// divergence: upstream uses the Node `os` module (platform, release,
 /// architecture); the Rust port uses compile-time `std::env::consts` and has
-/// no OS release string.
-pub fn get_pi_user_agent() -> String {
-    format!("pi ({} {})", std::env::consts::OS, std::env::consts::ARCH)
+/// no OS release string. The client name is overridable with
+/// `PILLAR_CLIENT_NAME` (default `pi`).
+pub fn get_user_agent() -> String {
+    user_agent_for(&client_name())
 }
 
 /// Resolve the effective cache retention from options and env (upstream

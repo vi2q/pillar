@@ -405,3 +405,84 @@ fn check_session_cwd_exists_returns_error() {
     };
     assert!(check_session_cwd_exists(&session, "/tmp").is_ok());
 }
+
+// --- provider attribution with a client identity --------------------------------
+
+/// Every overridable protocol value follows `ClientIdentity`, so a pillar
+/// build (or `PILLAR_CLIENT_NAME=pillar`) sends pillar branding while the
+/// functional headers (`x-opencode-session`, categories) stay as-is.
+#[test]
+fn client_identity_overrides_the_pillar_protocol_values() {
+    use pillar_coding_agent::core::provider_attribution::{
+        ClientIdentity, merge_provider_attribution_headers_with,
+    };
+
+    let identity = ClientIdentity {
+        client_name: "pillar".to_string(),
+        referer_url: Some("https://pillar.test".to_string()),
+    };
+
+    let openrouter = model("openrouter", "kimi", "https://openrouter.ai/api/v1");
+    let merged =
+        merge_provider_attribution_headers_with(&openrouter, true, None, &identity, &[]).unwrap();
+    assert_eq!(
+        merged.get("X-OpenRouter-Title").unwrap(),
+        &Some("pillar".to_string())
+    );
+    assert_eq!(
+        merged.get("HTTP-Referer").unwrap(),
+        &Some("https://pillar.test".to_string())
+    );
+    assert_eq!(
+        merged.get("X-OpenRouter-Categories").unwrap(),
+        &Some("cli-agent".to_string())
+    );
+
+    let nvidia = model("nvidia", "nemotron", "https://integrate.api.nvidia.com/v1");
+    let merged =
+        merge_provider_attribution_headers_with(&nvidia, true, None, &identity, &[]).unwrap();
+    assert_eq!(
+        merged.get("X-BILLING-INVOKE-ORIGIN").unwrap(),
+        &Some("Pillar".to_string())
+    );
+
+    let cloudflare = model("cloudflare-workers-ai", "kimi", "https://api.cloudflare.com");
+    let merged =
+        merge_provider_attribution_headers_with(&cloudflare, true, None, &identity, &[]).unwrap();
+    assert_eq!(
+        merged.get("User-Agent").unwrap(),
+        &Some("pillar-coding-agent".to_string())
+    );
+
+    let opencode = model("opencode-go", "omen-alpha", "https://opencode.ai/zen/go/v1");
+    let merged =
+        merge_provider_attribution_headers_with(&opencode, true, Some("sess-1"), &identity, &[])
+            .unwrap();
+    assert_eq!(
+        merged.get("x-opencode-client").unwrap(),
+        &Some("pillar".to_string())
+    );
+    assert_eq!(
+        merged.get("x-opencode-session").unwrap(),
+        &Some("sess-1".to_string()),
+        "the session id is functional and never renamed"
+    );
+}
+
+/// An empty referer URL drops the header instead of sending an empty value.
+#[test]
+fn empty_referer_url_omits_the_header() {
+    use pillar_coding_agent::core::provider_attribution::{
+        ClientIdentity, merge_provider_attribution_headers_with,
+    };
+
+    let identity = ClientIdentity {
+        client_name: "pillar".to_string(),
+        referer_url: None,
+    };
+    let m = model("openrouter", "kimi", "https://openrouter.ai/api/v1");
+    let merged =
+        merge_provider_attribution_headers_with(&m, true, None, &identity, &[]).unwrap();
+    assert!(!merged.contains_key("HTTP-Referer"), "{merged:?}");
+    assert!(merged.contains_key("X-OpenRouter-Title"));
+}

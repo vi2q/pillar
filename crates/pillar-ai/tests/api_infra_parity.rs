@@ -7,6 +7,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
+use pillar_ai::api::{client_name_with, referer_url_with, user_agent_for};
 use pillar_ai::constrained_sampling::{
     GrammarToolInputJsonBuffer, append_grammar_tool_input_json_delta,
     get_json_schema_tool_parameters, make_strict_json_schema, resolve_json_schema_strict_sampling,
@@ -877,4 +878,35 @@ fn provider_headers_to_record_drops_suppressed_and_empty() {
 #[test]
 fn reqwest_fetch_constructs() {
     pillar_ai::transport::ReqwestFetch::new().expect("default transport builds");
+}
+
+// --- client identity (PILLAR_CLIENT_NAME / PILLAR_REFERER_URL) -----------------
+
+#[test]
+fn client_name_defaults_to_pi_and_accepts_an_override() {
+    assert_eq!(client_name_with(None), "pi");
+    assert_eq!(client_name_with(Some("")), "pi");
+    assert_eq!(client_name_with(Some("   ")), "pi");
+    assert_eq!(client_name_with(Some("pillar")), "pillar");
+    assert_eq!(client_name_with(Some("  pillar  ")), "pillar");
+}
+
+#[test]
+fn referer_url_defaults_to_pi_dev_and_empty_disables_it() {
+    assert_eq!(referer_url_with(None).as_deref(), Some("https://pi.dev"));
+    assert_eq!(referer_url_with(Some("")), None);
+    assert_eq!(referer_url_with(Some("   ")), None);
+    assert_eq!(
+        referer_url_with(Some("https://example.test")).as_deref(),
+        Some("https://example.test")
+    );
+}
+
+#[test]
+fn user_agent_uses_the_client_name() {
+    assert_eq!(
+        user_agent_for("pi"),
+        format!("pi ({} {})", std::env::consts::OS, std::env::consts::ARCH)
+    );
+    assert!(user_agent_for("pillar").starts_with("pillar ("));
 }

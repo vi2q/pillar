@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 
 use crate::AbortSignal;
 use crate::api::impl_from_request_options;
-use crate::api::{ProviderResponseInfo, get_pi_user_agent};
+use crate::api::{ProviderResponseInfo, get_user_agent};
 use crate::diagnostics::append_assistant_message_diagnostic;
 use crate::event_stream::AssistantMessageEventStream;
 use crate::json_parse::parse_streaming_json;
@@ -744,7 +744,7 @@ async fn run_stream_inner(
     }
 
     let mut headers = vec![
-        ("User-Agent".to_string(), get_pi_user_agent()),
+        ("User-Agent".to_string(), get_user_agent()),
         ("Authorization".to_string(), format!("Bearer {api_key}")),
         ("accept".to_string(), "text/event-stream".to_string()),
         ("Content-Type".to_string(), "application/json".to_string()),

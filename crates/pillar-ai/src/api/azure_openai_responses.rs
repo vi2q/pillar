@@ -22,7 +22,7 @@ use crate::api::openai_responses_shared::{
     convert_responses_tools, process_responses_stream,
 };
 use crate::api::{
-    OnPayloadFn, OnResponseFn, ProviderHeaders, ProviderResponseInfo, get_pi_user_agent,
+    OnPayloadFn, OnResponseFn, ProviderHeaders, ProviderResponseInfo, get_user_agent,
     merge_request_headers,
 };
 use crate::assistant_message_event_stream;
@@ -529,7 +529,7 @@ async fn run_stream_inner(
 
     let headers = merge_request_headers(
         vec![
-            ("User-Agent".to_string(), get_pi_user_agent()),
+            ("User-Agent".to_string(), get_user_agent()),
             ("Authorization".to_string(), format!("Bearer {api_key}")),
             ("Content-Type".to_string(), "application/json".to_string()),
         ],

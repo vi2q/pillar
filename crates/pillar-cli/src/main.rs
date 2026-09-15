@@ -220,7 +220,9 @@ fn resolve_cli_model_selection(
         // A `--model <pattern>:<thinking>` shorthand only applies when
         // `--thinking` was not given explicitly.
         if parsed.thinking.is_none() {
-            thinking_level = resolved.thinking_level.map(|level| level.as_str().to_string());
+            thinking_level = resolved
+                .thinking_level
+                .map(|level| level.as_str().to_string());
         }
     }
 
@@ -230,7 +232,11 @@ fn resolve_cli_model_selection(
         for diagnostic in scope.diagnostics {
             eprintln!("Warning: {}", diagnostic.message);
         }
-        scoped_models = scope.scoped_models.into_iter().map(ScopedModel::from).collect();
+        scoped_models = scope
+            .scoped_models
+            .into_iter()
+            .map(ScopedModel::from)
+            .collect();
     }
 
     Ok(CliModelSelection {

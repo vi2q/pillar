@@ -15,7 +15,7 @@ use crate::abort::AbortSignal;
 use crate::api::impl_from_request_options;
 use crate::api::openai_prompt_cache::clamp_openai_prompt_cache_key;
 use crate::api::{
-    OnPayloadFn, OnResponseFn, ProviderResponseInfo, get_pi_user_agent, merge_request_headers,
+    OnPayloadFn, OnResponseFn, ProviderResponseInfo, get_user_agent, merge_request_headers,
     resolve_cache_retention,
 };
 use crate::api::{fetch_json_stream, format_stream_error};
@@ -929,7 +929,7 @@ fn build_request_headers(
     session_id: Option<&str>,
 ) -> Vec<(String, String)> {
     let mut defaults = vec![
-        ("User-Agent".to_string(), get_pi_user_agent()),
+        ("User-Agent".to_string(), get_user_agent()),
         ("Authorization".to_string(), format!("Bearer {api_key}")),
         ("Content-Type".to_string(), "application/json".to_string()),
     ];

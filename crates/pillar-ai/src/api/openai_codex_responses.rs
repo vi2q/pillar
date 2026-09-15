@@ -31,7 +31,7 @@ use crate::api::openai_responses_shared::{
     ConvertResponsesMessagesOptions, ConvertResponsesToolsOptions, ProcessResponsesStreamOptions,
     convert_responses_messages, convert_responses_tools, process_responses_stream,
 };
-use crate::api::{OnPayloadFn, OnResponseFn, ProviderResponseInfo, get_pi_user_agent};
+use crate::api::{OnPayloadFn, OnResponseFn, ProviderResponseInfo, get_user_agent};
 use crate::constrained_sampling::create_grammar_tool_input_properties;
 use crate::deferred_tools::split_deferred_tools;
 use crate::diagnostics::append_assistant_message_diagnostic;
@@ -1287,7 +1287,7 @@ fn build_base_codex_headers(
     set_header(&mut headers, "Authorization", &format!("Bearer {token}"));
     set_header(&mut headers, "chatgpt-account-id", account_id);
     set_header(&mut headers, "originator", "pi");
-    set_header(&mut headers, "User-Agent", &get_pi_user_agent());
+    set_header(&mut headers, "User-Agent", &get_user_agent());
     headers
 }
 

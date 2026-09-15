@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use pillar_ai::auth_types::{ApiKeyAuth, ApiKeyAuthInput, AuthResult, ModelAuth, ProviderAuth};
 use pillar_ai::error::AiError;
-use pillar_ai::event_stream::{assistant_message_event_stream, AssistantMessageEventStream};
+use pillar_ai::event_stream::{AssistantMessageEventStream, assistant_message_event_stream};
 use pillar_ai::models::{Provider, ProviderApi, ProviderStreams, StreamFn, StreamRequestOptions};
 use pillar_ai::types::{
     AssistantMessage, AssistantMessageEvent, Content, Context, Model, ProviderHeaders, StopReason,
@@ -202,14 +202,22 @@ async fn opencode_session_requests_carry_the_session_headers() {
         .await
         .expect("prompt succeeds");
 
-    let headers = captured.lock().expect("captured").clone().unwrap_or_default();
+    let headers = captured
+        .lock()
+        .expect("captured")
+        .clone()
+        .unwrap_or_default();
     assert_eq!(
-        headers.get("x-opencode-session").and_then(|value| value.as_deref()),
+        headers
+            .get("x-opencode-session")
+            .and_then(|value| value.as_deref()),
         Some(session_id.as_str()),
         "{headers:?}"
     );
     assert_eq!(
-        headers.get("x-opencode-client").and_then(|value| value.as_deref()),
+        headers
+            .get("x-opencode-client")
+            .and_then(|value| value.as_deref()),
         Some("pi"),
         "{headers:?}"
     );

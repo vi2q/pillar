@@ -287,7 +287,7 @@ pub fn create_client_identity(
         ));
         let defaults = crate::api::merge_request_headers(
             {
-                let mut with_ua = vec![("User-Agent".to_string(), crate::api::get_pi_user_agent())];
+                let mut with_ua = vec![("User-Agent".to_string(), crate::api::get_user_agent())];
                 with_ua.extend(base);
                 with_ua
             },
@@ -337,7 +337,7 @@ pub fn create_client_identity(
         ));
         let defaults = crate::api::merge_request_headers(
             {
-                let mut with_ua = vec![("User-Agent".to_string(), crate::api::get_pi_user_agent())];
+                let mut with_ua = vec![("User-Agent".to_string(), crate::api::get_user_agent())];
                 with_ua.extend(base);
                 with_ua
             },
@@ -363,7 +363,7 @@ pub fn create_client_identity(
     }
     let defaults = crate::api::merge_request_headers(
         {
-            let mut with_ua = vec![("User-Agent".to_string(), crate::api::get_pi_user_agent())];
+            let mut with_ua = vec![("User-Agent".to_string(), crate::api::get_user_agent())];
             with_ua.extend(base);
             with_ua.extend(session_affinity_headers);
             with_ua

@@ -56,6 +56,7 @@ Every intentional divergence from upstream carries a `// divergence:` comment in
 | Extension runtime: TypeScript/jiti → Luau on luaur | Project goal | [04-luau-extensions.md](04-luau-extensions.md) |
 | Extension API method names snake_cased | Luau convention; event names and LLM-boundary keys unchanged | [04-luau-extensions.md](04-luau-extensions.md) |
 | Identity and paths are `pillar`, not `pi`: `APP_NAME`, `--version`, the system prompt, `~/.pillar/agent`, `CONFIG_DIR_NAME = ".pillar"`, extension discovery, and `PILLAR_*` environment variables | Project goal (user decision 2026-09-15): the agent must not present itself as pi. Session/config *formats* stay pi-compatible, but the old `~/.pi` / `PI_*` locations are not read — migrate by copying `~/.pi/agent` to `~/.pillar/agent` | [02-porting-policy.md](02-porting-policy.md) |
+| Provider protocol values (`User-Agent`, `x-opencode-client`, OpenRouter/NVIDIA/Cloudflare attribution) default to the upstream-verified values but follow `PILLAR_CLIENT_NAME` / `PILLAR_REFERER_URL` | Changing them can affect provider-side client checks and routing; the env override allows switching to pillar branding without a rebuild and without breaking a working setup | This file |
 | No npm package sharing for extensions | Luau modules have no npm graph; git packages still supported | [04-luau-extensions.md](04-luau-extensions.md) |
 
 New divergences require a row here and a test ([05-testing-parity.md](05-testing-parity.md), "Every `// divergence:` comment has a test").

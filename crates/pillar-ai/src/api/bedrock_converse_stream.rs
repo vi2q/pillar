@@ -27,7 +27,7 @@
 use serde_json::{Map, Value, json};
 
 use crate::api::{
-    OnPayloadFn, OnResponseFn, ProviderResponseInfo, get_pi_user_agent, impl_from_request_options,
+    OnPayloadFn, OnResponseFn, ProviderResponseInfo, get_user_agent, impl_from_request_options,
     resolve_cache_retention,
 };
 use crate::constrained_sampling::{
@@ -392,7 +392,7 @@ async fn run_stream_inner(
     // --- Send request (upstream `client.send(command, {abortSignal})`) ---
     let url = build_request_url(model, options)?;
     let mut headers = vec![
-        ("User-Agent".to_string(), get_pi_user_agent()),
+        ("User-Agent".to_string(), get_user_agent()),
         (
             "accept".to_string(),
             "application/vnd.amazon.eventstream".to_string(),

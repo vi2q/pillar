@@ -184,7 +184,7 @@ pub fn build_http_options(
         }
     }
     let headers = crate::api::merge_request_headers(
-        vec![("User-Agent".to_string(), crate::api::get_pi_user_agent())],
+        vec![("User-Agent".to_string(), crate::api::get_user_agent())],
         model.headers.as_ref(),
         options_headers,
     );

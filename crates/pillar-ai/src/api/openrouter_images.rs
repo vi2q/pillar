@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 
-use crate::api::{ProviderHeaders, ProviderResponseInfo, get_pi_user_agent, merge_request_headers};
+use crate::api::{ProviderHeaders, ProviderResponseInfo, get_user_agent, merge_request_headers};
 
 /// Upstream `onPayload` for images: inspect or replace the request payload
 /// before sending. Return `Some(next)` to replace, `None` to keep.
@@ -256,7 +256,7 @@ async fn generate_images_inner(
 
     let headers = merge_request_headers(
         vec![
-            ("User-Agent".to_string(), get_pi_user_agent()),
+            ("User-Agent".to_string(), get_user_agent()),
             ("Authorization".to_string(), format!("Bearer {api_key}")),
             ("Content-Type".to_string(), "application/json".to_string()),
         ],

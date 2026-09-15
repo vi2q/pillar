@@ -13,7 +13,7 @@ use pillar_ai::api::azure_openai_responses::{
     AzureOpenAIResponsesOptions, SimpleStreamOptions, resolve_deployment_name, stream,
     stream_simple,
 };
-use pillar_ai::api::{OnPayloadFn, get_pi_user_agent};
+use pillar_ai::api::{OnPayloadFn, get_user_agent};
 use pillar_ai::error::AiError;
 use pillar_ai::transport::{FetchFn, FetchRequest, FetchResponse};
 use pillar_ai::types::{Context, Model, ModelCompat, ModelCost, StopReason};
@@ -346,7 +346,7 @@ async fn uses_pi_user_agent_by_default() {
         .find(|(name, _)| name.eq_ignore_ascii_case("User-Agent"))
         .map(|(_, value)| value.clone())
         .expect("User-Agent header");
-    assert_eq!(user_agent, get_pi_user_agent());
+    assert_eq!(user_agent, get_user_agent());
 }
 
 #[tokio::test(flavor = "multi_thread")]

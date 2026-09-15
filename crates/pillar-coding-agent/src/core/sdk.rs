@@ -22,15 +22,15 @@ use crate::core::agent_session_class::{
 };
 use crate::core::auth_guidance::format_no_models_available_message;
 use crate::core::extensions_runner::ExtensionRunner;
+use crate::core::extras::{PILLAR_TELEMETRY_ENV, is_install_telemetry_enabled};
 use crate::core::model_mutation::ScopedModel;
 use crate::core::model_runtime::ModelRuntime;
+use crate::core::provider_attribution::merge_provider_attribution_headers;
 use crate::core::resource_loader::{ResourceLoader, ResourceLoaderOptions};
 use crate::core::session_entries::SessionEntry;
 use crate::core::session_manager::SessionManager;
 use crate::core::session_support::{DEFAULT_THINKING_LEVEL, THINKING_LEVEL_OPTIONS};
 use crate::core::settings_manager::{SettingsManager, SettingsManagerCreateOptions};
-use crate::core::provider_attribution::merge_provider_attribution_headers;
-use crate::core::extras::{PILLAR_TELEMETRY_ENV, is_install_telemetry_enabled};
 use crate::core::system_prompt::{BuildSystemPromptOptions, PromptPaths, build_system_prompt};
 
 /// Upstream the `transformHeaders` callback of the session stream function:
