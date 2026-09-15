@@ -17,7 +17,8 @@
 //! render request through [`InteractiveMode::mark_dirty`] instead of calling
 //! `ui.requestRender()` from the event handlers.
 
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -31,6 +32,8 @@ use crate::core::agent_session_class::{AgentSession, AgentSessionEvent, PromptOp
 use crate::core::extensions_types::MarkdownTransformer;
 use crate::core::keybindings::KeybindingsManager;
 use crate::core::model_mutation::CycleDirection;
+use crate::core::session_manager::{SessionInfo, SessionListProgress, SessionManager};
+use crate::modes::interactive::components::session_selector::SessionScope;
 use crate::modes::interactive::interactive_mode::{
     InteractiveMode, InteractiveModeOptions, ModeAction,
 };
@@ -68,9 +71,42 @@ enum UiCommand {
         truncation: Option<crate::core::truncate::TruncationResult>,
         full_output_path: Option<String>,
     },
+    /// A session-list load's intermediate progress (upstream the loaders'
+    /// `onProgress` callback).
+    SessionsProgress {
+        scope: SessionScope,
+        loaded: usize,
+        total: usize,
+    },
+    /// A session-list load settled (upstream the loader promise resolving).
+    SessionsLoaded {
+        scope: SessionScope,
+        sessions: Vec<SessionInfo>,
+    },
+    /// A session delete settled (upstream `deleteSessionFile`).
+    SessionDeleted {
+        path: String,
+        ok: bool,
+        moved_to_trash: bool,
+        error: Option<String>,
+    },
+    /// A session rename settled (upstream the `renameSession` callback).
+    SessionRenamed { error: Option<String> },
+}
+
+/// How [`run_interactive`] ends (upstream the interactive mode keeps running
+/// across session switches; the port rebuilds it).
+#[derive(Debug, PartialEq, Eq)]
+pub enum InteractiveOutcome {
+    /// The exit code (upstream `stop` + `process.exit`).
+    Exit(i32),
+    /// `/resume` picked a session file: the caller re-enters the run loop
+    /// with a session built from it.
+    SwitchSession { session_path: String },
 }
 
 /// Options for [`run_interactive`].
+#[derive(Clone)]
 pub struct InteractiveRunOptions {
     pub mode: InteractiveModeOptions,
     pub transcript: TranscriptSettings,
@@ -99,7 +135,7 @@ pub async fn run_interactive(
     session: Arc<AgentSession>,
     terminal: Box<dyn Terminal>,
     options: InteractiveRunOptions,
-) -> Result<i32, String> {
+) -> Result<InteractiveOutcome, String> {
     let InteractiveRunOptions {
         mode: mut mode_options,
         transcript,
@@ -275,7 +311,7 @@ pub async fn run_interactive(
     unsubscribe();
     session.dispose();
     match pump_result {
-        Ok(Ok(())) => Ok(0),
+        Ok(Ok(outcome)) => Ok(outcome),
         Ok(Err(error)) => Err(error),
         Err(_) => Err("the interactive render loop panicked".to_string()),
     }
@@ -286,7 +322,7 @@ pub async fn run_interactive(
 pub async fn run_interactive_process(
     session: Arc<AgentSession>,
     options: InteractiveRunOptions,
-) -> Result<i32, String> {
+) -> Result<InteractiveOutcome, String> {
     run_interactive(session, Box::new(ProcessTerminal::new()), options).await
 }
 
@@ -392,9 +428,104 @@ async fn execute_action(
             });
             Ok(())
         }
+        // Upstream the session-selector loaders (`SessionsLoader`): scan the
+        // scope's directories and report the result. The progress callback
+        // streams intermediate `SessionsProgress` commands.
+        ModeAction::LoadSessions { scope } => {
+            let (cwd, session_dir, uses_default) = {
+                let manager = session.session_manager().lock().expect("session lock");
+                (
+                    manager.cwd().to_string(),
+                    manager.session_dir().to_path_buf(),
+                    manager.uses_default_session_dir(),
+                )
+            };
+            let progress_ui = ui.clone();
+            let progress: SessionListProgress = Arc::new(move |loaded, total| {
+                let _ = progress_ui.send(UiCommand::SessionsProgress {
+                    scope,
+                    loaded,
+                    total,
+                });
+            });
+            let sessions = match scope {
+                SessionScope::Current => {
+                    SessionManager::list(&cwd, Some(&session_dir), Some(&progress))
+                }
+                SessionScope::All => {
+                    if uses_default {
+                        SessionManager::list_all(None, Some(&progress))
+                    } else {
+                        SessionManager::list_all(Some(&session_dir), Some(&progress))
+                    }
+                }
+            };
+            let _ = ui.send(UiCommand::SessionsLoaded { scope, sessions });
+            Ok(())
+        }
+        // Upstream `deleteSessionFile`: try the `trash` CLI first, then fall
+        // back to a permanent unlink.
+        ModeAction::DeleteSession { path } => {
+            let result = delete_session_file(Path::new(&path));
+            let _ = ui.send(UiCommand::SessionDeleted {
+                path,
+                ok: result.is_ok(),
+                moved_to_trash: result == Ok(true),
+                error: result.err(),
+            });
+            Ok(())
+        }
+        // Upstream the selector's `renameSession`: open the target file and
+        // append a `session_info` entry.
+        ModeAction::RenameSession { path, name } => {
+            let result = SessionManager::open(Path::new(&path), None, None)
+                .and_then(|mut manager| manager.append_session_info(&name));
+            let _ = ui.send(UiCommand::SessionRenamed {
+                error: result.err(),
+            });
+            Ok(())
+        }
+        // The pump owns the session switch (it ends the run loop); the
+        // executor only sees a no-op.
+        ModeAction::ResumeSession { .. } => Ok(()),
         ModeAction::Shutdown => Ok(()),
         // Handled by the pump (it owns the TUI); never reaches the executor.
         ModeAction::EditorSlotChanged => Ok(()),
+    }
+}
+
+/// Upstream `deleteSessionFile`: move the file to the trash with the `trash`
+/// CLI when it is installed, else unlink it. `Ok(true)` = trash,
+/// `Ok(false)` = unlinked.
+fn delete_session_file(path: &Path) -> Result<bool, String> {
+    let trash = std::process::Command::new("trash")
+        .arg(if path.starts_with("-") {
+            format!("--{}", path.to_string_lossy())
+        } else {
+            path.to_string_lossy().to_string()
+        })
+        .output();
+    let mut trash_hint = None;
+    if let Ok(output) = &trash {
+        if output.status.success() {
+            return Ok(true);
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let first_line = stderr.lines().next().unwrap_or("").trim().to_string();
+        if !first_line.is_empty() {
+            trash_hint = Some(first_line);
+        }
+    }
+    // Fallback to permanent deletion (upstream the unlink fallback).
+    match fs::remove_file(path) {
+        Ok(()) => Ok(false),
+        Err(error) => {
+            let message = match trash_hint {
+                Some(hint) => format!("{error} (trash: {hint})"),
+                None => error.to_string(),
+            };
+            Err(message)
+        }
     }
 }
 
@@ -436,7 +567,7 @@ fn pump_loop(
     mut theme_controller: InteractiveThemeController,
     theme_errors: Arc<Mutex<Vec<String>>>,
     theme_changed: Arc<AtomicBool>,
-) -> Result<(), String> {
+) -> Result<InteractiveOutcome, String> {
     let interval = Duration::from_millis(PUMP_INTERVAL_MS);
     // Upstream `init()` applies the settings theme once the UI is running.
     // It runs inside the loop because the detection queries pump input:
@@ -451,7 +582,7 @@ fn pump_loop(
     let mut theme_applied = false;
     let result = loop {
         if shutdown.load(Ordering::SeqCst) {
-            break Ok(());
+            break Ok(InteractiveOutcome::Exit(0));
         }
 
         if !theme_applied {
@@ -509,6 +640,25 @@ fn pump_loop(
                     mode.complete_model_cycle(&provider, &id);
                     Vec::new()
                 }
+                UiCommand::SessionsProgress {
+                    scope,
+                    loaded,
+                    total,
+                } => {
+                    mode.session_load_progress(scope, loaded, total);
+                    Vec::new()
+                }
+                UiCommand::SessionsLoaded { scope, sessions } => {
+                    mode.session_list_loaded(scope, sessions);
+                    Vec::new()
+                }
+                UiCommand::SessionDeleted {
+                    path,
+                    ok,
+                    moved_to_trash,
+                    error,
+                } => mode.complete_session_delete(&path, ok, moved_to_trash, error),
+                UiCommand::SessionRenamed { error } => mode.complete_session_rename(error),
             };
             for action in reported {
                 if dispatch_action(&mut screen, &mode, editor_slot, &actions, action).is_err() {
@@ -537,6 +687,7 @@ fn pump_loop(
 
         // Terminal input.
         let mut requested_shutdown = false;
+        let mut resume_path: Option<String> = None;
         let data = screen.base_mut().terminal_mut().read_input(interval);
         // On idle, a buffered partial escape sequence flushes once its
         // disambiguation deadline passed (upstream the StdinBuffer's own
@@ -557,9 +708,20 @@ fn pump_loop(
             if matches!(action, ModeAction::Shutdown) {
                 requested_shutdown = true;
             }
+            // Upstream `onSelect` → `handleResumeSession`: the session switch
+            // replaces the whole runtime, which in this port ends the run
+            // loop; the caller re-enters it with the new session. The close
+            // action (if any) already dispatched.
+            if let ModeAction::ResumeSession { session_path } = action {
+                resume_path = Some(session_path);
+                break;
+            }
             if dispatch_action(&mut screen, &mode, editor_slot, &actions, action).is_err() {
                 break;
             }
+        }
+        if let Some(session_path) = resume_path {
+            break Ok(InteractiveOutcome::SwitchSession { session_path });
         }
 
         // Rendering (a shutdown request still paints the final frame).
@@ -579,7 +741,7 @@ fn pump_loop(
             }
         }
         if requested_shutdown {
-            break Ok(());
+            break Ok(InteractiveOutcome::Exit(0));
         }
     };
 

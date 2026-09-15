@@ -33,7 +33,9 @@ use pillar_coding_agent::core::resource_loader::{ResourceLoader, ResourceLoaderO
 use pillar_coding_agent::core::session_manager::SessionManager;
 use pillar_coding_agent::core::settings_manager::{SettingsManager, SettingsManagerCreateOptions};
 use pillar_coding_agent::modes::interactive::interactive_mode::InteractiveModeOptions;
-use pillar_coding_agent::modes::interactive::run::{InteractiveRunOptions, run_interactive};
+use pillar_coding_agent::modes::interactive::run::{
+    InteractiveOutcome, InteractiveRunOptions, run_interactive,
+};
 use pillar_coding_agent::modes::interactive::theme;
 use pillar_coding_agent::modes::interactive::transcript::TranscriptSettings;
 use pillar_tui::process_terminal::{ProcessTerminal, TerminalIo};
@@ -406,7 +408,7 @@ async fn typing_a_prompt_runs_it_and_quit_shuts_down() {
     .expect("run loop finished")
     .expect("run loop ok");
 
-    assert_eq!(result, 0);
+    assert_eq!(result, InteractiveOutcome::Exit(0));
     assert!(harness.started.load(Ordering::SeqCst), "terminal started");
     assert!(harness.stopped.load(Ordering::SeqCst), "terminal stopped");
 
@@ -455,7 +457,7 @@ async fn ctrl_d_on_an_empty_editor_shuts_down_without_prompting() {
     .expect("run loop finished")
     .expect("run loop ok");
 
-    assert_eq!(result, 0);
+    assert_eq!(result, InteractiveOutcome::Exit(0));
     assert!(session.state().messages.is_empty(), "no prompt was sent");
 }
 
@@ -495,7 +497,7 @@ async fn bash_submission_executes_and_records_the_result() {
     .expect("run loop finished")
     .expect("run loop ok");
 
-    assert_eq!(result, 0);
+    assert_eq!(result, InteractiveOutcome::Exit(0));
     let messages = session.state().messages;
     let bash = messages.iter().find_map(|message| match message {
         pillar_agent::types::AgentMessage::BashExecution(bash) => Some(bash.clone()),
@@ -590,7 +592,7 @@ async fn escape_cancels_the_selector() {
         }
     };
 
-    assert_eq!(result, 0);
+    assert_eq!(result, InteractiveOutcome::Exit(0));
     assert_eq!(
         session.state().model.id,
         "claude-sonnet-4-5",
@@ -666,7 +668,7 @@ async fn kitty_protocol_arrows_drive_the_model_picker() {
     .expect("run loop finished")
     .expect("run loop ok");
 
-    assert_eq!(result, 0);
+    assert_eq!(result, InteractiveOutcome::Exit(0));
     assert_eq!(
         session.state().model.id,
         "claude-sonnet-4-5",
@@ -725,7 +727,7 @@ async fn typing_a_slash_command_completes_it_and_enter_submits() {
     .expect("run loop finished")
     .expect("run loop ok");
 
-    assert_eq!(result, 0);
+    assert_eq!(result, InteractiveOutcome::Exit(0));
     let output = rendered(&harness.writes);
     assert!(
         output.contains("thinking"),
@@ -817,7 +819,7 @@ async fn scoped_models_selector_toggles_the_scope_and_closes() {
     .expect("run loop finished")
     .expect("run loop ok");
 
-    assert_eq!(result, 0);
+    assert_eq!(result, InteractiveOutcome::Exit(0));
     assert_eq!(
         session
             .scoped_models()
@@ -843,5 +845,70 @@ async fn scoped_models_selector_toggles_the_scope_and_closes() {
     assert!(
         output.contains("1/14 enabled"),
         "the toggle repainted the count: {output:?}"
+    );
+}
+
+/// `/resume` end to end: the selector renders in the editor slot with the
+/// loading header, the empty current folder falls through to the hint, Tab
+/// switches the scope (the load runs on the executor), and Escape closes
+/// without resuming anything.
+#[tokio::test]
+async fn resume_opens_the_session_selector_and_escape_cancels() {
+    install_dark();
+    let session = session(echo_stream("pong"), "resume");
+    let mut harness = harness(vec!["/resume\r".to_string()], None);
+    let chunks = Arc::clone(&harness.chunks);
+    let writes = Arc::clone(&harness.writes);
+    std::thread::spawn(move || {
+        // Wait for the selector frame, then Escape closes it.
+        for _ in 0..600 {
+            if strip_terminal_sequences(&writes.lock().unwrap())
+                .contains("Resume Session (Current Folder)")
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+        chunks.lock().unwrap().push("\u{1b}".to_string());
+        std::thread::sleep(Duration::from_millis(100));
+        chunks.lock().unwrap().push("/quit\r".to_string());
+    });
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        run_interactive(
+            Arc::clone(&session),
+            Box::new(std::mem::replace(
+                &mut harness.terminal,
+                ProcessTerminal::with_io(Box::new(pillar_tui::process_terminal::NullTerminalIo)),
+            )),
+            run_options(temp_dir("resume-run")),
+        ),
+    )
+    .await
+    .expect("run loop finished")
+    .expect("run loop ok");
+
+    assert_eq!(result, InteractiveOutcome::Exit(0));
+    let output = rendered(&harness.writes);
+    assert!(
+        output.contains("Resume Session (Curr"),
+        "selector rendered: {output:?}"
+    );
+    assert!(
+        output.contains("re:<pattern> regex"),
+        "the search hints rendered: {output:?}"
+    );
+    assert!(
+        output.contains("No sessions in current folder. Press Tab to view all."),
+        "the empty current folder shows the hint: {output:?}"
+    );
+    // The loaded (empty) list leaves the loading state.
+    assert!(output.contains("◉ Current Folder"), "{output:?}");
+    // Escape cancelled; nothing was resumed.
+    assert!(
+        !output.contains("Resumed session"),
+        "Esc cancelled the selector: {output:?}"
     );
 }

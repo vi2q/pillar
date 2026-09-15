@@ -12,13 +12,13 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use pillar_ai::types::Usage;
-
-use pillar_ai::types::Message;
+use pillar_ai::types::{Content, Message, Usage, UserContent};
 
 use crate::core::messages::{CodingAgentMessage, CustomContent, CustomMessage};
 use crate::core::session_entries::{
@@ -1108,7 +1108,7 @@ impl SessionManager {
         fs::write(session_file, content).map_err(|e| format!("Failed to write session: {e}"))
     }
 
-    fn persist_entry(&self, entry: &Entry) -> Result<(), String> {
+    fn persist_entry(&mut self, entry: &Entry) -> Result<(), String> {
         if !self.persist {
             return Ok(());
         }
@@ -1159,6 +1159,10 @@ impl SessionManager {
                 .map_err(|e| format!("Failed to write session: {e}"))?;
             file.write_all(content.as_bytes())
                 .map_err(|e| format!("Failed to write session: {e}"))?;
+            // Upstream `_persist` marks the session flushed once the file
+            // exists (the port missed this, so the next append retried the
+            // exclusive create and failed with `File exists`).
+            self.flushed = true;
         } else {
             use std::io::Write;
             fs::OpenOptions::new()
@@ -1177,7 +1181,8 @@ impl SessionManager {
         let index = self.file_entries.len() - 1;
         self.by_id.insert(id.clone(), index);
         self.leaf_id = Some(id.clone());
-        self.persist_entry(self.file_entries[index].entry_clone())?;
+        let entry_clone = self.file_entries[index].entry_clone().clone();
+        self.persist_entry(&entry_clone)?;
         Ok(id)
     }
 
@@ -1537,7 +1542,8 @@ impl SessionManager {
         let index = self.file_entries.len() - 1;
         self.by_id.insert(id.clone(), index);
         self.leaf_id = Some(id.clone());
-        self.persist_entry(self.file_entries[index].entry_clone())?;
+        let entry_clone = self.file_entries[index].entry_clone().clone();
+        self.persist_entry(&entry_clone)?;
         Ok(id)
     }
 
@@ -1589,6 +1595,85 @@ impl SessionManager {
     /// `SessionManager.inMemory`).
     pub fn in_memory(cwd: &str, options: Option<&NewSessionOptions>) -> Result<Self, String> {
         Self::new(cwd, Path::new(""), None, false, options)
+    }
+
+    // --- listing ------------------------------------------------------------------
+
+    /// List the sessions of one directory (upstream `SessionManager.list`):
+    /// without a session dir this is the cwd's default dir (no cwd filter);
+    /// with one, only sessions whose header cwd matches the cwd are listed.
+    /// Sorted by last activity, newest first.
+    pub fn list(
+        cwd: &str,
+        session_dir: Option<&Path>,
+        progress: Option<&SessionListProgress>,
+    ) -> Vec<SessionInfo> {
+        let dir = session_dir
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| default_session_dir_path(cwd));
+        let filter_cwd = session_dir.is_some() && dir != default_session_dir_path(cwd);
+        let resolved_cwd = crate::core::tools::path_utils::resolve_to_cwd(cwd, "/");
+        let mut sessions: Vec<SessionInfo> = list_sessions_from_dir(&dir, progress)
+            .into_iter()
+            .filter(|session| {
+                !filter_cwd || session_cwd_matches(&session.cwd, &resolved_cwd.to_string_lossy())
+            })
+            .collect();
+        sessions.sort_by(|a, b| b.modified_ms.cmp(&a.modified_ms));
+        sessions
+    }
+
+    /// List all sessions across the sessions root (upstream
+    /// `SessionManager.listAll`): every project directory under it, one
+    /// progress callback for the combined file count.
+    pub fn list_all(
+        session_dir: Option<&Path>,
+        progress: Option<&SessionListProgress>,
+    ) -> Vec<SessionInfo> {
+        if let Some(dir) = session_dir {
+            let mut sessions = list_sessions_from_dir(dir, progress);
+            sessions.sort_by(|a, b| b.modified_ms.cmp(&a.modified_ms));
+            return sessions;
+        }
+        let sessions_root = default_sessions_root();
+        let Ok(entries) = fs::read_dir(&sessions_root) else {
+            return Vec::new();
+        };
+        let dirs: Vec<PathBuf> = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.is_dir() || path.is_symlink())
+            .collect();
+
+        // Collect the files per project dir; the combined load below reports
+        // progress across all of them (upstream the same two-pass structure).
+        let mut dir_files: Vec<Vec<PathBuf>> = Vec::new();
+        for dir in &dirs {
+            let files = fs::read_dir(dir)
+                .map(|entries| {
+                    entries
+                        .flatten()
+                        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "jsonl"))
+                        .map(|entry| entry.path())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            dir_files.push(files);
+        }
+        let files: Vec<PathBuf> = dir_files.into_iter().flatten().collect();
+
+        let loaded = Arc::new(AtomicUsize::new(0));
+        let combined_progress: Option<SessionListProgress> = progress.map(|callback| {
+            let loaded = Arc::clone(&loaded);
+            let callback = Arc::clone(callback);
+            Arc::new(move |_, total| {
+                let current = loaded.fetch_add(1, Ordering::SeqCst) + 1;
+                callback(current, total);
+            }) as SessionListProgress
+        });
+        let mut sessions = load_session_infos(&files, combined_progress.as_ref());
+        sessions.sort_by(|a, b| b.modified_ms.cmp(&a.modified_ms));
+        sessions
     }
 
     // --- accessors ----------------------------------------------------------------
@@ -1829,6 +1914,247 @@ impl Entry {
             Entry::CustomMessage(e) => &mut e.base,
         }
     }
+}
+
+// ============================================================================
+// session listing (upstream `buildSessionInfo` / `listSessionsFromDir` /
+// `SessionManager.list` / `SessionManager.listAll`)
+// ============================================================================
+
+/// A session summary for the resume selector (upstream `SessionInfo`).
+///
+/// divergence: upstream carries `Date` objects; the port carries resolved
+/// millisecond timestamps (the port's convention for timestamps).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionInfo {
+    pub path: String,
+    pub id: String,
+    pub cwd: String,
+    /// The latest session-info name (explicit clears included).
+    pub name: Option<String>,
+    pub parent_session_path: Option<String>,
+    pub created_ms: Option<u64>,
+    /// Last message activity, else the header time, else the file mtime.
+    pub modified_ms: u64,
+    pub message_count: usize,
+    pub first_message: String,
+    pub all_messages_text: String,
+}
+
+/// Progress callback for the session listing (upstream
+/// `SessionListProgress`): `loaded` files of `total`.
+pub type SessionListProgress = Arc<dyn Fn(usize, usize) + Send + Sync>;
+
+/// Text blocks of a user / assistant message (upstream `extractTextContent`).
+fn extract_text_content(message: &CodingAgentMessage) -> Option<String> {
+    let blocks: Vec<&str> = match message {
+        CodingAgentMessage::Base(Message::User { content, .. }) => match content {
+            UserContent::Text(text) => vec![text.as_str()],
+            UserContent::Blocks(blocks) => blocks
+                .iter()
+                .filter_map(|block| match block {
+                    Content::Text { text, .. } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect(),
+        },
+        CodingAgentMessage::Base(Message::Assistant(assistant)) => assistant
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                Content::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect(),
+        _ => return None,
+    };
+    let text = blocks.join(" ");
+    (!text.is_empty()).then_some(text)
+}
+
+/// The message's own timestamp, else the entry timestamp (upstream
+/// `getMessageActivityTime`; only user / assistant messages count).
+fn message_activity_time(entry: &SessionMessageEntry) -> Option<u64> {
+    let timestamp = match &entry.message {
+        CodingAgentMessage::Base(Message::User { timestamp, .. }) => Some(*timestamp),
+        CodingAgentMessage::Base(Message::Assistant(assistant)) => Some(assistant.timestamp),
+        _ => None,
+    };
+    match timestamp {
+        Some(timestamp) if timestamp > 0 => Some(timestamp),
+        Some(_) if entry.base.timestamp > 0 => Some(entry.base.timestamp),
+        Some(_) => None,
+        None => None,
+    }
+}
+
+/// Scan one session file for the resume list (upstream `buildSessionInfo`).
+/// Discovery is best-effort: unreadable or non-session files return `None`.
+pub fn build_session_info(file_path: &Path) -> Option<SessionInfo> {
+    let modified_ms = fs::metadata(file_path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| {
+            modified
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .map(|duration| duration.as_millis() as u64)
+        });
+
+    let content = fs::read_to_string(file_path).ok()?;
+    let mut header: Option<SessionHeader> = None;
+    let mut name: Option<String> = None;
+    let mut message_count = 0usize;
+    let mut first_message = String::new();
+    let mut all_messages: Vec<String> = Vec::new();
+    let mut last_activity_ms: Option<u64> = None;
+
+    for line in content.lines() {
+        match parse_session_entry_line(line) {
+            Some(FileEntry::Header(parsed)) => {
+                if header.is_none() {
+                    header = Some(parsed);
+                }
+            }
+            Some(FileEntry::Entry(entry)) => {
+                if header.is_none() {
+                    continue;
+                }
+                if let Entry::SessionInfo(info) = &entry {
+                    let trimmed = info.name.as_deref().map(str::trim).unwrap_or("");
+                    name = (!trimmed.is_empty()).then(|| trimmed.to_string());
+                }
+                let Entry::Message(message_entry) = &entry else {
+                    continue;
+                };
+                message_count += 1;
+                if let Some(activity) = message_activity_time(message_entry) {
+                    last_activity_ms =
+                        Some(last_activity_ms.map_or(activity, |latest| latest.max(activity)));
+                }
+                let Some(text) = extract_text_content(&message_entry.message) else {
+                    continue;
+                };
+                if first_message.is_empty() {
+                    if let CodingAgentMessage::Base(Message::User { .. }) = &message_entry.message {
+                        first_message = text.clone();
+                    }
+                }
+                all_messages.push(text);
+            }
+            None => {}
+        }
+    }
+
+    let header = header?;
+    let header_ms = parse_iso_timestamp(&header.timestamp);
+    let modified_ms = match last_activity_ms {
+        Some(activity) => activity,
+        None => header_ms.unwrap_or_else(|| modified_ms.unwrap_or(0)),
+    };
+    Some(SessionInfo {
+        path: file_path.to_string_lossy().to_string(),
+        id: header.id,
+        cwd: header.cwd.clone(),
+        name,
+        parent_session_path: header.parent_session.clone(),
+        created_ms: header_ms,
+        modified_ms,
+        message_count,
+        first_message: if first_message.is_empty() {
+            "(no messages)".to_string()
+        } else {
+            first_message
+        },
+        all_messages_text: all_messages.join(" "),
+    })
+}
+
+/// Load the `.jsonl` session files of one directory (upstream
+/// `listSessionsFromDir`). Files load with up to
+/// [`MAX_CONCURRENT_SESSION_INFO_LOADS`] workers (upstream the same bound).
+pub fn list_sessions_from_dir(
+    dir: &Path,
+    progress: Option<&SessionListProgress>,
+) -> Vec<SessionInfo> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let files: Vec<PathBuf> = entries
+        .flatten()
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "jsonl"))
+        .map(|entry| entry.path())
+        .collect();
+    load_session_infos(&files, progress)
+}
+
+/// Build session infos for an explicit file list (upstream
+/// `buildSessionInfosWithConcurrency` wrapped by the two listing entries).
+fn load_session_infos(
+    files: &[PathBuf],
+    progress: Option<&SessionListProgress>,
+) -> Vec<SessionInfo> {
+    let total = files.len();
+    let mut sessions: Vec<SessionInfo> = Vec::new();
+    if total == 0 {
+        return sessions;
+    }
+
+    let next_index = AtomicUsize::new(0);
+    let loaded = AtomicUsize::new(0);
+    let results: Mutex<Vec<Option<SessionInfo>>> = Mutex::new((0..total).map(|_| None).collect());
+
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..total.min(MAX_CONCURRENT_SESSION_INFO_LOADS))
+            .map(|_| {
+                scope.spawn(|| {
+                    loop {
+                        let index = next_index.fetch_add(1, Ordering::SeqCst);
+                        if index >= total {
+                            break;
+                        }
+                        let info = build_session_info(&files[index]);
+                        results.lock().expect("session results")[index] = info;
+                        let current = loaded.fetch_add(1, Ordering::SeqCst) + 1;
+                        if let Some(progress) = progress {
+                            progress(current, total);
+                        }
+                    }
+                })
+            })
+            .collect();
+        for worker in workers {
+            let _ = worker.join();
+        }
+    });
+
+    for info in results.lock().expect("session results").drain(..).flatten() {
+        sessions.push(info);
+    }
+    sessions
+}
+
+/// Upstream `MAX_CONCURRENT_SESSION_INFO_LOADS`.
+pub const MAX_CONCURRENT_SESSION_INFO_LOADS: usize = 10;
+
+/// The sessions root directory (upstream `getSessionsDir`):
+/// `<agent dir>/sessions`.
+pub fn default_sessions_root() -> PathBuf {
+    let agent_dir = std::env::var("PILLAR_CODING_AGENT_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            std::env::var("HOME")
+                .map(|home| PathBuf::from(home).join(".pillar").join("agent"))
+                .unwrap_or_else(|_| PathBuf::from(".").join(".pillar").join("agent"))
+        });
+    agent_dir.join("sessions")
+}
+
+/// Upstream `sessionCwdMatches`.
+fn session_cwd_matches(cwd: &str, resolved_cwd: &str) -> bool {
+    !cwd.is_empty()
+        && crate::core::tools::path_utils::resolve_to_cwd(cwd, "/").to_string_lossy()
+            == resolved_cwd
 }
 
 /// Validate a session id (upstream `assertValidSessionId`).

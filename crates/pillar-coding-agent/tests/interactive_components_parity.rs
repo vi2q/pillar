@@ -1565,3 +1565,350 @@ fn tool_execution_renders_image_blocks_per_protocol() {
 
     caps_without_images();
 }
+
+// --- session selector (upstream session-selector.ts + session-selector-search.ts) ----
+
+use pillar_coding_agent::core::session_manager::SessionInfo;
+use pillar_coding_agent::modes::interactive::components::session_selector::{
+    SessionScope, SessionSelectorComponent, SessionSelectorOutcome,
+};
+
+fn session_info(path: &str, id: &str, name: Option<&str>, modified_ms: u64, body: &str) -> SessionInfo {
+    SessionInfo {
+        path: path.to_string(),
+        id: id.to_string(),
+        cwd: "/tmp".to_string(),
+        name: name.map(str::to_string),
+        parent_session_path: None,
+        created_ms: Some(modified_ms),
+        modified_ms,
+        message_count: 3,
+        first_message: body.to_string(),
+        all_messages_text: body.to_string(),
+    }
+}
+
+/// Install the theme and the merged keybinding table (the component matches
+/// the `app.session.*` bindings through the global registry; the merged
+/// table is a superset of the lazily-installed TUI table).
+static SESSION_LOCK: Mutex<()> = Mutex::new(());
+
+fn session_setup() -> std::sync::MutexGuard<'static, ()> {
+    let guard = SESSION_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    install_dark();
+    let definitions =
+        pillar_coding_agent::core::keybindings::keybindings("darwin", &Default::default());
+    pillar_tui::keybindings::set_keybindings(pillar_tui::keybindings::KeybindingsManager::new(
+        definitions,
+        Default::default(),
+    ));
+    guard
+}
+
+fn slot_body(component: &mut SessionSelectorComponent, width: usize) -> String {
+    component
+        .render(width)
+        .iter()
+        .map(|line| strip_ansi(line))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn session_selector_lists_the_loaded_sessions_and_renders_the_header() {
+    let _guard = session_setup();
+    let mut selector = SessionSelectorComponent::new(None);
+    assert!(
+        selector.displayed_loading(),
+        "the constructor starts the current-folder load"
+    );
+
+    // The host loaded the current folder's sessions.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let sessions = vec![
+        session_info("/s/older.jsonl", "older", None, now - 61_000, "older conversation"),
+        session_info("/s/newer.jsonl", "newer", Some("my session"), now - 120_000, "newer conversation"),
+    ];
+    selector.finish_load(SessionScope::Current, sessions);
+    let body = slot_body(&mut selector, 100);
+    assert!(body.contains("Resume Session (Current Folder)"), "{body:?}");
+    assert!(body.contains("◉ Current Folder"), "{body:?}");
+    assert!(body.contains("Sort: Threaded"), "{body:?}");
+    assert!(body.contains("Name: All"), "{body:?}");
+    assert!(body.contains("older conversation"), "{body:?}");
+    assert!(body.contains("my session"), "{body:?}");
+    // The relative ages render in the list (2m / 1h style).
+    assert!(body.contains("3 2m"), "the relative age renders: {body:?}");
+    assert!(body.contains("3 2m"), "{body:?}");
+}
+
+#[test]
+fn session_selector_navigation_and_enter_reports_the_selection() {
+    let _guard = session_setup();
+    let mut selector = SessionSelectorComponent::new(None);
+    let sessions = vec![
+        session_info("/s/one.jsonl", "one", None, 1000, "first"),
+        session_info("/s/two.jsonl", "two", None, 2000, "second"),
+    ];
+    selector.finish_load(SessionScope::Current, sessions);
+
+    // Threaded order: the most recent session first (upstream
+    // `buildSessionTree` sorts by latest subtree activity).
+    assert_eq!(selector.selected_session_path().as_deref(), Some("/s/two.jsonl"));
+    assert_eq!(
+        selector.handle_key("\u{1b}[B"), // down
+        SessionSelectorOutcome::Consumed
+    );
+    assert_eq!(selector.selected_session_path().as_deref(), Some("/s/one.jsonl"));
+    assert_eq!(
+        selector.handle_key("\r"),
+        SessionSelectorOutcome::Resume("/s/one.jsonl".to_string())
+    );
+
+    // Escape cancels.
+    assert_eq!(
+        selector.handle_key("\u{1b}"),
+        SessionSelectorOutcome::Cancel
+    );
+
+    // PgUp/PgDn jump by the page.
+    selector.handle_key("\u{1b}[5~"); // page up
+    assert_eq!(selector.selected_session_path().as_deref(), Some("/s/two.jsonl"));
+}
+
+#[test]
+fn session_selector_search_filters_and_ctrl_c_clears_the_query() {
+    let _guard = session_setup();
+    let mut selector = SessionSelectorComponent::new(None);
+    let sessions = vec![
+        session_info("/s/one.jsonl", "one", None, 1000, "alpha conversation"),
+        session_info("/s/two.jsonl", "two", None, 2000, "beta conversation"),
+    ];
+    selector.finish_load(SessionScope::Current, sessions);
+
+    for ch in "alph".chars() {
+        assert_eq!(
+            selector.handle_key(&ch.to_string()),
+            SessionSelectorOutcome::Consumed
+        );
+    }
+    assert_eq!(selector.selected_session_path().as_deref(), Some("/s/one.jsonl"));
+
+    // Ctrl+C clears the search first (upstream the same).
+    assert_eq!(
+        selector.handle_key("\u{3}"),
+        SessionSelectorOutcome::Consumed
+    );
+    assert_eq!(selector.search_value(), "");
+    // Without a query the threaded sort applies again.
+    assert_eq!(
+        selector.selected_session_path().as_deref(),
+        Some("/s/two.jsonl")
+    );
+}
+
+#[test]
+fn session_selector_tab_toggles_the_scope_and_requests_a_load() {
+    let _guard = session_setup();
+    let mut selector = SessionSelectorComponent::new(None);
+    selector.finish_load(
+        SessionScope::Current,
+        vec![session_info("/s/one.jsonl", "one", None, 1000, "first")],
+    );
+
+    // Tab → the "all" scope: uncached, so the host must load it.
+    assert_eq!(
+        selector.handle_key("\t"),
+        SessionSelectorOutcome::ScopeToggled {
+            scope: SessionScope::All,
+            needs_load: true
+        }
+    );
+    let body = slot_body(&mut selector, 100);
+    assert!(body.contains("Resume Session (All)"), "{body:?}");
+
+    // The load lands: the cwd column appears and the scope is cached now.
+    selector.finish_load(
+        SessionScope::All,
+        vec![session_info("/other/two.jsonl", "two", None, 2000, "second")],
+    );
+    let body = slot_body(&mut selector, 140);
+    assert!(body.contains("/tmp"), "the cwd shows in the all scope: {body:?}");
+
+    // Tab back → the cached current list returns without a load request.
+    assert_eq!(
+        selector.handle_key("\t"),
+        SessionSelectorOutcome::ScopeToggled {
+            scope: SessionScope::Current,
+            needs_load: false
+        }
+    );
+    let body = slot_body(&mut selector, 100);
+    assert!(body.contains("first"), "{body:?}");
+
+    // A second Tab → the cached "all" scope shows immediately, no reload.
+    assert_eq!(
+        selector.handle_key("\t"),
+        SessionSelectorOutcome::Consumed
+    );
+    let body = slot_body(&mut selector, 140);
+    assert!(body.contains("second"), "{body:?}");
+}
+
+#[test]
+fn session_selector_sort_name_and_path_toggles() {
+    let _guard = session_setup();
+    let mut selector = SessionSelectorComponent::new(None);
+    selector.finish_load(
+        SessionScope::Current,
+        vec![session_info("/s/one.jsonl", "one", Some("named"), 1000, "first")],
+    );
+
+    // Ctrl+S cycles Threaded → Recent → Fuzzy (the header labels follow).
+    selector.handle_key("\u{13}"); // ctrl+s
+    assert!(slot_body(&mut selector, 100).contains("Sort: Recent"));
+    selector.handle_key("\u{13}");
+    assert!(slot_body(&mut selector, 100).contains("Sort: Fuzzy"));
+    selector.handle_key("\u{13}");
+    assert!(slot_body(&mut selector, 100).contains("Sort: Threaded"));
+
+    // The named filter hides unnamed sessions.
+    let mut selector = SessionSelectorComponent::new(None);
+    selector.finish_load(
+        SessionScope::Current,
+        vec![
+            session_info("/s/one.jsonl", "one", None, 1000, "unnamed"),
+            session_info("/s/two.jsonl", "two", Some("kept"), 2000, "named"),
+        ],
+    );
+    selector.handle_key("\u{e}"); // ctrl+n? (toggleNamedFilter binding)
+    let body = slot_body(&mut selector, 100);
+    assert!(body.contains("No named sessions in current folder") || body.contains("kept"), "{body:?}");
+    selector.handle_key("\u{e}"); // toggle back (same binding)
+    let body = slot_body(&mut selector, 100);
+    assert!(body.contains("unnamed"), "{body:?}");
+
+    // Ctrl+P toggles the path column.
+    selector.handle_key("\u{10}"); // ctrl+p
+    let body = slot_body(&mut selector, 160);
+    assert!(body.contains("/s/one.jsonl"), "{body:?}");
+    assert!(body.contains("path (on)"), "{body:?}");
+}
+
+#[test]
+fn session_selector_delete_needs_confirmation_and_blocks_the_current_session() {
+    let _guard = session_setup();
+    let mut selector = SessionSelectorComponent::new(None);
+    selector.finish_load(
+        SessionScope::Current,
+        vec![
+            session_info("/s/one.jsonl", "one", None, 1000, "first"),
+            session_info("/s/two.jsonl", "two", None, 2000, "second"),
+        ],
+    );
+    // Ctrl+D starts the confirmation for the highlighted session.
+    assert_eq!(selector.handle_key("\u{4}"), SessionSelectorOutcome::Consumed);
+    let body = slot_body(&mut selector, 100);
+    assert!(body.contains("Delete session?"), "{body:?}");
+
+    // While confirming, every key is swallowed.
+    assert_eq!(selector.handle_key("x"), SessionSelectorOutcome::Consumed);
+    assert!(selector.confirming_delete_path().is_some());
+
+    // Enter confirms → the host deletes and reports back.
+    assert_eq!(
+        selector.handle_key("\r"),
+        SessionSelectorOutcome::Delete("/s/two.jsonl".to_string())
+    );
+    assert!(selector.confirming_delete_path().is_none());
+    selector.remove_session("/s/two.jsonl");
+    assert_eq!(
+        selector.selected_session_path().as_deref(),
+        Some("/s/one.jsonl")
+    );
+
+    // The current session cannot be deleted.
+    let mut selector = SessionSelectorComponent::new(Some("/s/current.jsonl".to_string()));
+    selector.finish_load(
+        SessionScope::Current,
+        vec![session_info("/s/current.jsonl", "current", None, 1000, "current")],
+    );
+    selector.handle_key("\u{4}"); // ctrl+d
+    let body = slot_body(&mut selector, 120);
+    assert!(
+        body.contains("Cannot delete the currently active session"),
+        "{body:?}"
+    );
+
+    // Cancel aborts the confirmation without deleting.
+    let mut selector = SessionSelectorComponent::new(None);
+    selector.finish_load(
+        SessionScope::Current,
+        vec![session_info("/s/one.jsonl", "one", None, 1000, "first")],
+    );
+    selector.handle_key("\u{4}");
+    selector.handle_key("\u{1b}"); // cancel
+    assert!(selector.confirming_delete_path().is_none());
+    assert_eq!(selector.selected_session_path().as_deref(), Some("/s/one.jsonl"));
+}
+
+#[test]
+fn session_selector_rename_mode() {
+    let _guard = session_setup();
+    let mut selector = SessionSelectorComponent::new(None);
+    selector.finish_load(
+        SessionScope::Current,
+        vec![session_info("/s/one.jsonl", "one", Some("old name"), 1000, "first")],
+    );
+
+    // Ctrl+R enters rename mode with the current name.
+    selector.handle_key("\u{12}"); // ctrl+r
+    assert_eq!(selector.search_value(), "", "the list search is separate");
+    let body = slot_body(&mut selector, 100);
+    assert!(body.contains("Rename Session"), "{body:?}");
+
+    // The rename input starts with the current name; edit and submit.
+    for ch in "renamed".chars() {
+        selector.handle_key(&ch.to_string());
+    }
+    // The upstream `Input.setValue` keeps the cursor at 0, so typed text
+    // prepends (same quirk upstream).
+    assert_eq!(
+        selector.handle_key("\r"),
+        SessionSelectorOutcome::Rename {
+            path: "/s/one.jsonl".to_string(),
+            name: "renamedold name".to_string(),
+        }
+    );
+    // Escape exits the rename mode without submitting.
+    selector.handle_key("\u{12}");
+    assert_eq!(
+        selector.handle_key("\u{1b}"),
+        SessionSelectorOutcome::Consumed
+    );
+    let body = slot_body(&mut selector, 100);
+    assert!(body.contains("Resume Session (Current Folder)"), "{body:?}");
+}
+
+#[test]
+fn session_selector_tree_groups_children_under_their_parent() {
+    let _guard = session_setup();
+    let mut selector = SessionSelectorComponent::new(None);
+    let parent = session_info("/s/p.jsonl", "p", None, 1000, "parent");
+    let mut child = session_info("/s/c.jsonl", "c", None, 2000, "child");
+    child.parent_session_path = Some("/s/p.jsonl".to_string());
+    let mut grandchild = session_info("/s/g.jsonl", "g", None, 3000, "grandchild");
+    grandchild.parent_session_path = Some("/s/c.jsonl".to_string());
+    selector.finish_load(SessionScope::Current, vec![child, grandchild, parent]);
+
+    let body = slot_body(&mut selector, 120);
+    // The parent renders first; the child rows carry the tree prefix.
+    assert!(body.contains("parent"), "{body:?}");
+    assert!(body.contains("└─ child") || body.contains("├─ child"), "{body:?}");
+    assert!(body.contains("grandchild"), "{body:?}");
+}

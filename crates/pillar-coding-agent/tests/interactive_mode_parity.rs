@@ -16,7 +16,7 @@ use pillar_coding_agent::core::messages::CodingAgentMessage;
 use pillar_coding_agent::core::model_runtime::ModelRuntime;
 use pillar_coding_agent::core::resource_loader::{ResourceLoader, ResourceLoaderOptions};
 
-use pillar_coding_agent::core::session_manager::SessionManager;
+use pillar_coding_agent::core::session_manager::{SessionInfo, SessionManager};
 use pillar_coding_agent::core::settings_manager::{SettingsManager, SettingsManagerCreateOptions};
 use pillar_coding_agent::modes::interactive::interactive_mode::{
     InteractiveMode, InteractiveModeOptions, ModeAction,
@@ -1552,4 +1552,157 @@ fn scoped_models_seeds_from_the_settings_patterns() {
     let body = editor_slot_body(&mode, 90);
     assert!(body.contains("[unavailable]"), "{body:?}");
     assert!(body.contains("1 unavailable"), "{body:?}");
+}
+
+// --- session selector (upstream `/resume` + SessionSelectorComponent) --------------
+
+#[test]
+fn resume_command_shows_the_selector_and_escape_closes_it() {
+    install_app_keybindings();
+    let session = session_with_available_scoped_models(vec![scoped_model("claude-sonnet-4-5")]);
+    let mode = make_mode(&session);
+
+    let actions = mode.handle_submit("/resume");
+    assert_eq!(
+        actions,
+        vec![ModeAction::EditorSlotChanged, ModeAction::LoadSessions { scope: pillar_coding_agent::modes::interactive::components::session_selector::SessionScope::Current }]
+    );
+    assert!(mode.has_active_selector());
+    let body = editor_slot_body(&mode, 120);
+    assert!(body.contains("Resume Session (Current Folder)"), "{body:?}");
+    assert!(
+        body.contains("Loading"),
+        "the constructor starts the current-folder load: {body:?}"
+    );
+
+    // The load lands (the mode routes the executor's report back).
+    mode.session_list_loaded(
+        pillar_coding_agent::modes::interactive::components::session_selector::SessionScope::Current,
+        vec![SessionInfo {
+            path: "/s/one.jsonl".to_string(),
+            id: "one".to_string(),
+            cwd: session.cwd().to_string(),
+            name: None,
+            parent_session_path: None,
+            created_ms: Some(1000),
+            modified_ms: 1000,
+            message_count: 1,
+            first_message: "first conversation".to_string(),
+            all_messages_text: "first conversation".to_string(),
+        }],
+    );
+    let body = editor_slot_body(&mode, 90);
+    assert!(body.contains("first conversation"), "{body:?}");
+
+    // Enter reports the resume for the highlighted session.
+    let actions = mode.handle_selector_key("\r").expect("selector active");
+    assert_eq!(
+        actions,
+        vec![
+            ModeAction::EditorSlotChanged,
+            ModeAction::ResumeSession {
+                session_path: "/s/one.jsonl".to_string(),
+            }
+        ]
+    );
+    assert!(!mode.has_active_selector());
+}
+
+#[test]
+fn resume_selector_delete_and_rename_route_through_the_executor() {
+    install_app_keybindings();
+    use pillar_coding_agent::modes::interactive::components::session_selector::SessionScope;
+    let session = session_with_available_scoped_models(vec![scoped_model("claude-sonnet-4-5")]);
+    let mode = make_mode(&session);
+    mode.handle_submit("/resume");
+    mode.session_list_loaded(
+        SessionScope::Current,
+        vec![SessionInfo {
+            path: "/s/one.jsonl".to_string(),
+            id: "one".to_string(),
+            cwd: "/tmp".to_string(),
+            name: Some("old".to_string()),
+            parent_session_path: None,
+            created_ms: Some(1000),
+            modified_ms: 1000,
+            message_count: 1,
+            first_message: "first".to_string(),
+            all_messages_text: "first".to_string(),
+        }],
+    );
+
+    // Ctrl+D → delete confirmation → Enter → DeleteSession action.
+    assert_eq!(
+        mode.handle_selector_key("\u{4}").expect("selector"),
+        Vec::new()
+    );
+    let actions = mode.handle_selector_key("\r").expect("selector");
+    assert_eq!(
+        actions,
+        vec![ModeAction::DeleteSession {
+            path: "/s/one.jsonl".to_string(),
+        }]
+    );
+
+    // The delete settles: the list reloads (upstream
+    // `refreshSessionsAfterMutation`).
+    let actions = mode.complete_session_delete("/s/one.jsonl", true, true, None);
+    assert_eq!(
+        actions,
+        vec![ModeAction::LoadSessions { scope: SessionScope::Current }]
+    );
+    let body = editor_slot_body(&mode, 120);
+    assert!(body.contains("Session moved to trash"), "{body:?}");
+
+    // The reload lands (the deleted file is gone from the disk list).
+    mode.session_list_loaded(
+        SessionScope::Current,
+        vec![SessionInfo {
+            path: "/s/two.jsonl".to_string(),
+            id: "two".to_string(),
+            cwd: "/tmp".to_string(),
+            name: Some("old".to_string()),
+            parent_session_path: None,
+            created_ms: Some(2000),
+            modified_ms: 2000,
+            message_count: 1,
+            first_message: "second".to_string(),
+            all_messages_text: "second".to_string(),
+        }],
+    );
+
+    // Rename: Ctrl+R → submit → RenameSession → refresh on completion.
+    let actions = mode.handle_selector_key("\u{12}").expect("selector");
+    assert_eq!(actions, Vec::new());
+    let actions = mode.handle_selector_key("\r").expect("selector");
+    match actions.as_slice() {
+        [ModeAction::RenameSession { path, name }] => {
+            assert_eq!(path, "/s/two.jsonl");
+            assert!(name.contains("old"), "{name:?}");
+        }
+        other => panic!("expected RenameSession, got {other:?}"),
+    }
+    let actions = mode.complete_session_rename(None);
+    assert_eq!(
+        actions,
+        vec![ModeAction::LoadSessions { scope: SessionScope::Current }]
+    );
+}
+
+#[test]
+fn resume_selector_load_progress_shows_the_counts() {
+    install_app_keybindings();
+    use pillar_coding_agent::modes::interactive::components::session_selector::SessionScope;
+    let session = session_with_available_scoped_models(vec![scoped_model("claude-sonnet-4-5")]);
+    let mode = make_mode(&session);
+    mode.handle_submit("/resume");
+
+    mode.session_load_progress(SessionScope::Current, 3, 10);
+    let body = editor_slot_body(&mode, 120);
+    assert!(body.contains("Loading 3/10"), "{body:?}");
+    // A stale scope's progress does not leak into the display.
+    mode.session_load_progress(SessionScope::All, 1, 2);
+    let body = editor_slot_body(&mode, 120);
+    assert!(body.contains("Current Folder"), "{body:?}");
+    assert!(!body.contains("Loading 1/2"), "{body:?}");
 }

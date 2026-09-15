@@ -7,6 +7,7 @@
 //! login completions, `ExpandableText`) land with those types.
 
 use std::io::IsTerminal;
+use std::time::Instant;
 
 use pillar_ai::types::Model;
 use pillar_tui::autocomplete::AutocompleteItem;
@@ -158,6 +159,7 @@ use crate::core::footer_data_provider::FooterDataProvider;
 use crate::core::messages::{CodingAgentMessage, create_compaction_summary_message};
 use crate::core::resource_loader::GitPaths;
 use crate::core::session_entries::SessionEntry;
+use crate::core::session_manager::SessionInfo;
 use crate::core::settings_manager::DoubleEscapeAction;
 use crate::core::truncate::TruncationResult;
 use crate::modes::interactive::autocomplete::InteractiveAutocomplete;
@@ -168,6 +170,9 @@ use crate::modes::interactive::components::model_picker::{
 };
 use crate::modes::interactive::components::scoped_models_selector::{
     ScopedModelsOutcome, ScopedModelsSelectorComponent,
+};
+use crate::modes::interactive::components::session_selector::{
+    SessionScope, SessionSelectorComponent, SessionSelectorOutcome, StatusKind,
 };
 use crate::modes::interactive::components::status_indicator::{
     CompactionStatusReason, RetryStatusIndicator, StatusIndicatorKind, compaction_status_indicator,
@@ -219,6 +224,19 @@ pub enum ModeAction {
         id: String,
         persist: bool,
     },
+    /// Upstream `showSessionSelector`'s loaders: list the sessions of one
+    /// scope (upstream the async `SessionsLoader`). The result travels back
+    /// through [`UiCommand::SessionsLoaded`].
+    LoadSessions { scope: SessionScope },
+    /// Upstream `deleteSessionFile` (the selector's confirmed delete).
+    DeleteSession { path: String },
+    /// Upstream the selector's `renameSession` callback: append a
+    /// `session_info` entry to the target file.
+    RenameSession { path: String, name: String },
+    /// Upstream `handleResumeSession`: the pump intercepts this action (the
+    /// session switch replaces the whole run loop) and reports it to the
+    /// host as a run outcome; the executor only sees it as a no-op.
+    ResumeSession { session_path: String },
     /// The editor slot changed (a selector was shown or closed; upstream
     /// `showSelector`'s `editorContainer` swap + `setFocus`).
     EditorSlotChanged,
@@ -304,6 +322,10 @@ pub enum ActiveSelector {
         token: u64,
         component: Shared<ScopedModelsSelectorComponent>,
     },
+    Session {
+        token: u64,
+        component: Shared<SessionSelectorComponent>,
+    },
 }
 
 impl ActiveSelector {
@@ -312,6 +334,7 @@ impl ActiveSelector {
             ActiveSelector::Thinking { token, .. } => *token,
             ActiveSelector::ModelPicker { token, .. } => *token,
             ActiveSelector::ScopedModels { token, .. } => *token,
+            ActiveSelector::Session { token, .. } => *token,
         }
     }
 
@@ -325,6 +348,9 @@ impl ActiveSelector {
                 crate::modes::interactive::transcript::FocusHandle::new(component.clone()),
             ),
             ActiveSelector::ScopedModels { component, .. } => Box::new(
+                crate::modes::interactive::transcript::FocusHandle::new(component.clone()),
+            ),
+            ActiveSelector::Session { component, .. } => Box::new(
                 crate::modes::interactive::transcript::FocusHandle::new(component.clone()),
             ),
         }
@@ -733,7 +759,7 @@ impl InteractiveMode {
 
         // Selector-backed commands answer a warning until the selectors
         // land (upstream opens the corresponding selector).
-        const SELECTOR_COMMANDS: [&str; 18] = [
+        const SELECTOR_COMMANDS: [&str; 17] = [
             "/settings",
             "/export",
             "/import",
@@ -751,7 +777,6 @@ impl InteractiveMode {
             "/new",
             "/reload",
             "/debug",
-            "/resume",
         ];
         for command in SELECTOR_COMMANDS {
             if text == command || text.starts_with(&format!("{command} ")) {
@@ -763,6 +788,10 @@ impl InteractiveMode {
             }
         }
 
+        if text == "/resume" {
+            self.set_editor_text("");
+            return self.show_session_selector();
+        }
         if text == "/quit" {
             self.set_editor_text("");
             return vec![ModeAction::Shutdown];
@@ -987,7 +1016,18 @@ impl InteractiveMode {
     /// Advance the host-driven animations (upstream the status indicator's
     /// own interval). Returns whether anything changed.
     pub fn tick(&self) -> bool {
-        let changed = self.status.lock().tick();
+        // Upstream the header status `setTimeout` (auto-hide); the selector's
+        // status messages expire the same way.
+        let selector_tick = {
+            let guard = self.active_selector.lock().expect("active selector");
+            match guard.as_ref() {
+                Some(ActiveSelector::Session { component, .. }) => {
+                    component.lock().tick(Instant::now())
+                }
+                _ => false,
+            }
+        };
+        let changed = self.status.lock().tick() || selector_tick;
         if changed {
             self.mark_dirty();
         }
@@ -1469,6 +1509,116 @@ impl InteractiveMode {
         self.mark_dirty();
     }
 
+    /// Upstream `showSessionSelector` (`/resume` and the
+    /// `app.session.resume` binding): the searchable resume list. The listing
+    /// itself is async host work — the selector starts empty and the host
+    /// fills it through [`ModeAction::LoadSessions`] /
+    /// [`UiCommand::SessionsLoaded`] (upstream the async loaders with a
+    /// progress callback).
+    pub fn show_session_selector(&self) -> Vec<ModeAction> {
+        let current_session_path = self
+            .session
+            .session_manager()
+            .lock()
+            .expect("session lock")
+            .session_file()
+            .map(|path| path.to_string_lossy().to_string());
+        let token = self.next_selector_token.fetch_add(1, Ordering::SeqCst);
+        let component = Shared::new(SessionSelectorComponent::new(current_session_path));
+        let mut actions = self.show_selector(ActiveSelector::Session { token, component });
+        // Upstream the constructor's `loadCurrentSessions()`.
+        actions.push(ModeAction::LoadSessions {
+            scope: SessionScope::Current,
+        });
+        actions
+    }
+
+    /// A load's intermediate progress (upstream the `onProgress` callback
+    /// feeding the header's `Loading n/m`).
+    pub fn session_load_progress(&self, scope: SessionScope, loaded: usize, total: usize) {
+        let guard = self.active_selector.lock().expect("active selector");
+        let Some(ActiveSelector::Session { component, .. }) = guard.as_ref() else {
+            return;
+        };
+        if component.lock().scope() != scope {
+            return;
+        }
+        component.lock().set_progress(loaded, total);
+        drop(guard);
+        self.mark_dirty();
+    }
+
+    /// A load settled (upstream `loadScope`'s resolution): fill the list,
+    /// clear the loading state, and repaint.
+    pub fn session_list_loaded(&self, scope: SessionScope, sessions: Vec<SessionInfo>) {
+        let guard = self.active_selector.lock().expect("active selector");
+        let Some(ActiveSelector::Session { component, .. }) = guard.as_ref() else {
+            return;
+        };
+        if component.lock().scope() != scope {
+            return;
+        }
+        component.lock().finish_load(scope, sessions);
+        drop(guard);
+        self.mark_dirty();
+    }
+
+    /// Upstream the `onDeleteSession` continuation: drop the deleted file
+    /// from the caches, report the outcome, and schedule the reload.
+    pub fn complete_session_delete(
+        &self,
+        path: &str,
+        ok: bool,
+        moved_to_trash: bool,
+        error: Option<String>,
+    ) -> Vec<ModeAction> {
+        let scope = {
+            let guard = self.active_selector.lock().expect("active selector");
+            let Some(ActiveSelector::Session { component, .. }) = guard.as_ref() else {
+                return Vec::new();
+            };
+            let mut component = component.lock();
+            if ok {
+                component.remove_session(path);
+                let message = if moved_to_trash {
+                    "Session moved to trash"
+                } else {
+                    "Session deleted"
+                };
+                component.set_status(StatusKind::Info, message, Some(2000));
+            } else {
+                let message = format!(
+                    "Failed to delete: {}",
+                    error.as_deref().unwrap_or("Unknown error")
+                );
+                component.set_status(StatusKind::Error, &message, Some(3000));
+            }
+            component.scope()
+        };
+        self.mark_dirty();
+        // Upstream `refreshSessionsAfterMutation`.
+        vec![ModeAction::LoadSessions { scope }]
+    }
+
+    /// Upstream `confirmRename`'s continuation: report failures and refresh
+    /// the list (upstream `refreshSessionsAfterMutation`).
+    pub fn complete_session_rename(&self, error: Option<String>) -> Vec<ModeAction> {
+        let scope = {
+            let guard = self.active_selector.lock().expect("active selector");
+            let Some(ActiveSelector::Session { component, .. }) = guard.as_ref() else {
+                return Vec::new();
+            };
+            if let Some(error) = error {
+                component
+                    .lock()
+                    .set_status(StatusKind::Error, &error, Some(4000));
+            }
+            component.lock().scope()
+        };
+        self.mark_dirty();
+        vec![ModeAction::LoadSessions { scope }]
+    }
+
     /// Upstream `handleModelCommand`, minus the built-in selector: an exact
     /// model reference switches directly and anything else falls through to the
     /// 2-column picker (`/m`).
@@ -1741,6 +1891,7 @@ impl InteractiveMode {
             Thinking(u64, Shared<ThinkingSelectorComponent>),
             ModelPicker(u64, Shared<ModelPickerComponent>),
             ScopedModels(u64, Shared<ScopedModelsSelectorComponent>),
+            Session(u64, Shared<SessionSelectorComponent>),
         }
         let handle = {
             let guard = self.active_selector.lock().expect("active selector");
@@ -1753,6 +1904,9 @@ impl InteractiveMode {
                 }
                 Some(ActiveSelector::ScopedModels { token, component }) => {
                     Handle::ScopedModels(*token, component.clone())
+                }
+                Some(ActiveSelector::Session { token, component }) => {
+                    Handle::Session(*token, component.clone())
                 }
                 None => return None,
             }
@@ -1805,6 +1959,29 @@ impl InteractiveMode {
                     Vec::new()
                 }
                 ScopedModelsOutcome::Cancel => self.close_selector(Some(token)),
+            },
+            // Toggles apply synchronously; loads / mutations travel through
+            // the executor and report back through the `UiCommand`s (upstream
+            // the async loaders and `onDeleteSession` / `renameSession`).
+            Handle::Session(token, component) => match component.lock().handle_key(data) {
+                SessionSelectorOutcome::Consumed => Vec::new(),
+                SessionSelectorOutcome::Resume(path) => {
+                    let mut actions = self.close_selector(Some(token));
+                    actions.push(ModeAction::ResumeSession { session_path: path });
+                    actions
+                }
+                SessionSelectorOutcome::ScopeToggled { scope, needs_load } => {
+                    if needs_load {
+                        vec![ModeAction::LoadSessions { scope }]
+                    } else {
+                        Vec::new()
+                    }
+                }
+                SessionSelectorOutcome::Delete(path) => vec![ModeAction::DeleteSession { path }],
+                SessionSelectorOutcome::Rename { path, name } => {
+                    vec![ModeAction::RenameSession { path, name }]
+                }
+                SessionSelectorOutcome::Cancel => self.close_selector(Some(token)),
             },
         })
     }
@@ -2122,6 +2299,7 @@ impl InteractiveMode {
             "app.model.cycleForward" => vec![ModeAction::CycleModel { forward: true }],
             "app.model.cycleBackward" => vec![ModeAction::CycleModel { forward: false }],
             "app.model.select" => self.show_model_picker(None),
+            "app.session.resume" => self.show_session_selector(),
             "app.message.dequeue" => {
                 self.handle_dequeue();
                 Vec::new()

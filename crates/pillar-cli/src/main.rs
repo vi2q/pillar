@@ -37,7 +37,7 @@ use pillar_coding_agent::modes::interactive::interactive_mode::{
     InteractiveModeOptions, TuiMode as InteractiveTuiMode,
 };
 use pillar_coding_agent::modes::interactive::run::{
-    InteractiveRunOptions, run_interactive_process,
+    InteractiveOutcome, InteractiveRunOptions, run_interactive_process,
 };
 use pillar_coding_agent::modes::interactive::transcript::TranscriptSettings;
 use pillar_coding_agent::modes::print_mode::{PrintModeMode, PrintModeOptions, run_print_mode};
@@ -332,6 +332,72 @@ async fn build_session(parsed: &Args) -> Result<(AgentSession, ExtensionWiring),
     .await
 }
 
+/// Build the replacement session for `/resume` (upstream
+/// `runtimeHost.switchSession` + `rebindCurrentSession`). A fresh
+/// services bundle + model runtime is created for the target session (the
+/// same divergence the RPC host documents: the runtime is rebuilt per
+/// replacement, so the extension wirings of every replacement stay alive in
+/// the caller).
+///
+/// divergence: upstream prompts for a missing session cwd; the port reports
+/// the error and exits instead.
+async fn resume_session(
+    parsed: &Args,
+    current: &Arc<AgentSession>,
+    session_path: &str,
+) -> Result<(AgentSession, ExtensionWiring), String> {
+    let agent_dir = agent_dir();
+    let model_runtime = create_model_runtime(&agent_dir).await?;
+    // The runtime instance the replacement flows through (upstream one
+    // `runtimeHost`); for an in-memory current session there is no previous
+    // file (upstream `previousSessionFile` is then undefined too).
+    let current_file = current
+        .session_manager()
+        .lock()
+        .expect("session lock")
+        .session_file()
+        .map(Path::to_path_buf);
+    let current_manager = match current_file {
+        Some(file) => SessionManager::open(&file, None, None)?,
+        None => SessionManager::in_memory(current.cwd(), None)?,
+    };
+    let mut factory = replacement_factory(parsed, &agent_dir);
+    let runtime = AgentSessionRuntime::create(
+        &mut factory,
+        current.cwd(),
+        &agent_dir,
+        current_manager,
+    )?;
+    let previous = runtime
+        .session_manager()
+        .session_file()
+        .map(|path| path.to_string_lossy().to_string());
+    let (outcome, runtime) = {
+        let mut hooks = RuntimeHooks::default();
+        runtime.switch_session(session_path, None, &mut hooks, &mut factory)?
+    };
+    if outcome.cancelled {
+        return Err("resume cancelled".to_string());
+    }
+    let (services, session_manager, _diagnostics) = runtime.into_parts();
+    let settings_manager = Arc::clone(&services.settings_manager);
+    let resource_loader = Arc::new(Mutex::new(services.resource_loader));
+    build_session_with(
+        parsed,
+        model_runtime,
+        SessionBuildInput {
+            cwd: services.cwd.to_string_lossy().to_string(),
+            agent_dir: services.agent_dir.to_string_lossy().to_string(),
+            session_manager: Some(session_manager),
+            settings_manager: Some(settings_manager),
+            resource_loader: Some(resource_loader),
+            start_reason: "resume".to_string(),
+            previous_session_file: previous,
+        },
+    )
+    .await
+}
+
 async fn run_print(parsed: &Args, app_mode: AppMode) -> ExitCode {
     let (session, _wiring) = match build_session(parsed).await {
         Ok(built) => built,
@@ -446,7 +512,7 @@ async fn run_interactive(parsed: &Args) -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    let session = Arc::new(session);
+    let mut session = Arc::new(session);
     session
         .bind_extensions(ExtensionBindings {
             ui_context: Some(false),
@@ -482,7 +548,8 @@ async fn run_interactive(parsed: &Args) -> ExitCode {
         _ => Some(InteractiveTuiMode::Regular),
     };
 
-    let options = InteractiveRunOptions {
+    let initial_message = prepare_initial_message(parsed, &cwd);
+    let mut options = InteractiveRunOptions {
         mode: InteractiveModeOptions {
             tui_mode,
             clear_on_shrink: None,
@@ -498,15 +565,58 @@ async fn run_interactive(parsed: &Args) -> ExitCode {
         },
         transcript,
         markdown_transformers: Vec::new(),
-        initial_message: prepare_initial_message(parsed, &cwd),
+        initial_message,
         agent_dir: PathBuf::from(agent_dir()),
     };
 
-    match run_interactive_process(session, options).await {
-        Ok(code) => ExitCode::from(code as u8),
-        Err(error) => {
-            eprintln!("Error: {error}");
-            ExitCode::from(1)
+    // Upstream `runtimeHost.switchSession` rebinds the live session inside
+    // one interactive mode instance; the port rebuilds the run loop instead
+    // (see the run module's outcome docs).
+    let mut wirings: Vec<ExtensionWiring> = Vec::new();
+    loop {
+        let outcome = match run_interactive_process(Arc::clone(&session), options.clone()).await {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                eprintln!("Error: {error}");
+                return ExitCode::from(1);
+            }
+        };
+        let session_path = match outcome {
+            InteractiveOutcome::Exit(code) => return ExitCode::from(code as u8),
+            InteractiveOutcome::SwitchSession { session_path } => session_path,
+        };
+        match resume_session(parsed, &session, &session_path).await {
+            Ok((next, wiring)) => {
+                let next = Arc::new(next);
+                // Upstream `rebindCurrentSession` → `bindCurrentSessionExtensions`.
+                next.bind_extensions(ExtensionBindings {
+                    ui_context: Some(false),
+                    mode: Some("tui".to_string()),
+                    on_error: None,
+                })
+                .await;
+                session = next;
+                wirings.push(wiring);
+                options.initial_message = None;
+                // The transcript settings rebuild per entry: a resumed session
+                // can live in another cwd with different settings.
+                options.transcript = {
+                    let settings = session.settings_manager().lock().expect("settings lock");
+                    TranscriptSettings {
+                        hide_thinking_block: settings.hide_thinking_block(),
+                        hidden_thinking_label: "Thinking...".to_string(),
+                        output_pad: settings.output_pad() as usize,
+                        tool_output_expanded: false,
+                        show_images: settings.show_images(),
+                        image_width_cells: settings.image_width_cells() as usize,
+                        show_cache_miss_notices: settings.show_cache_miss_notices(),
+                    }
+                };
+            }
+            Err(error) => {
+                eprintln!("Error: {error}");
+                return ExitCode::from(1);
+            }
         }
     }
 }

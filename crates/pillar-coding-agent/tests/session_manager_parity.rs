@@ -2,9 +2,11 @@
 //! migrations, tree appends/branching, compaction-aware context building,
 //! labels, session names, tree views, and branched-session extraction.
 
+use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 
-use pillar_ai::types::{Message, StopReason, Usage, UserContent};
+use pillar_ai::types::{Message, StopReason, Usage, UsageCost, UserContent};
 use pillar_coding_agent::core::messages::{CodingAgentMessage, CustomContent};
 use pillar_coding_agent::core::session_entries::SessionEntry as Entry;
 use pillar_coding_agent::core::session_manager::{
@@ -512,4 +514,157 @@ fn opening_a_missing_session_path_starts_a_fresh_session() {
         "no file is written until an assistant message"
     );
     assert!(manager.get_entries_owned().is_empty());
+}
+
+// --- session listing (upstream buildSessionInfo / list / listAll) ---------------------
+
+/// Like [`user_msg`] / [`assistant_msg`], but with real timestamps: the
+/// listing sorts by the last message activity, so fixture entries need
+/// distinct, current times.
+fn stamp_msg(text: &str, role_user: bool) -> CodingAgentMessage {
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    if role_user {
+        CodingAgentMessage::Base(Message::User {
+            content: UserContent::Text(text.to_string()),
+            timestamp,
+        })
+    } else {
+        CodingAgentMessage::Base(Message::Assistant(Box::new(
+            pillar_ai::types::AssistantMessage {
+                content: vec![pillar_ai::types::Content::text(text)],
+                api: "test-api".to_string(),
+                provider: "p".to_string(),
+                model: "m".to_string(),
+                response_model: None,
+                usage: Usage {
+                    input: 0,
+                    output: 0,
+                    cache_read: 0,
+                    cache_write: 0,
+                    cache_write_1h: None,
+                    reasoning: None,
+                    total_tokens: 0,
+                    cost: UsageCost::default(),
+                },
+                stop_reason: StopReason::Stop,
+                deferred: None,
+                error_message: None,
+                response_id: None,
+                diagnostics: Vec::new(),
+                raw_stop_reason: None,
+                end_turn: None,
+                timestamp,
+            },
+        )))
+    }
+}
+
+fn write_session_file(dir: &std::path::Path, cwd: &str, name: Option<&str>, first: &str) -> PathBuf {
+    let mut manager =
+        SessionManager::create(cwd, Some(dir), None).expect("session");
+    manager
+        .append_message(stamp_msg(first, true))
+        .expect("append");
+    manager
+        .append_message(stamp_msg("reply", false))
+        .expect("append");
+    if let Some(name) = name {
+        manager.append_session_info(name).expect("name");
+    }
+    manager.session_file().map(Path::to_path_buf).unwrap()
+}
+
+#[test]
+fn build_session_info_extracts_the_summary_fields() {
+    let dir = std::env::temp_dir().join(format!(
+        "pillar-session-info-{}-{}",
+        std::process::id(),
+        chrono_unique()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = write_session_file(&dir, "/tmp/proj", Some("my session"), "hello world");
+
+    let info = pillar_coding_agent::core::session_manager::build_session_info(&file)
+        .expect("session info");
+    assert_eq!(info.name.as_deref(), Some("my session"));
+    assert_eq!(info.cwd, "/tmp/proj");
+    assert_eq!(info.first_message, "hello world");
+    assert_eq!(info.message_count, 2);
+    assert!(info.all_messages_text.contains("hello world"));
+    assert!(info.all_messages_text.contains("reply"));
+    assert!(info.modified_ms > 0, "activity time: {info:?}");
+    assert_eq!(
+        pillar_coding_agent::core::session_manager::build_session_info(
+            std::path::Path::new(&dir).join("missing.jsonl").as_path()
+        ),
+        None,
+        "unreadable files are skipped"
+    );
+}
+
+fn chrono_unique() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64
+        + COUNTER.fetch_add(1, Ordering::SeqCst)
+}
+
+#[test]
+fn list_returns_the_directory_sorted_and_filters_the_cwd() {
+    let unique = chrono_unique();
+    let dir = std::env::temp_dir().join(format!("pillar-session-list-{unique}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    write_session_file(&dir, "/tmp", None, "older session");
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let newer = write_session_file(&dir, "/tmp", Some("newer"), "newer session");
+
+    let sessions = SessionManager::list("/tmp", Some(&dir), None);
+    assert_eq!(sessions.len(), 2, "both files listed: {sessions:?}");
+    assert_eq!(
+        sessions[0].path, newer,
+        "newest first: {:?}",
+        sessions.iter().map(|s| s.path.clone()).collect::<Vec<_>>()
+    );
+
+    // A custom dir filters by header cwd (upstream the same condition).
+    let other_dir = std::env::temp_dir().join(format!("pillar-session-list-{unique}-2"));
+    std::fs::create_dir_all(&other_dir).unwrap();
+    write_session_file(&other_dir, "/elsewhere", None, "elsewhere");
+    let sessions = SessionManager::list("/tmp", Some(&other_dir), None);
+    assert!(
+        sessions.is_empty(),
+        "mismatched cwds are filtered: {sessions:?}"
+    );
+}
+
+#[test]
+fn list_all_scans_the_given_directory_and_reports_progress() {
+    let unique = chrono_unique();
+    let dir = std::env::temp_dir().join(format!("pillar-session-list-all-{unique}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    write_session_file(&dir, "/tmp", None, "one");
+    write_session_file(&dir, "/tmp", Some("two"), "two");
+
+    let loaded = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = Arc::clone(&loaded);
+    let progress: pillar_coding_agent::core::session_manager::SessionListProgress =
+        Arc::new(move |done, total| sink.lock().unwrap().push((done, total)));
+    let sessions = SessionManager::list_all(Some(&dir), Some(&progress));
+    assert_eq!(sessions.len(), 2, "{sessions:?}");
+    assert_eq!(loaded.lock().unwrap().len(), 2, "progress per file");
+    assert_eq!(
+        loaded.lock().unwrap().last().copied(),
+        Some((2, 2)),
+        "final progress covers every file"
+    );
+
+    // A missing directory lists nothing (upstream the same).
+    let missing = std::env::temp_dir().join(format!("pillar-session-list-all-{unique}-missing"));
+    assert!(SessionManager::list_all(Some(&missing), None).is_empty());
 }
