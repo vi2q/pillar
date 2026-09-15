@@ -1,9 +1,13 @@
 //! Parity tests for the `InteractiveMode` assembly (pi v0.84.3
 //! `interactive-mode.ts`): the event dispatch and the submit router.
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
+use async_trait::async_trait;
 use pillar_agent::{Agent, AgentOptions, AgentState, FauxModelRef};
+use pillar_ai::auth_types::{Credential, CredentialInfo, CredentialStore};
+use pillar_ai::error::AiError;
 use pillar_ai::types::{Content, Message, StopReason, Usage, UsageCost, UserContent};
 use pillar_coding_agent::core::agent_session_class::{
     AgentSession, AgentSessionConfig, AgentSessionEvent, StreamingBehavior,
@@ -23,6 +27,59 @@ use pillar_coding_agent::modes::interactive::transcript::TranscriptSettings;
 use pillar_tui::tui::{Component as _, TuiMode};
 
 static THEME_LOCK: Mutex<()> = Mutex::new(());
+
+/// In-memory credential store so the runtime's availability snapshot can be
+/// refreshed without touching a real auth file.
+#[derive(Default)]
+struct MemCredentials(Mutex<BTreeMap<String, Credential>>);
+
+#[async_trait]
+impl CredentialStore for MemCredentials {
+    async fn read(
+        &self,
+        provider_id: &str,
+        _options: Option<&pillar_ai::auth_types::AuthOperationOptions>,
+    ) -> Result<Option<Credential>, AiError> {
+        Ok(self.0.lock().unwrap().get(provider_id).cloned())
+    }
+    async fn list(
+        &self,
+        _options: Option<&pillar_ai::auth_types::AuthOperationOptions>,
+    ) -> Result<Vec<CredentialInfo>, AiError> {
+        Ok(self
+            .0
+            .lock()
+            .unwrap()
+            .keys()
+            .map(|provider_id| CredentialInfo {
+                provider_id: provider_id.clone(),
+                kind: "api_key".to_string(),
+            })
+            .collect())
+    }
+    async fn modify(
+        &self,
+        provider_id: &str,
+        f: pillar_ai::auth_types::CredentialModifier<'_>,
+        _options: Option<&pillar_ai::auth_types::AuthOperationOptions>,
+    ) -> Result<Option<Credential>, AiError> {
+        let current = self.0.lock().unwrap().get(provider_id).cloned();
+        let next = f(current).await.map_err(|e| AiError::Other(e.to_string()))?;
+        let mut map = self.0.lock().unwrap();
+        if let Some(credential) = next {
+            map.insert(provider_id.to_string(), credential);
+        }
+        Ok(map.get(provider_id).cloned())
+    }
+    async fn delete(
+        &self,
+        provider_id: &str,
+        _options: Option<&pillar_ai::auth_types::AuthOperationOptions>,
+    ) -> Result<(), AiError> {
+        self.0.lock().unwrap().remove(provider_id);
+        Ok(())
+    }
+}
 
 fn install_dark() {
     theme::init_theme(Some("dark"));
@@ -77,6 +134,22 @@ fn session() -> Arc<AgentSession> {
 /// scope (the model selector's initial `scoped` scope).
 fn session_with_scoped_models(
     scoped_models: Vec<pillar_coding_agent::core::model_mutation::ScopedModel>,
+) -> Arc<AgentSession> {
+    session_with_models_impl(scoped_models, false)
+}
+
+/// Same, but the runtime's availability snapshot also reports the anthropic
+/// models (an API key is configured, like a real agent dir). The
+/// `/scoped-models` selector reads `getAvailableSnapshot()`.
+fn session_with_available_scoped_models(
+    scoped_models: Vec<pillar_coding_agent::core::model_mutation::ScopedModel>,
+) -> Arc<AgentSession> {
+    session_with_models_impl(scoped_models, true)
+}
+
+fn session_with_models_impl(
+    scoped_models: Vec<pillar_coding_agent::core::model_mutation::ScopedModel>,
+    make_available: bool,
 ) -> Arc<AgentSession> {
     let model = FauxModelRef {
         id: "claude-sonnet-4-5".to_string(),
@@ -141,16 +214,33 @@ fn session_with_scoped_models(
     // A valid empty config: `{}` would leave a `ModelRuntime::get_error()`
     // config error that the model selector renders as its error message.
     std::fs::write(&models_path, "{\"providers\":{}}").expect("write models");
-    let runtime = ModelRuntime::new(
+    let mut runtime = ModelRuntime::new(
         pillar_coding_agent::core::model_runtime::CreateModelRuntimeOptions {
             models_path: Some(models_path),
             models_store: Some(Arc::new(
                 pillar_coding_agent::core::auth_storage::InMemoryCodingAgentModelsStore::new(),
             )),
+            credentials: Some(Arc::new(MemCredentials::default())),
             ..Default::default()
         },
     )
     .expect("runtime");
+    if make_available {
+        // Configure anthropic auth and refresh the availability snapshot (the
+        // selector reads `getAvailableSnapshot()`).
+        tokio::runtime::Runtime::new()
+            .expect("tokio runtime")
+            .block_on(async {
+                runtime
+                    .set_runtime_api_key("anthropic", "sk-test")
+                    .await
+                    .expect("api key");
+                runtime
+                    .refresh_availability(None)
+                    .await
+                    .expect("availability");
+            });
+    }
 
     let mut config = AgentSessionConfig::new(
         agent,
@@ -1303,4 +1393,161 @@ fn autocomplete_ignores_ordinary_text_and_the_bang_prefix() {
         !mode.autocomplete_is_open(),
         "bash mode keeps the menu closed"
     );
+}
+
+// --- scoped-models selector (upstream `/scoped-models` +
+// ScopedModelsSelectorComponent) -----------------------------------------------------
+
+/// The component's footer and Ctrl+S matching read the process-global
+/// keybindings (upstream `getKeybindings()` returns the merged app + TUI
+/// table; the runtime installs it in `run_interactive`). The merged table is
+/// a superset of the lazily-installed TUI table, so the other tests in this
+/// binary are unaffected.
+fn install_app_keybindings() {
+    let definitions =
+        pillar_coding_agent::core::keybindings::keybindings("darwin", &Default::default());
+    pillar_tui::keybindings::set_keybindings(pillar_tui::keybindings::KeybindingsManager::new(
+        definitions,
+        Default::default(),
+    ));
+}
+
+#[test]
+fn scoped_models_command_shows_the_selector_and_toggles_the_scope() {
+    install_app_keybindings();
+    let session = session_with_available_scoped_models(vec![
+        scoped_model("claude-sonnet-4-5"),
+        scoped_model("claude-opus-5"),
+    ]);
+    let mode = make_mode(&session);
+
+    let actions = mode.handle_submit("/scoped-models");
+    assert_eq!(actions, vec![ModeAction::EditorSlotChanged]);
+    assert!(mode.has_active_selector());
+    let body = editor_slot_body(&mode, 90);
+    assert!(body.contains("Model Configuration"), "{body:?}");
+    assert!(body.contains("Session-only"), "{body:?}");
+    assert!(body.contains("claude-sonnet-4-5"), "{body:?}");
+    assert!(
+        body.contains("2/14 enabled"),
+        "the two scoped models are enabled over the full snapshot: {body:?}"
+    );
+    assert!(body.contains('✓'), "scoped entries start enabled: {body:?}");
+
+    // Enter toggles the highlighted model off and applies the scope
+    // synchronously (upstream `onChange` → `updateSessionModels`).
+    assert_eq!(
+        mode.handle_selector_key("\u{1b}[B").expect("selector"),
+        Vec::new(),
+        "down consumes the key"
+    );
+    assert_eq!(
+        mode.handle_selector_key("\r").expect("selector"),
+        Vec::new(),
+        "toggling keeps the selector open"
+    );
+    assert_eq!(
+        session
+            .scoped_models()
+            .iter()
+            .map(|scoped| scoped.model.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["claude-sonnet-4-5"],
+        "the cycle scope drops the toggled-off model (opus)"
+    );
+    let body = editor_slot_body(&mode, 90);
+    assert!(body.contains("1/14 enabled"), "{body:?}");
+    assert!(body.contains('✗'), "the disabled row is marked: {body:?}");
+
+    // Escape closes and the scope stays.
+    let actions = mode.handle_selector_key("\u{1b}").expect("selector");
+    assert_eq!(actions, vec![ModeAction::EditorSlotChanged]);
+    assert!(!mode.has_active_selector());
+    assert_eq!(session.scoped_models().len(), 1);
+}
+
+#[test]
+fn scoped_models_ctrl_s_persists_to_settings_and_reports_the_status() {
+    install_app_keybindings();
+    let session = session_with_available_scoped_models(vec![
+        scoped_model("claude-sonnet-4-5"),
+        scoped_model("claude-opus-5"),
+    ]);
+    let mode = make_mode(&session);
+    mode.handle_submit("/scoped-models");
+
+    // Toggle the highlighted model off, then persist the remaining set.
+    mode.handle_selector_key("\u{1b}[B").expect("selector");
+    mode.handle_selector_key("\r").expect("selector");
+    assert_eq!(
+        mode.handle_selector_key("\u{13}").expect("selector"), // ctrl+s
+        Vec::new(),
+        "Ctrl+S keeps the selector open"
+    );
+    {
+        let settings = session.settings_manager().lock().expect("settings");
+        assert_eq!(
+            settings.enabled_models(),
+            Some(vec!["anthropic/claude-sonnet-4-5".to_string()]),
+            "the explicit list is persisted"
+        );
+    }
+    let body = plain(&mut mode.transcript().lock().chat, 120);
+    assert!(
+        body.contains("Model selection saved to settings"),
+        "{body:?}"
+    );
+    // The unsaved marker is gone after the persist.
+    let body = editor_slot_body(&mode, 90);
+    assert!(
+        !body.contains("(unsaved)"),
+        "persist clears the marker: {body:?}"
+    );
+}
+
+#[test]
+fn scoped_models_seeds_from_the_settings_patterns() {
+    install_app_keybindings();
+    // No session scope: the settings patterns resolve the initial selection
+    // (upstream `configuredEnabledIds`).
+    let session = session_with_available_scoped_models(Vec::new());
+    session
+        .settings_manager()
+        .lock()
+        .expect("settings")
+        .set_enabled_models(Some(vec!["anthropic/claude-opus-5".to_string()]));
+    let mode = make_mode(&session);
+
+    mode.handle_submit("/scoped-models");
+    let body = editor_slot_body(&mode, 90);
+    assert!(body.contains("1/14 enabled"), "{body:?}");
+    // opus first (enabled ids lead) and marked enabled; the disabled rows
+    // follow.
+    let opus_line = body
+        .lines()
+        .find(|line| line.contains("→ claude-opus-5"))
+        .expect("selected opus row");
+    assert!(opus_line.contains('✓'), "{opus_line:?}");
+    assert!(
+        body.lines().any(|line| line.contains('✗')),
+        "disabled rows are marked: {body:?}"
+    );
+    assert!(
+        !body.contains("(unsaved)"),
+        "the seeded list is not dirty: {body:?}"
+    );
+
+    // An unknown pattern is kept in the list as `unavailable` (its own
+    // session/settings pair).
+    let session = session_with_available_scoped_models(Vec::new());
+    session
+        .settings_manager()
+        .lock()
+        .expect("settings")
+        .set_enabled_models(Some(vec!["ghost/none".to_string()]));
+    let mode = make_mode(&session);
+    mode.handle_submit("/scoped-models");
+    let body = editor_slot_body(&mode, 90);
+    assert!(body.contains("[unavailable]"), "{body:?}");
+    assert!(body.contains("1 unavailable"), "{body:?}");
 }

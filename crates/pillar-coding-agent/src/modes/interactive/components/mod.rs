@@ -22,6 +22,7 @@ pub mod footer;
 pub mod keybinding_hints;
 pub mod markdown_transform;
 pub mod model_picker;
+pub mod scoped_models_selector;
 pub mod skill_invocation_message;
 pub mod status_indicator;
 pub mod thinking_selector;

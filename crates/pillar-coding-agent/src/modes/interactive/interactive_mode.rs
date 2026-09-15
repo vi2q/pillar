@@ -166,6 +166,9 @@ use crate::modes::interactive::components::footer::FooterComponent;
 use crate::modes::interactive::components::model_picker::{
     CategoryKind, ModelPickerComponent, ModelPickerOutcome, PickerCategory, RECENT_CATEGORY_ID,
 };
+use crate::modes::interactive::components::scoped_models_selector::{
+    ScopedModelsOutcome, ScopedModelsSelectorComponent,
+};
 use crate::modes::interactive::components::status_indicator::{
     CompactionStatusReason, RetryStatusIndicator, StatusIndicatorKind, compaction_status_indicator,
 };
@@ -297,6 +300,10 @@ pub enum ActiveSelector {
         token: u64,
         component: Shared<ModelPickerComponent>,
     },
+    ScopedModels {
+        token: u64,
+        component: Shared<ScopedModelsSelectorComponent>,
+    },
 }
 
 impl ActiveSelector {
@@ -304,6 +311,7 @@ impl ActiveSelector {
         match self {
             ActiveSelector::Thinking { token, .. } => *token,
             ActiveSelector::ModelPicker { token, .. } => *token,
+            ActiveSelector::ScopedModels { token, .. } => *token,
         }
     }
 
@@ -314,6 +322,9 @@ impl ActiveSelector {
                 crate::modes::interactive::transcript::FocusHandle::new(component.clone()),
             ),
             ActiveSelector::ModelPicker { component, .. } => Box::new(
+                crate::modes::interactive::transcript::FocusHandle::new(component.clone()),
+            ),
+            ActiveSelector::ScopedModels { component, .. } => Box::new(
                 crate::modes::interactive::transcript::FocusHandle::new(component.clone()),
             ),
         }
@@ -722,9 +733,8 @@ impl InteractiveMode {
 
         // Selector-backed commands answer a warning until the selectors
         // land (upstream opens the corresponding selector).
-        const SELECTOR_COMMANDS: [&str; 19] = [
+        const SELECTOR_COMMANDS: [&str; 18] = [
             "/settings",
-            "/scoped-models",
             "/export",
             "/import",
             "/share",
@@ -774,6 +784,10 @@ impl InteractiveMode {
                 .map(str::to_string);
             self.set_editor_text("");
             return vec![ModeAction::Compact { instructions }];
+        }
+        if text == "/scoped-models" {
+            self.set_editor_text("");
+            return self.show_scoped_models_selector();
         }
         if text == "/thinking" || text.starts_with("/thinking ") {
             let search = text
@@ -1320,6 +1334,143 @@ impl InteractiveMode {
         self.show_selector(ActiveSelector::Thinking { token, component })
     }
 
+    /// Upstream `showModelsSelector` (`/scoped-models`): the searchable list
+    /// that enables/disables and orders the models Ctrl+P cycles through.
+    /// The enabled set is session-only until Ctrl+S persists it.
+    ///
+    /// divergence: upstream refreshes the model catalogs while the selector
+    /// is open (`refreshStatus: "Refreshing model catalogs…"`, 15 s timeout,
+    /// `updateModels` / `setRefreshStatus` afterwards). The port has no
+    /// catalog refresh yet (the same as the `/model` selector), so the
+    /// selector opens on the current runtime snapshot only.
+    pub fn show_scoped_models_selector(&self) -> Vec<ModeAction> {
+        let available_models = self.session.model_runtime().get_available_snapshot();
+        let configured_patterns = self
+            .session
+            .settings_manager()
+            .lock()
+            .expect("settings lock")
+            .enabled_models();
+        let current_enabled_ids = self.initial_enabled_ids(&available_models, configured_patterns);
+        let token = self.next_selector_token.fetch_add(1, Ordering::SeqCst);
+        let component = Shared::new(ScopedModelsSelectorComponent::new(
+            available_models,
+            current_enabled_ids,
+        ));
+        self.show_selector(ActiveSelector::ScopedModels { token, component })
+    }
+
+    /// Upstream the `currentEnabledIds` computation of `showModelsSelector`:
+    /// the session scope wins, else the settings patterns resolve against the
+    /// available models (unmatched patterns stay listed as unavailable).
+    fn initial_enabled_ids(
+        &self,
+        available_models: &[pillar_ai::types::Model],
+        configured_patterns: Option<Vec<String>>,
+    ) -> Option<Vec<String>> {
+        let session_scoped = self.session.scoped_models();
+        if !session_scoped.is_empty() {
+            return Some(
+                session_scoped
+                    .iter()
+                    .map(|scoped| format!("{}/{}", scoped.model.provider, scoped.model.id))
+                    .collect(),
+            );
+        }
+        let patterns = configured_patterns?;
+        if patterns.is_empty() {
+            return None;
+        }
+        let resolved = crate::core::model_resolver::resolve_model_scope_from_models(
+            &patterns,
+            available_models,
+        );
+        let mut ids = resolved
+            .scoped_models
+            .iter()
+            .map(|scoped| format!("{}/{}", scoped.model.provider, scoped.model.id))
+            .collect::<Vec<_>>();
+        for diagnostic in resolved.diagnostics {
+            if diagnostic.code == crate::core::model_resolver::ModelScopeDiagnosticCode::NoMatch
+                && !ids.contains(&diagnostic.pattern)
+            {
+                ids.push(diagnostic.pattern);
+            }
+        }
+        Some(ids)
+    }
+
+    /// Upstream the `updateSessionModels` closure (the selector's `onChange`):
+    /// translate the enabled set into the session's cycle scope. The scope is
+    /// set only while an explicit list enables at least one available model
+    /// but not all of them (upstream the same condition).
+    ///
+    /// divergence: upstream applies it synchronously from the component
+    /// callback; the port applies it in the same synchronous dispatch (the
+    /// same precedent as [`Self::select_thinking_level`]).
+    pub fn apply_scoped_model_change(&self, enabled_ids: &Option<Vec<String>>) {
+        let available_models = self.session.model_runtime().get_available_snapshot();
+        let available_ids: std::collections::HashSet<String> = available_models
+            .iter()
+            .map(|model| format!("{}/{}", model.provider, model.id))
+            .collect();
+        let new_scope = match enabled_ids {
+            Some(ids) => {
+                let has_enabled_available = ids.iter().any(|id| available_ids.contains(id));
+                let all_available_enabled = available_ids
+                    .iter()
+                    .all(|id| ids.contains(id));
+                if has_enabled_available && !all_available_enabled {
+                    crate::core::model_resolver::resolve_model_scope_from_models(
+                        ids,
+                        &available_models,
+                    )
+                    .scoped_models
+                    .into_iter()
+                    .map(crate::core::model_mutation::ScopedModel::from)
+                    .collect()
+                } else {
+                    Vec::new()
+                }
+            }
+            None => Vec::new(),
+        };
+        self.session.set_scoped_models(new_scope);
+        self.update_available_provider_count();
+        self.mark_dirty();
+    }
+
+    /// Upstream the selector's `onPersist` callback (Ctrl+S): write the
+    /// enabled patterns to settings, or clear them when everything is
+    /// enabled, and report the save in the transcript.
+    ///
+    /// divergence: the settings write runs synchronously in the pump
+    /// dispatch (the settings manager is behind a mutex; the same precedent
+    /// as `selectThinkingLevel` persisting through the session).
+    pub fn save_scoped_models(&self, enabled_ids: &Option<Vec<String>>) {
+        let available_models = self.session.model_runtime().get_available_snapshot();
+        let available_ids: std::collections::HashSet<String> = available_models
+            .iter()
+            .map(|model| format!("{}/{}", model.provider, model.id))
+            .collect();
+        let all_enabled = enabled_ids.as_ref().is_some_and(|ids| {
+            ids.len() == available_models.len() && ids.iter().all(|id| available_ids.contains(id))
+        });
+        let patterns = match enabled_ids {
+            Some(ids) if !all_enabled => Some(ids.clone()),
+            _ => None,
+        };
+        self.session
+            .settings_manager()
+            .lock()
+            .expect("settings lock")
+            .set_enabled_models(patterns);
+        self.transcript
+            .lock()
+            .show_status("Model selection saved to settings");
+        self.mark_dirty();
+    }
+
     /// Upstream `handleModelCommand`, minus the built-in selector: an exact
     /// model reference switches directly and anything else falls through to the
     /// 2-column picker (`/m`).
@@ -1591,6 +1742,7 @@ impl InteractiveMode {
         enum Handle {
             Thinking(u64, Shared<ThinkingSelectorComponent>),
             ModelPicker(u64, Shared<ModelPickerComponent>),
+            ScopedModels(u64, Shared<ScopedModelsSelectorComponent>),
         }
         let handle = {
             let guard = self.active_selector.lock().expect("active selector");
@@ -1600,6 +1752,9 @@ impl InteractiveMode {
                 }
                 Some(ActiveSelector::ModelPicker { token, component }) => {
                     Handle::ModelPicker(*token, component.clone())
+                }
+                Some(ActiveSelector::ScopedModels { token, component }) => {
+                    Handle::ScopedModels(*token, component.clone())
                 }
                 None => return None,
             }
@@ -1636,6 +1791,22 @@ impl InteractiveMode {
                     persist: true,
                 }],
                 ModelPickerOutcome::Cancel => self.close_selector(Some(token)),
+            },
+            // Toggles apply immediately (upstream `onChange` →
+            // `updateSessionModels`); Ctrl+S persists to settings and the
+            // component clears its unsaved marker (upstream inside the save
+            // branch).
+            Handle::ScopedModels(token, component) => match component.lock().handle_key(data) {
+                ScopedModelsOutcome::Consumed => Vec::new(),
+                ScopedModelsOutcome::Change(enabled_ids) => {
+                    self.apply_scoped_model_change(&enabled_ids);
+                    Vec::new()
+                }
+                ScopedModelsOutcome::Persist(enabled_ids) => {
+                    self.save_scoped_models(&enabled_ids);
+                    Vec::new()
+                }
+                ScopedModelsOutcome::Cancel => self.close_selector(Some(token)),
             },
         })
     }

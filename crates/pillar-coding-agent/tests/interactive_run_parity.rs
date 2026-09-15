@@ -740,3 +740,108 @@ async fn typing_a_slash_command_completes_it_and_enter_submits() {
         "nothing was submitted as a prompt"
     );
 }
+
+/// `/scoped-models` end to end: the selector renders in the editor slot, a
+/// kitty ↓ + Enter toggle applies to the session's cycle scope and repaints
+/// (the release event must not move the highlight again), Escape closes, and
+/// the last frame returns to the editor before `/quit`.
+#[tokio::test]
+async fn scoped_models_selector_toggles_the_scope_and_closes() {
+    install_dark();
+    let session = session_with_scoped_models(
+        echo_stream("pong"),
+        "scoped-models",
+        vec![
+            scoped_model("claude-sonnet-4-5"),
+            scoped_model("claude-opus-5"),
+        ],
+    );
+    // The selector's enable-state and scope resolution read the runtime's
+    // availability snapshot; refresh it (the fixture's runtime has the
+    // anthropic key) like the startup path does.
+    session
+        .model_runtime()
+        .refresh_availability(None)
+        .await
+        .expect("availability");
+
+    let mut harness = harness(vec!["/scoped-models\r".to_string()], None);
+    let chunks = Arc::clone(&harness.chunks);
+    let writes = Arc::clone(&harness.writes);
+    std::thread::spawn(move || {
+        // Wait for the selector frame, then ↓ (press + release) → opus.
+        for _ in 0..600 {
+            if strip_terminal_sequences(&writes.lock().unwrap()).contains("Model Configuration") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        chunks.lock().unwrap().push("\u{1b}[1;1:1B".to_string());
+        for _ in 0..600 {
+            if strip_terminal_sequences(&writes.lock().unwrap())
+                .contains("Model Name: Claude Opus 5")
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        chunks.lock().unwrap().push("\u{1b}[1;1:3B".to_string());
+        std::thread::sleep(Duration::from_millis(50));
+        // Enter toggles opus off (the footer repaints to 1 enabled)…
+        chunks.lock().unwrap().push("\r".to_string());
+        for _ in 0..600 {
+            if strip_terminal_sequences(&writes.lock().unwrap()).contains("1/14 enabled") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+        // …and Escape closes the selector.
+        chunks.lock().unwrap().push("\u{1b}".to_string());
+        std::thread::sleep(Duration::from_millis(100));
+        chunks.lock().unwrap().push("/quit\r".to_string());
+    });
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        run_interactive(
+            Arc::clone(&session),
+            Box::new(std::mem::replace(
+                &mut harness.terminal,
+                ProcessTerminal::with_io(Box::new(pillar_tui::process_terminal::NullTerminalIo)),
+            )),
+            run_options(temp_dir("scoped-models-run")),
+        ),
+    )
+    .await
+    .expect("run loop finished")
+    .expect("run loop ok");
+
+    assert_eq!(result, 0);
+    assert_eq!(
+        session
+            .scoped_models()
+            .iter()
+            .map(|scoped| scoped.model.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["claude-sonnet-4-5"],
+        "the toggle dropped opus from the cycle scope"
+    );
+    let output = rendered(&harness.writes);
+    assert!(
+        output.contains("Model Configuration"),
+        "selector rendered: {output:?}"
+    );
+    assert!(
+        output.contains("Session-only"),
+        "the session-only hint rendered: {output:?}"
+    );
+    assert!(
+        output.contains("2/14 enabled"),
+        "both scoped models start enabled: {output:?}"
+    );
+    assert!(
+        output.contains("1/14 enabled"),
+        "the toggle repainted the count: {output:?}"
+    );
+}

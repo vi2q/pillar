@@ -676,6 +676,13 @@ impl AgentSession {
             .scoped_models
             .clone()
     }
+
+    /// Upstream `setScopedModels`: replace the cycling scope (session-only,
+    /// never persisted).
+    pub fn set_scoped_models(&self, models: Vec<ScopedModel>) {
+        self.inner.state.lock().expect("session state").scoped_models = models;
+    }
+
     pub fn is_retrying(&self) -> bool {
         self.inner
             .state
