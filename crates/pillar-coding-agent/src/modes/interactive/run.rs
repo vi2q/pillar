@@ -130,8 +130,7 @@ pub async fn run_interactive(
     screen.base_mut().start();
 
     // Session events are queued for the pump, which owns all mode mutation.
-    let (event_tx, event_rx) =
-        tokio::sync::mpsc::unbounded_channel::<AgentSessionEvent>();
+    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<AgentSessionEvent>();
     let unsubscribe = session.subscribe(Arc::new(move |event| {
         let _ = event_tx.send(event.clone());
     }));
@@ -240,7 +239,10 @@ async fn execute_action(session: &AgentSession, action: ModeAction) -> Result<()
             // divergence: the live bash component (upstream
             // `BashExecutionComponent` in the pending/chat area) is not wired
             // yet; the command runs and only failures are reported.
-            session.execute_bash(&command, excluded, None).await.map(|_| ())
+            session
+                .execute_bash(&command, excluded, None)
+                .await
+                .map(|_| ())
         }
         ModeAction::Compact { instructions } => {
             session.compact(instructions.as_deref()).await.map(|_| ())
@@ -417,8 +419,7 @@ fn dispatch_sequence(
         return run_app_action(mode, "app.clipboard.pasteImage");
     }
     // Escape / interrupt - only when the autocomplete menu is closed.
-    if keybindings.matches(data, "app.interrupt")
-        && !mode.editor().lock().is_showing_autocomplete()
+    if keybindings.matches(data, "app.interrupt") && !mode.editor().lock().is_showing_autocomplete()
     {
         return run_app_action(mode, "app.interrupt");
     }

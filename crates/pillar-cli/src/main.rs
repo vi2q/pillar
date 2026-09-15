@@ -23,6 +23,11 @@ use pillar_coding_agent::core::agent_session_runtime::{
     RuntimeFactoryResult, RuntimeHooks, create_agent_session_services,
 };
 use pillar_coding_agent::core::extensions_runner::ExtensionRunner;
+use pillar_coding_agent::core::model_mutation::ScopedModel;
+use pillar_coding_agent::core::model_resolver::{
+    AuthProviders, Model, ResolveCliModelOptions, ResolverThinkingLevel, resolve_cli_model,
+    resolve_model_scope_from_models,
+};
 use pillar_coding_agent::core::model_runtime::{CreateModelRuntimeOptions, ModelRuntime};
 use pillar_coding_agent::core::resource_loader::ResourceLoader;
 use pillar_coding_agent::core::sdk::{CreateAgentSessionOptions, create_agent_session};
@@ -151,14 +156,88 @@ struct SessionBuildInput {
     previous_session_file: Option<String>,
 }
 
-fn create_model_runtime(agent_dir: &str) -> Result<Arc<ModelRuntime>, String> {
+/// Create the model runtime over the agent directory config.
+///
+/// Upstream `ModelRuntime.refresh` reloads the catalog and re-derives which
+/// providers have usable auth; the port's `refresh` needs `&mut self` and is
+/// offline-only, so the bootstrap runs the availability pass explicitly —
+/// without it every provider reads as unauthenticated and no model is ever
+/// selected, even when `auth.json` / `models.json` are populated.
+async fn create_model_runtime(agent_dir: &str) -> Result<Arc<ModelRuntime>, String> {
     let runtime = ModelRuntime::new(CreateModelRuntimeOptions {
         auth_path: Some(PathBuf::from(agent_dir).join("auth.json")),
         models_path: Some(PathBuf::from(agent_dir).join("models.json")),
         ..Default::default()
     })
     .map_err(|error| format!("failed to create model runtime: {error}"))?;
+    runtime
+        .refresh_availability(None)
+        .await
+        .map_err(|error| format!("failed to refresh model availability: {error}"))?;
     Ok(Arc::new(runtime))
+}
+
+/// The CLI-selected model, scope, and thinking level (upstream
+/// `buildSessionOptions`).
+struct CliModelSelection {
+    model: Option<Model>,
+    scoped_models: Vec<ScopedModel>,
+    thinking_level: Option<String>,
+}
+
+/// Resolve `--provider` / `--model` (with the `<pattern>:<thinking>`
+/// shorthand) and the `--models` scope against the model runtime.
+fn resolve_cli_model_selection(
+    parsed: &Args,
+    model_runtime: &ModelRuntime,
+) -> Result<CliModelSelection, String> {
+    let all_models = model_runtime.get_models(None);
+    let auth = AuthProviders(
+        model_runtime
+            .get_snapshot()
+            .configured_providers
+            .into_iter()
+            .collect(),
+    );
+
+    let mut thinking_level: Option<String> = None;
+    let mut model: Option<Model> = None;
+    if parsed.model.is_some() {
+        let resolved = resolve_cli_model(ResolveCliModelOptions {
+            cli_provider: parsed.provider.clone(),
+            cli_model: parsed.model.clone(),
+            cli_thinking: parsed.thinking.as_deref().map(ResolverThinkingLevel::parse),
+            models: &all_models,
+            auth: &auth,
+        });
+        if let Some(warning) = resolved.warning {
+            eprintln!("Warning: {warning}");
+        }
+        if let Some(error) = resolved.error {
+            return Err(error);
+        }
+        model = resolved.model;
+        // A `--model <pattern>:<thinking>` shorthand only applies when
+        // `--thinking` was not given explicitly.
+        if parsed.thinking.is_none() {
+            thinking_level = resolved.thinking_level.map(|level| level.as_str().to_string());
+        }
+    }
+
+    let mut scoped_models: Vec<ScopedModel> = Vec::new();
+    if let Some(patterns) = &parsed.models {
+        let scope = resolve_model_scope_from_models(patterns, &all_models);
+        for diagnostic in scope.diagnostics {
+            eprintln!("Warning: {}", diagnostic.message);
+        }
+        scoped_models = scope.scoped_models.into_iter().map(ScopedModel::from).collect();
+    }
+
+    Ok(CliModelSelection {
+        model,
+        scoped_models,
+        thinking_level,
+    })
 }
 
 /// Create the runtime (model runtime, Luau extension runner, session). The
@@ -192,6 +271,8 @@ async fn build_session_with(
     }
     let extension_runner: Arc<Mutex<ExtensionRunner>> = Arc::new(Mutex::new(wiring.take_runner()));
 
+    let selection = resolve_cli_model_selection(parsed, &model_runtime)?;
+
     let created = create_agent_session(CreateAgentSessionOptions {
         cwd: cwd.clone(),
         agent_dir: Some(agent_dir),
@@ -199,9 +280,9 @@ async fn build_session_with(
         settings_manager,
         session_manager,
         resource_loader,
-        model: None,
-        thinking_level: parsed.thinking.clone(),
-        scoped_models: Vec::new(),
+        model: selection.model,
+        thinking_level: parsed.thinking.clone().or(selection.thinking_level),
+        scoped_models: selection.scoped_models,
         tools: parsed.tools.clone(),
         no_tools: no_tools(parsed),
         exclude_tools: parsed.exclude_tools.clone().unwrap_or_default(),
@@ -228,7 +309,7 @@ async fn build_session(parsed: &Args) -> Result<(AgentSession, ExtensionWiring),
         .to_string_lossy()
         .to_string();
     let agent_dir = agent_dir();
-    let model_runtime = create_model_runtime(&agent_dir)?;
+    let model_runtime = create_model_runtime(&agent_dir).await?;
     build_session_with(
         parsed,
         model_runtime,
@@ -293,7 +374,7 @@ async fn run_rpc(parsed: &Args) -> ExitCode {
         .to_string_lossy()
         .to_string();
     let agent_dir = agent_dir();
-    let model_runtime = match create_model_runtime(&agent_dir) {
+    let model_runtime = match create_model_runtime(&agent_dir).await {
         Ok(runtime) => runtime,
         Err(error) => {
             eprintln!("Error: {error}");

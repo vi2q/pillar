@@ -598,6 +598,51 @@ fn compose_fabricates_an_api_key_auth_when_only_configured_key_exists() {
     assert!(provider.auth.api_key.is_some());
 }
 
+/// Config-only providers resolve their API implementations per model
+/// (upstream's lazy `getApiProvider(model.api)` fallback). Before this the
+/// port composed `ProviderApi::None`, so every custom provider failed to
+/// stream with "has no API implementation".
+#[test]
+fn config_only_provider_resolves_api_implementations() {
+    let mut definition = json_model("m1");
+    definition.api = Some("openai-completions".to_string());
+    definition.base_url = Some("https://custom.test/v1".to_string());
+    let model_config = ModelConfig::from_providers(BTreeMap::from([(
+        "p".to_string(),
+        ModelsJsonProvider {
+            models: Some(vec![definition]),
+            ..Default::default()
+        },
+    )]));
+    let provider = compose_model_provider("p", None, &model_config, None).unwrap();
+    match &provider.api {
+        pillar_ai::models::ProviderApi::Map(map) => {
+            assert!(
+                map.contains_key("openai-completions"),
+                "{:?}",
+                map.keys().collect::<Vec<_>>()
+            );
+        }
+        _ => panic!("expected an api map"),
+    }
+
+    // A provider-level `api` (the models.json shape pi writes) covers every
+    // model.
+    let mut config = ModelsJsonProvider {
+        api: Some("openai-completions".to_string()),
+        base_url: Some("https://custom.test/v1".to_string()),
+        ..Default::default()
+    };
+    config.models = Some(vec![json_model("m2")]);
+    let model_config = ModelConfig::from_providers(BTreeMap::from([("p".to_string(), config)]));
+    let provider = compose_model_provider("p", None, &model_config, None).unwrap();
+    assert!(matches!(
+        provider.api,
+        pillar_ai::models::ProviderApi::Map(_)
+    ));
+    assert_eq!((provider.get_models)()[0].api, "openai-completions");
+}
+
 #[test]
 fn compose_with_models_json_key_composes_a_working_provider() {
     let model_config = ModelConfig::from_providers(BTreeMap::from([(

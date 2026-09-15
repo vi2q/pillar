@@ -940,9 +940,9 @@ impl InteractiveMode {
                 let last = self.last_escape_ms.load(Ordering::SeqCst);
                 if now.saturating_sub(last) < 500 {
                     self.last_escape_ms.store(0, Ordering::SeqCst);
-                    self.transcript.lock().show_warning(
-                        "Session tree / fork selectors are not ported yet",
-                    );
+                    self.transcript
+                        .lock()
+                        .show_warning("Session tree / fork selectors are not ported yet");
                 } else {
                     self.last_escape_ms.store(now, Ordering::SeqCst);
                 }

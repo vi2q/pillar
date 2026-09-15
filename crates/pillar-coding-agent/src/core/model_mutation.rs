@@ -37,6 +37,19 @@ impl ScopedModel {
     }
 }
 
+/// The resolver's scoped entry uses the agent thinking vocabulary; the
+/// session-facing entry stores the level string.
+impl From<crate::core::model_resolver::ScopedModel> for ScopedModel {
+    fn from(resolved: crate::core::model_resolver::ScopedModel) -> Self {
+        Self {
+            model: resolved.model,
+            thinking_level: resolved
+                .thinking_level
+                .map(|level| level.as_str().to_string()),
+        }
+    }
+}
+
 /// The stable identity key for a model (upstream
 /// `provider\0id` for availability matching).
 pub fn model_key(model: &Model) -> String {

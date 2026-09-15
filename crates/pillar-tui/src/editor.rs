@@ -1618,10 +1618,7 @@ fn paste_marker_spans(text: &str, valid_ids: &[u32]) -> Vec<(usize, usize)> {
 
 /// Marker spans whose ids satisfy `is_valid` (the id set is a predicate so
 /// whole-registry scans do not materialize one id per possible marker).
-fn paste_marker_spans_with(
-    text: &str,
-    is_valid: impl Fn(u32) -> bool,
-) -> Vec<(usize, usize)> {
+fn paste_marker_spans_with(text: &str, is_valid: impl Fn(u32) -> bool) -> Vec<(usize, usize)> {
     let mut spans = Vec::new();
     let bytes = text.as_bytes();
     let mut search_from = 0usize;

@@ -989,8 +989,11 @@ pub fn compose_model_provider(
     };
 
     // Validate eagerly so registration/reload reports structural errors now.
-    apply_models_json(provider_id, &base_models, config)?;
-    apply_extension(provider_id, &base_models, extension)?;
+    let validated_models = apply_extension(
+        provider_id,
+        &apply_models_json(provider_id, &base_models, config)?,
+        extension,
+    )?;
 
     let base_auth = base.map(|b| b.auth.clone());
     let api_key = compose_api_key_auth(provider_id, base_auth.as_ref(), config, extension);
@@ -1006,7 +1009,18 @@ pub fn compose_model_provider(
     let streams: ProviderApi = match base {
         // Base provider dispatches its own APIs; composition reuses them.
         Some(_) => base_api,
-        None => ProviderApi::None,
+        // Config-only providers resolve the API per model, like upstream's
+        // lazy `getApiProvider(model.api)` fallback (previously this was
+        // `ProviderApi::None`, so every custom provider failed to stream with
+        // "has no API implementation").
+        None => {
+            let api_names: std::collections::BTreeSet<&str> = validated_models
+                .iter()
+                .map(|model| model.api.as_str())
+                .collect();
+            let api_names: Vec<&str> = api_names.into_iter().collect();
+            pillar_ai::api_dispatch::api_map(&api_names)
+        }
     };
 
     let name = extension

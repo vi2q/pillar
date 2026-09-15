@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 
 use globset::GlobBuilder;
-use pillar_ai::types::Model;
+pub use pillar_ai::types::Model;
 
 pub use pillar_agent::types::thinking::AgentThinkingLevel as ResolverThinkingLevel;
 

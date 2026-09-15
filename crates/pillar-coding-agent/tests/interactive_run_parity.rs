@@ -28,9 +28,7 @@ use pillar_coding_agent::core::resource_loader::{ResourceLoader, ResourceLoaderO
 use pillar_coding_agent::core::session_manager::SessionManager;
 use pillar_coding_agent::core::settings_manager::{SettingsManager, SettingsManagerCreateOptions};
 use pillar_coding_agent::modes::interactive::interactive_mode::InteractiveModeOptions;
-use pillar_coding_agent::modes::interactive::run::{
-    InteractiveRunOptions, run_interactive,
-};
+use pillar_coding_agent::modes::interactive::run::{InteractiveRunOptions, run_interactive};
 use pillar_coding_agent::modes::interactive::theme;
 use pillar_coding_agent::modes::interactive::transcript::TranscriptSettings;
 use pillar_tui::process_terminal::{ProcessTerminal, TerminalIo};
@@ -346,13 +344,17 @@ async fn typing_a_prompt_runs_it_and_quit_shuts_down() {
     // prompt has been executed before the shutdown request.
     let state = Arc::clone(&session);
     let release: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || {
-        state
-            .state()
-            .messages
-            .iter()
-            .any(|message| matches!(message, pillar_agent::types::AgentMessage::Message(Message::Assistant(_))))
+        state.state().messages.iter().any(|message| {
+            matches!(
+                message,
+                pillar_agent::types::AgentMessage::Message(Message::Assistant(_))
+            )
+        })
     });
-    let mut harness = harness(vec!["hi\r".to_string(), "/quit\r".to_string()], Some(release));
+    let mut harness = harness(
+        vec!["hi\r".to_string(), "/quit\r".to_string()],
+        Some(release),
+    );
 
     let result = tokio::time::timeout(
         Duration::from_secs(10),
@@ -375,7 +377,10 @@ async fn typing_a_prompt_runs_it_and_quit_shuts_down() {
 
     let output = rendered(&harness.writes);
     assert!(output.contains("hi"), "user message rendered: {output:?}");
-    assert!(output.contains("pong"), "assistant message rendered: {output:?}");
+    assert!(
+        output.contains("pong"),
+        "assistant message rendered: {output:?}"
+    );
 
     let messages = session.state().messages;
     assert!(
@@ -424,14 +429,12 @@ async fn bash_submission_executes_and_records_the_result() {
     install_dark();
     let session = session(echo_stream("pong"), "bash");
     let state = Arc::clone(&session);
-    let release: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || {
-        state.state().messages.iter().any(|message| {
-            matches!(
-                message,
-                pillar_agent::types::AgentMessage::BashExecution(_)
-            )
-        })
-    });
+    let release: Arc<dyn Fn() -> bool + Send + Sync> =
+        Arc::new(move || {
+            state.state().messages.iter().any(|message| {
+                matches!(message, pillar_agent::types::AgentMessage::BashExecution(_))
+            })
+        });
     let mut harness = harness(
         vec!["!printf hello\r".to_string(), "/quit\r".to_string()],
         Some(release),
