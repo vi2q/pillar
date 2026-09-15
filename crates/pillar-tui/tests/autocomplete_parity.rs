@@ -347,3 +347,24 @@ fn should_trigger_file_completion_rules() {
     assert!(!CombinedAutocompleteProvider::should_trigger_file_completion(&["/model "], 0, 7));
     assert!(CombinedAutocompleteProvider::should_trigger_file_completion(&["some text"], 0, 9));
 }
+
+#[test]
+fn slash_command_argument_prefix_splits_name_and_arguments() {
+    use pillar_tui::autocomplete::slash_command_argument_prefix;
+    assert_eq!(
+        slash_command_argument_prefix("/model op"),
+        Some(("model", "op"))
+    );
+    assert_eq!(
+        slash_command_argument_prefix("/model a/b c"),
+        Some(("model", "a/b c")),
+        "only the first space splits"
+    );
+    assert_eq!(
+        slash_command_argument_prefix("/thinking "),
+        Some(("thinking", ""))
+    );
+    assert_eq!(slash_command_argument_prefix("/model"), None, "no space yet");
+    assert_eq!(slash_command_argument_prefix("model x"), None, "not a command");
+    assert_eq!(slash_command_argument_prefix("/ x"), None, "empty name");
+}

@@ -560,6 +560,12 @@ impl AgentSession {
         Arc::clone(&self.inner.settings_manager)
     }
 
+    /// The shared extension runner (hosts that need the registered commands,
+    /// e.g. the interactive autocomplete provider).
+    pub fn extension_runner_arc(&self) -> Arc<Mutex<crate::core::extensions_runner::ExtensionRunner>> {
+        Arc::clone(&self.inner.extension_runner)
+    }
+
     pub fn model_runtime(&self) -> &ModelRuntime {
         &self.inner.model_runtime
     }

@@ -1192,3 +1192,115 @@ fn cycling_a_model_records_it_and_refreshes_the_footer() {
     let history = std::fs::read_to_string(dir.join("model-picker-recent.json")).expect("history");
     assert!(history.contains("claude-opus-5"), "{history}");
 }
+
+// --- autocomplete (host-side provider) ---------------------------------------
+
+/// Type `text` into the editor the way the pump does: the editor events are
+/// drained through the mode's handlers.
+fn type_into_editor(mode: &InteractiveMode, text: &str) {
+    for ch in text.chars() {
+        mode.editor().lock().handle_input(&ch.to_string());
+        drain(mode);
+    }
+}
+
+fn drain(mode: &InteractiveMode) {
+    // Mirrors the run loop's editor-event drain.
+    let events = mode.editor().lock().take_input_events();
+    for event in events {
+        match event {
+            pillar_tui::editor::EditorInputEvent::Changed => mode.on_editor_change(),
+            pillar_tui::editor::EditorInputEvent::Submitted(_) => {}
+        }
+    }
+}
+
+#[test]
+fn autocomplete_offers_commands_and_applies_them() {
+    let session = session_with_scoped_models(vec![scoped_model("claude-sonnet-4-5")]);
+    let mode = make_mode(&session);
+    mode.rebuild_autocomplete();
+
+    // Typing a slash command opens the menu with the built-in commands.
+    type_into_editor(&mode, "/thi");
+    assert!(mode.autocomplete_is_open());
+    assert_eq!(mode.autocomplete_prefix().as_deref(), Some("/thi"));
+    assert_eq!(mode.autocomplete_items(), vec!["thinking".to_string()]);
+
+    // Tab applies the highlighted completion.
+    assert!(mode.autocomplete_tab().is_empty());
+    assert_eq!(mode.editor_text(), "/thinking ");
+    assert!(!mode.autocomplete_is_open(), "the menu closes");
+
+    // Argument completions come from the host: /thinking levels.
+    type_into_editor(&mode, "h");
+    assert_eq!(mode.autocomplete_prefix().as_deref(), Some("h"));
+    assert_eq!(mode.autocomplete_items(), vec!["high".to_string()]);
+    // Enter applies an argument completion without submitting.
+    assert!(mode.autocomplete_accept().is_empty());
+    assert_eq!(mode.editor_text(), "/thinking high");
+    assert!(!mode.has_active_selector(), "no submit happened");
+}
+
+#[test]
+fn autocomplete_completes_model_references_and_picker_providers() {
+    let session = session_with_scoped_models(vec![
+        scoped_model("claude-sonnet-4-5"),
+        scoped_model("claude-opus-5"),
+    ]);
+    let mode = make_mode(&session);
+    mode.rebuild_autocomplete();
+
+    // `/model <Tab>` completes provider/id references.
+    type_into_editor(&mode, "/model op");
+    assert_eq!(mode.autocomplete_prefix().as_deref(), Some("op"));
+    assert_eq!(
+        mode.autocomplete_items().first().map(String::as_str),
+        Some("anthropic/claude-opus-5"),
+        "the fuzzy best match leads: {:?}",
+        mode.autocomplete_items()
+    );
+    assert!(mode.autocomplete_tab().is_empty());
+    assert_eq!(mode.editor_text(), "/model anthropic/claude-opus-5");
+
+    // `/m <Tab>` completes provider names (the picker's filter).
+    mode.editor().lock().set_text("");
+    drain(&mode);
+    type_into_editor(&mode, "/m ant");
+    assert_eq!(mode.autocomplete_prefix().as_deref(), Some("ant"));
+    assert_eq!(mode.autocomplete_items(), vec!["anthropic".to_string()]);
+}
+
+#[test]
+fn autocomplete_enter_on_a_command_name_submits_it() {
+    let session = session_with_scoped_models(vec![scoped_model("claude-sonnet-4-5")]);
+    let mode = make_mode(&session);
+    mode.rebuild_autocomplete();
+
+    type_into_editor(&mode, "/thinking");
+    assert!(mode.autocomplete_is_open());
+    // Enter completes `/thinking ` and falls through to submit, which opens the
+    // thinking selector (upstream's `/command` fall-through).
+    let actions = mode.autocomplete_accept();
+    assert_eq!(actions, vec![ModeAction::EditorSlotChanged]);
+    assert!(mode.has_active_selector());
+    assert!(!mode.autocomplete_is_open());
+}
+
+#[test]
+fn autocomplete_ignores_ordinary_text_and_the_bang_prefix() {
+    let session = session_with_scoped_models(vec![scoped_model("claude-sonnet-4-5")]);
+    let mode = make_mode(&session);
+    mode.rebuild_autocomplete();
+
+    type_into_editor(&mode, "hello world");
+    assert!(!mode.autocomplete_is_open(), "plain text does not trigger");
+
+    mode.editor().lock().set_text("");
+    drain(&mode);
+    type_into_editor(&mode, "!echo hi");
+    assert!(
+        !mode.autocomplete_is_open(),
+        "bash mode keeps the menu closed"
+    );
+}

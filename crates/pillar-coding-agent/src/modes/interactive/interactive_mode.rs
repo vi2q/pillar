@@ -161,6 +161,7 @@ use crate::core::session_entries::SessionEntry;
 use crate::core::settings_manager::DoubleEscapeAction;
 use crate::core::truncate::TruncationResult;
 use crate::modes::interactive::components::bash_execution::BashExecutionComponent;
+use crate::modes::interactive::autocomplete::InteractiveAutocomplete;
 use crate::modes::interactive::components::footer::FooterComponent;
 use crate::modes::interactive::components::model_picker::{
     CategoryKind, ModelPickerComponent, ModelPickerOutcome, PickerCategory, RECENT_CATEGORY_ID,
@@ -280,6 +281,9 @@ pub struct InteractiveMode {
     terminal_rows: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     /// Where the 2-column picker keeps its recent-model history.
     agent_dir: Option<std::path::PathBuf>,
+    /// Host-side autocomplete (upstream the editor's provider; the port's
+    /// editor only renders the dropdown).
+    autocomplete: std::sync::Mutex<InteractiveAutocomplete>,
 }
 
 /// The selector currently shown in place of the editor (upstream the
@@ -372,6 +376,12 @@ impl InteractiveMode {
                 .terminal_rows
                 .unwrap_or_else(|| std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(24))),
             agent_dir: options.agent_dir.clone(),
+            autocomplete: std::sync::Mutex::new(InteractiveAutocomplete::new(
+                Vec::new(),
+                Vec::new(),
+                &cwd,
+                5,
+            )),
             session,
         }
     }
@@ -738,13 +748,13 @@ impl InteractiveMode {
                 self.transcript.lock().show_warning(&format!(
                     "{command} is not available yet (selector UI is not ported)"
                 ));
-                self.editor.lock().set_text("");
+                self.set_editor_text("");
                 return Vec::new();
             }
         }
 
         if text == "/quit" {
-            self.editor.lock().set_text("");
+            self.set_editor_text("");
             return vec![ModeAction::Shutdown];
         }
         if text == "/arminsayshi" || text == "/dementedelves" {
@@ -753,7 +763,7 @@ impl InteractiveMode {
             self.transcript
                 .lock()
                 .show_warning("This command is not ported");
-            self.editor.lock().set_text("");
+            self.set_editor_text("");
             return Vec::new();
         }
         if text == "/compact" || text.starts_with("/compact ") {
@@ -762,7 +772,7 @@ impl InteractiveMode {
                 .map(str::trim)
                 .filter(|instructions| !instructions.is_empty())
                 .map(str::to_string);
-            self.editor.lock().set_text("");
+            self.set_editor_text("");
             return vec![ModeAction::Compact { instructions }];
         }
         if text == "/thinking" || text.starts_with("/thinking ") {
@@ -770,7 +780,7 @@ impl InteractiveMode {
                 .strip_prefix("/thinking ")
                 .map(str::trim)
                 .filter(|search| !search.is_empty());
-            self.editor.lock().set_text("");
+            self.set_editor_text("");
             return match search {
                 None => self.show_thinking_selector(),
                 Some(search) => {
@@ -797,13 +807,13 @@ impl InteractiveMode {
             };
         }
         if text == "/model" || text.starts_with("/model ") {
-            self.editor.lock().set_text("");
+            self.set_editor_text("");
             return self.handle_model_command(text);
         }
         // The 2-column picker of the `pi-model-picker` extension (not an
         // upstream command); `/model` above stays as upstream has it.
         if text == "/m" || text.starts_with("/m ") {
-            self.editor.lock().set_text("");
+            self.set_editor_text("");
             let query = text
                 .strip_prefix("/m")
                 .map(str::trim)
@@ -815,7 +825,7 @@ impl InteractiveMode {
         }
         if text == "/name" || text.starts_with("/name ") {
             self.handle_name_command(text);
-            self.editor.lock().set_text("");
+            self.set_editor_text("");
             return Vec::new();
         }
 
@@ -832,7 +842,7 @@ impl InteractiveMode {
                     self.transcript.lock().show_warning(
                         "A bash command is already running. Press Esc to cancel it first.",
                     );
-                    self.editor.lock().set_text(text);
+                    self.set_editor_text(text);
                     return Vec::new();
                 }
                 self.editor.lock().add_to_history(text);
@@ -847,7 +857,7 @@ impl InteractiveMode {
         // immediately; the port has no extension commands yet).
         if self.session.is_compacting() {
             self.editor.lock().add_to_history(text);
-            self.editor.lock().set_text("");
+            self.set_editor_text("");
             self.pending
                 .lock()
                 .queue_compaction_message(text.to_string(), QueueMode::Steer);
@@ -862,7 +872,7 @@ impl InteractiveMode {
         // Streaming submissions steer the running turn.
         if self.session.is_streaming() {
             self.editor.lock().add_to_history(text);
-            self.editor.lock().set_text("");
+            self.set_editor_text("");
             let (steering, follow_up) = self.session_queues();
             self.pending.lock().update_display(&steering, &follow_up);
             return vec![ModeAction::Prompt {
@@ -989,6 +999,9 @@ impl InteractiveMode {
         if was != is {
             self.update_editor_border_color();
         }
+        // Upstream the editor re-requests or refreshes the menu on every text
+        // change (`insertCharacter` / the deletion paths).
+        self.update_autocomplete_on_change();
     }
 
     /// Upstream `updateEditorBorderColor`.
@@ -1039,7 +1052,7 @@ impl InteractiveMode {
             .filter(|text| !text.trim().is_empty())
             .collect::<Vec<_>>()
             .join("\n\n");
-        self.editor.lock().set_text(&combined);
+        self.set_editor_text(&combined);
         self.update_pending_display();
         all_queued.len()
     }
@@ -1049,7 +1062,7 @@ impl InteractiveMode {
     pub fn handle_ctrl_c(&self) -> Vec<ModeAction> {
         let now = now_ms();
         let last = self.last_sigint_ms.load(Ordering::SeqCst);
-        self.editor.lock().set_text("");
+        self.set_editor_text("");
         self.mark_dirty();
         if now.saturating_sub(last) < 500 {
             return vec![ModeAction::Shutdown];
@@ -1077,7 +1090,7 @@ impl InteractiveMode {
             return Vec::new();
         }
         if self.bash_mode.load(Ordering::SeqCst) {
-            self.editor.lock().set_text("");
+            self.set_editor_text("");
             self.bash_mode.store(false, Ordering::SeqCst);
             self.update_editor_border_color();
             return Vec::new();
@@ -1625,6 +1638,261 @@ impl InteractiveMode {
                 ModelPickerOutcome::Cancel => self.close_selector(Some(token)),
             },
         })
+    }
+
+    // --- Autocomplete (host-side provider) ---------------------------------
+
+    /// Upstream `setupAutocompleteProvider`: (re)build the command table from
+    /// the session and the current settings, and hand the dropdown to the
+    /// editor.
+    pub fn rebuild_autocomplete(&self) {
+        let (enable_skill_commands, max_visible) = {
+            let settings = self.session.settings_manager().lock().expect("settings lock");
+            (
+                settings.enable_skill_commands(),
+                settings.autocomplete_max_visible() as usize,
+            )
+        };
+        {
+            let mut autocomplete = self.autocomplete.lock().expect("autocomplete");
+            let max_visible = if max_visible == 0 {
+                autocomplete.max_visible()
+            } else {
+                max_visible
+            };
+            *autocomplete = InteractiveAutocomplete::new(
+                crate::modes::interactive::autocomplete::commands(
+                    &self.session,
+                    enable_skill_commands,
+                ),
+                crate::modes::interactive::autocomplete::argument_completers(&self.session),
+                self.session.cwd(),
+                max_visible,
+            );
+        }
+        let max_visible = self.autocomplete.lock().expect("autocomplete").max_visible();
+        self.editor
+            .lock()
+            .set_autocomplete_max_visible(max_visible);
+        self.close_autocomplete();
+    }
+
+    /// Close the dropdown (upstream `cancelAutocomplete`).
+    pub fn close_autocomplete(&self) {
+        let mut autocomplete = self.autocomplete.lock().expect("autocomplete");
+        if !autocomplete.is_open() {
+            return;
+        }
+        autocomplete.set_open(None, false);
+        drop(autocomplete);
+        self.editor.lock().set_autocomplete_list(None);
+        self.mark_dirty();
+    }
+
+    /// Set the editor text programmatically and drop the dropdown: upstream
+    /// `editor.setText` cancels the autocomplete first.
+    fn set_editor_text(&self, text: &str) {
+        self.close_autocomplete();
+        self.editor.lock().set_text(text);
+    }
+
+    /// Whether the dropdown is showing (upstream `isShowingAutocomplete`).
+    pub fn autocomplete_is_open(&self) -> bool {
+        self.autocomplete.lock().expect("autocomplete").is_open()
+    }
+
+    /// The open menu's prefix (tests / hosts).
+    pub fn autocomplete_prefix(&self) -> Option<String> {
+        self.autocomplete
+            .lock()
+            .expect("autocomplete")
+            .open_prefix()
+            .map(str::to_string)
+    }
+
+    /// The visible completion values (tests).
+    pub fn autocomplete_items(&self) -> Vec<String> {
+        self.editor
+            .lock()
+            .autocomplete_list()
+            .map(|list| {
+                list.filtered_items()
+                    .iter()
+                    .map(|item| item.value.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Upstream the editor's autocomplete request after a text change.
+    pub fn update_autocomplete_on_change(&self) {
+        let (lines, cursor_line, cursor_col) = {
+            let editor = self.editor.lock();
+            (editor.get_lines(), editor.get_cursor().0, editor.get_cursor().1)
+        };
+        let should_request = self
+            .autocomplete
+            .lock()
+            .expect("autocomplete")
+            .should_request_on_change(&lines, cursor_line, cursor_col);
+        if should_request {
+            self.request_autocomplete(&lines, cursor_line, cursor_col, false, false);
+        }
+    }
+
+    /// Upstream `handleTabCompletion`: apply the highlighted completion when
+    /// the menu is open, else request suggestions (slash commands without
+    /// `force`, file paths with it).
+    pub fn autocomplete_tab(&self) -> Vec<ModeAction> {
+        if self.autocomplete_is_open() {
+            self.accept_autocomplete();
+            self.close_autocomplete();
+            self.mark_dirty();
+            return Vec::new();
+        }
+        let (lines, cursor_line, cursor_col) = {
+            let editor = self.editor.lock();
+            (editor.get_lines(), editor.get_cursor().0, editor.get_cursor().1)
+        };
+        let text_before = lines
+            .get(cursor_line)
+            .map(|line| line[..cursor_col.min(line.len())].to_string())
+            .unwrap_or_default();
+        let force = !pillar_tui::editor_autocomplete::SlashMenuContext::is_in_slash_command_context(
+            cursor_line,
+            &text_before,
+        );
+        if force {
+            let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+            if !pillar_tui::autocomplete::CombinedAutocompleteProvider::should_trigger_file_completion(
+                &refs,
+                cursor_line,
+                cursor_col,
+            ) {
+                return Vec::new();
+            }
+        }
+        self.request_autocomplete(&lines, cursor_line, cursor_col, force, true);
+        Vec::new()
+    }
+
+    /// Upstream the editor's `tui.select.confirm` handling while the menu is
+    /// open: apply the completion; a `/command` name completion falls through
+    /// to submit (so `/help` + Enter runs the command), arguments do not.
+    pub fn autocomplete_accept(&self) -> Vec<ModeAction> {
+        let Some(prefix) = self.autocomplete_prefix() else {
+            return Vec::new();
+        };
+        let applied = self.accept_autocomplete();
+        // Upstream: a completed `/command` name falls through to submit (so
+        // `/help` + Enter runs the command); a completed argument does not, and
+        // an empty menu submits whatever is typed.
+        let submit = if applied { prefix.starts_with('/') } else { true };
+        self.close_autocomplete();
+        if !submit {
+            return Vec::new();
+        }
+        let text = self.editor.lock().get_text();
+        self.handle_submit(&text)
+    }
+
+    /// Apply the highlighted completion to the editor (upstream
+    /// `applyCompletion`); answers whether a completion was applied. The menu is
+    /// left to the caller to close.
+    fn accept_autocomplete(&self) -> bool {
+        let (lines, cursor_line, cursor_col, item, prefix) = {
+            let autocomplete = self.autocomplete.lock().expect("autocomplete");
+            let Some(prefix) = autocomplete.open_prefix().map(str::to_string) else {
+                return false;
+            };
+            let editor = self.editor.lock();
+            let Some(item) = editor
+                .autocomplete_list()
+                .and_then(|list| list.get_selected_item())
+                .map(|item| {
+                    pillar_tui::autocomplete::AutocompleteItem {
+                        value: item.value.clone(),
+                        label: item.label.clone(),
+                        description: item.description.clone(),
+                    }
+                })
+            else {
+                return false;
+            };
+            (
+                editor.get_lines(),
+                editor.get_cursor().0,
+                editor.get_cursor().1,
+                item,
+                prefix,
+            )
+        };
+        let (applied, line, col) = self
+            .autocomplete
+            .lock()
+            .expect("autocomplete")
+            .apply(&lines, cursor_line, cursor_col, &item, &prefix);
+        self.editor
+            .lock()
+            .set_lines_and_cursor(&applied, line, col);
+        self.mark_dirty();
+        true
+    }
+
+    /// Upstream `runAutocompleteRequest` + `applyAutocompleteSuggestions`.
+    fn request_autocomplete(
+        &self,
+        lines: &[String],
+        cursor_line: usize,
+        cursor_col: usize,
+        force: bool,
+        explicit_tab: bool,
+    ) {
+        let suggestions = {
+            let autocomplete = self.autocomplete.lock().expect("autocomplete");
+            // The ported provider is synchronous; the (unwired) `@`-attachment
+            // debounce is the only one upstream would apply here.
+            if autocomplete.debounce_ms(force, explicit_tab, lines, cursor_line, cursor_col) > 0 {
+                return;
+            }
+            autocomplete.suggestions(lines, cursor_line, cursor_col, force)
+        };
+        let Some(suggestions) = suggestions else {
+            self.close_autocomplete();
+            return;
+        };
+        let (max_visible, best_match) = {
+            let autocomplete = self.autocomplete.lock().expect("autocomplete");
+            (
+                autocomplete.max_visible(),
+                autocomplete.best_match_index(&suggestions.items, &suggestions.prefix),
+            )
+        };
+        let items: Vec<(String, String, Option<String>)> = suggestions
+            .items
+            .iter()
+            .map(|item| {
+                (
+                    item.value.clone(),
+                    item.label.clone(),
+                    item.description.clone(),
+                )
+            })
+            .collect();
+        let mut list = pillar_tui::editor_autocomplete::create_autocomplete_list(
+            &suggestions.prefix,
+            &items,
+            max_visible,
+        );
+        if best_match >= 0 {
+            list.set_selected_index(best_match as usize);
+        }
+        {
+            let mut autocomplete = self.autocomplete.lock().expect("autocomplete");
+            autocomplete.set_open(Some(suggestions.prefix.clone()), force);
+        }
+        self.editor.lock().set_autocomplete_list(Some(list));
+        self.mark_dirty();
     }
 
     /// Upstream `handleDequeue`.

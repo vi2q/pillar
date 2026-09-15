@@ -463,14 +463,21 @@ async fn ctrl_d_on_an_empty_editor_shuts_down_without_prompting() {
 async fn bash_submission_executes_and_records_the_result() {
     install_dark();
     let session = session(echo_stream("pong"), "bash");
-    // Release `/quit` once the block was painted (see the prompt test above on
-    // why the gate watches frames instead of the session state).
-    let writes = Arc::new(Mutex::new(String::new()));
-    let gate = Arc::clone(&writes);
-    let release: Arc<dyn Fn() -> bool + Send + Sync> =
-        Arc::new(move || strip_terminal_sequences(&gate.lock().unwrap()).contains("printf hello"));
-    let mut harness = harness_with_writes(
-        writes,
+    // Release `/quit` once the bash *message* is in the session: the block
+    // header and its output are painted while the command runs (live bash), so
+    // a frame-based gate would shut the run down before `executeBash` returned
+    // and recorded the result. The completion is drained before the next input
+    // read, so the final painted frame still carries the output.
+    let state = Arc::clone(&session);
+    let release: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || {
+        state.state().messages.iter().any(|message| {
+            matches!(
+                message,
+                pillar_agent::types::AgentMessage::BashExecution(_)
+            )
+        })
+    });
+    let mut harness = harness(
         vec!["!printf hello\r".to_string(), "/quit\r".to_string()],
         Some(release),
     );
@@ -680,5 +687,58 @@ async fn kitty_protocol_arrows_drive_the_model_picker() {
     assert!(
         output.contains("Model: claude-sonnet-4-5"),
         "the status reports the new model: {output:?}"
+    );
+}
+
+/// The autocomplete wiring end to end: typing a slash command opens the menu,
+/// Tab completes it, and Enter on a completed `/command` falls through to
+/// submit (here `/quit`, which shuts the loop down).
+#[tokio::test]
+async fn typing_a_slash_command_completes_it_and_enter_submits() {
+    install_dark();
+    let session = session(echo_stream("pong"), "autocomplete");
+    // `/thi` + Tab completes to `/thinking `; Enter falls through to submit it,
+    // which opens the thinking selector; Ctrl+C cancels the selector (a single
+    // byte, so the harness needs no escape-flush gap); `/quit` then completes
+    // and submits the same way.
+    let mut harness = harness(
+        vec![
+            "/thi".to_string(),
+            "\t".to_string(),
+            "\r".to_string(),
+            "\u{3}".to_string(),
+            "/quit\r".to_string(),
+        ],
+        None,
+    );
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        run_interactive(
+            Arc::clone(&session),
+            Box::new(std::mem::replace(
+                &mut harness.terminal,
+                ProcessTerminal::with_io(Box::new(pillar_tui::process_terminal::NullTerminalIo)),
+            )),
+            run_options(temp_dir("keybindings")),
+        ),
+    )
+    .await
+    .expect("run loop finished")
+    .expect("run loop ok");
+
+    assert_eq!(result, 0);
+    let output = rendered(&harness.writes);
+    assert!(
+        output.contains("thinking"),
+        "the menu listed the command and Tab completed it: {output:?}"
+    );
+    assert!(
+        output.contains("Thinking Level"),
+        "the completed command ran: {output:?}"
+    );
+    assert!(
+        session.state().messages.is_empty(),
+        "nothing was submitted as a prompt"
     );
 }

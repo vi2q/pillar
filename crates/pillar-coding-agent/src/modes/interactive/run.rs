@@ -187,6 +187,9 @@ pub async fn run_interactive(
     // Upstream `init()` (the footer needs the provider count before the first
     // render; the model selector keeps it fresh afterwards).
     mode.update_available_provider_count();
+    // Upstream `setupAutocompleteProvider()`: build the command table and hand
+    // the dropdown the editor renders to the mode.
+    mode.rebuild_autocomplete();
 
     let editor_slot = mode.mount(screen.base_mut());
     screen.base_mut().set_focus(Some(editor_slot));
@@ -668,6 +671,20 @@ fn dispatch_sequence(
     keybindings: &KeybindingsManager,
     data: &str,
 ) -> Vec<ModeAction> {
+    // Autocomplete (host-side provider): Tab triggers a request or applies the
+    // highlighted completion, and Enter applies it while the menu is open
+    // (upstream the editor owns both; the port's editor only renders the
+    // dropdown, so the host intercepts them before the editor sees them).
+    if keybindings.matches(data, "tui.input.tab") {
+        let actions = mode.autocomplete_tab();
+        mode.mark_dirty();
+        return actions;
+    }
+    if keybindings.matches(data, "tui.select.confirm") && mode.autocomplete_is_open() {
+        let actions = mode.autocomplete_accept();
+        mode.mark_dirty();
+        return actions;
+    }
     // Kitty flag 2 (report event types) makes a kitty-protocol terminal send
     // a release event for every press. Upstream drops those inside
     // `TUI.handleInput` unless the focused component asked for them

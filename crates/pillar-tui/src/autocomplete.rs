@@ -120,6 +120,22 @@ pub struct FileEntry {
 /// Host-side `fd` walk callback (upstream `walkDirectoryWithFd`).
 pub type FdRunner<'a> = &'a mut dyn FnMut(&str, &str, usize) -> Vec<FileEntry>;
 
+/// The command name and argument text of an in-progress slash command
+/// invocation: `/model op` → `("model", "op")` (upstream the private parsing
+/// inside `getSuggestions`). `None` when the text is not `/name <args>`.
+///
+/// The port exposes it because argument completions stay host-side (upstream
+/// `SlashCommand.getArgumentCompletions`), and the host must split the text the
+/// same way the provider does.
+pub fn slash_command_argument_prefix(text_before_cursor: &str) -> Option<(&str, &str)> {
+    let rest = text_before_cursor.strip_prefix('/')?;
+    let (name, arguments) = rest.split_once(' ')?;
+    if name.is_empty() {
+        return None;
+    }
+    Some((name, arguments))
+}
+
 /// The combined provider (upstream `CombinedAutocompleteProvider`).
 pub struct CombinedAutocompleteProvider {
     commands: Vec<SlashCommand>,
@@ -230,8 +246,7 @@ impl CombinedAutocompleteProvider {
 
         // Slash commands at the start of the line.
         if !force && text_before.starts_with('/') {
-            let space_index = text_before.find(' ');
-            let Some(space_index) = space_index else {
+            if text_before.find(' ').is_none() {
                 let prefix = &text_before[1..];
                 let items: Vec<AutocompleteItem> = self
                     .commands
@@ -264,10 +279,10 @@ impl CombinedAutocompleteProvider {
                     items: filtered,
                     prefix: text_before.clone(),
                 });
-            };
+            }
 
-            let command_name = &text_before[1..space_index];
-            let argument_text = &text_before[space_index + 1..];
+            let (command_name, argument_text) =
+                slash_command_argument_prefix(&text_before).expect("space checked above");
             let command = self
                 .commands
                 .iter()
