@@ -137,7 +137,7 @@ impl<C> Clone for Shared<C> {
     }
 }
 
-impl<C: Component> Component for Shared<C> {
+impl<C: Component + 'static> Component for Shared<C> {
     fn render(&mut self, width: usize) -> Vec<String> {
         self.lock().render(width)
     }
@@ -152,6 +152,10 @@ impl<C: Component> Component for Shared<C> {
 
     fn invalidate(&mut self) {
         self.lock().invalidate();
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 }
 
@@ -221,6 +225,10 @@ pub struct InteractiveTranscript {
     /// Upstream `session.retryAttempt`, host-updated.
     pub retry_attempt: u32,
     cwd: String,
+    /// Upstream `lastStatusSpacer` / `lastStatusText` (the showStatus
+    /// in-place rewrite tracking).
+    pub(crate) last_status_spacer: Option<Shared<Spacer>>,
+    pub(crate) last_status_text: Option<Shared<Text>>,
 }
 
 impl InteractiveTranscript {
@@ -243,6 +251,8 @@ impl InteractiveTranscript {
             on_history: None,
             retry_attempt: 0,
             cwd: cwd.to_string(),
+            last_status_spacer: None,
+            last_status_text: None,
         }
     }
 
@@ -262,6 +272,11 @@ impl InteractiveTranscript {
     /// `show_cache_miss_notices` / `tool_output_expanded` here).
     pub fn settings_mut(&mut self) -> &mut TranscriptSettings {
         &mut self.settings
+    }
+
+    /// Upstream `outputPad`.
+    pub fn output_pad(&self) -> usize {
+        self.settings.output_pad
     }
 
     /// Replace the hidden-thinking label for later components (upstream also

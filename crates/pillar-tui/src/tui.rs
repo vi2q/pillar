@@ -146,6 +146,12 @@ impl Container {
         self.children.clear();
     }
 
+    /// Mutable children access (upstream code indexes `children[i]`)
+    /// for identity checks and index-based splices.
+    pub fn children_mut(&mut self) -> &mut [Box<dyn Component>] {
+        &mut self.children
+    }
+
     pub fn len(&self) -> usize {
         self.children.len()
     }
