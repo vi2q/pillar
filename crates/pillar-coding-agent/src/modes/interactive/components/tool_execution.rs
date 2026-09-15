@@ -60,11 +60,24 @@ pub struct ToolExecutionResult {
 
 /// Pass-through child rendering stored lines verbatim (the port stand-in for
 /// upstream's renderer-provided child components).
+///
+/// Upstream hands these strings to a `Text` child, which splits on newlines
+/// and word-wraps every line to the available width; a multi-line string
+/// stored as one element therefore has to be wrapped here too (otherwise the
+/// frame contains a line wider than the terminal and the renderer aborts with
+/// "Rendered line N exceeds terminal width").
 struct StaticLines(Vec<String>);
 
 impl Component for StaticLines {
-    fn render(&mut self, _width: usize) -> Vec<String> {
-        self.0.clone()
+    fn render(&mut self, width: usize) -> Vec<String> {
+        let mut lines = Vec::new();
+        for stored in &self.0 {
+            lines.extend(pillar_tui::text_utils::wrap_text_with_ansi(
+                stored,
+                width.max(1),
+            ));
+        }
+        lines
     }
 }
 
