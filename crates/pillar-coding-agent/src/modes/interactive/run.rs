@@ -48,6 +48,15 @@ pub const PUMP_INTERVAL_MS: u64 = 8;
 /// stays on the pump thread.
 #[derive(Debug)]
 enum UiCommand {
+    /// A model switch from the `/model` selector settled (upstream the code
+    /// after `await session.setModel(...)` in `selectModel`): the pump closes
+    /// the selector and reports the outcome.
+    ModelSelected {
+        provider: String,
+        id: String,
+        persist: bool,
+        error: Option<String>,
+    },
     /// A bash command finished (upstream the code after `await
     /// session.executeBash(...)`).
     BashComplete {
@@ -161,6 +170,9 @@ pub async fn run_interactive(
     mode.render_initial_messages();
     mode.update_terminal_title();
     mode.update_editor_border_color();
+    // Upstream `init()` (the footer needs the provider count before the first
+    // render; the model selector keeps it fresh afterwards).
+    mode.update_available_provider_count();
 
     let editor_slot = mode.mount(screen.base_mut());
     screen.base_mut().set_focus(Some(editor_slot));
@@ -337,6 +349,28 @@ async fn execute_action(
             }
             Ok(())
         }
+        // Upstream `selectModel`: resolve the model instance from the runtime
+        // (the selector handed over `provider`/`id`), switch, and report back.
+        // The error travels inside the command so the pump can close the
+        // selector and show it (upstream `done(); showError()`) instead of the
+        // executor loop reporting it a second time.
+        ModeAction::SelectModel {
+            provider,
+            id,
+            persist,
+        } => {
+            let result = match session.model_runtime().get_model(&provider, &id) {
+                Some(model) => session.set_model(model, persist).await,
+                None => Err(format!("Unknown model {provider}/{id}")),
+            };
+            let _ = ui.send(UiCommand::ModelSelected {
+                provider,
+                id,
+                persist,
+                error: result.err(),
+            });
+            Ok(())
+        }
         ModeAction::Shutdown => Ok(()),
         // Handled by the pump (it owns the TUI); never reaches the executor.
         ModeAction::EditorSlotChanged => Ok(()),
@@ -432,15 +466,29 @@ fn pump_loop(
             }
         }
 
-        // Executor reports (bash completion).
+        // Executor reports (bash completion, model switches).
         while let Ok(command) = ui_commands.try_recv() {
-            match command {
+            let reported: Vec<ModeAction> = match command {
                 UiCommand::BashComplete {
                     exit_code,
                     cancelled,
                     truncation,
                     full_output_path,
-                } => mode.complete_bash(exit_code, cancelled, truncation, full_output_path),
+                } => {
+                    mode.complete_bash(exit_code, cancelled, truncation, full_output_path);
+                    Vec::new()
+                }
+                UiCommand::ModelSelected {
+                    provider,
+                    id,
+                    persist,
+                    error,
+                } => mode.complete_model_selection(&provider, &id, persist, error),
+            };
+            for action in reported {
+                if dispatch_action(&mut screen, &mode, editor_slot, &actions, action).is_err() {
+                    break;
+                }
             }
         }
 
@@ -465,14 +513,27 @@ fn pump_loop(
         // Terminal input.
         let mut requested_shutdown = false;
         let data = screen.base_mut().terminal_mut().read_input(interval);
-        if let Some(data) = data {
-            for action in dispatch_input(&mut screen, &mode, editor_slot, &keybindings, &data) {
-                if matches!(action, ModeAction::Shutdown) {
-                    requested_shutdown = true;
-                }
-                if dispatch_action(&mut screen, &mode, editor_slot, &actions, action).is_err() {
-                    break;
-                }
+        // On idle, a buffered partial escape sequence flushes once its
+        // disambiguation deadline passed (upstream the StdinBuffer's own
+        // timer). Without this a lone Escape waits for the next keypress,
+        // which breaks every `tui.select.cancel` / `app.interrupt` binding
+        // that is a bare Escape.
+        let input_actions = match data {
+            Some(data) => dispatch_input(&mut screen, &mode, editor_slot, &keybindings, &data),
+            None => {
+                let flushed = screen
+                    .base_mut()
+                    .terminal_mut()
+                    .flush_pending_input(Instant::now());
+                dispatch_sequences(&mut screen, &mode, editor_slot, &keybindings, flushed)
+            }
+        };
+        for action in input_actions {
+            if matches!(action, ModeAction::Shutdown) {
+                requested_shutdown = true;
+            }
+            if dispatch_action(&mut screen, &mode, editor_slot, &actions, action).is_err() {
+                break;
             }
         }
 
@@ -538,6 +599,18 @@ fn dispatch_input(
         let terminal = screen.base_mut().terminal_mut();
         terminal.feed_input_bytes(data, now)
     };
+    dispatch_sequences(screen, mode, editor_slot, keybindings, sequences)
+}
+
+/// Feed parsed sequences through the terminal's kitty-negotiation filter and
+/// dispatch what survives (upstream the `stdinBuffer.on("data")` handler).
+fn dispatch_sequences(
+    screen: &mut TuiMainScreen,
+    mode: &Arc<InteractiveMode>,
+    editor_slot: &mut pillar_tui::tui::ComponentId,
+    keybindings: &KeybindingsManager,
+    sequences: Vec<String>,
+) -> Vec<ModeAction> {
     let mut forwarded = Vec::new();
     {
         let terminal = screen.base_mut().terminal_mut();
@@ -571,8 +644,12 @@ fn dispatch_sequence(
     data: &str,
 ) -> Vec<ModeAction> {
     // A selector owns the keyboard while it is open (upstream it is the
-    // focused component); the host app keybindings do not apply.
+    // focused component); the host app keybindings do not apply. The port must
+    // request the repaint that the TUI's focused dispatch would have made
+    // (`handle_terminal_input` renders on every key), otherwise navigation and
+    // search typing stay invisible even though the state changes.
     if let Some(actions) = mode.handle_selector_key(data) {
+        mode.mark_dirty();
         return actions;
     }
     // Upstream checks extension shortcuts and the clipboard-paste binding

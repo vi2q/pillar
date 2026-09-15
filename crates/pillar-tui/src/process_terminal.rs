@@ -84,6 +84,12 @@ pub trait Terminal: Send {
     /// Feed raw input bytes and return the complete input sequences
     /// (bracketed paste is re-wrapped like upstream).
     fn feed_input_bytes(&mut self, data: &str, now: Instant) -> Vec<String>;
+    /// Flush a buffered partial escape sequence once its disambiguation
+    /// deadline passed (upstream the StdinBuffer schedules that timer itself;
+    /// the port's host polls this). The host feeds the returned sequences
+    /// through [`Terminal::handle_sequence`] like any other input — without
+    /// this a lone Escape or a split escape waits for the next keypress.
+    fn flush_pending_input(&mut self, now: Instant) -> Vec<String>;
     /// Handle one parsed sequence: kitty negotiation responses are consumed,
     /// other sequences are returned for dispatch.
     fn handle_sequence(&mut self, sequence: &str) -> Option<String>;
@@ -118,6 +124,9 @@ pub struct ProcessTerminal {
     keyboard_protocol_pushed: bool,
     negotiator: KeyboardProtocolNegotiator,
     stdin_buffer: StdinBuffer,
+    /// When the buffered partial sequence is flushed as input (upstream the
+    /// StdinBuffer's `setTimeout`); refreshed on every `feed_input_bytes`.
+    pending_flush: Option<Instant>,
     progress_active: bool,
     last_progress_write: Option<Instant>,
     escape_timeout_ms: u64,
@@ -159,6 +168,7 @@ impl ProcessTerminal {
             keyboard_protocol_pushed: false,
             negotiator: KeyboardProtocolNegotiator::new(),
             stdin_buffer: StdinBuffer::with_timeouts(0, escape_timeout_ms),
+            pending_flush: None,
             progress_active: false,
             last_progress_write: None,
             escape_timeout_ms,
@@ -365,6 +375,7 @@ impl Terminal for ProcessTerminal {
 
     fn feed_input_bytes(&mut self, data: &str, now: Instant) -> Vec<String> {
         let outcome = self.stdin_buffer.process_with_clock(data, now);
+        self.pending_flush = outcome.flush_deadline;
         let mut sequences = outcome.data;
         if let Some(paste) = outcome.paste {
             // Re-wrap paste content in the bracketed paste markers the editor
@@ -372,6 +383,14 @@ impl Terminal for ProcessTerminal {
             sequences.push(format!("\u{1b}[200~{paste}\u{1b}[201~"));
         }
         sequences
+    }
+
+    fn flush_pending_input(&mut self, now: Instant) -> Vec<String> {
+        if self.pending_flush.is_none_or(|deadline| now < deadline) {
+            return Vec::new();
+        }
+        self.pending_flush = None;
+        self.stdin_buffer.flush()
     }
 
     fn handle_sequence(&mut self, sequence: &str) -> Option<String> {

@@ -57,6 +57,9 @@ impl Terminal for RecorderTerminal {
     fn feed_input_bytes(&mut self, data: &str, _now: Instant) -> Vec<String> {
         vec![data.to_string()]
     }
+    fn flush_pending_input(&mut self, _now: Instant) -> Vec<String> {
+        Vec::new()
+    }
     fn handle_sequence(&mut self, sequence: &str) -> Option<String> {
         Some(sequence.to_string())
     }

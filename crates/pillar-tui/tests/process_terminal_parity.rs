@@ -249,3 +249,43 @@ fn null_io_keeps_the_terminal_usable_on_wasm_hosts() {
     terminal.stop();
     assert_eq!(terminal.read_input(Duration::from_millis(1)), None);
 }
+
+#[test]
+fn a_buffered_partial_sequence_flushes_once_its_deadline_passes() {
+    let io = FakeIo::new(80, 24);
+    let mut terminal = terminal(&io);
+    let start = Instant::now();
+
+    // A lone Escape is held for the escape window (upstream the StdinBuffer
+    // `setTimeout` the host has to drive).
+    assert!(terminal.feed_input_bytes("\u{1b}", start).is_empty());
+    assert!(
+        terminal.flush_pending_input(start).is_empty(),
+        "not due yet"
+    );
+    assert_eq!(
+        terminal
+            .flush_pending_input(start + Duration::from_millis(10))
+            .len(),
+        1,
+        "the lone Escape is released as input"
+    );
+    assert!(
+        terminal
+            .flush_pending_input(start + Duration::from_millis(50))
+            .is_empty(),
+        "flushed once"
+    );
+
+    // New input resets the window; a complete sequence never flushes.
+    assert!(terminal.feed_input_bytes("\u{1b}[", start).is_empty());
+    assert_eq!(
+        terminal.feed_input_bytes("A", start),
+        vec!["\u{1b}[A".to_string()]
+    );
+    assert!(
+        terminal
+            .flush_pending_input(start + Duration::from_secs(1))
+            .is_empty()
+    );
+}

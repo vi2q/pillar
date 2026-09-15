@@ -21,6 +21,7 @@ pub mod dynamic_border;
 pub mod footer;
 pub mod keybinding_hints;
 pub mod markdown_transform;
+pub mod model_selector;
 pub mod skill_invocation_message;
 pub mod status_indicator;
 pub mod thinking_selector;

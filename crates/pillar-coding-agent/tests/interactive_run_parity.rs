@@ -186,7 +186,9 @@ fn runtime_with_anthropic_key(label: &str) -> ModelRuntime {
     );
     let dir = temp_dir(label);
     let models_path = dir.join("models.json");
-    std::fs::write(&models_path, "{}").unwrap();
+    // A valid empty config: `{}` would leave a `ModelRuntime::get_error()`
+    // config error that the model selector renders as its error message.
+    std::fs::write(&models_path, "{\"providers\":{}}").unwrap();
     ModelRuntime::new(CreateModelRuntimeOptions {
         models_path: Some(models_path),
         models_store: Some(Arc::new(InMemoryCodingAgentModelsStore::new())),
@@ -197,6 +199,16 @@ fn runtime_with_anthropic_key(label: &str) -> ModelRuntime {
 }
 
 fn session(stream_fn: pillar_agent::StreamFn, label: &str) -> Arc<AgentSession> {
+    session_with_scoped_models(stream_fn, label, Vec::new())
+}
+
+/// A session whose `--models` scope is populated (the model selector's initial
+/// `scoped` scope).
+fn session_with_scoped_models(
+    stream_fn: pillar_agent::StreamFn,
+    label: &str,
+    scoped_models: Vec<pillar_coding_agent::core::model_mutation::ScopedModel>,
+) -> Arc<AgentSession> {
     let mut options = AgentOptions::new(stream_fn);
     options.initial_state = Some(AgentState {
         system_prompt: "Test".to_string(),
@@ -231,7 +243,7 @@ fn session(stream_fn: pillar_agent::StreamFn, label: &str) -> Arc<AgentSession> 
         },
         Arc::clone(&settings_manager),
     )));
-    Arc::new(AgentSession::new(AgentSessionConfig::new(
+    let mut config = AgentSessionConfig::new(
         agent,
         session_manager,
         settings_manager,
@@ -239,7 +251,9 @@ fn session(stream_fn: pillar_agent::StreamFn, label: &str) -> Arc<AgentSession> 
         resource_loader,
         Arc::new(runtime_with_anthropic_key(label)),
         Arc::new(Mutex::new(ExtensionRunner::new(Vec::new()))),
-    )))
+    );
+    config.scoped_models = scoped_models;
+    Arc::new(AgentSession::new(config))
 }
 
 /// Terminal I/O serving scripted input chunks and recording output.
@@ -295,6 +309,10 @@ impl TerminalIo for ScriptedIo {
 struct Harness {
     terminal: ProcessTerminal,
     writes: Arc<Mutex<String>>,
+    /// The scripted input queue: a test may append chunks while the loop runs
+    /// (used when the next input depends on state the pump only reaches after
+    /// draining an executor report).
+    chunks: Arc<Mutex<Vec<String>>>,
     started: Arc<AtomicBool>,
     stopped: Arc<AtomicBool>,
 }
@@ -303,9 +321,10 @@ fn harness(chunks: Vec<String>, release: Option<Arc<dyn Fn() -> bool + Send + Sy
     let writes = Arc::new(Mutex::new(String::new()));
     let started = Arc::new(AtomicBool::new(false));
     let stopped = Arc::new(AtomicBool::new(false));
+    let chunks = Arc::new(Mutex::new(chunks));
     let io = ScriptedIo {
         writes: Arc::clone(&writes),
-        chunks: Arc::new(Mutex::new(chunks)),
+        chunks: Arc::clone(&chunks),
         release,
         first_taken: false,
         started: Arc::clone(&started),
@@ -314,6 +333,7 @@ fn harness(chunks: Vec<String>, release: Option<Arc<dyn Fn() -> bool + Send + Sy
     Harness {
         terminal: ProcessTerminal::with_io(Box::new(io)),
         writes,
+        chunks,
         started,
         stopped,
     }
@@ -480,5 +500,193 @@ async fn bash_submission_executes_and_records_the_result() {
     assert!(
         output.contains("hello"),
         "the bash block shows the output: {output:?}"
+    );
+}
+
+/// A scoped model entry for the `--models` scope (`core::model_mutation`).
+fn scoped_model(id: &str) -> pillar_coding_agent::core::model_mutation::ScopedModel {
+    pillar_coding_agent::core::model_mutation::ScopedModel {
+        model: pillar_ai::types::Model {
+            id: id.to_string(),
+            name: format!("{id} name"),
+            api: "anthropic-messages".to_string(),
+            provider: "anthropic".to_string(),
+            base_url: String::new(),
+            reasoning: true,
+            thinking_level_map: None,
+            input: vec!["text".to_string()],
+            cost: Default::default(),
+            context_window: 200_000,
+            max_tokens: 8_000,
+            sampling_params: None,
+            headers: None,
+            compat: None,
+        },
+        thinking_level: None,
+    }
+}
+
+/// The full `/model` path: the selector opens in the editor slot, the search
+/// narrows to a model, Enter reports the switch, the executor resolves it from
+/// the runtime and calls `session.setModel`, and the pump closes the selector
+/// and reports the new model.
+#[tokio::test]
+async fn model_selector_switches_the_session_model() {
+    install_dark();
+    let session = session_with_scoped_models(
+        echo_stream("pong"),
+        "model-select",
+        vec![
+            scoped_model("claude-sonnet-4-5"),
+            scoped_model("claude-opus-5"),
+        ],
+    );
+    let mut harness = harness(vec!["/model\r".to_string()], None);
+    // The rest is fed from a monitor thread, one stage per painted frame, so
+    // each key gets its own read batch and frame:
+    //   selector frame -> search text (the repaint under test) -> Enter ->
+    //   `/quit` once the switch landed *and* the pump drained the executor
+    //   report (a gated chunk would otherwise land in the still-open selector).
+    let chunks = Arc::clone(&harness.chunks);
+    let writes = Arc::clone(&harness.writes);
+    let state = Arc::clone(&session);
+    std::thread::spawn(move || {
+        // The scope line and the highlighted row carry colour codes between the
+        // words, so match against the stripped frame.
+        let wait_for = |needle: &str| {
+            for _ in 0..600 {
+                if strip_terminal_sequences(&writes.lock().unwrap()).contains(needle) {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            false
+        };
+        if !wait_for("Scope:") {
+            return;
+        }
+        chunks.lock().unwrap().push("opus-5".to_string());
+        if !wait_for("→ claude-opus-5") {
+            return;
+        }
+        chunks.lock().unwrap().push("\r".to_string());
+        for _ in 0..600 {
+            if state.state().model.id == "claude-opus-5" {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+        chunks.lock().unwrap().push("/quit\r".to_string());
+    });
+
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(10),
+        run_interactive(
+            Arc::clone(&session),
+            Box::new(std::mem::replace(
+                &mut harness.terminal,
+                ProcessTerminal::with_io(Box::new(pillar_tui::process_terminal::NullTerminalIo)),
+            )),
+            run_options(temp_dir("keybindings")),
+        ),
+    )
+    .await;
+    let output = rendered(&harness.writes);
+    let result = match outcome {
+        Ok(result) => result.expect("run loop ok"),
+        Err(_) => {
+            // The monitor thread waits for the moved highlight to be painted
+            // before pressing Enter; without it this run never finishes.
+            let tail: String = output
+                .chars()
+                .rev()
+                .take(600)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            panic!("the run loop did not finish; a consumed selector key did not repaint. tail={tail:?}");
+        }
+    };
+
+    assert_eq!(result, 0);
+    assert_eq!(
+        session.state().model.id,
+        "claude-opus-5",
+        "the selector switched the session model"
+    );
+    assert!(
+        output.contains("Scope:"),
+        "the selector rendered in the editor slot: {output:?}"
+    );
+    // The repaint of a consumed selector key: the frame is painted in a later
+    // pump iteration than the one that mounted the selector (the down/up keys
+    // take the same path; the pty smoke covers them end to end).
+    assert!(
+        output.contains("→ claude-opus-5"),
+        "the search key repainted the moved highlight: {output:?}"
+    );
+    assert!(
+        output.contains("Model: claude-opus-5"),
+        "the status reports the new model: {output:?}"
+    );
+}
+
+
+/// A bare Escape reaches the mode: the terminal releases the buffered partial
+/// sequence once its disambiguation window passed (upstream the StdinBuffer's
+/// own timer), so `tui.select.cancel` closes the selector and the next command
+/// goes to the editor.
+#[tokio::test]
+async fn escape_cancels_the_selector() {
+    install_dark();
+    let session = session_with_scoped_models(
+        echo_stream("pong"),
+        "escape",
+        vec![scoped_model("claude-sonnet-4-5")],
+    );
+    let mut harness = harness(vec!["/model\r".to_string(), "\u{1b}".to_string()], None);
+    // `/quit` only after the escape window elapsed; before the fix the Escape
+    // stayed buffered, so it would be typed into the still-open selector.
+    let chunks = Arc::clone(&harness.chunks);
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(200));
+        chunks.lock().unwrap().push("/quit\r".to_string());
+    });
+
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(10),
+        run_interactive(
+            Arc::clone(&session),
+            Box::new(std::mem::replace(
+                &mut harness.terminal,
+                ProcessTerminal::with_io(Box::new(pillar_tui::process_terminal::NullTerminalIo)),
+            )),
+            run_options(temp_dir("keybindings")),
+        ),
+    )
+    .await;
+    let output = rendered(&harness.writes);
+    let result = match outcome {
+        Ok(result) => result.expect("run loop ok"),
+        Err(_) => {
+            let tail: String = output
+                .chars()
+                .rev()
+                .take(600)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            panic!("the run loop did not finish; the Escape never reached the mode. tail={tail:?}");
+        }
+    };
+
+    assert_eq!(result, 0);
+    assert_eq!(
+        session.state().model.id,
+        "claude-sonnet-4-5",
+        "the cancelled selector did not switch the model"
     );
 }

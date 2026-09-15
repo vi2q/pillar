@@ -1675,6 +1675,12 @@ impl AgentSession {
         Ok(())
     }
 
+    /// Current model as the registry model (upstream `session.model`; the
+    /// port's [`AgentSession::model`] is the agent's lighter ref).
+    pub fn current_model(&self) -> Option<Model> {
+        self.model().as_ref().map(faux_model_to_model)
+    }
+
     /// Upstream `setThinkingLevel`: clamp to the current model, append on
     /// change, persist to global defaults only when requested.
     pub fn set_thinking_level(&self, level: &str, persist: bool) {

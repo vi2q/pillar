@@ -70,6 +70,14 @@ fn assistant_message(text: &str, stop_reason: StopReason) -> CodingAgentMessage 
 }
 
 fn session() -> Arc<AgentSession> {
+    session_with_scoped_models(Vec::new())
+}
+
+/// Upstream the `--models` scope: the session starts with these models in
+/// scope (the model selector's initial `scoped` scope).
+fn session_with_scoped_models(
+    scoped_models: Vec<pillar_coding_agent::core::model_mutation::ScopedModel>,
+) -> Arc<AgentSession> {
     let model = FauxModelRef {
         id: "claude-sonnet-4-5".to_string(),
         name: "Claude Sonnet 4.5".to_string(),
@@ -122,7 +130,9 @@ fn session() -> Arc<AgentSession> {
     let dir = std::env::temp_dir().join(format!("pillar-mode-runtime-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
     let models_path = dir.join("models.json");
-    std::fs::write(&models_path, "{}").expect("write models");
+    // A valid empty config: `{}` would leave a `ModelRuntime::get_error()`
+    // config error that the model selector renders as its error message.
+    std::fs::write(&models_path, "{\"providers\":{}}").expect("write models");
     let runtime = ModelRuntime::new(
         pillar_coding_agent::core::model_runtime::CreateModelRuntimeOptions {
             models_path: Some(models_path),
@@ -134,7 +144,7 @@ fn session() -> Arc<AgentSession> {
     )
     .expect("runtime");
 
-    Arc::new(AgentSession::new(AgentSessionConfig::new(
+    let mut config = AgentSessionConfig::new(
         agent,
         session_manager,
         settings_manager,
@@ -144,7 +154,9 @@ fn session() -> Arc<AgentSession> {
         Arc::new(Mutex::new(
             pillar_coding_agent::core::extensions_runner::ExtensionRunner::new(Vec::new()),
         )),
-    )))
+    );
+    config.scoped_models = scoped_models;
+    Arc::new(AgentSession::new(config))
 }
 
 fn make_mode(session: &Arc<AgentSession>) -> InteractiveMode {
@@ -423,8 +435,9 @@ fn submit_routes_the_non_selector_commands() {
     assert!(body.contains("Session name set: my session"), "{body:?}");
 
     // Selector-backed commands answer a warning (divergence until the
-    // selectors land).
-    mode.handle_submit("/model");
+    // selectors land). `/model` moved out of that list with the model
+    // selector (`model_command_shows_the_selector_and_enter_reports_the_switch`).
+    mode.handle_submit("/settings");
     let body = {
         let mut transcript = mode.transcript().lock();
         transcript
@@ -435,7 +448,7 @@ fn submit_routes_the_non_selector_commands() {
             .collect::<Vec<_>>()
             .join("\n")
     };
-    assert!(body.contains("/model is not available yet"), "{body:?}");
+    assert!(body.contains("/settings is not available yet"), "{body:?}");
 }
 
 #[test]
@@ -742,4 +755,176 @@ fn thinking_selector_ctrl_s_persists_the_default_and_command_takes_a_level() {
     mode.handle_submit("/thinking nope");
     let body = plain(&mut mode.transcript().lock().chat, 100);
     assert!(body.contains("Unknown thinking level"), "{body:?}");
+}
+
+// --- model selector (upstream `/model` + ModelSelectorComponent) ---------------
+
+/// A scoped model entry for the `--models` scope (`core::model_mutation`).
+fn scoped_model(id: &str) -> pillar_coding_agent::core::model_mutation::ScopedModel {
+    pillar_coding_agent::core::model_mutation::ScopedModel {
+        model: pillar_ai::types::Model {
+            id: id.to_string(),
+            name: format!("{id} name"),
+            api: "anthropic-messages".to_string(),
+            provider: "anthropic".to_string(),
+            base_url: String::new(),
+            reasoning: true,
+            thinking_level_map: None,
+            input: vec!["text".to_string()],
+            cost: Default::default(),
+            context_window: 200_000,
+            max_tokens: 8_000,
+            sampling_params: None,
+            headers: None,
+            compat: None,
+        },
+        thinking_level: None,
+    }
+}
+
+#[test]
+fn model_command_shows_the_selector_and_enter_reports_the_switch() {
+    let session = session_with_scoped_models(vec![
+        scoped_model("claude-sonnet-4-5"),
+        scoped_model("claude-opus-5"),
+    ]);
+    let mode = make_mode(&session);
+
+    // `/model` opens the selector in the editor slot.
+    let actions = mode.handle_submit("/model");
+    assert_eq!(actions, vec![ModeAction::EditorSlotChanged]);
+    assert!(mode.has_active_selector());
+    let body = editor_slot_body(&mode, 80);
+    assert!(
+        body.contains("Enter to select · Ctrl+S to set as default · Esc to cancel"),
+        "{body:?}"
+    );
+    assert!(
+        body.contains("Scope: all | scoped"),
+        "scoped scope line: {body:?}"
+    );
+    assert!(body.contains("[anthropic]"), "provider badge: {body:?}");
+    assert!(body.contains("claude-sonnet-4-5"), "{body:?}");
+    assert!(
+        body.contains("Model Name: claude-sonnet-4-5 name"),
+        "selected model name: {body:?}"
+    );
+
+    // Down + Enter reports the switch; the selector stays open until the
+    // session reports back (upstream `selectModel`'s await).
+    assert_eq!(
+        mode.handle_selector_key("\u{1b}[B").expect("selector"),
+        Vec::new(),
+        "down"
+    );
+    let actions = mode.handle_selector_key("\r").expect("selector");
+    assert_eq!(
+        actions,
+        vec![ModeAction::SelectModel {
+            provider: "anthropic".to_string(),
+            id: "claude-opus-5".to_string(),
+            persist: false,
+        }]
+    );
+    assert!(mode.has_active_selector(), "open until the switch settles");
+
+    // The host reports the settled switch back (upstream `done()`).
+    let actions = mode.complete_model_selection("anthropic", "claude-opus-5", false, None);
+    assert_eq!(actions, vec![ModeAction::EditorSlotChanged]);
+    assert!(!mode.has_active_selector());
+    let body = plain(&mut mode.transcript().lock().chat, 100);
+    assert!(body.contains("Model: claude-opus-5"), "{body:?}");
+}
+
+#[test]
+fn model_selector_tab_switches_scope_and_escape_cancels() {
+    let session = session_with_scoped_models(vec![
+        scoped_model("claude-sonnet-4-5"),
+        scoped_model("claude-opus-5"),
+    ]);
+    let mode = make_mode(&session);
+
+    mode.handle_submit("/model");
+    // Tab switches to the full snapshot scope; the runtime snapshot is empty
+    // in this fixture, so the scope line flips and the list empties.
+    assert_eq!(
+        mode.handle_selector_key("\t").expect("selector"),
+        Vec::new()
+    );
+    let body = editor_slot_body(&mode, 80);
+    assert!(body.contains("Scope: all | scoped"), "{body:?}");
+    assert!(body.contains("No matching models"), "{body:?}");
+
+    // Escape cancels and restores the editor without switching.
+    let actions = mode.handle_selector_key("\u{1b}").expect("selector");
+    assert_eq!(actions, vec![ModeAction::EditorSlotChanged]);
+    assert!(!mode.has_active_selector());
+    assert_eq!(session.state().model.id, "claude-sonnet-4-5");
+}
+
+#[test]
+fn model_command_with_an_exact_reference_switches_without_the_selector() {
+    let session = session_with_scoped_models(vec![
+        scoped_model("claude-sonnet-4-5"),
+        scoped_model("claude-opus-5"),
+    ]);
+    let mode = make_mode(&session);
+
+    // An exact scoped reference switches directly (upstream `findExactModelMatch`).
+    let actions = mode.handle_submit("/model anthropic/claude-opus-5");
+    assert_eq!(
+        actions,
+        vec![ModeAction::SelectModel {
+            provider: "anthropic".to_string(),
+            id: "claude-opus-5".to_string(),
+            persist: false,
+        }]
+    );
+    assert!(!mode.has_active_selector());
+
+    // Ctrl+S in the selector asks for the persisted default.
+    mode.handle_submit("/model");
+    let actions = mode.handle_selector_key("\u{13}").expect("selector"); // ctrl+s
+    assert_eq!(
+        actions,
+        vec![ModeAction::SelectModel {
+            provider: "anthropic".to_string(),
+            id: "claude-sonnet-4-5".to_string(),
+            persist: true,
+        }]
+    );
+    let actions = mode.complete_model_selection(
+        "anthropic",
+        "claude-sonnet-4-5",
+        true,
+        Some("No API key for anthropic/claude-sonnet-4-5".to_string()),
+    );
+    assert_eq!(actions, vec![ModeAction::EditorSlotChanged]);
+    let body = plain(&mut mode.transcript().lock().chat, 120);
+    assert!(body.contains("No API key for anthropic/claude-sonnet-4-5"), "{body:?}");
+}
+
+#[test]
+fn model_command_with_an_unknown_reference_opens_the_search_prefilled() {
+    let session = session_with_scoped_models(vec![scoped_model("claude-sonnet-4-5")]);
+    let mode = make_mode(&session);
+
+    // `zzz` has no subsequence in any row (fuzzy matching is generous, so a
+    // query like `nope` still matches `claude-sonnet-4-5`).
+    let actions = mode.handle_submit("/model zzz");
+    assert_eq!(actions, vec![ModeAction::EditorSlotChanged]);
+    assert!(mode.has_active_selector());
+    let body = editor_slot_body(&mode, 80);
+    assert!(body.contains("> zzz"), "search prefilled: {body:?}");
+    assert!(body.contains("No matching models"), "{body:?}");
+}
+
+#[test]
+fn model_select_app_action_opens_the_selector() {
+    let session = session_with_scoped_models(vec![scoped_model("claude-sonnet-4-5")]);
+    let mode = make_mode(&session);
+
+    let actions = mode.handle_app_action("app.model.select");
+    assert_eq!(actions, vec![ModeAction::EditorSlotChanged]);
+    assert!(mode.has_active_selector());
 }

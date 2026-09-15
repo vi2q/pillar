@@ -162,6 +162,9 @@ use crate::core::settings_manager::DoubleEscapeAction;
 use crate::core::truncate::TruncationResult;
 use crate::modes::interactive::components::bash_execution::BashExecutionComponent;
 use crate::modes::interactive::components::footer::FooterComponent;
+use crate::modes::interactive::components::model_selector::{
+    DefaultModelReference, ModelSelectorComponent, ModelSelectorOutcome,
+};
 use crate::modes::interactive::components::status_indicator::{
     CompactionStatusReason, RetryStatusIndicator, StatusIndicatorKind, compaction_status_indicator,
 };
@@ -202,6 +205,15 @@ pub enum ModeAction {
     Abort,
     /// Upstream `session.cycleModel(direction)`.
     CycleModel { forward: bool },
+    /// Upstream the model selector's `selectModel`: `session.setModel(model,
+    /// { persist })`. The host resolves the model from the runtime (see the
+    /// model selector's divergence note) and reports the result back through
+    /// [`UiCommand::ModelSelected`].
+    SelectModel {
+        provider: String,
+        id: String,
+        persist: bool,
+    },
     /// The editor slot changed (a selector was shown or closed; upstream
     /// `showSelector`'s `editorContainer` swap + `setFocus`).
     EditorSlotChanged,
@@ -262,12 +274,17 @@ pub enum ActiveSelector {
         token: u64,
         component: Shared<ThinkingSelectorComponent>,
     },
+    Model {
+        token: u64,
+        component: Shared<ModelSelectorComponent>,
+    },
 }
 
 impl ActiveSelector {
     fn token(&self) -> u64 {
         match self {
             ActiveSelector::Thinking { token, .. } => *token,
+            ActiveSelector::Model { token, .. } => *token,
         }
     }
 
@@ -275,6 +292,9 @@ impl ActiveSelector {
     fn mount(&self) -> Box<dyn pillar_tui::tui::Component> {
         match self {
             ActiveSelector::Thinking { component, .. } => Box::new(
+                crate::modes::interactive::transcript::FocusHandle::new(component.clone()),
+            ),
+            ActiveSelector::Model { component, .. } => Box::new(
                 crate::modes::interactive::transcript::FocusHandle::new(component.clone()),
             ),
         }
@@ -669,10 +689,9 @@ impl InteractiveMode {
 
         // Selector-backed commands answer a warning until the selectors
         // land (upstream opens the corresponding selector).
-        const SELECTOR_COMMANDS: [&str; 20] = [
+        const SELECTOR_COMMANDS: [&str; 19] = [
             "/settings",
             "/scoped-models",
-            "/model",
             "/export",
             "/import",
             "/share",
@@ -753,6 +772,10 @@ impl InteractiveMode {
                     }
                 }
             };
+        }
+        if text == "/model" || text.starts_with("/model ") {
+            self.editor.lock().set_text("");
+            return self.handle_model_command(text);
         }
         if text == "/name" || text.starts_with("/name ") {
             self.handle_name_command(text);
@@ -1248,6 +1271,126 @@ impl InteractiveMode {
         self.show_selector(ActiveSelector::Thinking { token, component })
     }
 
+    /// Upstream `handleModelCommand`: no argument opens the selector, an
+    /// exact model reference switches directly, anything else opens the
+    /// selector with the search prefilled.
+    ///
+    /// divergence: upstream refreshes the catalogs before giving up on the
+    /// exact match (`findExactModelMatch`); the port has no catalog refresh
+    /// yet, so it matches against the cached scope / runtime snapshot only.
+    /// The Anthropic subscription warning and the `daxnuts` easter egg are
+    /// not ported (see docs/TASKS.md).
+    pub fn handle_model_command(&self, text: &str) -> Vec<ModeAction> {
+        let search = text
+            .strip_prefix("/model")
+            .map(str::trim)
+            .filter(|search| !search.is_empty());
+        let Some(search) = search else {
+            return self.show_model_selector(None);
+        };
+        let scoped = self.session.scoped_models();
+        let cached_models: Vec<pillar_ai::types::Model> = if scoped.is_empty() {
+            self.session.model_runtime().get_available_snapshot()
+        } else {
+            scoped.into_iter().map(|scoped| scoped.model).collect()
+        };
+        match crate::core::model_resolver::find_exact_model_reference_match(search, &cached_models) {
+            Some(model) => vec![ModeAction::SelectModel {
+                provider: model.provider,
+                id: model.id,
+                persist: false,
+            }],
+            None => self.show_model_selector(Some(search)),
+        }
+    }
+
+    /// Upstream `showModelSelector`: build it from the current model, the
+    /// runtime snapshot, the session scope and the persisted default, and put
+    /// it in the editor slot.
+    pub fn show_model_selector(&self, initial_search_input: Option<&str>) -> Vec<ModeAction> {
+        let token = self.next_selector_token.fetch_add(1, Ordering::SeqCst);
+        let current_model = self.session.current_model();
+        let available_models = self.session.model_runtime().get_available_snapshot();
+        let scoped_models = self.session.scoped_models();
+        let default_model = self
+            .session
+            .settings_manager()
+            .lock()
+            .expect("settings lock")
+            .default_model_and_provider()
+            .map(|(provider, id)| DefaultModelReference { provider, id });
+        // Upstream sets `errorMessage` from `modelRuntime.getError()` once the
+        // background refresh settles; without a refresh the port shows the
+        // configured-error text right away.
+        let error_message = self.session.model_runtime().get_error();
+        let component = Shared::new(ModelSelectorComponent::new(
+            current_model.as_ref(),
+            &available_models,
+            &scoped_models,
+            default_model,
+            error_message,
+            initial_search_input,
+        ));
+        self.show_selector(ActiveSelector::Model { token, component })
+    }
+
+    /// Upstream the model selector's `selectModel` continuation: close the
+    /// selector (`done()`), refresh the provider count / footer / editor
+    /// border, and report the switch (or the error) in the transcript.
+    pub fn complete_model_selection(
+        &self,
+        provider: &str,
+        id: &str,
+        persist: bool,
+        error: Option<String>,
+    ) -> Vec<ModeAction> {
+        // Upstream `done()` is a no-op once the token no longer matches (the
+        // selector was cancelled or replaced while the switch was in flight).
+        let token = {
+            let guard = self.active_selector.lock().expect("active selector");
+            match guard.as_ref() {
+                Some(ActiveSelector::Model { token, .. }) => Some(*token),
+                _ => None,
+            }
+        };
+        let actions = match token {
+            Some(token) => self.close_selector(Some(token)),
+            None => Vec::new(),
+        };
+        self.update_available_provider_count();
+        self.update_editor_border_color();
+        match error {
+            Some(error) => self.transcript.lock().show_error(&error),
+            None => self.transcript.lock().show_status(&if persist {
+                format!("Default model: {provider}/{id}")
+            } else {
+                format!("Model: {id}")
+            }),
+        }
+        self.mark_dirty();
+        actions
+    }
+
+    /// Upstream `updateAvailableProviderCount`: the footer shows the provider
+    /// name only when the active scope spans more than one provider.
+    pub fn update_available_provider_count(&self) {
+        let scoped = self.session.scoped_models();
+        let models: Vec<pillar_ai::types::Model> = if scoped.is_empty() {
+            self.session.model_runtime().get_available_snapshot()
+        } else {
+            scoped.into_iter().map(|scoped| scoped.model).collect()
+        };
+        let providers: std::collections::HashSet<&str> = models
+            .iter()
+            .map(|model| model.provider.as_str())
+            .collect();
+        self.footer
+            .lock()
+            .footer_data()
+            .set_available_provider_count(providers.len());
+        self.mark_dirty();
+    }
+
     /// Upstream `selectThinkingLevel`: apply (and optionally persist) a level.
     pub fn select_thinking_level(&self, level: &str, persist: bool) {
         self.session.set_thinking_level(level, persist);
@@ -1265,27 +1408,55 @@ impl InteractiveMode {
     /// Returns `Some(actions)` when the key was handled by the selector,
     /// `None` when no selector is active.
     pub fn handle_selector_key(&self, data: &str) -> Option<Vec<ModeAction>> {
-        let (token, component) = {
+        enum Handle {
+            Thinking(u64, Shared<ThinkingSelectorComponent>),
+            Model(u64, Shared<ModelSelectorComponent>),
+        }
+        let handle = {
             let guard = self.active_selector.lock().expect("active selector");
             match guard.as_ref() {
-                Some(ActiveSelector::Thinking { token, component }) => (*token, component.clone()),
+                Some(ActiveSelector::Thinking { token, component }) => {
+                    Handle::Thinking(*token, component.clone())
+                }
+                Some(ActiveSelector::Model { token, component }) => {
+                    Handle::Model(*token, component.clone())
+                }
                 None => return None,
             }
         };
-        let outcome = component.lock().handle_key(data);
-        Some(match outcome {
-            ThinkingSelectorOutcome::Consumed => Vec::new(),
-            ThinkingSelectorOutcome::Select(level) => {
-                self.select_thinking_level(&level, false);
+        Some(match handle {
+            Handle::Thinking(token, component) => match component.lock().handle_key(data) {
+                ThinkingSelectorOutcome::Consumed => Vec::new(),
+                ThinkingSelectorOutcome::Select(level) => {
+                    self.select_thinking_level(&level, false);
 
-                self.close_selector(Some(token))
-            }
-            ThinkingSelectorOutcome::SelectAsDefault(level) => {
-                self.select_thinking_level(&level, true);
+                    self.close_selector(Some(token))
+                }
+                ThinkingSelectorOutcome::SelectAsDefault(level) => {
+                    self.select_thinking_level(&level, true);
 
-                self.close_selector(Some(token))
-            }
-            ThinkingSelectorOutcome::Cancel => self.close_selector(Some(token)),
+                    self.close_selector(Some(token))
+                }
+                ThinkingSelectorOutcome::Cancel => self.close_selector(Some(token)),
+            },
+            // Upstream `selectModel`: the selector stays open until the async
+            // `session.setModel` settles; the host reports back through
+            // `UiCommand::ModelSelected` and [`Self::complete_model_selection`]
+            // closes it (upstream `done()`).
+            Handle::Model(token, component) => match component.lock().handle_key(data) {
+                ModelSelectorOutcome::Consumed => Vec::new(),
+                ModelSelectorOutcome::Select(model) => vec![ModeAction::SelectModel {
+                    provider: model.provider.clone(),
+                    id: model.id.clone(),
+                    persist: false,
+                }],
+                ModelSelectorOutcome::SelectAsDefault(model) => vec![ModeAction::SelectModel {
+                    provider: model.provider.clone(),
+                    id: model.id.clone(),
+                    persist: true,
+                }],
+                ModelSelectorOutcome::Cancel => self.close_selector(Some(token)),
+            },
         })
     }
 
@@ -1330,6 +1501,7 @@ impl InteractiveMode {
             }
             "app.model.cycleForward" => vec![ModeAction::CycleModel { forward: true }],
             "app.model.cycleBackward" => vec![ModeAction::CycleModel { forward: false }],
+            "app.model.select" => self.show_model_selector(None),
             "app.message.dequeue" => {
                 self.handle_dequeue();
                 Vec::new()
