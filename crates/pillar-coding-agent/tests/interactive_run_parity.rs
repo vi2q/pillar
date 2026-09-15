@@ -469,14 +469,12 @@ async fn bash_submission_executes_and_records_the_result() {
     // and recorded the result. The completion is drained before the next input
     // read, so the final painted frame still carries the output.
     let state = Arc::clone(&session);
-    let release: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || {
-        state.state().messages.iter().any(|message| {
-            matches!(
-                message,
-                pillar_agent::types::AgentMessage::BashExecution(_)
-            )
-        })
-    });
+    let release: Arc<dyn Fn() -> bool + Send + Sync> =
+        Arc::new(move || {
+            state.state().messages.iter().any(|message| {
+                matches!(message, pillar_agent::types::AgentMessage::BashExecution(_))
+            })
+        });
     let mut harness = harness(
         vec!["!printf hello\r".to_string(), "/quit\r".to_string()],
         Some(release),

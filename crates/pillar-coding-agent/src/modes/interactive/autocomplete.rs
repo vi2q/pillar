@@ -27,8 +27,8 @@ use std::sync::Arc;
 
 use pillar_ai::types::Model;
 use pillar_tui::autocomplete::{
-    AutocompleteItem, AutocompleteSuggestions, CombinedAutocompleteProvider, FileEntry, SlashCommand,
-    slash_command_argument_prefix,
+    AutocompleteItem, AutocompleteSuggestions, CombinedAutocompleteProvider, FileEntry,
+    SlashCommand, slash_command_argument_prefix,
 };
 use pillar_tui::editor_autocomplete::{
     DebouncePattern, SlashMenuContext, TriggerPattern, get_best_autocomplete_match_index,
@@ -50,14 +50,19 @@ pub fn commands(session: &AgentSession, enable_skill_commands: bool) -> Vec<Slas
             argument_hint: command.argument_hint.clone(),
         })
         .collect();
-    let builtin_names: std::collections::BTreeSet<String> =
-        commands.iter().map(|command| command.name.clone()).collect();
+    let builtin_names: std::collections::BTreeSet<String> = commands
+        .iter()
+        .map(|command| command.name.clone())
+        .collect();
 
     // Prompt templates (upstream `session.promptTemplates`).
     for template in session.prompt_templates() {
         commands.push(SlashCommand {
             name: template.name.clone(),
-            description: prefix_source_tag(Some(&template.description), Some(&template.source_info)),
+            description: prefix_source_tag(
+                Some(&template.description),
+                Some(&template.source_info),
+            ),
             argument_hint: template.argument_hint.clone(),
         });
     }
@@ -124,7 +129,10 @@ fn source_tag(source_info: &SourceInfo) -> Option<String> {
 }
 
 /// Upstream `prefixAutocompleteDescription`.
-fn prefix_source_tag(description: Option<&str>, source_info: Option<&SourceInfo>) -> Option<String> {
+fn prefix_source_tag(
+    description: Option<&str>,
+    source_info: Option<&SourceInfo>,
+) -> Option<String> {
     let tag = source_info.and_then(source_tag);
     match (tag, description) {
         (None, description) => description.map(str::to_string),
@@ -167,9 +175,7 @@ pub fn argument_completers(session: &Arc<AgentSession>) -> Vec<(String, Argument
         Arc::new(move |prefix: &str| {
             let scoped = model_session.scoped_models();
             let models: Vec<Model> = if scoped.is_empty() {
-                model_session
-                    .model_runtime()
-                    .get_available_snapshot()
+                model_session.model_runtime().get_available_snapshot()
             } else {
                 scoped.into_iter().map(|scoped| scoped.model).collect()
             };
@@ -453,7 +459,11 @@ mod tests {
             Some("u:npm:pi-lens")
         );
         assert_eq!(
-            source_tag(&info("git:github.com/vi2q/pi-model-picker", SourceScope::User)).as_deref(),
+            source_tag(&info(
+                "git:github.com/vi2q/pi-model-picker",
+                SourceScope::User
+            ))
+            .as_deref(),
             Some("u:git:github.com/vi2q/pi-model-picker")
         );
         assert_eq!(source_tag(&info("  ", SourceScope::User)), None);
@@ -515,7 +525,11 @@ mod tests {
             .expect("command suggestions");
         assert_eq!(suggestions.prefix, "/mo");
         assert_eq!(
-            suggestions.items.iter().map(|i| i.value.as_str()).collect::<Vec<_>>(),
+            suggestions
+                .items
+                .iter()
+                .map(|i| i.value.as_str())
+                .collect::<Vec<_>>(),
             vec!["model"]
         );
 
@@ -526,7 +540,11 @@ mod tests {
             .expect("argument suggestions");
         assert_eq!(suggestions.prefix, "op");
         assert_eq!(
-            suggestions.items.iter().map(|i| i.value.as_str()).collect::<Vec<_>>(),
+            suggestions
+                .items
+                .iter()
+                .map(|i| i.value.as_str())
+                .collect::<Vec<_>>(),
             vec!["opencode-go/omen-alpha"]
         );
 
@@ -545,8 +563,7 @@ mod tests {
 
     #[test]
     fn requests_follow_the_slash_and_trigger_contexts() {
-        let autocomplete =
-            InteractiveAutocomplete::new(Vec::new(), Vec::new(), "/tmp", 5);
+        let autocomplete = InteractiveAutocomplete::new(Vec::new(), Vec::new(), "/tmp", 5);
         assert!(
             autocomplete.should_request_on_change(&["/thi".to_string()], 0, 4),
             "typing inside a slash command"
@@ -559,9 +576,17 @@ mod tests {
             !autocomplete.should_request_on_change(&["plain word".to_string()], 0, 10),
             "ordinary text"
         );
-        assert_eq!(autocomplete.best_match_index(
-            &[AutocompleteItem { value: "thinking".to_string(), label: "thinking".to_string(), description: None }],
-            "/th"
-        ), -1, "the slash itself is not part of the value");
+        assert_eq!(
+            autocomplete.best_match_index(
+                &[AutocompleteItem {
+                    value: "thinking".to_string(),
+                    label: "thinking".to_string(),
+                    description: None
+                }],
+                "/th"
+            ),
+            -1,
+            "the slash itself is not part of the value"
+        );
     }
 }

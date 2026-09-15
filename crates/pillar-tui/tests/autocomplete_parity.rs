@@ -364,7 +364,15 @@ fn slash_command_argument_prefix_splits_name_and_arguments() {
         slash_command_argument_prefix("/thinking "),
         Some(("thinking", ""))
     );
-    assert_eq!(slash_command_argument_prefix("/model"), None, "no space yet");
-    assert_eq!(slash_command_argument_prefix("model x"), None, "not a command");
+    assert_eq!(
+        slash_command_argument_prefix("/model"),
+        None,
+        "no space yet"
+    );
+    assert_eq!(
+        slash_command_argument_prefix("model x"),
+        None,
+        "not a command"
+    );
     assert_eq!(slash_command_argument_prefix("/ x"), None, "empty name");
 }

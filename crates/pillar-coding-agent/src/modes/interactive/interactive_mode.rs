@@ -160,8 +160,8 @@ use crate::core::resource_loader::GitPaths;
 use crate::core::session_entries::SessionEntry;
 use crate::core::settings_manager::DoubleEscapeAction;
 use crate::core::truncate::TruncationResult;
-use crate::modes::interactive::components::bash_execution::BashExecutionComponent;
 use crate::modes::interactive::autocomplete::InteractiveAutocomplete;
+use crate::modes::interactive::components::bash_execution::BashExecutionComponent;
 use crate::modes::interactive::components::footer::FooterComponent;
 use crate::modes::interactive::components::model_picker::{
     CategoryKind, ModelPickerComponent, ModelPickerOutcome, PickerCategory, RECENT_CATEGORY_ID,
@@ -1647,7 +1647,11 @@ impl InteractiveMode {
     /// editor.
     pub fn rebuild_autocomplete(&self) {
         let (enable_skill_commands, max_visible) = {
-            let settings = self.session.settings_manager().lock().expect("settings lock");
+            let settings = self
+                .session
+                .settings_manager()
+                .lock()
+                .expect("settings lock");
             (
                 settings.enable_skill_commands(),
                 settings.autocomplete_max_visible() as usize,
@@ -1670,10 +1674,12 @@ impl InteractiveMode {
                 max_visible,
             );
         }
-        let max_visible = self.autocomplete.lock().expect("autocomplete").max_visible();
-        self.editor
+        let max_visible = self
+            .autocomplete
             .lock()
-            .set_autocomplete_max_visible(max_visible);
+            .expect("autocomplete")
+            .max_visible();
+        self.editor.lock().set_autocomplete_max_visible(max_visible);
         self.close_autocomplete();
     }
 
@@ -1728,7 +1734,11 @@ impl InteractiveMode {
     pub fn update_autocomplete_on_change(&self) {
         let (lines, cursor_line, cursor_col) = {
             let editor = self.editor.lock();
-            (editor.get_lines(), editor.get_cursor().0, editor.get_cursor().1)
+            (
+                editor.get_lines(),
+                editor.get_cursor().0,
+                editor.get_cursor().1,
+            )
         };
         let should_request = self
             .autocomplete
@@ -1752,7 +1762,11 @@ impl InteractiveMode {
         }
         let (lines, cursor_line, cursor_col) = {
             let editor = self.editor.lock();
-            (editor.get_lines(), editor.get_cursor().0, editor.get_cursor().1)
+            (
+                editor.get_lines(),
+                editor.get_cursor().0,
+                editor.get_cursor().1,
+            )
         };
         let text_before = lines
             .get(cursor_line)
@@ -1787,7 +1801,11 @@ impl InteractiveMode {
         // Upstream: a completed `/command` name falls through to submit (so
         // `/help` + Enter runs the command); a completed argument does not, and
         // an empty menu submits whatever is typed.
-        let submit = if applied { prefix.starts_with('/') } else { true };
+        let submit = if applied {
+            prefix.starts_with('/')
+        } else {
+            true
+        };
         self.close_autocomplete();
         if !submit {
             return Vec::new();
@@ -1809,12 +1827,10 @@ impl InteractiveMode {
             let Some(item) = editor
                 .autocomplete_list()
                 .and_then(|list| list.get_selected_item())
-                .map(|item| {
-                    pillar_tui::autocomplete::AutocompleteItem {
-                        value: item.value.clone(),
-                        label: item.label.clone(),
-                        description: item.description.clone(),
-                    }
+                .map(|item| pillar_tui::autocomplete::AutocompleteItem {
+                    value: item.value.clone(),
+                    label: item.label.clone(),
+                    description: item.description.clone(),
                 })
             else {
                 return false;
@@ -1827,14 +1843,14 @@ impl InteractiveMode {
                 prefix,
             )
         };
-        let (applied, line, col) = self
-            .autocomplete
-            .lock()
-            .expect("autocomplete")
-            .apply(&lines, cursor_line, cursor_col, &item, &prefix);
-        self.editor
-            .lock()
-            .set_lines_and_cursor(&applied, line, col);
+        let (applied, line, col) = self.autocomplete.lock().expect("autocomplete").apply(
+            &lines,
+            cursor_line,
+            cursor_col,
+            &item,
+            &prefix,
+        );
+        self.editor.lock().set_lines_and_cursor(&applied, line, col);
         self.mark_dirty();
         true
     }

@@ -321,7 +321,12 @@ impl Editor {
     /// Replace the buffer and place the cursor (upstream `applyCompletion`
     /// assigns `state.lines` / `cursorLine` / `cursorCol` directly; the port's
     /// host applies completions, so it needs a setter).
-    pub fn set_lines_and_cursor(&mut self, lines: &[String], cursor_line: usize, cursor_col: usize) {
+    pub fn set_lines_and_cursor(
+        &mut self,
+        lines: &[String],
+        cursor_line: usize,
+        cursor_col: usize,
+    ) {
         self.last_action = None;
         self.exit_history_browsing();
         let mut lines = lines.to_vec();
