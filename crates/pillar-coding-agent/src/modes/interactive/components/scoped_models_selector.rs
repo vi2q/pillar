@@ -76,11 +76,7 @@ fn enable_all(
             let all_enabled = all_ids
                 .iter()
                 .all(|id| result.iter().any(|enabled| enabled == id));
-            if all_enabled {
-                None
-            } else {
-                Some(result)
-            }
+            if all_enabled { None } else { Some(result) }
         }
     }
 }
@@ -107,11 +103,7 @@ fn clear_all(
                 Some(targets) => targets.iter().cloned().collect(),
                 None => ids.iter().cloned().collect(),
             };
-            Some(
-                ids.into_iter()
-                    .filter(|id| !targets.contains(id))
-                    .collect(),
-            )
+            Some(ids.into_iter().filter(|id| !targets.contains(id)).collect())
         }
     }
 }
@@ -252,11 +244,17 @@ impl ScopedModelsSelectorComponent {
     /// (unavailable configured ids count separately).
     fn footer_text(&self) -> String {
         let enabled_count = match &self.enabled_ids {
-            Some(ids) => ids.iter().filter(|id| self.models_by_id.contains_key(*id)).count(),
+            Some(ids) => ids
+                .iter()
+                .filter(|id| self.models_by_id.contains_key(*id))
+                .count(),
             None => self.all_ids.len(),
         };
         let unavailable_count = match &self.enabled_ids {
-            Some(ids) => ids.iter().filter(|id| !self.models_by_id.contains_key(*id)).count(),
+            Some(ids) => ids
+                .iter()
+                .filter(|id| !self.models_by_id.contains_key(*id))
+                .count(),
             None => 0,
         };
         let all_enabled = self.enabled_ids.is_none();
@@ -268,7 +266,10 @@ impl ScopedModelsSelectorComponent {
             } else {
                 String::new()
             };
-            format!("{enabled_count}/{} enabled{unavailable}", self.all_ids.len())
+            format!(
+                "{enabled_count}/{} enabled{unavailable}",
+                self.all_ids.len()
+            )
         };
         let parts = [
             format!("{} toggle", key_text("tui.select.confirm")),
@@ -303,14 +304,15 @@ impl ScopedModelsSelectorComponent {
         self.filtered_items = if query.is_empty() {
             items
         } else {
-            pillar_tui::fuzzy::fuzzy_filter_by(&items, &query, |item: &ModelItem| match &item.model
-            {
-                Some(model) => model_search_text(&ModelSearchItem {
-                    id: &model.id,
-                    provider: &model.provider,
-                    name: Some(&model.name),
-                }),
-                None => item.full_id.clone(),
+            pillar_tui::fuzzy::fuzzy_filter_by(&items, &query, |item: &ModelItem| {
+                match &item.model {
+                    Some(model) => model_search_text(&ModelSearchItem {
+                        id: &model.id,
+                        provider: &model.provider,
+                        name: Some(&model.name),
+                    }),
+                    None => item.full_id.clone(),
+                }
             })
             .into_iter()
             .map(|item| (*item).clone())
@@ -328,10 +330,7 @@ impl ScopedModelsSelectorComponent {
         }
         let total = self.filtered_items.len();
         let max_visible = self.max_visible;
-        (self
-            .selected_index
-            .saturating_sub(max_visible / 2))
-        .min(total.saturating_sub(max_visible))
+        (self.selected_index.saturating_sub(max_visible / 2)).min(total.saturating_sub(max_visible))
     }
 
     /// Host-driven key handling (upstream `handleInput`).
@@ -378,7 +377,8 @@ impl ScopedModelsSelectorComponent {
                 if let Some(current) = current {
                     let new_index = current as i64 + delta;
                     if new_index >= 0 && (new_index as usize) < ids.len() {
-                        self.enabled_ids = move_enabled(self.enabled_ids.clone(), &item.full_id, delta);
+                        self.enabled_ids =
+                            move_enabled(self.enabled_ids.clone(), &item.full_id, delta);
                         self.is_dirty = true;
                         self.selected_index = (self.selected_index as i64 + delta) as usize;
                         self.refresh();
@@ -403,8 +403,11 @@ impl ScopedModelsSelectorComponent {
         // Enable all (filtered if search active, otherwise all).
         if matches("app.models.enableAll") {
             let target_ids = self.filtered_target_ids();
-            self.enabled_ids =
-                enable_all(self.enabled_ids.clone(), &self.all_ids, target_ids.as_deref());
+            self.enabled_ids = enable_all(
+                self.enabled_ids.clone(),
+                &self.all_ids,
+                target_ids.as_deref(),
+            );
             self.is_dirty = true;
             self.refresh();
             return ScopedModelsOutcome::Change(self.enabled_ids.clone());
@@ -413,8 +416,11 @@ impl ScopedModelsSelectorComponent {
         // Clear all (filtered if search active, otherwise all).
         if matches("app.models.clearAll") {
             let target_ids = self.filtered_target_ids();
-            self.enabled_ids =
-                clear_all(self.enabled_ids.clone(), &self.all_ids, target_ids.as_deref());
+            self.enabled_ids = clear_all(
+                self.enabled_ids.clone(),
+                &self.all_ids,
+                target_ids.as_deref(),
+            );
             self.is_dirty = true;
             self.refresh();
             return ScopedModelsOutcome::Change(self.enabled_ids.clone());
@@ -441,17 +447,9 @@ impl ScopedModelsSelectorComponent {
                     .iter()
                     .all(|id| is_enabled(&self.enabled_ids, id));
                 self.enabled_ids = if all_enabled {
-                    clear_all(
-                        self.enabled_ids.clone(),
-                        &self.all_ids,
-                        Some(&provider_ids),
-                    )
+                    clear_all(self.enabled_ids.clone(), &self.all_ids, Some(&provider_ids))
                 } else {
-                    enable_all(
-                        self.enabled_ids.clone(),
-                        &self.all_ids,
-                        Some(&provider_ids),
-                    )
+                    enable_all(self.enabled_ids.clone(), &self.all_ids, Some(&provider_ids))
                 };
                 self.is_dirty = true;
                 self.refresh();
@@ -589,7 +587,11 @@ impl Component for ScopedModelsSelectorComponent {
                     Text::new(
                         &theme_handle.fg(
                             "muted",
-                            &format!("  ({}/{})", self.selected_index + 1, self.filtered_items.len()),
+                            &format!(
+                                "  ({}/{})",
+                                self.selected_index + 1,
+                                self.filtered_items.len()
+                            ),
                         ),
                         0,
                         0,
@@ -654,9 +656,10 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         crate::modes::interactive::theme::init_theme(Some("dark"));
         let definitions = crate::core::keybindings::keybindings("darwin", &Default::default());
-        pillar_tui::keybindings::set_keybindings(
-            pillar_tui::keybindings::KeybindingsManager::new(definitions, Default::default()),
-        );
+        pillar_tui::keybindings::set_keybindings(pillar_tui::keybindings::KeybindingsManager::new(
+            definitions,
+            Default::default(),
+        ));
         guard
     }
 
@@ -684,11 +687,7 @@ mod tests {
     }
 
     fn models() -> Vec<Model> {
-        vec![
-            model("m1", "p1"),
-            model("m2", "p1"),
-            model("m3", "p2"),
-        ]
+        vec![model("m1", "p1"), model("m2", "p1"), model("m3", "p2")]
     }
 
     #[test]
@@ -735,10 +734,7 @@ mod tests {
         selector.handle_key("\u{1b}[B"); // down
         assert_eq!(
             selector.handle_key("\r"),
-            ScopedModelsOutcome::Change(Some(vec![
-                "p1/m1".to_string(),
-                "p1/m2".to_string()
-            ])),
+            ScopedModelsOutcome::Change(Some(vec!["p1/m1".to_string(), "p1/m2".to_string()])),
         );
         // Toggle it off again.
         selector.handle_key("\r");
@@ -776,10 +772,7 @@ mod tests {
         // Ctrl+A enables just the filtered id.
         assert_eq!(
             selector.handle_key("\u{1}"), // Ctrl+A
-            ScopedModelsOutcome::Change(Some(vec![
-                "p1/m1".to_string(),
-                "p1/m2".to_string()
-            ])),
+            ScopedModelsOutcome::Change(Some(vec!["p1/m1".to_string(), "p1/m2".to_string()])),
         );
 
         // Ctrl+X clears the filtered target only.
@@ -796,7 +789,10 @@ mod tests {
             ScopedModelsOutcome::Change(Some(Vec::new())),
         );
         // And Ctrl+A from the empty list re-enables everything (→ null).
-        assert_eq!(selector.handle_key("\u{1}"), ScopedModelsOutcome::Change(None));
+        assert_eq!(
+            selector.handle_key("\u{1}"),
+            ScopedModelsOutcome::Change(None)
+        );
     }
 
     #[test]
@@ -810,7 +806,10 @@ mod tests {
             ScopedModelsOutcome::Change(Some(vec!["p2/m3".to_string()])),
         );
         // Ctrl+P again re-enables the provider (→ null = all).
-        assert_eq!(selector.handle_key("\u{10}"), ScopedModelsOutcome::Change(None));
+        assert_eq!(
+            selector.handle_key("\u{10}"),
+            ScopedModelsOutcome::Change(None)
+        );
     }
 
     #[test]
@@ -828,10 +827,7 @@ mod tests {
         // Alt+Down swaps it with p2/m3.
         assert_eq!(
             selector.handle_key("\u{1b}[1;3B"), // Alt+Down
-            ScopedModelsOutcome::Change(Some(vec![
-                "p2/m3".to_string(),
-                "p1/m1".to_string()
-            ])),
+            ScopedModelsOutcome::Change(Some(vec!["p2/m3".to_string(), "p1/m1".to_string()])),
         );
         // The selection follows the moved item.
         assert_eq!(
@@ -887,7 +883,11 @@ mod tests {
         assert_eq!(ids, vec!["p1/m1", "ghost/none", "p1/m2", "p2/m3"]);
         let body = strip_ansi_vec(selector.render(60)).join("\n");
         assert!(body.contains("[unavailable]"), "{body:?}");
-        assert!(selector.footer_text().contains("1/3 enabled · 1 unavailable"));
+        assert!(
+            selector
+                .footer_text()
+                .contains("1/3 enabled · 1 unavailable")
+        );
 
         // The highlighted unavailable row renders the fallback info line.
         selector.handle_key("\u{1b}[B"); // ghost/none

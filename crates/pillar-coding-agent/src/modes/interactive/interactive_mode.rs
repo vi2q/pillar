@@ -1417,9 +1417,7 @@ impl InteractiveMode {
         let new_scope = match enabled_ids {
             Some(ids) => {
                 let has_enabled_available = ids.iter().any(|id| available_ids.contains(id));
-                let all_available_enabled = available_ids
-                    .iter()
-                    .all(|id| ids.contains(id));
+                let all_available_enabled = available_ids.iter().all(|id| ids.contains(id));
                 if has_enabled_available && !all_available_enabled {
                     crate::core::model_resolver::resolve_model_scope_from_models(
                         ids,

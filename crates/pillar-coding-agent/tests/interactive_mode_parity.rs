@@ -64,7 +64,9 @@ impl CredentialStore for MemCredentials {
         _options: Option<&pillar_ai::auth_types::AuthOperationOptions>,
     ) -> Result<Option<Credential>, AiError> {
         let current = self.0.lock().unwrap().get(provider_id).cloned();
-        let next = f(current).await.map_err(|e| AiError::Other(e.to_string()))?;
+        let next = f(current)
+            .await
+            .map_err(|e| AiError::Other(e.to_string()))?;
         let mut map = self.0.lock().unwrap();
         if let Some(credential) = next {
             map.insert(provider_id.to_string(), credential);
