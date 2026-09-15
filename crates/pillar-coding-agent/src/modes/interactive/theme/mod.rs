@@ -937,6 +937,39 @@ fn load_theme(name: &str) -> Result<Theme, String> {
     load_theme_json(name).map(|theme_json| create_theme(&theme_json, ColorMode::Truecolor, None))
 }
 
+/// Register the themes discovered by the resource loader (upstream
+/// `setRegisteredThemes(this.session.resourceLoader.getThemes().themes)`).
+///
+/// Returns per-theme errors instead of failing the whole set (upstream logs
+/// and continues).
+pub fn register_resource_themes(
+    themes: &[crate::core::resource_loader::LoadedTheme],
+) -> Vec<String> {
+    let mut registered: Vec<std::sync::Arc<Theme>> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
+    for loaded in themes {
+        let Some(name) = loaded.name.as_deref() else {
+            continue;
+        };
+        if let Err(error) = assert_theme_name_is_valid(name) {
+            errors.push(error);
+            continue;
+        }
+        match ThemeJson::parse(name, &loaded.data) {
+            Ok(json) => registered.push(std::sync::Arc::new(create_theme(
+                &json,
+                ColorMode::Truecolor,
+                loaded.source_path.as_deref(),
+            ))),
+            Err(error) => errors.push(error),
+        }
+    }
+    if let Err(error) = set_registered_themes(registered) {
+        errors.push(error);
+    }
+    errors
+}
+
 /// Initialize the active theme, falling back to dark on failure (upstream
 /// `initTheme`).
 pub fn init_theme(theme_name: Option<&str>) {

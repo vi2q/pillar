@@ -449,3 +449,45 @@ fn background_detection_uses_the_process_environment_by_default() {
         TerminalThemeSource::ColorFgBg | TerminalThemeSource::Fallback
     ));
 }
+
+// --- resource theme registration -------------------------------------------------
+
+/// Themes discovered by the resource loader are registered under their name so
+/// the settings can select them (upstream
+/// `setRegisteredThemes(this.session.resourceLoader.getThemes().themes)`).
+#[test]
+fn resource_themes_register_under_their_name() {
+    use pillar_coding_agent::core::resource_loader::LoadedTheme;
+    use pillar_coding_agent::core::source_info::SourceInfo;
+    use pillar_coding_agent::modes::interactive::theme;
+
+    let mut data: serde_json::Value =
+        serde_json::from_str(include_str!("../src/modes/interactive/theme/dark.json"))
+            .expect("dark theme json");
+    data["name"] = serde_json::Value::String("custom-user-theme".to_string());
+    let loaded = LoadedTheme {
+        name: Some("custom-user-theme".to_string()),
+        source_path: Some("/tmp/custom-user-theme.json".to_string()),
+        data,
+        source_info: SourceInfo {
+            path: "/tmp/custom-user-theme.json".to_string(),
+            source: "local".to_string(),
+            ..Default::default()
+        },
+    };
+    let errors = theme::register_resource_themes(&[loaded]);
+    assert!(errors.is_empty(), "{errors:?}");
+    // The registered theme is selectable by name.
+    theme::set_theme("custom-user-theme").expect("registered theme loads");
+
+    // An invalid name is reported per theme instead of failing the set.
+    theme::set_registered_themes(Vec::new()).expect("clear");
+    let invalid = theme::register_resource_themes(&[LoadedTheme {
+        name: Some("bad/name".to_string()),
+        source_path: None,
+        data: serde_json::json!({}),
+        source_info: SourceInfo::default(),
+    }]);
+    assert_eq!(invalid.len(), 1, "{invalid:?}");
+    assert!(invalid[0].contains("cannot contain \"/\""), "{invalid:?}");
+}

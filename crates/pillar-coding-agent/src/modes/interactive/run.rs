@@ -35,6 +35,9 @@ use crate::modes::interactive::interactive_mode::{
     InteractiveMode, InteractiveModeOptions, ModeAction,
 };
 use crate::modes::interactive::theme;
+use crate::modes::interactive::theme::controller::{
+    InteractiveThemeController, InteractiveThemeControllerOptions,
+};
 use crate::modes::interactive::transcript::TranscriptSettings;
 
 /// How often the pump drains the terminal and re-renders (upstream relies on
@@ -98,15 +101,12 @@ pub async fn run_interactive(
     let keybindings = Arc::new(KeybindingsManager::create(&agent_dir));
     pillar_tui::keybindings::set_keybindings(keybindings.tui_manager());
 
-    // Upstream's module-level default theme plus the settings-selected name;
-    // the full controller (`applyFromSettings` with `auto` detection and
-    // resource themes) is the next theme slice.
-    let theme_name = session
-        .settings_manager()
-        .lock()
-        .expect("settings lock")
-        .theme();
-    theme::init_theme(theme_name.as_deref());
+    // Upstream `setRegisteredThemes(this.session.resourceLoader.getThemes().themes)`:
+    // user/project themes must be registered before the controller resolves
+    // the settings theme by name.
+    for error in theme::register_resource_themes(&session.resource_loader().snapshot().themes) {
+        eprintln!("Warning: {error}");
+    }
 
     // The terminal lives on the pump thread, so the mode's terminal callbacks
     // hand the values to the pump through shared cells (upstream calls
@@ -127,6 +127,31 @@ pub async fn run_interactive(
     }
 
     let clear_on_shrink = mode_options.clear_on_shrink.unwrap_or(false);
+    let mut screen = TuiMainScreen::new(terminal);
+    screen.base_mut().set_clear_on_shrink(clear_on_shrink);
+
+    // Upstream constructs the controller inside the `InteractiveMode`
+    // constructor (it initializes the global theme there) and applies the
+    // settings after `ui.start()`. Its callbacks cannot borrow the mode, so
+    // they record the effect and the pump applies it.
+    let theme_errors: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let theme_changed = Arc::new(AtomicBool::new(false));
+    let theme_controller = InteractiveThemeController::new(
+        screen.base_mut(),
+        session.settings_manager_arc(),
+        InteractiveThemeControllerOptions {
+            show_error: Box::new({
+                let cell = Arc::clone(&theme_errors);
+                move |message: &str| cell.lock().expect("theme errors").push(message.to_string())
+            }),
+            on_changed: Box::new({
+                let flag = Arc::clone(&theme_changed);
+                move || flag.store(true, Ordering::SeqCst)
+            }),
+            initial_theme_setting: None,
+        },
+    );
+
     let mode = Arc::new(InteractiveMode::new(
         Arc::clone(&session),
         transcript,
@@ -137,8 +162,6 @@ pub async fn run_interactive(
     mode.update_terminal_title();
     mode.update_editor_border_color();
 
-    let mut screen = TuiMainScreen::new(terminal);
-    screen.base_mut().set_clear_on_shrink(clear_on_shrink);
     let editor_id = mode.mount(screen.base_mut());
     screen.base_mut().set_focus(Some(editor_id));
     screen.base_mut().start();
@@ -168,6 +191,8 @@ pub async fn run_interactive(
     let pump_exit = shutdown_tx.clone();
     let pump_title = Arc::clone(&pending_title);
     let pump_progress = Arc::clone(&pending_progress);
+    let pump_theme_errors = Arc::clone(&theme_errors);
+    let pump_theme_changed = Arc::clone(&theme_changed);
     let pump = std::thread::spawn(move || {
         let result = pump_loop(
             screen,
@@ -179,6 +204,9 @@ pub async fn run_interactive(
             pump_stop,
             pump_title,
             pump_progress,
+            theme_controller,
+            pump_theme_errors,
+            pump_theme_changed,
         );
         // Wake the executor so it stops waiting for actions.
         let _ = pump_exit.send(true);
@@ -345,11 +373,38 @@ fn pump_loop(
     shutdown: Arc<AtomicBool>,
     pending_title: Arc<Mutex<Option<String>>>,
     pending_progress: Arc<Mutex<Option<bool>>>,
+    mut theme_controller: InteractiveThemeController,
+    theme_errors: Arc<Mutex<Vec<String>>>,
+    theme_changed: Arc<AtomicBool>,
 ) -> Result<(), String> {
     let interval = Duration::from_millis(PUMP_INTERVAL_MS);
+    // Upstream `init()` applies the settings theme once the UI is running.
+    // It runs inside the loop because the detection queries pump input:
+    // keystrokes consumed while waiting for the terminal's reply are
+    // dispatched (and their editor events drained) like any other input.
+    //
+    // divergence: input consumed *during* a query goes through the TUI's
+    // focused-component dispatch, so the host's app keybindings (Ctrl-C /
+    // Ctrl-D / Escape) do not apply for that ~100ms window (upstream's
+    // `CustomEditor` owns those bindings and still sees them). Only the
+    // `auto` / unset theme settings query the terminal.
+    let mut theme_applied = false;
     let result = loop {
         if shutdown.load(Ordering::SeqCst) {
             break Ok(());
+        }
+
+        if !theme_applied {
+            theme_applied = true;
+            theme_controller.apply_from_settings(screen.base_mut());
+            mode.update_editor_border_color();
+            let mut actions_out = Vec::new();
+            drain_editor_events(&mode, &mut actions_out);
+            for action in actions_out {
+                if dispatch_action(&mode, &actions, action).is_err() {
+                    break;
+                }
+            }
         }
 
         // Terminal side effects the mode reported (upstream calls the terminal
@@ -384,6 +439,21 @@ fn pump_loop(
             }
         }
 
+        // Theme controller: drain terminal color-scheme reports (auto
+        // sync) and apply the recorded effects.
+        theme_controller.pump(screen.base_mut());
+        if theme_changed.swap(false, Ordering::SeqCst) {
+            mode.update_editor_border_color();
+        }
+        let reported_errors: Vec<String> = {
+            let mut guard = theme_errors.lock().expect("theme errors");
+            std::mem::take(&mut *guard)
+        };
+        for error in reported_errors {
+            mode.transcript().lock().show_error(&error);
+            mode.mark_dirty();
+        }
+
         // Host-driven animations (retry countdown, status expiry).
         mode.tick();
 
@@ -395,12 +465,7 @@ fn pump_loop(
                 if matches!(action, ModeAction::Shutdown) {
                     requested_shutdown = true;
                 }
-                if let ModeAction::Bash { command, excluded } = &action {
-                    // Upstream creates the block inside `handleBashCommand`
-                    // before executing; the executor only runs the command.
-                    mode.begin_bash(command, *excluded);
-                }
-                if actions.send(action).is_err() {
+                if dispatch_action(&mode, &actions, action).is_err() {
                     break;
                 }
             }
@@ -428,6 +493,20 @@ fn pump_loop(
         preserve_screen: false,
     });
     result
+}
+
+/// Hand one action to the executor, applying the pump-side bookkeeping first
+/// (upstream creates the bash block inside `handleBashCommand`, before the
+/// command runs).
+fn dispatch_action(
+    mode: &Arc<InteractiveMode>,
+    actions: &tokio::sync::mpsc::UnboundedSender<ModeAction>,
+    action: ModeAction,
+) -> Result<(), tokio::sync::mpsc::error::SendError<ModeAction>> {
+    if let ModeAction::Bash { command, excluded } = &action {
+        mode.begin_bash(command, *excluded);
+    }
+    actions.send(action)
 }
 
 /// Feed raw terminal bytes through the ported input pipeline and dispatch the
@@ -514,6 +593,13 @@ fn dispatch_to_editor(
 ) -> Vec<ModeAction> {
     screen.base_mut().handle_terminal_input(data);
     let mut actions = Vec::new();
+    drain_editor_events(mode, &mut actions);
+    actions
+}
+
+/// Report the editor events that accumulated since the last drain (upstream
+/// the `onChange` / `onSubmit` callbacks).
+fn drain_editor_events(mode: &Arc<InteractiveMode>, actions: &mut Vec<ModeAction>) {
     // Collect first: the guard would deadlock against `handle_submit` /
     // `on_editor_change`, which lock the editor again.
     let events = mode.editor().lock().take_input_events();
@@ -523,5 +609,4 @@ fn dispatch_to_editor(
             EditorInputEvent::Submitted(text) => actions.extend(mode.handle_submit(&text)),
         }
     }
-    actions
 }

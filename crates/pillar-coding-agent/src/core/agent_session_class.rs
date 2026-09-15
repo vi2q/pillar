@@ -554,6 +554,12 @@ impl AgentSession {
         &self.inner.settings_manager
     }
 
+    /// The shared settings manager (hosts that keep their own handle, e.g.
+    /// the interactive theme controller).
+    pub fn settings_manager_arc(&self) -> Arc<Mutex<SettingsManager>> {
+        Arc::clone(&self.inner.settings_manager)
+    }
+
     pub fn model_runtime(&self) -> &ModelRuntime {
         &self.inner.model_runtime
     }

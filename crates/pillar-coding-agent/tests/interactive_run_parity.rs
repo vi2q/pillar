@@ -5,6 +5,11 @@
 //!
 //! The scripted terminal goes through the real `ProcessTerminal` over injected
 //! `TerminalIo`, so `StdinBuffer` splits the raw bytes like upstream.
+//!
+//! The fixtures set an explicit `theme` setting: the theme controller's
+//! detection path queries the terminal (pumping input), and input consumed
+//! during that query goes through the TUI dispatch rather than the host's app
+//! keybindings (port divergence; see the live-bash/theme TASKS entry).
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -209,7 +214,7 @@ fn session(stream_fn: pillar_agent::StreamFn, label: &str) -> Arc<AgentSession> 
         SessionManager::in_memory(&temp_dir(label).to_string_lossy(), None).expect("in-memory"),
     ));
     let settings_manager = Arc::new(Mutex::new(SettingsManager::in_memory(
-        serde_json::json!({}),
+        serde_json::json!({ "theme": "dark" }),
         SettingsManagerCreateOptions {
             project_trusted: Some(true),
         },
