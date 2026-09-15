@@ -789,45 +789,31 @@ fn scoped_model(id: &str) -> pillar_coding_agent::core::model_mutation::ScopedMo
 }
 
 #[test]
-fn model_command_shows_the_selector_and_enter_reports_the_switch() {
+fn model_without_arguments_opens_the_two_column_picker() {
     let session = session_with_scoped_models(vec![
         scoped_model("claude-sonnet-4-5"),
         scoped_model("claude-opus-5"),
     ]);
     let mode = make_mode(&session);
 
-    // `/model` opens the selector in the editor slot.
+    // The user replaced upstream's `ModelSelectorComponent` with the
+    // `pi-model-picker` UX, so bare `/model` is now `/m`.
     let actions = mode.handle_submit("/model");
     assert_eq!(actions, vec![ModeAction::EditorSlotChanged]);
     assert!(mode.has_active_selector());
     let body = editor_slot_body(&mode, 80);
-    assert!(
-        body.contains("Enter to select · Ctrl+S to set as default · Esc to cancel"),
-        "{body:?}"
-    );
-    assert!(
-        body.contains("Scope: all | scoped"),
-        "scoped scope line: {body:?}"
-    );
-    assert!(body.contains("[anthropic]"), "provider badge: {body:?}");
-    assert!(body.contains("claude-sonnet-4-5"), "{body:?}");
-    assert!(
-        body.contains("Model Name: claude-sonnet-4-5 name"),
-        "selected model name: {body:?}"
-    );
+    assert!(body.contains("←→ category"), "{body:?}");
+    assert!(body.contains("PROVIDERS"), "{body:?}");
+    assert!(body.contains("Ctrl+S default"), "{body:?}");
 
-    // Down + Enter reports the switch; the selector stays open until the
+    // Enter reports the highlighted model; the picker stays open until the
     // session reports back (upstream `selectModel`'s await).
-    assert_eq!(
-        mode.handle_selector_key("\u{1b}[B").expect("selector"),
-        Vec::new(),
-        "down"
-    );
     let actions = mode.handle_selector_key("\r").expect("selector");
     assert_eq!(
         actions,
         vec![ModeAction::SelectModel {
             provider: "anthropic".to_string(),
+            // Models sort by name, so opus leads the provider category.
             id: "claude-opus-5".to_string(),
             persist: false,
         }]
@@ -843,33 +829,7 @@ fn model_command_shows_the_selector_and_enter_reports_the_switch() {
 }
 
 #[test]
-fn model_selector_tab_switches_scope_and_escape_cancels() {
-    let session = session_with_scoped_models(vec![
-        scoped_model("claude-sonnet-4-5"),
-        scoped_model("claude-opus-5"),
-    ]);
-    let mode = make_mode(&session);
-
-    mode.handle_submit("/model");
-    // Tab switches to the full snapshot scope; the runtime snapshot is empty
-    // in this fixture, so the scope line flips and the list empties.
-    assert_eq!(
-        mode.handle_selector_key("\t").expect("selector"),
-        Vec::new()
-    );
-    let body = editor_slot_body(&mode, 80);
-    assert!(body.contains("Scope: all | scoped"), "{body:?}");
-    assert!(body.contains("No matching models"), "{body:?}");
-
-    // Escape cancels and restores the editor without switching.
-    let actions = mode.handle_selector_key("\u{1b}").expect("selector");
-    assert_eq!(actions, vec![ModeAction::EditorSlotChanged]);
-    assert!(!mode.has_active_selector());
-    assert_eq!(session.state().model.id, "claude-sonnet-4-5");
-}
-
-#[test]
-fn model_command_with_an_exact_reference_switches_without_the_selector() {
+fn model_command_with_an_exact_reference_switches_without_a_selector() {
     let session = session_with_scoped_models(vec![
         scoped_model("claude-sonnet-4-5"),
         scoped_model("claude-opus-5"),
@@ -888,51 +848,75 @@ fn model_command_with_an_exact_reference_switches_without_the_selector() {
     );
     assert!(!mode.has_active_selector());
 
-    // Ctrl+S in the selector asks for the persisted default.
+    // A bare model id resolves too when it is unambiguous.
+    let actions = mode.handle_submit("/model claude-sonnet-4-5");
+    assert_eq!(
+        actions,
+        vec![ModeAction::SelectModel {
+            provider: "anthropic".to_string(),
+            id: "claude-sonnet-4-5".to_string(),
+            persist: false,
+        }]
+    );
+
+    // Ctrl+S in the picker asks for the persisted default.
     mode.handle_submit("/model");
     let actions = mode.handle_selector_key("\u{13}").expect("selector"); // ctrl+s
     assert_eq!(
         actions,
         vec![ModeAction::SelectModel {
             provider: "anthropic".to_string(),
-            id: "claude-sonnet-4-5".to_string(),
+            id: "claude-opus-5".to_string(),
             persist: true,
         }]
     );
     let actions = mode.complete_model_selection(
         "anthropic",
-        "claude-sonnet-4-5",
+        "claude-opus-5",
         true,
-        Some("No API key for anthropic/claude-sonnet-4-5".to_string()),
+        Some("No API key for anthropic/claude-opus-5".to_string()),
     );
     assert_eq!(actions, vec![ModeAction::EditorSlotChanged]);
     let body = plain(&mut mode.transcript().lock().chat, 120);
-    assert!(body.contains("No API key for anthropic/claude-sonnet-4-5"), "{body:?}");
+    assert!(body.contains("No API key for anthropic/claude-opus-5"), "{body:?}");
 }
 
 #[test]
-fn model_command_with_an_unknown_reference_opens_the_search_prefilled() {
+fn model_command_with_a_provider_argument_filters_the_picker() {
     let session = session_with_scoped_models(vec![scoped_model("claude-sonnet-4-5")]);
     let mode = make_mode(&session);
 
-    // `zzz` has no subsequence in any row (fuzzy matching is generous, so a
-    // query like `nope` still matches `claude-sonnet-4-5`).
-    let actions = mode.handle_submit("/model zzz");
+    // Not a model reference: the picker opens with the provider filter applied.
+    let actions = mode.handle_submit("/model anthropic");
     assert_eq!(actions, vec![ModeAction::EditorSlotChanged]);
     assert!(mode.has_active_selector());
     let body = editor_slot_body(&mode, 80);
-    assert!(body.contains("> zzz"), "search prefilled: {body:?}");
-    assert!(body.contains("No matching models"), "{body:?}");
+    assert!(
+        body.lines().any(|line| line.contains("› Anthropic")),
+        "filtered to the provider: {body:?}"
+    );
+
+    // A filter that matches no provider reports it instead of opening.
+    let actions = mode.handle_selector_key("\u{1b}").expect("selector");
+    assert_eq!(actions, vec![ModeAction::EditorSlotChanged]);
+    let actions = mode.handle_submit("/model zzz");
+    assert!(actions.is_empty(), "{actions:?}");
+    assert!(!mode.has_active_selector());
+    let body = plain(&mut mode.transcript().lock().chat, 120);
+    assert!(body.contains("No provider matching \"zzz\""), "{body:?}");
 }
 
 #[test]
-fn model_select_app_action_opens_the_selector() {
+fn model_select_app_action_opens_the_picker() {
     let session = session_with_scoped_models(vec![scoped_model("claude-sonnet-4-5")]);
     let mode = make_mode(&session);
 
+    // The `app.model.select` keybinding opens the picker (`/model`'s bare form).
     let actions = mode.handle_app_action("app.model.select");
     assert_eq!(actions, vec![ModeAction::EditorSlotChanged]);
     assert!(mode.has_active_selector());
+    let body = editor_slot_body(&mode, 80);
+    assert!(body.contains("PROVIDERS"), "{body:?}");
 }
 
 // --- 2-column model picker (the `pi-model-picker` extension UX, `/m`) ---------

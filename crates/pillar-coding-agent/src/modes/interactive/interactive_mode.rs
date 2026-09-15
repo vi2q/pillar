@@ -165,9 +165,6 @@ use crate::modes::interactive::components::footer::FooterComponent;
 use crate::modes::interactive::components::model_picker::{
     CategoryKind, ModelPickerComponent, ModelPickerOutcome, PickerCategory, RECENT_CATEGORY_ID,
 };
-use crate::modes::interactive::components::model_selector::{
-    DefaultModelReference, ModelSelectorComponent, ModelSelectorOutcome,
-};
 use crate::modes::interactive::components::status_indicator::{
     CompactionStatusReason, RetryStatusIndicator, StatusIndicatorKind, compaction_status_indicator,
 };
@@ -292,10 +289,6 @@ pub enum ActiveSelector {
         token: u64,
         component: Shared<ThinkingSelectorComponent>,
     },
-    Model {
-        token: u64,
-        component: Shared<ModelSelectorComponent>,
-    },
     ModelPicker {
         token: u64,
         component: Shared<ModelPickerComponent>,
@@ -306,7 +299,6 @@ impl ActiveSelector {
     fn token(&self) -> u64 {
         match self {
             ActiveSelector::Thinking { token, .. } => *token,
-            ActiveSelector::Model { token, .. } => *token,
             ActiveSelector::ModelPicker { token, .. } => *token,
         }
     }
@@ -315,9 +307,6 @@ impl ActiveSelector {
     fn mount(&self) -> Box<dyn pillar_tui::tui::Component> {
         match self {
             ActiveSelector::Thinking { component, .. } => Box::new(
-                crate::modes::interactive::transcript::FocusHandle::new(component.clone()),
-            ),
-            ActiveSelector::Model { component, .. } => Box::new(
                 crate::modes::interactive::transcript::FocusHandle::new(component.clone()),
             ),
             ActiveSelector::ModelPicker { component, .. } => Box::new(
@@ -1320,22 +1309,25 @@ impl InteractiveMode {
         self.show_selector(ActiveSelector::Thinking { token, component })
     }
 
-    /// Upstream `handleModelCommand`: no argument opens the selector, an
-    /// exact model reference switches directly, anything else opens the
-    /// selector with the search prefilled.
+    /// Upstream `handleModelCommand`, minus the built-in selector: an exact
+    /// model reference switches directly and anything else falls through to the
+    /// 2-column picker (`/m`).
     ///
-    /// divergence: upstream refreshes the catalogs before giving up on the
-    /// exact match (`findExactModelMatch`); the port has no catalog refresh
-    /// yet, so it matches against the cached scope / runtime snapshot only.
-    /// The Anthropic subscription warning and the `daxnuts` easter egg are
-    /// not ported (see docs/TASKS.md).
+    /// divergence: the user replaced upstream's `ModelSelectorComponent` with
+    /// the `pi-model-picker` UX, so a non-matching argument opens `/m` filtered
+    /// by that argument (the picker filters by provider id / display name, not
+    /// by model name). Upstream also refreshes the catalogs before giving up on
+    /// the exact match (`findExactModelMatch`); the port has no catalog refresh
+    /// yet, so it matches the cached scope / runtime snapshot only. The Anthropic
+    /// subscription warning and the `daxnuts` easter egg are not ported (see
+    /// docs/TASKS.md).
     pub fn handle_model_command(&self, text: &str) -> Vec<ModeAction> {
         let search = text
             .strip_prefix("/model")
             .map(str::trim)
             .filter(|search| !search.is_empty());
         let Some(search) = search else {
-            return self.show_model_selector(None);
+            return self.show_model_picker(None);
         };
         let scoped = self.session.scoped_models();
         let cached_models: Vec<pillar_ai::types::Model> = if scoped.is_empty() {
@@ -1349,38 +1341,8 @@ impl InteractiveMode {
                 id: model.id,
                 persist: false,
             }],
-            None => self.show_model_selector(Some(search)),
+            None => self.show_model_picker(Some(search)),
         }
-    }
-
-    /// Upstream `showModelSelector`: build it from the current model, the
-    /// runtime snapshot, the session scope and the persisted default, and put
-    /// it in the editor slot.
-    pub fn show_model_selector(&self, initial_search_input: Option<&str>) -> Vec<ModeAction> {
-        let token = self.next_selector_token.fetch_add(1, Ordering::SeqCst);
-        let current_model = self.session.current_model();
-        let available_models = self.session.model_runtime().get_available_snapshot();
-        let scoped_models = self.session.scoped_models();
-        let default_model = self
-            .session
-            .settings_manager()
-            .lock()
-            .expect("settings lock")
-            .default_model_and_provider()
-            .map(|(provider, id)| DefaultModelReference { provider, id });
-        // Upstream sets `errorMessage` from `modelRuntime.getError()` once the
-        // background refresh settles; without a refresh the port shows the
-        // configured-error text right away.
-        let error_message = self.session.model_runtime().get_error();
-        let component = Shared::new(ModelSelectorComponent::new(
-            current_model.as_ref(),
-            &available_models,
-            &scoped_models,
-            default_model,
-            error_message,
-            initial_search_input,
-        ));
-        self.show_selector(ActiveSelector::Model { token, component })
     }
 
     /// Upstream the model selector's `selectModel` continuation: close the
@@ -1398,8 +1360,7 @@ impl InteractiveMode {
         let token = {
             let guard = self.active_selector.lock().expect("active selector");
             match guard.as_ref() {
-                Some(ActiveSelector::Model { token, .. })
-                | Some(ActiveSelector::ModelPicker { token, .. }) => Some(*token),
+                Some(ActiveSelector::ModelPicker { token, .. }) => Some(*token),
                 _ => None,
             }
         };
@@ -1624,7 +1585,6 @@ impl InteractiveMode {
     pub fn handle_selector_key(&self, data: &str) -> Option<Vec<ModeAction>> {
         enum Handle {
             Thinking(u64, Shared<ThinkingSelectorComponent>),
-            Model(u64, Shared<ModelSelectorComponent>),
             ModelPicker(u64, Shared<ModelPickerComponent>),
         }
         let handle = {
@@ -1632,9 +1592,6 @@ impl InteractiveMode {
             match guard.as_ref() {
                 Some(ActiveSelector::Thinking { token, component }) => {
                     Handle::Thinking(*token, component.clone())
-                }
-                Some(ActiveSelector::Model { token, component }) => {
-                    Handle::Model(*token, component.clone())
                 }
                 Some(ActiveSelector::ModelPicker { token, component }) => {
                     Handle::ModelPicker(*token, component.clone())
@@ -1657,27 +1614,10 @@ impl InteractiveMode {
                 }
                 ThinkingSelectorOutcome::Cancel => self.close_selector(Some(token)),
             },
-            // Upstream `selectModel`: the selector stays open until the async
-            // `session.setModel` settles; the host reports back through
-            // `UiCommand::ModelSelected` and [`Self::complete_model_selection`]
-            // closes it (upstream `done()`).
-            Handle::Model(token, component) => match component.lock().handle_key(data) {
-                ModelSelectorOutcome::Consumed => Vec::new(),
-                ModelSelectorOutcome::Select(model) => vec![ModeAction::SelectModel {
-                    provider: model.provider.clone(),
-                    id: model.id.clone(),
-                    persist: false,
-                }],
-                ModelSelectorOutcome::SelectAsDefault(model) => vec![ModeAction::SelectModel {
-                    provider: model.provider.clone(),
-                    id: model.id.clone(),
-                    persist: true,
-                }],
-                ModelSelectorOutcome::Cancel => self.close_selector(Some(token)),
-            },
-            // The 2-column picker reports the same selection as `/model`
-            // (`SelectModel`), so the host, executor and completion path are
-            // shared with the built-in selector.
+            // The picker stays open until the async `session.setModel`
+            // settles; the host reports back through `UiCommand::ModelSelected`
+            // and [`Self::complete_model_selection`] closes it (upstream
+            // `done()`).
             Handle::ModelPicker(token, component) => match component.lock().handle_key(data) {
                 ModelPickerOutcome::Consumed => Vec::new(),
                 ModelPickerOutcome::Select(model) => vec![ModeAction::SelectModel {
@@ -1736,7 +1676,7 @@ impl InteractiveMode {
             }
             "app.model.cycleForward" => vec![ModeAction::CycleModel { forward: true }],
             "app.model.cycleBackward" => vec![ModeAction::CycleModel { forward: false }],
-            "app.model.select" => self.show_model_selector(None),
+            "app.model.select" => self.show_model_picker(None),
             "app.message.dequeue" => {
                 self.handle_dequeue();
                 Vec::new()

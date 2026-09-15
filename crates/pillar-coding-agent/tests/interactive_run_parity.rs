@@ -536,113 +536,6 @@ fn scoped_model(id: &str) -> pillar_coding_agent::core::model_mutation::ScopedMo
     }
 }
 
-/// The full `/model` path: the selector opens in the editor slot, the search
-/// narrows to a model, Enter reports the switch, the executor resolves it from
-/// the runtime and calls `session.setModel`, and the pump closes the selector
-/// and reports the new model.
-#[tokio::test]
-async fn model_selector_switches_the_session_model() {
-    install_dark();
-    let session = session_with_scoped_models(
-        echo_stream("pong"),
-        "model-select",
-        vec![
-            scoped_model("claude-sonnet-4-5"),
-            scoped_model("claude-opus-5"),
-        ],
-    );
-    let mut harness = harness(vec!["/model\r".to_string()], None);
-    // The rest is fed from a monitor thread, one stage per painted frame, so
-    // each key gets its own read batch and frame:
-    //   selector frame -> search text (the repaint under test) -> Enter ->
-    //   `/quit` once the switch landed *and* the pump drained the executor
-    //   report (a gated chunk would otherwise land in the still-open selector).
-    let chunks = Arc::clone(&harness.chunks);
-    let writes = Arc::clone(&harness.writes);
-    let state = Arc::clone(&session);
-    std::thread::spawn(move || {
-        // The scope line and the highlighted row carry colour codes between the
-        // words, so match against the stripped frame.
-        let wait_for = |needle: &str| {
-            for _ in 0..600 {
-                if strip_terminal_sequences(&writes.lock().unwrap()).contains(needle) {
-                    return true;
-                }
-                std::thread::sleep(Duration::from_millis(5));
-            }
-            false
-        };
-        if !wait_for("Scope:") {
-            return;
-        }
-        chunks.lock().unwrap().push("opus-5".to_string());
-        if !wait_for("→ claude-opus-5") {
-            return;
-        }
-        chunks.lock().unwrap().push("\r".to_string());
-        for _ in 0..600 {
-            if state.state().model.id == "claude-opus-5" {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        std::thread::sleep(Duration::from_millis(50));
-        chunks.lock().unwrap().push("/quit\r".to_string());
-    });
-
-    let outcome = tokio::time::timeout(
-        Duration::from_secs(10),
-        run_interactive(
-            Arc::clone(&session),
-            Box::new(std::mem::replace(
-                &mut harness.terminal,
-                ProcessTerminal::with_io(Box::new(pillar_tui::process_terminal::NullTerminalIo)),
-            )),
-            run_options(temp_dir("keybindings")),
-        ),
-    )
-    .await;
-    let output = rendered(&harness.writes);
-    let result = match outcome {
-        Ok(result) => result.expect("run loop ok"),
-        Err(_) => {
-            // The monitor thread waits for the moved highlight to be painted
-            // before pressing Enter; without it this run never finishes.
-            let tail: String = output
-                .chars()
-                .rev()
-                .take(600)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect();
-            panic!("the run loop did not finish; a consumed selector key did not repaint. tail={tail:?}");
-        }
-    };
-
-    assert_eq!(result, 0);
-    assert_eq!(
-        session.state().model.id,
-        "claude-opus-5",
-        "the selector switched the session model"
-    );
-    assert!(
-        output.contains("Scope:"),
-        "the selector rendered in the editor slot: {output:?}"
-    );
-    // The repaint of a consumed selector key: the frame is painted in a later
-    // pump iteration than the one that mounted the selector (the down/up keys
-    // take the same path; the pty smoke covers them end to end).
-    assert!(
-        output.contains("→ claude-opus-5"),
-        "the search key repainted the moved highlight: {output:?}"
-    );
-    assert!(
-        output.contains("Model: claude-opus-5"),
-        "the status reports the new model: {output:?}"
-    );
-}
-
 /// A bare Escape reaches the mode: the terminal releases the buffered partial
 /// sequence once its disambiguation window passed (upstream the StdinBuffer's
 /// own timer), so `tui.select.cancel` closes the selector and the next command
@@ -700,84 +593,9 @@ async fn escape_cancels_the_selector() {
     );
 }
 
-/// A kitty-protocol terminal (Ghostty, kitty, foot, …) answers the startup
-/// negotiation and then reports arrows as `CSI 1;1:1B` (press) plus
-/// `CSI 1;1:3B` (release). The selector must see the press and ignore the
-/// release — otherwise the highlight jumps two rows.
-#[tokio::test]
-async fn kitty_protocol_arrows_move_the_selector_once() {
-    install_dark();
-    let session = session_with_scoped_models(
-        echo_stream("pong"),
-        "kitty-arrows",
-        vec![
-            scoped_model("claude-sonnet-4-5"),
-            scoped_model("claude-opus-5"),
-            scoped_model("claude-haiku-4-5"),
-        ],
-    );
-    // The first chunk is the flags reply the terminal sends for pillar's
-    // `CSI >7u CSI ?u CSI c` query; after that the terminal is in kitty mode.
-    let mut harness = harness(
-        vec![
-            "\u{1b}[?7u".to_string(),
-            "/model\r".to_string(),
-            "\u{1b}[1;1:1B".to_string(), // down press
-            "\u{1b}[1;1:3B".to_string(), // down release
-        ],
-        None,
-    );
-    let chunks = Arc::clone(&harness.chunks);
-    let writes = Arc::clone(&harness.writes);
-    let state = Arc::clone(&session);
-    std::thread::spawn(move || {
-        for _ in 0..600 {
-            if strip_terminal_sequences(&writes.lock().unwrap()).contains("→ claude-opus-5") {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        chunks.lock().unwrap().push("\r".to_string());
-        for _ in 0..600 {
-            if state.state().model.id == "claude-opus-5" {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        std::thread::sleep(Duration::from_millis(50));
-        chunks.lock().unwrap().push("/quit\r".to_string());
-    });
-
-    let result = tokio::time::timeout(
-        Duration::from_secs(10),
-        run_interactive(
-            Arc::clone(&session),
-            Box::new(std::mem::replace(
-                &mut harness.terminal,
-                ProcessTerminal::with_io(Box::new(pillar_tui::process_terminal::NullTerminalIo)),
-            )),
-            run_options(temp_dir("keybindings")),
-        ),
-    )
-    .await
-    .expect("run loop finished")
-    .expect("run loop ok");
-
-    assert_eq!(result, 0);
-    assert_eq!(
-        session.state().model.id,
-        "claude-opus-5",
-        "one row down: the release event must not move the highlight again"
-    );
-    let output = rendered(&harness.writes);
-    assert!(
-        output.contains("→ claude-opus-5"),
-        "the kitty-protocol arrow repainted the highlight: {output:?}"
-    );
-}
-
 /// The 2-column picker (`/m`) end to end under the kitty protocol: ←/→ walk
-/// the categories, ↑/↓ the models, the release events are ignored, and Enter
+/// the categories, ↑/↓ the models, the release events are ignored (a leaked
+/// release would move the highlight twice), the navigation repaints, and Enter
 /// switches the session model through the same path as `/model`.
 #[tokio::test]
 async fn kitty_protocol_arrows_drive_the_model_picker() {
@@ -790,28 +608,36 @@ async fn kitty_protocol_arrows_drive_the_model_picker() {
             scoped_model("claude-opus-5"),
         ],
     );
-    // One provider category, models sorted by name (opus first); ↓ then ↑
-    // returns to the same row, so a release event leaking through would leave
-    // the highlight on the wrong model.
+    // One provider category, models sorted by name (opus first): a single ↓
+    // highlights sonnet, so the picker's footer line names it. Enter is fed
+    // only after that frame was painted, which also proves the repaint of a
+    // consumed selector key.
     let mut harness = harness(
         vec![
-            "\u{1b}[?7u".to_string(),  // kitty flags reply
-            "/m\r".to_string(),        // open the picker
-            "\u{1b}[1;1:1C".to_string(), // → next category (wraps)
+            "\u{1b}[?7u".to_string(),   // kitty flags reply
+            "/m\r".to_string(),         // open the picker
+            "\u{1b}[1;1:1C".to_string(), // → next category (wraps: one provider)
             "\u{1b}[1;1:3C".to_string(), // → release
-            "\u{1b}[1;1:1B".to_string(), // ↓
+            "\u{1b}[1;1:1B".to_string(), // ↓ to sonnet
             "\u{1b}[1;1:3B".to_string(), // ↓ release
-            "\u{1b}[1;1:1A".to_string(), // ↑
-            "\u{1b}[1;1:3A".to_string(), // ↑ release
-            "\r".to_string(),
         ],
         None,
     );
     let chunks = Arc::clone(&harness.chunks);
+    let writes = Arc::clone(&harness.writes);
     let state = Arc::clone(&session);
     std::thread::spawn(move || {
         for _ in 0..600 {
-            if state.state().model.id == "claude-opus-5" {
+            if strip_terminal_sequences(&writes.lock().unwrap())
+                .contains("anthropic/claude-sonnet-4-5 · ctx")
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        chunks.lock().unwrap().push("\r".to_string());
+        for _ in 0..600 {
+            if state.state().model.id == "claude-sonnet-4-5" {
                 break;
             }
             std::thread::sleep(Duration::from_millis(5));
@@ -838,13 +664,21 @@ async fn kitty_protocol_arrows_drive_the_model_picker() {
     assert_eq!(result, 0);
     assert_eq!(
         session.state().model.id,
-        "claude-opus-5",
-        "the picker selected the first model of the provider category"
+        "claude-sonnet-4-5",
+        "one row down: the release event must not move the highlight again"
     );
     let output = rendered(&harness.writes);
     assert!(output.contains("PROVIDERS"), "picker rendered: {output:?}");
     assert!(
         output.contains("←→ category"),
         "picker hint rendered: {output:?}"
+    );
+    assert!(
+        output.contains("anthropic/claude-sonnet-4-5 · ctx"),
+        "the ↓ repainted the highlighted model's footer: {output:?}"
+    );
+    assert!(
+        output.contains("Model: claude-sonnet-4-5"),
+        "the status reports the new model: {output:?}"
     );
 }
