@@ -491,6 +491,10 @@ async fn run_interactive(parsed: &Args) -> ExitCode {
             on_terminal_title: None,
             on_terminal_progress: None,
             cwd_git_paths: None,
+            // Filled in by the run loop (the 2-column picker's history and the
+            // terminal height it lays out against).
+            agent_dir: None,
+            terminal_rows: None,
         },
         transcript,
         markdown_transformers: Vec::new(),

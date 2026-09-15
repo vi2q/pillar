@@ -162,6 +162,9 @@ use crate::core::settings_manager::DoubleEscapeAction;
 use crate::core::truncate::TruncationResult;
 use crate::modes::interactive::components::bash_execution::BashExecutionComponent;
 use crate::modes::interactive::components::footer::FooterComponent;
+use crate::modes::interactive::components::model_picker::{
+    CategoryKind, ModelPickerComponent, ModelPickerOutcome, PickerCategory, RECENT_CATEGORY_ID,
+};
 use crate::modes::interactive::components::model_selector::{
     DefaultModelReference, ModelSelectorComponent, ModelSelectorOutcome,
 };
@@ -172,6 +175,7 @@ use crate::modes::interactive::components::thinking_selector::{
     ThinkingSelectorComponent, ThinkingSelectorOutcome,
 };
 use crate::modes::interactive::mode_ui::{PendingMessagesUi, QueueMode, StatusUi};
+use crate::modes::interactive::model_picker_recent::RecentModels;
 use crate::modes::interactive::theme::get_editor_theme;
 use crate::modes::interactive::transcript::{
     CompactionCostKind, InteractiveTranscript, Shared, TranscriptSettings,
@@ -232,6 +236,12 @@ pub struct InteractiveModeOptions {
     /// Upstream `terminal.setProgress`.
     pub on_terminal_progress: Option<TerminalProgressCallback>,
     pub cwd_git_paths: Option<GitPaths>,
+    /// Agent directory: where the 2-column picker keeps its recent-model
+    /// history (upstream the extension's `getAgentDir()`).
+    pub agent_dir: Option<std::path::PathBuf>,
+    /// Live terminal height for the 2-column picker's window (upstream reads
+    /// `tui.terminal.rows` on every render; the pump keeps this up to date).
+    pub terminal_rows: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
 }
 
 /// The assembled interactive mode (upstream `InteractiveMode`).
@@ -265,6 +275,14 @@ pub struct InteractiveMode {
     active_selector: std::sync::Mutex<Option<ActiveSelector>>,
     /// Monotonic token so a stale `done` cannot close a newer selector.
     next_selector_token: AtomicU64,
+    /// The 2-column picker's recent-model history (the user's
+    /// `pi-model-picker` extension stores it in the agent directory).
+    recent_models: std::sync::Mutex<crate::modes::interactive::model_picker_recent::RecentModels>,
+    /// Live terminal height (see
+    /// [`InteractiveModeOptions::terminal_rows`]).
+    terminal_rows: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// Where the 2-column picker keeps its recent-model history.
+    agent_dir: Option<std::path::PathBuf>,
 }
 
 /// The selector currently shown in place of the editor (upstream the
@@ -278,6 +296,10 @@ pub enum ActiveSelector {
         token: u64,
         component: Shared<ModelSelectorComponent>,
     },
+    ModelPicker {
+        token: u64,
+        component: Shared<ModelPickerComponent>,
+    },
 }
 
 impl ActiveSelector {
@@ -285,6 +307,7 @@ impl ActiveSelector {
         match self {
             ActiveSelector::Thinking { token, .. } => *token,
             ActiveSelector::Model { token, .. } => *token,
+            ActiveSelector::ModelPicker { token, .. } => *token,
         }
     }
 
@@ -295,6 +318,9 @@ impl ActiveSelector {
                 crate::modes::interactive::transcript::FocusHandle::new(component.clone()),
             ),
             ActiveSelector::Model { component, .. } => Box::new(
+                crate::modes::interactive::transcript::FocusHandle::new(component.clone()),
+            ),
+            ActiveSelector::ModelPicker { component, .. } => Box::new(
                 crate::modes::interactive::transcript::FocusHandle::new(component.clone()),
             ),
         }
@@ -349,6 +375,16 @@ impl InteractiveMode {
             pending_bash_components: std::sync::Mutex::new(Vec::new()),
             active_selector: std::sync::Mutex::new(None),
             next_selector_token: AtomicU64::new(1),
+            recent_models: std::sync::Mutex::new(match options.agent_dir.as_deref() {
+                Some(agent_dir) => RecentModels::load(agent_dir),
+                None => RecentModels::disabled(),
+            }),
+            terminal_rows: options
+                .terminal_rows
+                .unwrap_or_else(|| {
+                    std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(24))
+                }),
+            agent_dir: options.agent_dir.clone(),
             session,
         }
     }
@@ -776,6 +812,19 @@ impl InteractiveMode {
         if text == "/model" || text.starts_with("/model ") {
             self.editor.lock().set_text("");
             return self.handle_model_command(text);
+        }
+        // The 2-column picker of the `pi-model-picker` extension (not an
+        // upstream command); `/model` above stays as upstream has it.
+        if text == "/m" || text.starts_with("/m ") {
+            self.editor.lock().set_text("");
+            let query = text
+                .strip_prefix("/m")
+                .map(str::trim)
+                .filter(|query| !query.is_empty())
+                .map(str::to_string);
+            let actions = self.show_model_picker(query.as_deref());
+            self.mark_dirty();
+            return actions;
         }
         if text == "/name" || text.starts_with("/name ") {
             self.handle_name_command(text);
@@ -1349,7 +1398,8 @@ impl InteractiveMode {
         let token = {
             let guard = self.active_selector.lock().expect("active selector");
             match guard.as_ref() {
-                Some(ActiveSelector::Model { token, .. }) => Some(*token),
+                Some(ActiveSelector::Model { token, .. })
+                | Some(ActiveSelector::ModelPicker { token, .. }) => Some(*token),
                 _ => None,
             }
         };
@@ -1361,14 +1411,178 @@ impl InteractiveMode {
         self.update_editor_border_color();
         match error {
             Some(error) => self.transcript.lock().show_error(&error),
-            None => self.transcript.lock().show_status(&if persist {
-                format!("Default model: {provider}/{id}")
-            } else {
-                format!("Model: {id}")
-            }),
+            None => {
+                self.record_recent_model(provider, id);
+                self.transcript.lock().show_status(&if persist {
+                    format!("Default model: {provider}/{id}")
+                } else {
+                    format!("Model: {id}")
+                });
+            }
         }
         self.mark_dirty();
         actions
+    }
+
+    /// Report a model change the mode did not initiate (upstream Ctrl+P
+    /// cycling): refresh the footer and record the recent-model history, like
+    /// the extension's `model_select` listener.
+    pub fn complete_model_cycle(&self, provider: &str, id: &str) {
+        self.record_recent_model(provider, id);
+        self.update_available_provider_count();
+        self.update_editor_border_color();
+        self.mark_dirty();
+    }
+
+    /// Upstream the extension's `recordRecent`: every model change counts
+    /// toward the picker's history (session restores are never reported to the
+    /// mode, so they do not).
+    pub fn record_recent_model(&self, provider: &str, id: &str) {
+        self.recent_models
+            .lock()
+            .expect("recent models")
+            .record(provider, id);
+    }
+
+    /// Reload the recent-model history from disk (upstream `session_start` and
+    /// each `/m` open).
+    pub fn reload_recent_models(&self, agent_dir: &std::path::Path) {
+        *self.recent_models.lock().expect("recent models") = RecentModels::load(agent_dir);
+    }
+
+    /// The terminal height the 2-column picker lays out against (the pump
+    /// refreshes it on resize).
+    pub fn set_terminal_rows(&self, rows: usize) {
+        self.terminal_rows
+            .store(rows, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// The model groups the 2-column picker shows (upstream `getGroups`): the
+    /// session scope when set, else every available model, grouped per
+    /// provider and sorted like the built-in selector.
+    fn picker_groups(&self) -> Vec<(String, String, Vec<pillar_ai::types::Model>)> {
+        let scoped = self.session.scoped_models();
+        let models: Vec<pillar_ai::types::Model> = if scoped.is_empty() {
+            self.session.model_runtime().get_available_snapshot()
+        } else {
+            scoped.into_iter().map(|scoped| scoped.model).collect()
+        };
+        let runtime = self.session.model_runtime();
+        let mut groups: Vec<(String, String, Vec<pillar_ai::types::Model>)> = Vec::new();
+        for model in models {
+            let group = match groups.iter_mut().find(|(id, _, _)| *id == model.provider) {
+                Some(group) => group,
+                None => {
+                    let display_name = runtime
+                        .get_provider(&model.provider)
+                        .map(|provider| provider.name.clone())
+                        .unwrap_or_else(|| model.provider.clone());
+                    groups.push((model.provider.clone(), display_name, Vec::new()));
+                    groups.last_mut().expect("just pushed")
+                }
+            };
+            group.2.push(model);
+        }
+        for group in &mut groups {
+            group.2.sort_by(|a, b| {
+                a.name
+                    .to_lowercase()
+                    .cmp(&b.name.to_lowercase())
+                    .then_with(|| a.id.cmp(&b.id))
+            });
+        }
+        groups.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+        groups
+    }
+
+    /// Upstream `/m`'s category list: `RECENT` (filtered to available models)
+    /// when there is history, then one category per provider.
+    fn picker_categories(&self, query: Option<&str>) -> Result<Vec<PickerCategory>, String> {
+        let groups = self.picker_groups();
+        if groups.is_empty() {
+            return Err("No models available".to_string());
+        }
+        let groups: Vec<_> = match query {
+            Some(query) if !query.is_empty() => {
+                let needle = query.to_lowercase();
+                groups
+                    .into_iter()
+                    .filter(|(provider, display_name, _)| {
+                        provider.to_lowercase().contains(&needle)
+                            || display_name.to_lowercase().contains(&needle)
+                    })
+                    .collect()
+            }
+            _ => groups,
+        };
+        if groups.is_empty() {
+            return Err(format!(
+                "No provider matching \"{}\"",
+                query.unwrap_or_default()
+            ));
+        }
+
+        let mut categories: Vec<PickerCategory> = Vec::new();
+        let recents = self.recent_models.lock().expect("recent models");
+        let recent_models: Vec<pillar_ai::types::Model> = recents
+            .entries()
+            .iter()
+            .filter_map(|entry| {
+                groups.iter().find_map(|(provider, _, models)| {
+                    (provider == &entry.provider)
+                        .then(|| {
+                            models
+                                .iter()
+                                .find(|model| model.id == entry.id)
+                                .cloned()
+                        })
+                        .flatten()
+                })
+            })
+            .collect();
+        drop(recents);
+        if !recent_models.is_empty() {
+            categories.push(PickerCategory {
+                kind: CategoryKind::Recent,
+                id: RECENT_CATEGORY_ID.to_string(),
+                label: "RECENT".to_string(),
+                models: recent_models,
+            });
+        }
+        for (provider, display_name, models) in groups {
+            categories.push(PickerCategory {
+                kind: CategoryKind::Provider,
+                id: provider,
+                label: display_name,
+                models,
+            });
+        }
+        Ok(categories)
+    }
+
+    /// Upstream the extension's `/m` handler: open the 2-column picker, with
+    /// an optional provider filter for the left column.
+    pub fn show_model_picker(&self, query: Option<&str>) -> Vec<ModeAction> {
+        // Upstream reloads the history when the picker opens (the file may have
+        // been changed by a pi install sharing the agent directory).
+        if let Some(agent_dir) = &self.agent_dir {
+            self.reload_recent_models(agent_dir);
+        }
+        let categories = match self.picker_categories(query) {
+            Ok(categories) => categories,
+            Err(error) => {
+                self.transcript.lock().show_error(&error);
+                self.mark_dirty();
+                return Vec::new();
+            }
+        };
+        let token = self.next_selector_token.fetch_add(1, Ordering::SeqCst);
+        let component = Shared::new(ModelPickerComponent::new(
+            categories,
+            self.session.current_model(),
+            std::sync::Arc::clone(&self.terminal_rows),
+        ));
+        self.show_selector(ActiveSelector::ModelPicker { token, component })
     }
 
     /// Upstream `updateAvailableProviderCount`: the footer shows the provider
@@ -1411,6 +1625,7 @@ impl InteractiveMode {
         enum Handle {
             Thinking(u64, Shared<ThinkingSelectorComponent>),
             Model(u64, Shared<ModelSelectorComponent>),
+            ModelPicker(u64, Shared<ModelPickerComponent>),
         }
         let handle = {
             let guard = self.active_selector.lock().expect("active selector");
@@ -1420,6 +1635,9 @@ impl InteractiveMode {
                 }
                 Some(ActiveSelector::Model { token, component }) => {
                     Handle::Model(*token, component.clone())
+                }
+                Some(ActiveSelector::ModelPicker { token, component }) => {
+                    Handle::ModelPicker(*token, component.clone())
                 }
                 None => return None,
             }
@@ -1456,6 +1674,18 @@ impl InteractiveMode {
                     persist: true,
                 }],
                 ModelSelectorOutcome::Cancel => self.close_selector(Some(token)),
+            },
+            // The 2-column picker reports the same selection as `/model`
+            // (`SelectModel`), so the host, executor and completion path are
+            // shared with the built-in selector.
+            Handle::ModelPicker(token, component) => match component.lock().handle_key(data) {
+                ModelPickerOutcome::Consumed => Vec::new(),
+                ModelPickerOutcome::Select(model) => vec![ModeAction::SelectModel {
+                    provider: model.provider.clone(),
+                    id: model.id.clone(),
+                    persist: false,
+                }],
+                ModelPickerOutcome::Cancel => self.close_selector(Some(token)),
             },
         })
     }

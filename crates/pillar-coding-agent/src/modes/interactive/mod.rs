@@ -6,6 +6,7 @@ pub mod components;
 pub mod external_editor;
 pub mod interactive_mode;
 pub mod mode_ui;
+pub mod model_picker_recent;
 pub mod model_search;
 pub mod run;
 pub mod session_share;

@@ -15,7 +15,8 @@ use pillar_coding_agent::modes::interactive::theme::controller::{
 use pillar_coding_agent::modes::interactive::theme::{
     ColorMode, TerminalAutoThemeDetector, TerminalBackgroundThemeDetector, TerminalTheme,
     TerminalThemeConfidence, TerminalThemeDetection, TerminalThemeSource, create_theme,
-    detect_terminal_background_theme, detect_terminal_theme_for_auto, get_theme_by_name, theme,
+    detect_terminal_background_theme, detect_terminal_theme_for_auto, get_default_theme,
+    get_theme_by_name, init_theme, theme,
 };
 use pillar_tui::terminal_colors::{RgbColor, TerminalColorScheme};
 
@@ -490,4 +491,31 @@ fn resource_themes_register_under_their_name() {
     }]);
     assert_eq!(invalid.len(), 1, "{invalid:?}");
     assert!(invalid[0].contains("cannot contain \"/\""), "{invalid:?}");
+}
+
+/// A controller whose theme setting does not resolve to a name (an automatic
+/// `light/dark` pair, or no settings at all) must still initialize the theme:
+/// upstream calls `initTheme(activeThemeName, true)` with the name possibly
+/// undefined, which applies the default theme. Without it the registry is left
+/// untouched and the first `theme()` call panics — a fresh install with no
+/// `settings.json` crashed in `updateEditorBorderColor` before the first render.
+#[test]
+fn controller_initializes_the_default_theme_when_no_name_resolves() {
+    let _guard = THEME_LOCK.lock().expect("theme lock");
+    // Seed the registry with the opposite of the default so "the theme was
+    // re-initialized" is observable through the process-wide registry.
+    let default = get_default_theme();
+    let seeded = if default == "light" { "dark" } else { "light" };
+    init_theme(Some(seeded));
+
+    let mut host = FakeHost::default();
+    let settings = settings(None);
+    let controller = controller(&mut host, Arc::clone(&settings), None);
+
+    assert_eq!(controller.get_theme_selection(), None);
+    assert_eq!(
+        theme().name(),
+        Some(default.as_str()),
+        "the controller falls back to the default theme"
+    );
 }

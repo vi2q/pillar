@@ -147,9 +147,12 @@ impl InteractiveThemeController {
                 .or(settings_theme.as_deref()),
             terminal_theme,
         );
-        if let Some(name) = active_theme_name.as_deref() {
-            init_theme(Some(name));
-        }
+        // Upstream calls `initTheme(this.activeThemeName, true)`
+        // unconditionally: an unresolved name (an automatic `light/dark` pair,
+        // or settings that never loaded) still initializes the *default*
+        // theme. Skipping it leaves the registry empty and the first `theme()`
+        // call panics before the first render.
+        init_theme(active_theme_name.as_deref());
 
         let mut controller = Self {
             settings,

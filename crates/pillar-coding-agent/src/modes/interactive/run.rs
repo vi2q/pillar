@@ -57,6 +57,9 @@ enum UiCommand {
         persist: bool,
         error: Option<String>,
     },
+    /// A model switch the mode did not initiate settled (Ctrl+P cycling): the
+    /// pump refreshes the footer and records the recent-model history.
+    ModelCycled { provider: String, id: String },
     /// A bash command finished (upstream the code after `await
     /// session.executeBash(...)`).
     BashComplete {
@@ -138,6 +141,17 @@ pub async fn run_interactive(
     let clear_on_shrink = mode_options.clear_on_shrink.unwrap_or(false);
     let mut screen = TuiMainScreen::new(terminal);
     screen.base_mut().set_clear_on_shrink(clear_on_shrink);
+
+    // Host facts the 2-column picker needs: the agent directory (its
+    // recent-model history) and the live terminal height.
+    if mode_options.agent_dir.is_none() {
+        mode_options.agent_dir = Some(agent_dir.clone());
+    }
+    if mode_options.terminal_rows.is_none() {
+        mode_options.terminal_rows = Some(Arc::new(std::sync::atomic::AtomicUsize::new(
+            screen.base_mut().terminal_mut().rows(),
+        )));
+    }
 
     // Upstream constructs the controller inside the `InteractiveMode`
     // constructor (it initializes the global theme there) and applies the
@@ -338,7 +352,7 @@ async fn execute_action(
                 CycleDirection::Backward
             };
             let outcome = session.cycle_model(direction).await?;
-            if outcome.is_none() {
+            let Some(outcome) = outcome else {
                 let scoped = !session.scoped_models().is_empty();
                 let message = if scoped {
                     "Only one model in scope"
@@ -346,7 +360,11 @@ async fn execute_action(
                     "Only one model available"
                 };
                 return Err(message.to_string());
-            }
+            };
+            let _ = ui.send(UiCommand::ModelCycled {
+                provider: outcome.model.provider,
+                id: outcome.model.id,
+            });
             Ok(())
         }
         // Upstream `selectModel`: resolve the model instance from the runtime
@@ -484,6 +502,10 @@ fn pump_loop(
                     persist,
                     error,
                 } => mode.complete_model_selection(&provider, &id, persist, error),
+                UiCommand::ModelCycled { provider, id } => {
+                    mode.complete_model_cycle(&provider, &id);
+                    Vec::new()
+                }
             };
             for action in reported {
                 if dispatch_action(&mut screen, &mode, editor_slot, &actions, action).is_err() {
@@ -544,6 +566,9 @@ fn pump_loop(
         }
         if screen.base_mut().terminal_mut().resize_if_changed() {
             screen.base_mut().invalidate();
+            // The 2-column picker lays out against the terminal height
+            // (upstream reads `tui.terminal.rows` on every render).
+            mode.set_terminal_rows(screen.base_mut().terminal_mut().rows());
         }
         if screen.base_mut().take_render_request(Instant::now()) {
             if let Err(error) = screen.do_render() {

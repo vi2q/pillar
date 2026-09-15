@@ -358,6 +358,7 @@ fn run_options(agent_dir: PathBuf) -> InteractiveRunOptions {
             on_terminal_title: None,
             on_terminal_progress: None,
             cwd_git_paths: None,
+            ..Default::default()
         },
         transcript: TranscriptSettings::default(),
         markdown_transformers: Vec::new(),
@@ -772,5 +773,78 @@ async fn kitty_protocol_arrows_move_the_selector_once() {
     assert!(
         output.contains("→ claude-opus-5"),
         "the kitty-protocol arrow repainted the highlight: {output:?}"
+    );
+}
+
+/// The 2-column picker (`/m`) end to end under the kitty protocol: ←/→ walk
+/// the categories, ↑/↓ the models, the release events are ignored, and Enter
+/// switches the session model through the same path as `/model`.
+#[tokio::test]
+async fn kitty_protocol_arrows_drive_the_model_picker() {
+    install_dark();
+    let session = session_with_scoped_models(
+        echo_stream("pong"),
+        "picker",
+        vec![
+            scoped_model("claude-sonnet-4-5"),
+            scoped_model("claude-opus-5"),
+        ],
+    );
+    // One provider category, models sorted by name (opus first); ↓ then ↑
+    // returns to the same row, so a release event leaking through would leave
+    // the highlight on the wrong model.
+    let mut harness = harness(
+        vec![
+            "\u{1b}[?7u".to_string(),  // kitty flags reply
+            "/m\r".to_string(),        // open the picker
+            "\u{1b}[1;1:1C".to_string(), // → next category (wraps)
+            "\u{1b}[1;1:3C".to_string(), // → release
+            "\u{1b}[1;1:1B".to_string(), // ↓
+            "\u{1b}[1;1:3B".to_string(), // ↓ release
+            "\u{1b}[1;1:1A".to_string(), // ↑
+            "\u{1b}[1;1:3A".to_string(), // ↑ release
+            "\r".to_string(),
+        ],
+        None,
+    );
+    let chunks = Arc::clone(&harness.chunks);
+    let state = Arc::clone(&session);
+    std::thread::spawn(move || {
+        for _ in 0..600 {
+            if state.state().model.id == "claude-opus-5" {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+        chunks.lock().unwrap().push("/quit\r".to_string());
+    });
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        run_interactive(
+            Arc::clone(&session),
+            Box::new(std::mem::replace(
+                &mut harness.terminal,
+                ProcessTerminal::with_io(Box::new(pillar_tui::process_terminal::NullTerminalIo)),
+            )),
+            run_options(temp_dir("keybindings")),
+        ),
+    )
+    .await
+    .expect("run loop finished")
+    .expect("run loop ok");
+
+    assert_eq!(result, 0);
+    assert_eq!(
+        session.state().model.id,
+        "claude-opus-5",
+        "the picker selected the first model of the provider category"
+    );
+    let output = rendered(&harness.writes);
+    assert!(output.contains("PROVIDERS"), "picker rendered: {output:?}");
+    assert!(
+        output.contains("←→ category"),
+        "picker hint rendered: {output:?}"
     );
 }

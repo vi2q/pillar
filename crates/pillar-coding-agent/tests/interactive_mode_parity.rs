@@ -179,6 +179,7 @@ fn make_mode(session: &Arc<AgentSession>) -> InteractiveMode {
             on_terminal_title: Some(Arc::new(|_| {})),
             on_terminal_progress: None,
             cwd_git_paths: None,
+            ..Default::default()
         },
     )
 }
@@ -932,4 +933,227 @@ fn model_select_app_action_opens_the_selector() {
     let actions = mode.handle_app_action("app.model.select");
     assert_eq!(actions, vec![ModeAction::EditorSlotChanged]);
     assert!(mode.has_active_selector());
+}
+
+// --- 2-column model picker (the `pi-model-picker` extension UX, `/m`) ---------
+
+/// `make_mode` with an agent directory (where the picker's recent-model
+/// history lives) and a terminal height.
+fn make_mode_with_agent_dir(session: &Arc<AgentSession>, agent_dir: std::path::PathBuf) -> InteractiveMode {
+    let _guard = THEME_LOCK.lock().expect("lock");
+    install_dark();
+    InteractiveMode::new(
+        Arc::clone(session),
+        TranscriptSettings::default(),
+        Vec::new(),
+        InteractiveModeOptions {
+            tui_mode: Some(TuiMode::Regular),
+            clear_on_shrink: Some(false),
+            show_terminal_progress: Some(false),
+            version: Some("0.84.3".to_string()),
+            on_terminal_title: Some(Arc::new(|_| {})),
+            on_terminal_progress: None,
+            cwd_git_paths: None,
+            agent_dir: Some(agent_dir),
+            terminal_rows: None,
+        },
+    )
+}
+
+/// A scoped entry for an arbitrary provider (the fixture's default is
+/// `anthropic`).
+fn scoped_model_with_provider(
+    id: &str,
+    provider: &str,
+) -> pillar_coding_agent::core::model_mutation::ScopedModel {
+    let mut scoped = scoped_model(id);
+    scoped.model.provider = provider.to_string();
+    scoped
+}
+
+/// Write the picker's history file the way the `pi-model-picker` extension
+/// does (newest first).
+fn seed_recent(dir: &std::path::Path, entries: &[(&str, &str)]) {
+    let recent: Vec<serde_json::Value> = entries
+        .iter()
+        .map(|(provider, id)| serde_json::json!({ "provider": provider, "id": id }))
+        .collect();
+    let payload = serde_json::to_string_pretty(&serde_json::json!({ "recent": recent }))
+        .expect("history json");
+    std::fs::write(dir.join("model-picker-recent.json"), payload).expect("write history");
+}
+
+fn picker_agent_dir(label: &str) -> std::path::PathBuf {
+    static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let unique = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!(
+        "pillar-picker-{label}-{}-{unique}",
+        std::process::id()
+    ));
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
+/// The three scrollable rows of the picker (the up/down marker picks a model
+/// per row).
+fn picker_rows(mode: &InteractiveMode, width: usize) -> Vec<String> {
+    editor_slot_body(mode, width)
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn m_opens_the_two_column_picker_and_enter_reports_the_selection() {
+    let dir = picker_agent_dir("open");
+    // Newest first, like a pi install would leave it.
+    seed_recent(&dir, &[("anthropic", "claude-opus-5"), ("anthropic", "claude-sonnet-4-5")]);
+    let session = session_with_scoped_models(vec![
+        scoped_model("claude-sonnet-4-5"),
+        scoped_model("claude-opus-5"),
+    ]);
+    let mode = make_mode_with_agent_dir(&session, dir);
+
+    let actions = mode.handle_submit("/m");
+    assert_eq!(actions, vec![ModeAction::EditorSlotChanged]);
+    assert!(mode.has_active_selector());
+
+    let body = editor_slot_body(&mode, 80);
+    assert!(body.contains("←→ category"), "{body:?}");
+    assert!(body.contains("PROVIDERS"), "{body:?}");
+    assert!(body.contains("ctx 200,000"), "footer details: {body:?}");
+    assert!(body.contains('✓'), "the current model is marked: {body:?}");
+
+    // Newest first and RECENT selected: it is the first left-column row.
+    let rows = picker_rows(&mode, 80);
+    let recent_row = rows
+        .iter()
+        .find(|row| row.contains("RECENT"))
+        .unwrap_or_else(|| panic!("recent row in {rows:?}"));
+    assert!(recent_row.contains('›'), "recent is selected: {recent_row:?}");
+    assert!(recent_row.contains("claude-opus-5"), "{recent_row:?}");
+
+    // ↓ moves within the recent category, Enter selects.
+    assert_eq!(
+        mode.handle_selector_key("\u{1b}[B").expect("selector"),
+        Vec::new()
+    );
+    let actions = mode.handle_selector_key("\r").expect("selector");
+    assert_eq!(
+        actions,
+        vec![ModeAction::SelectModel {
+            provider: "anthropic".to_string(),
+            id: "claude-sonnet-4-5".to_string(),
+            persist: false,
+        }]
+    );
+}
+
+#[test]
+fn m_right_left_switch_categories_and_escape_cancels() {
+    // Two providers: without history the picker opens on the first one and
+    // →/← walk the categories.
+    let session = session_with_scoped_models(vec![
+        scoped_model("claude-sonnet-4-5"),
+        scoped_model_with_provider("gpt-5.6", "openai"),
+    ]);
+    let mode = make_mode_with_agent_dir(&session, picker_agent_dir("nav"));
+
+    mode.handle_submit("/m");
+    let body = editor_slot_body(&mode, 80);
+    assert!(!body.contains("RECENT"), "no history yet: {body:?}");
+    assert!(
+        body.lines().any(|line| line.contains("› Anthropic")),
+        "opens on the first provider category: {body:?}"
+    );
+
+    // → moves to the next provider category (both are registry providers).
+    assert_eq!(
+        mode.handle_selector_key("\u{1b}[C").expect("selector"),
+        Vec::new()
+    );
+    let body = editor_slot_body(&mode, 80);
+    assert!(
+        body.lines().any(|line| line.contains("› OpenAI")),
+        "second provider category selected: {body:?}"
+    );
+
+    // ← wraps back to the first category.
+    assert_eq!(
+        mode.handle_selector_key("\u{1b}[D").expect("selector"),
+        Vec::new()
+    );
+    let body = editor_slot_body(&mode, 80);
+    assert!(
+        body.lines().any(|line| line.contains("› Anthropic")),
+        "left wraps: {body:?}"
+    );
+
+    // Escape closes without switching.
+    let actions = mode.handle_selector_key("\u{1b}").expect("selector");
+    assert_eq!(actions, vec![ModeAction::EditorSlotChanged]);
+    assert!(!mode.has_active_selector());
+    assert_eq!(session.state().model.id, "claude-sonnet-4-5");
+}
+
+#[test]
+fn m_filters_the_left_column_by_provider_and_reports_no_match() {
+    let session = session_with_scoped_models(vec![
+        scoped_model("claude-sonnet-4-5"),
+        scoped_model("gpt-5.6-luna"),
+    ]);
+    let mode = make_mode_with_agent_dir(&session, picker_agent_dir("filter"));
+
+    // A provider filter that matches nothing reports an error instead of
+    // opening (upstream `No provider matching "…"`).
+    let actions = mode.handle_submit("/m nope");
+    assert!(actions.is_empty(), "{actions:?}");
+    assert!(!mode.has_active_selector());
+    let body = plain(&mut mode.transcript().lock().chat, 100);
+    assert!(body.contains("No provider matching \"nope\""), "{body:?}");
+}
+
+#[test]
+fn completing_a_picker_selection_records_the_recent_history() {
+    let dir = picker_agent_dir("recent");
+    let session = session_with_scoped_models(vec![
+        scoped_model("claude-sonnet-4-5"),
+        scoped_model("claude-opus-5"),
+    ]);
+    let mode = make_mode_with_agent_dir(&session, dir.clone());
+
+    // Complete a switch through the shared path (what the pump does when the
+    // executor reports back).
+    let actions = mode.complete_model_selection("anthropic", "claude-opus-5", false, None);
+    assert_eq!(actions, Vec::new(), "no selector was open");
+    let history = std::fs::read_to_string(dir.join("model-picker-recent.json")).expect("history");
+    assert!(history.contains("claude-opus-5"), "{history}");
+
+    // `/m` now opens on RECENT with that model.
+    mode.handle_submit("/m");
+    let body = editor_slot_body(&mode, 80);
+    assert!(body.contains("› RECENT"), "{body:?}");
+    assert!(body.contains("anthropic/claude-opus-5"), "{body:?}");
+
+    // A failed switch is not recorded.
+    mode.handle_selector_key("\u{1b}").expect("selector");
+    mode.complete_model_selection(
+        "anthropic",
+        "claude-haiku-4-5",
+        false,
+        Some("No API key for anthropic/claude-haiku-4-5".to_string()),
+    );
+    let history = std::fs::read_to_string(dir.join("model-picker-recent.json")).expect("history");
+    assert!(!history.contains("claude-haiku-4-5"), "{history}");
+}
+
+#[test]
+fn cycling_a_model_records_it_and_refreshes_the_footer() {
+    let dir = picker_agent_dir("cycle");
+    let session = session_with_scoped_models(vec![scoped_model("claude-sonnet-4-5")]);
+    let mode = make_mode_with_agent_dir(&session, dir.clone());
+
+    mode.complete_model_cycle("anthropic", "claude-opus-5");
+    let history = std::fs::read_to_string(dir.join("model-picker-recent.json")).expect("history");
+    assert!(history.contains("claude-opus-5"), "{history}");
 }
