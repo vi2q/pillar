@@ -643,6 +643,15 @@ fn dispatch_sequence(
     keybindings: &KeybindingsManager,
     data: &str,
 ) -> Vec<ModeAction> {
+    // Kitty flag 2 (report event types) makes a kitty-protocol terminal send
+    // a release event for every press. Upstream drops those inside
+    // `TUI.handleInput` unless the focused component asked for them
+    // (`wantsKeyRelease`), so the host-side app keybindings and the selectors
+    // must not see them either — otherwise every action runs twice. The TUI's
+    // focused dispatch applies that rule, so releases go there directly.
+    if pillar_tui::tui::is_key_release(data) {
+        return dispatch_to_editor(screen, mode, data);
+    }
     // A selector owns the keyboard while it is open (upstream it is the
     // focused component); the host app keybindings do not apply. The port must
     // request the repaint that the TUI's focused dispatch would have made

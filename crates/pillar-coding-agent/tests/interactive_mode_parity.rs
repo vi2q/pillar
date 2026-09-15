@@ -127,7 +127,12 @@ fn session_with_scoped_models(
         },
         Arc::clone(&settings_manager),
     )));
-    let dir = std::env::temp_dir().join(format!("pillar-mode-runtime-{}", std::process::id()));
+    // A unique directory per session: the tests in this binary run in parallel
+    // and a shared `models.json` races a truncating write against another
+    // test's read (the loader then reports "EOF while parsing a value").
+    static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let unique = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("pillar-mode-runtime-{}-{unique}", std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
     let models_path = dir.join("models.json");
     // A valid empty config: `{}` would leave a `ModelRuntime::get_error()`

@@ -214,3 +214,40 @@ fn matches_legacy_and_ctrl_keys() {
     assert!(!matches_key("\x1b[A", "down"));
     assert!(!matches_key("x", "ctrl+x"));
 }
+
+/// Kitty-protocol arrows carry a modifier field and, with flag 2, an event
+/// type (`CSI 1;1:1B`) — that is what Ghostty/kitty send once the protocol is
+/// negotiated. They must match the plain arrow bindings like upstream's
+/// `arrowMatch` does.
+#[test]
+fn kitty_protocol_arrows_match_the_arrow_bindings() {
+    for (sequence, binding) in [
+        ("\u{1b}[1;1B", "down"),
+        ("\u{1b}[1;1:1B", "down"),
+        ("\u{1b}[1;1A", "up"),
+        ("\u{1b}[1;1:1A", "up"),
+        ("\u{1b}[1;1C", "right"),
+        ("\u{1b}[1;1:1C", "right"),
+        ("\u{1b}[1;1D", "left"),
+        ("\u{1b}[1;1:1D", "left"),
+        ("\u{1b}[1;1H", "home"),
+        ("\u{1b}[1;1:1F", "end"),
+        ("\u{1b}[5;1:1~", "pageUp"),
+        ("\u{1b}[6;1:1~", "pageDown"),
+    ] {
+        assert!(
+            matches_key(sequence, binding),
+            "{sequence:?} should match {binding}"
+        );
+    }
+
+    // Modifiers still select only the modified binding.
+    assert!(matches_key("\u{1b}[1;2:1B", "shift+down"));
+    assert!(!matches_key("\u{1b}[1;2:1B", "down"));
+
+    // A release event parses as the key (the host filters it with
+    // `is_key_release` before any action runs).
+    assert!(matches_key("\u{1b}[1;1:3B", "down"));
+    assert!(pillar_tui::tui::is_key_release("\u{1b}[1;1:3B"));
+    assert!(!pillar_tui::tui::is_key_release("\u{1b}[1;1:1B"));
+}

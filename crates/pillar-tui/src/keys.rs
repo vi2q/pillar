@@ -298,31 +298,38 @@ fn parse_kitty_sequence(data: &str) -> Option<ParsedKittySequence> {
                 event_type: event,
             });
         }
-        // Arrow keys with modifier: \x1b[1;<mod>A/B/C/D or with :<event>
-        if let Some(rest) = rest.strip_suffix(['A', 'B', 'C', 'D']) {
-            let mut segments = rest.split(':');
-            let first = segments.next()?.to_string();
-            let event = parse_event_type(segments.next());
+        // Arrow keys with modifier: `\x1b[1;<mod>A/B/C/D`, optionally with
+        // the kitty event type (flag 2): `\x1b[1;<mod>:<event>A/B/C/D`
+        // (upstream the `arrowMatch` regex).
+        if let Some(arrow_char) = rest
+            .chars()
+            .last()
+            .filter(|c| matches!(c, 'A' | 'B' | 'C' | 'D'))
+        {
+            let body = &rest[..rest.len() - arrow_char.len_utf8()];
+            let (first, event_part) = match body.split_once(':') {
+                Some((first, event)) => (first, Some(event)),
+                None => (body, None),
+            };
             let mut kv = first.split(';');
-            let one = kv.next()?;
-            let arrow_char = rest.chars().last()?;
-            if one == "1" {
-                let mod_value = kv.next().and_then(|v| v.parse::<i32>().ok()).unwrap_or(1);
-                let codepoint = match arrow_char {
-                    'A' => ARROW_UP,
-                    'B' => ARROW_DOWN,
-                    'C' => ARROW_RIGHT,
-                    'D' => ARROW_LEFT,
-                    _ => return None,
-                };
-                return Some(ParsedKittySequence {
-                    codepoint,
-                    base_layout_key: None,
-                    modifier: (mod_value - 1).clamp(0, u8::MAX as i32) as u8,
-                    event_type: event,
-                });
+            // The modifier field is part of the sequence (upstream `;(\d+)`).
+            if kv.next() == Some("1") {
+                if let Some(mod_value) = kv.next().and_then(|v| v.parse::<i32>().ok()) {
+                    let codepoint = match arrow_char {
+                        'A' => ARROW_UP,
+                        'B' => ARROW_DOWN,
+                        'C' => ARROW_RIGHT,
+                        'D' => ARROW_LEFT,
+                        _ => return None,
+                    };
+                    return Some(ParsedKittySequence {
+                        codepoint,
+                        base_layout_key: None,
+                        modifier: (mod_value - 1).clamp(0, u8::MAX as i32) as u8,
+                        event_type: parse_event_type(event_part),
+                    });
+                }
             }
-            // Functional keys: \x1b[<num>~ or \x1b[<num>;<mod>~ (handled below)
         }
         if let Some(rest) = rest.strip_suffix('H').or_else(|| rest.strip_suffix('F')) {
             // Home/End with modifier: \x1b[1;<mod>H/F

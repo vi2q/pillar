@@ -318,7 +318,16 @@ struct Harness {
 }
 
 fn harness(chunks: Vec<String>, release: Option<Arc<dyn Fn() -> bool + Send + Sync>>) -> Harness {
-    let writes = Arc::new(Mutex::new(String::new()));
+    harness_with_writes(Arc::new(Mutex::new(String::new())), chunks, release)
+}
+
+/// [`harness`] with a caller-owned output buffer, so a release gate can watch
+/// the painted frames (the pump's writes land in the same `Arc`).
+fn harness_with_writes(
+    writes: Arc<Mutex<String>>,
+    chunks: Vec<String>,
+    release: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+) -> Harness {
     let started = Arc::new(AtomicBool::new(false));
     let stopped = Arc::new(AtomicBool::new(false));
     let chunks = Arc::new(Mutex::new(chunks));
@@ -365,18 +374,18 @@ fn rendered(writes: &Arc<Mutex<String>>) -> String {
 async fn typing_a_prompt_runs_it_and_quit_shuts_down() {
     install_dark();
     let session = session(echo_stream("pong"), "prompt");
-    // `/quit` is only released once the assistant message exists, so the
-    // prompt has been executed before the shutdown request.
-    let state = Arc::clone(&session);
+    // `/quit` is only released once both messages were *painted*: the session
+    // state can be ahead of the pump's event drain (the executor runs on its
+    // own task), so a state-based gate lets the shutdown win the race and the
+    // frames are never rendered.
+    let writes = Arc::new(Mutex::new(String::new()));
+    let gate = Arc::clone(&writes);
     let release: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || {
-        state.state().messages.iter().any(|message| {
-            matches!(
-                message,
-                pillar_agent::types::AgentMessage::Message(Message::Assistant(_))
-            )
-        })
+        let frame = strip_terminal_sequences(&gate.lock().unwrap());
+        frame.contains("hi") && frame.contains("pong")
     });
-    let mut harness = harness(
+    let mut harness = harness_with_writes(
+        writes,
         vec!["hi\r".to_string(), "/quit\r".to_string()],
         Some(release),
     );
@@ -453,14 +462,14 @@ async fn ctrl_d_on_an_empty_editor_shuts_down_without_prompting() {
 async fn bash_submission_executes_and_records_the_result() {
     install_dark();
     let session = session(echo_stream("pong"), "bash");
-    let state = Arc::clone(&session);
+    // Release `/quit` once the block was painted (see the prompt test above on
+    // why the gate watches frames instead of the session state).
+    let writes = Arc::new(Mutex::new(String::new()));
+    let gate = Arc::clone(&writes);
     let release: Arc<dyn Fn() -> bool + Send + Sync> =
-        Arc::new(move || {
-            state.state().messages.iter().any(|message| {
-                matches!(message, pillar_agent::types::AgentMessage::BashExecution(_))
-            })
-        });
-    let mut harness = harness(
+        Arc::new(move || strip_terminal_sequences(&gate.lock().unwrap()).contains("printf hello"));
+    let mut harness = harness_with_writes(
+        writes,
         vec!["!printf hello\r".to_string(), "/quit\r".to_string()],
         Some(release),
     );
@@ -633,7 +642,6 @@ async fn model_selector_switches_the_session_model() {
     );
 }
 
-
 /// A bare Escape reaches the mode: the terminal releases the buffered partial
 /// sequence once its disambiguation window passed (upstream the StdinBuffer's
 /// own timer), so `tui.select.cancel` closes the selector and the next command
@@ -688,5 +696,81 @@ async fn escape_cancels_the_selector() {
         session.state().model.id,
         "claude-sonnet-4-5",
         "the cancelled selector did not switch the model"
+    );
+}
+
+/// A kitty-protocol terminal (Ghostty, kitty, foot, …) answers the startup
+/// negotiation and then reports arrows as `CSI 1;1:1B` (press) plus
+/// `CSI 1;1:3B` (release). The selector must see the press and ignore the
+/// release — otherwise the highlight jumps two rows.
+#[tokio::test]
+async fn kitty_protocol_arrows_move_the_selector_once() {
+    install_dark();
+    let session = session_with_scoped_models(
+        echo_stream("pong"),
+        "kitty-arrows",
+        vec![
+            scoped_model("claude-sonnet-4-5"),
+            scoped_model("claude-opus-5"),
+            scoped_model("claude-haiku-4-5"),
+        ],
+    );
+    // The first chunk is the flags reply the terminal sends for pillar's
+    // `CSI >7u CSI ?u CSI c` query; after that the terminal is in kitty mode.
+    let mut harness = harness(
+        vec![
+            "\u{1b}[?7u".to_string(),
+            "/model\r".to_string(),
+            "\u{1b}[1;1:1B".to_string(), // down press
+            "\u{1b}[1;1:3B".to_string(), // down release
+        ],
+        None,
+    );
+    let chunks = Arc::clone(&harness.chunks);
+    let writes = Arc::clone(&harness.writes);
+    let state = Arc::clone(&session);
+    std::thread::spawn(move || {
+        for _ in 0..600 {
+            if strip_terminal_sequences(&writes.lock().unwrap()).contains("→ claude-opus-5") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        chunks.lock().unwrap().push("\r".to_string());
+        for _ in 0..600 {
+            if state.state().model.id == "claude-opus-5" {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+        chunks.lock().unwrap().push("/quit\r".to_string());
+    });
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        run_interactive(
+            Arc::clone(&session),
+            Box::new(std::mem::replace(
+                &mut harness.terminal,
+                ProcessTerminal::with_io(Box::new(pillar_tui::process_terminal::NullTerminalIo)),
+            )),
+            run_options(temp_dir("keybindings")),
+        ),
+    )
+    .await
+    .expect("run loop finished")
+    .expect("run loop ok");
+
+    assert_eq!(result, 0);
+    assert_eq!(
+        session.state().model.id,
+        "claude-opus-5",
+        "one row down: the release event must not move the highlight again"
+    );
+    let output = rendered(&harness.writes);
+    assert!(
+        output.contains("→ claude-opus-5"),
+        "the kitty-protocol arrow repainted the highlight: {output:?}"
     );
 }
