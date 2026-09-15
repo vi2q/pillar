@@ -49,7 +49,7 @@ Commands:
   %A% install <source> [-l]     Install extension source and add to settings
   %A% remove <source> [-l]      Remove extension source from settings
   %A% uninstall <source> [-l]   Alias for remove
-  %A% update [source|self|pi]   Update pi, extensions, or model catalogs
+  %A% update [source|self|pi]   Update %A%, extensions, or model catalogs
   %A% list                      List installed extensions from settings
   %A% config [-l]               Open TUI to enable/disable package resources (Tab switches scope)
   %A% auth <command>            Print credentials or check provider readiness

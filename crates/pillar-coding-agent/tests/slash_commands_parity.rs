@@ -66,7 +66,7 @@ const EXPECTED: &[(&str, &str, Option<&str>)] = &[
         "Reload keybindings, extensions, skills, prompts, themes, and context files",
         None,
     ),
-    ("quit", "Quit pi", None),
+    ("quit", "Quit pillar", None),
 ];
 
 #[test]

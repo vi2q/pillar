@@ -702,7 +702,7 @@ fn help_includes_extension_flags_section() {
         },
     )];
     let text = render_help(&flags);
-    assert!(text.contains("pi - AI coding assistant"));
+    assert!(text.contains("pillar - AI coding assistant"));
     assert!(text.contains("Extension CLI Flags:"));
     assert!(text.contains("--plan"));
     assert!(text.contains("Enable planning"));

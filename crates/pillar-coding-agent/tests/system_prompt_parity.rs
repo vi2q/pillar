@@ -72,7 +72,7 @@ fn uses_shell_specific_guidance_for_bash_and_powershell() {
 fn instructs_models_to_resolve_pi_docs_under_absolute_base_paths() {
     let prompt = build_system_prompt(&options());
     assert!(prompt.contains(
-        "- When reading pi docs or examples, resolve docs/... under Additional docs and examples/... under Examples, not the current working directory"
+        "- When reading pillar docs or examples, resolve docs/... under Additional docs and examples/... under Examples, not the current working directory"
     ));
     assert!(prompt.contains("environment variables (docs/environment-variables.md)"));
 }

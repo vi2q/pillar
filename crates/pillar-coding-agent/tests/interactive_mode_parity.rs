@@ -251,7 +251,7 @@ fn session_info_changes_the_terminal_title() {
     let titles = titles.lock().expect("titles");
     assert_eq!(
         titles.last().map(String::as_str),
-        Some("pi - my session - pillar-mode-cwd"),
+        Some("pillar - my session - pillar-mode-cwd"),
         "{titles:?}"
     );
 }

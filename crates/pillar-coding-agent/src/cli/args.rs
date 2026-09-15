@@ -2,15 +2,16 @@
 //! parsing and help display.
 //!
 //! divergence: upstream reads `APP_NAME` / `CONFIG_DIR_NAME` from
-//! `package.json` (`piConfig`) and colorizes help with chalk. The port keeps
-//! the pi-compatible identity constants ([`APP_NAME`] = "pi",
-//! [`CONFIG_DIR_NAME`] = ".pi") so sessions, settings, and env vars stay
-//! interoperable, and renders help as plain text.
+//! `package.json` (`piConfig`) and colorizes help with chalk. The port names
+//! itself `pillar` ([`APP_NAME`]) and reports its own version, but keeps the
+//! pi-compatible config identity ([`CONFIG_DIR_NAME`] = ".pi" and the `PI_*`
+//! environment variables) so existing sessions, settings, credentials, and
+//! extensions stay interoperable; help renders as plain text.
 
 use std::collections::BTreeMap;
 
 /// Binary/agent name (upstream `APP_NAME`).
-pub const APP_NAME: &str = "pi";
+pub const APP_NAME: &str = "pillar";
 
 /// Agent config directory environment variable (upstream `ENV_AGENT_DIR`).
 pub const ENV_AGENT_DIR: &str = "PI_CODING_AGENT_DIR";
@@ -19,9 +20,9 @@ pub const ENV_AGENT_DIR: &str = "PI_CODING_AGENT_DIR";
 pub const ENV_SESSION_DIR: &str = "PI_CODING_AGENT_SESSION_DIR";
 
 /// Version reported by `--version` (upstream `VERSION` from package.json).
-/// The port reports the pinned pi version so pi-compatible clients
-/// (version detection, update checks) keep working.
-pub const VERSION: &str = "0.84.3";
+/// The port reports its own version (upstream's is pinned in the port notes
+/// for parity work).
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Output mode (`--mode`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

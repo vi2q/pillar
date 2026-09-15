@@ -13,7 +13,10 @@ fn binary_version_prints_pinned_pi_version() {
         .output()
         .expect("run pillar");
     assert!(output.status.success());
-    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "0.84.3");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        env!("CARGO_PKG_VERSION")
+    );
 }
 
 #[test]
@@ -24,7 +27,7 @@ fn binary_help_prints_usage() {
         .expect("run pillar");
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.starts_with("pi - AI coding assistant"));
+    assert!(stdout.starts_with("pillar - AI coding assistant"));
     assert!(stdout.contains("Usage:"));
 }
 
