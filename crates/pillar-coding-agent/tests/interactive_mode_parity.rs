@@ -601,3 +601,36 @@ fn mount_focuses_the_editor_and_emits_the_cursor_marker() {
         .count();
     assert_eq!(markers, 1, "one cursor marker in the frame: {lines:?}");
 }
+
+/// Live bash blocks (upstream `handleBashCommand`'s UI half): the block
+/// renders while the command runs, streamed output lands on it, and a block
+/// created while the agent streams waits in the pending area until the next
+/// submission flushes it into the chat.
+#[test]
+fn bash_blocks_render_live_and_flush_from_the_pending_area() {
+    // `make_mode` installs the theme and holds THEME_LOCK itself.
+    let session = session();
+    let mode = make_mode(&session);
+
+    // Idle: the block goes straight into the chat.
+    mode.begin_bash("printf hello", false);
+    assert_eq!(mode.pending().lock().container.len(), 0);
+    assert_eq!(mode.transcript().lock().chat.len(), 1);
+    mode.append_bash_output("hello\n");
+    mode.complete_bash(Some(0), false, None, None);
+    let body = plain(&mut mode.transcript().lock().chat, 60);
+    assert!(body.contains("printf hello"), "{body:?}");
+    assert!(body.contains("hello"), "{body:?}");
+
+    // Streaming: the block waits in the pending area and moves to the chat
+    // when the next submission flushes it.
+    let mode = make_mode(&session);
+    mode.begin_bash_deferred("echo pending", false, true);
+    assert_eq!(mode.transcript().lock().chat.len(), 0);
+    assert_eq!(mode.pending().lock().container.len(), 1);
+    mode.flush_pending_bash_components();
+    assert_eq!(mode.pending().lock().container.len(), 0);
+    assert_eq!(mode.transcript().lock().chat.len(), 1);
+    let body = plain(&mut mode.transcript().lock().chat, 60);
+    assert!(body.contains("echo pending"), "{body:?}");
+}

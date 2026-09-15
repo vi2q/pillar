@@ -893,7 +893,11 @@ fn client_name_defaults_to_pillar_and_accepts_an_override() {
 
 #[test]
 fn referer_url_defaults_to_none_and_accepts_an_override() {
-    assert_eq!(referer_url_with(None), None, "pillar sends no referer by default");
+    assert_eq!(
+        referer_url_with(None),
+        None,
+        "pillar sends no referer by default"
+    );
     assert_eq!(referer_url_with(Some("")), None);
     assert_eq!(referer_url_with(Some("   ")), None);
     assert_eq!(
@@ -906,7 +910,11 @@ fn referer_url_defaults_to_none_and_accepts_an_override() {
 fn user_agent_uses_the_client_name() {
     assert_eq!(
         user_agent_for("pillar"),
-        format!("pillar ({} {})", std::env::consts::OS, std::env::consts::ARCH)
+        format!(
+            "pillar ({} {})",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        )
     );
     assert!(user_agent_for("pi").starts_with("pi ("));
 }

@@ -148,7 +148,12 @@ pub fn referer_url() -> Option<String> {
 
 /// The user agent for `client` (upstream `getPiUserAgent()`).
 pub fn user_agent_for(client: &str) -> String {
-    format!("{} ({} {})", client, std::env::consts::OS, std::env::consts::ARCH)
+    format!(
+        "{} ({} {})",
+        client,
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    )
 }
 
 /// Resolved user agent for provider requests (upstream `getPiUserAgent()`).

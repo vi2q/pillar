@@ -465,4 +465,15 @@ async fn bash_submission_executes_and_records_the_result() {
     assert_eq!(bash.command, "printf hello");
     assert_eq!(bash.output, "hello");
     assert_eq!(bash.exit_code, Some(0));
+
+    // The block is rendered live: command header plus captured output.
+    let output = rendered(&harness.writes);
+    assert!(
+        output.contains("printf hello"),
+        "the bash block shows the command: {output:?}"
+    );
+    assert!(
+        output.contains("hello"),
+        "the bash block shows the output: {output:?}"
+    );
 }

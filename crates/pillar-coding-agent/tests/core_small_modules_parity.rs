@@ -446,7 +446,11 @@ fn client_identity_overrides_the_pillar_protocol_values() {
         &Some("Pillar".to_string())
     );
 
-    let cloudflare = model("cloudflare-workers-ai", "kimi", "https://api.cloudflare.com");
+    let cloudflare = model(
+        "cloudflare-workers-ai",
+        "kimi",
+        "https://api.cloudflare.com",
+    );
     let merged =
         merge_provider_attribution_headers_with(&cloudflare, true, None, &identity, &[]).unwrap();
     assert_eq!(
@@ -481,8 +485,7 @@ fn empty_referer_url_omits_the_header() {
         referer_url: None,
     };
     let m = model("openrouter", "kimi", "https://openrouter.ai/api/v1");
-    let merged =
-        merge_provider_attribution_headers_with(&m, true, None, &identity, &[]).unwrap();
+    let merged = merge_provider_attribution_headers_with(&m, true, None, &identity, &[]).unwrap();
     assert!(!merged.contains_key("HTTP-Referer"), "{merged:?}");
     assert!(merged.contains_key("X-OpenRouter-Title"));
 }

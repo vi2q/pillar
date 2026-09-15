@@ -159,6 +159,8 @@ use crate::core::messages::{CodingAgentMessage, create_compaction_summary_messag
 use crate::core::resource_loader::GitPaths;
 use crate::core::session_entries::SessionEntry;
 use crate::core::settings_manager::DoubleEscapeAction;
+use crate::core::truncate::TruncationResult;
+use crate::modes::interactive::components::bash_execution::BashExecutionComponent;
 use crate::modes::interactive::components::footer::FooterComponent;
 use crate::modes::interactive::components::status_indicator::{
     CompactionStatusReason, RetryStatusIndicator, StatusIndicatorKind, compaction_status_indicator,
@@ -235,6 +237,12 @@ pub struct InteractiveMode {
     last_sigint_ms: AtomicU64,
     /// Upstream `lastEscapeTime` (milliseconds).
     last_escape_ms: AtomicU64,
+    /// Upstream `bashComponent`: the bash block currently running.
+    bash_component: std::sync::Mutex<Option<Shared<BashExecutionComponent>>>,
+    /// Upstream `pendingBashComponents`: blocks run while the agent streams,
+    /// shown in the pending area until the next submission flushes them into
+    /// the chat.
+    pending_bash_components: std::sync::Mutex<Vec<Shared<BashExecutionComponent>>>,
 }
 
 impl InteractiveMode {
@@ -281,6 +289,8 @@ impl InteractiveMode {
             dirty: AtomicBool::new(true),
             last_sigint_ms: AtomicU64::new(0),
             last_escape_ms: AtomicU64::new(0),
+            bash_component: std::sync::Mutex::new(None),
+            pending_bash_components: std::sync::Mutex::new(Vec::new()),
             session,
         }
     }
@@ -559,6 +569,13 @@ impl InteractiveMode {
                 self.transcript.lock().handle_event(event);
                 Vec::new()
             }
+            // Upstream's `bash_execution_update` case is a no-op because the
+            // `executeBash` chunk callback writes to the component directly;
+            // in the port the chunk arrives as an event.
+            AgentSessionEvent::BashExecutionUpdate { delta, .. } => {
+                self.append_bash_output(delta);
+                Vec::new()
+            }
             _ => Vec::new(),
         }
     }
@@ -727,7 +744,9 @@ impl InteractiveMode {
             }];
         }
 
-        // Normal message submission.
+        // Normal message submission: move any pending bash blocks into the
+        // chat first (upstream `flushPendingBashComponents`).
+        self.flush_pending_bash_components();
         self.editor.lock().add_to_history(text);
         vec![ModeAction::SubmitToLoop(text.to_string())]
     }
@@ -994,6 +1013,122 @@ impl InteractiveMode {
                     .show_status(&format!("Thinking level: {level}"));
             }
         }
+        self.mark_dirty();
+    }
+
+    /// Upstream `handleBashCommand`'s component setup: create the block (in
+    /// the pending area while the agent streams, in the chat otherwise) and
+    /// remember it so streamed chunks and the completion land on it.
+    pub fn begin_bash(&self, command: &str, exclude_from_context: bool) {
+        self.begin_bash_deferred(
+            command,
+            exclude_from_context,
+            self.session.is_streaming(),
+        );
+    }
+
+    /// [`begin_bash`] with the deferral decision supplied (upstream reads
+    /// `session.isStreaming` at the `handleBashCommand` call site).
+    pub fn begin_bash_deferred(
+        &self,
+        command: &str,
+        exclude_from_context: bool,
+        deferred: bool,
+    ) {
+        let component = Shared::new(BashExecutionComponent::new(
+            &theme(),
+            command,
+            exclude_from_context,
+        ));
+        if deferred {
+            self.pending
+                .lock()
+                .container
+                .add_child(Box::new(component.clone()));
+            self.pending_bash_components
+                .lock()
+                .expect("pending bash")
+                .push(component.clone());
+        } else {
+            self.transcript
+                .lock()
+                .chat
+                .add_child(Box::new(component.clone()));
+        }
+        *self.bash_component.lock().expect("bash component") = Some(component);
+        self.mark_dirty();
+    }
+
+    /// Upstream the `executeBash` chunk callback: append streamed output.
+    pub fn append_bash_output(&self, chunk: &str) {
+        let component = self
+            .bash_component
+            .lock()
+            .expect("bash component")
+            .clone();
+        let Some(component) = component else {
+            return;
+        };
+        component.lock().append_output(chunk);
+        self.mark_dirty();
+    }
+
+    /// Upstream `setComplete(...)` after `executeBash` returns (or in its
+    /// error path).
+    pub fn complete_bash(
+        &self,
+        exit_code: Option<i32>,
+        cancelled: bool,
+        truncation: Option<TruncationResult>,
+        full_output_path: Option<String>,
+    ) {
+        let component = self.bash_component.lock().expect("bash component").take();
+        if let Some(component) = component {
+            component.lock().set_complete(
+                exit_code,
+                cancelled,
+                truncation,
+                full_output_path,
+            );
+        }
+        // Upstream resets the `!` mode once the command finished
+        // (`isBashMode = false; updateEditorBorderColor()`).
+        self.bash_mode.store(false, Ordering::SeqCst);
+        self.update_editor_border_color();
+        self.mark_dirty();
+    }
+
+    /// Upstream `flushPendingBashComponents`: move the blocks that ran while
+    /// streaming into the chat.
+    ///
+    /// divergence: the port removes the child from the pending container
+    /// instead of relying on the next `updatePendingMessagesDisplay` clear
+    /// (upstream leaves it there until then, which renders it twice).
+    pub fn flush_pending_bash_components(&self) {
+        let pending = {
+            let mut guard = self
+                .pending_bash_components
+                .lock()
+                .expect("pending bash");
+            std::mem::take(&mut *guard)
+        };
+        if pending.is_empty() {
+            return;
+        }
+        let mut transcript = self.transcript.lock();
+        let mut pending_ui = self.pending.lock();
+        for component in pending {
+            let taken = crate::modes::interactive::transcript::take_shared_child(
+                &mut pending_ui.container,
+                &component,
+            );
+            match taken {
+                Some(child) => transcript.chat.add_child(child),
+                None => transcript.chat.add_child(Box::new(component)),
+            }
+        }
+        drop(pending_ui);
+        drop(transcript);
         self.mark_dirty();
     }
 

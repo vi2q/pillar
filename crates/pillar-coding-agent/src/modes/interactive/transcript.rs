@@ -216,6 +216,21 @@ impl<C: Focusable + Send> Focusable for FocusHandle<C> {
     }
 }
 
+/// Remove the child that is the same shared object as `target`
+/// (upstream `removeChild(component)`, which matches by identity).
+pub(crate) fn take_shared_child<C: Component + 'static>(
+    container: &mut Container,
+    target: &Shared<C>,
+) -> Option<Box<dyn Component>> {
+    let index = container.children_mut().iter_mut().position(|child| {
+        child
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<Shared<C>>())
+            .is_some_and(|candidate| Shared::ptr_eq(candidate, target))
+    })?;
+    container.remove_child(index)
+}
+
 /// Transcript-level knobs (upstream the settings-derived fields).
 #[derive(Debug, Clone)]
 pub struct TranscriptSettings {

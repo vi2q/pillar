@@ -41,6 +41,20 @@ use crate::modes::interactive::transcript::TranscriptSettings;
 /// the event loop; the port polls).
 pub const PUMP_INTERVAL_MS: u64 = 8;
 
+/// Compartments the executor reports back to the pump; every mode mutation
+/// stays on the pump thread.
+#[derive(Debug)]
+enum UiCommand {
+    /// A bash command finished (upstream the code after `await
+    /// session.executeBash(...)`).
+    BashComplete {
+        exit_code: Option<i32>,
+        cancelled: bool,
+        truncation: Option<crate::core::truncate::TruncationResult>,
+        full_output_path: Option<String>,
+    },
+}
+
 /// Options for [`run_interactive`].
 pub struct InteractiveRunOptions {
     pub mode: InteractiveModeOptions,
@@ -136,6 +150,7 @@ pub async fn run_interactive(
     }));
 
     let (action_tx, mut action_rx) = tokio::sync::mpsc::unbounded_channel::<ModeAction>();
+    let (ui_tx, ui_rx) = tokio::sync::mpsc::unbounded_channel::<UiCommand>();
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
     let pump_shutdown = Arc::new(AtomicBool::new(false));
 
@@ -160,6 +175,7 @@ pub async fn run_interactive(
             pump_keybindings,
             event_rx,
             pump_actions,
+            ui_rx,
             pump_stop,
             pump_title,
             pump_progress,
@@ -186,7 +202,7 @@ pub async fn run_interactive(
         let result = tokio::select! {
             biased;
             _ = shutdown_rx.changed() => break,
-            result = execute_action(&session, action) => result,
+            result = execute_action(&session, &ui_tx, action) => result,
         };
         if let Err(error) = result {
             mode.transcript().lock().show_error(&error);
@@ -217,7 +233,11 @@ pub async fn run_interactive_process(
 
 /// Run one [`ModeAction`] (upstream the awaits inside `handleEvent` and the
 /// submit handler).
-async fn execute_action(session: &AgentSession, action: ModeAction) -> Result<(), String> {
+async fn execute_action(
+    session: &AgentSession,
+    ui: &tokio::sync::mpsc::UnboundedSender<UiCommand>,
+    action: ModeAction,
+) -> Result<(), String> {
     match action {
         ModeAction::Prompt {
             text,
@@ -236,13 +256,30 @@ async fn execute_action(session: &AgentSession, action: ModeAction) -> Result<()
         ModeAction::Steer(text) => session.steer(&text, None).await,
         ModeAction::FollowUp(text) => session.follow_up(&text, None).await,
         ModeAction::Bash { command, excluded } => {
-            // divergence: the live bash component (upstream
-            // `BashExecutionComponent` in the pending/chat area) is not wired
-            // yet; the command runs and only failures are reported.
-            session
-                .execute_bash(&command, excluded, None)
-                .await
-                .map(|_| ())
+            // The block itself is created by the pump (`begin_bash`) before
+            // this runs; streamed output arrives as `bash_execution_update`
+            // events and the completion is reported back to the pump.
+            let result = session.execute_bash(&command, excluded, None).await;
+            let completion = match &result {
+                Ok(result) => UiCommand::BashComplete {
+                    exit_code: result.exit_code,
+                    cancelled: result.cancelled,
+                    truncation: result.truncation.clone(),
+                    full_output_path: result
+                        .full_output_path
+                        .as_ref()
+                        .map(|path| path.to_string_lossy().to_string()),
+                },
+                // Upstream `setComplete(undefined, false)` in the catch block.
+                Err(_) => UiCommand::BashComplete {
+                    exit_code: None,
+                    cancelled: false,
+                    truncation: None,
+                    full_output_path: None,
+                },
+            };
+            let _ = ui.send(completion);
+            result.map(|_| ())
         }
         ModeAction::Compact { instructions } => {
             session.compact(instructions.as_deref()).await.map(|_| ())
@@ -304,6 +341,7 @@ fn pump_loop(
     keybindings: Arc<KeybindingsManager>,
     mut events: tokio::sync::mpsc::UnboundedReceiver<AgentSessionEvent>,
     actions: tokio::sync::mpsc::UnboundedSender<ModeAction>,
+    mut ui_commands: tokio::sync::mpsc::UnboundedReceiver<UiCommand>,
     shutdown: Arc<AtomicBool>,
     pending_title: Arc<Mutex<Option<String>>>,
     pending_progress: Arc<Mutex<Option<bool>>>,
@@ -334,6 +372,18 @@ fn pump_loop(
             }
         }
 
+        // Executor reports (bash completion).
+        while let Ok(command) = ui_commands.try_recv() {
+            match command {
+                UiCommand::BashComplete {
+                    exit_code,
+                    cancelled,
+                    truncation,
+                    full_output_path,
+                } => mode.complete_bash(exit_code, cancelled, truncation, full_output_path),
+            }
+        }
+
         // Host-driven animations (retry countdown, status expiry).
         mode.tick();
 
@@ -344,6 +394,11 @@ fn pump_loop(
             for action in dispatch_input(&mut screen, &mode, &keybindings, &data) {
                 if matches!(action, ModeAction::Shutdown) {
                     requested_shutdown = true;
+                }
+                if let ModeAction::Bash { command, excluded } = &action {
+                    // Upstream creates the block inside `handleBashCommand`
+                    // before executing; the executor only runs the command.
+                    mode.begin_bash(command, *excluded);
                 }
                 if actions.send(action).is_err() {
                     break;
