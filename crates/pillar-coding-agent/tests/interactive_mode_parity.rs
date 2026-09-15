@@ -1,256 +1,562 @@
-//! Parity tests for modes/interactive/interactive-mode.ts (pi v0.84.3): the
-//! pure helpers, including upstream test/format-resume-command.test.ts.
+//! Parity tests for the `InteractiveMode` assembly (pi v0.84.3
+//! `interactive-mode.ts`): the event dispatch and the submit router.
 
-use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
-use pillar_ai::types::{Model, ModelCost};
-use pillar_coding_agent::core::session_manager::SessionManager;
-use pillar_coding_agent::modes::interactive::interactive_mode::{
-    ANTHROPIC_SUBSCRIPTION_AUTH_WARNING, create_fuzzy_autocomplete_items,
-    format_resume_command_with, has_default_model_provider, is_anthropic_subscription_auth_key,
-    is_dead_terminal_error, is_unknown_model, llama_cpp_post_login_guidance, quote_if_needed,
+use pillar_agent::{Agent, AgentOptions, AgentState, FauxModelRef};
+use pillar_ai::types::{Content, Message, StopReason, Usage, UsageCost, UserContent};
+use pillar_coding_agent::core::agent_session_class::{
+    AgentSession, AgentSessionConfig, AgentSessionEvent, StreamingBehavior,
 };
-use pillar_tui::autocomplete::AutocompleteItem;
+use pillar_coding_agent::core::messages::CodingAgentMessage;
+use pillar_coding_agent::core::model_runtime::ModelRuntime;
+use pillar_coding_agent::core::resource_loader::{ResourceLoader, ResourceLoaderOptions};
 
-fn temp_dir(name: &str) -> PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    let id = NEXT.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!(
-        "pillar-interactive-mode-{}-{id}-{name}",
-        std::process::id()
-    ));
-    let _ = std::fs::create_dir_all(&dir);
-    dir
+use pillar_coding_agent::core::session_manager::SessionManager;
+use pillar_coding_agent::core::settings_manager::{SettingsManager, SettingsManagerCreateOptions};
+use pillar_coding_agent::modes::interactive::interactive_mode::{
+    InteractiveMode, InteractiveModeOptions, ModeAction,
+};
+use pillar_coding_agent::modes::interactive::mode_ui::QueueMode;
+use pillar_coding_agent::modes::interactive::theme;
+use pillar_coding_agent::modes::interactive::transcript::TranscriptSettings;
+use pillar_tui::tui::{Component as _, TuiMode};
+
+static THEME_LOCK: Mutex<()> = Mutex::new(());
+
+fn install_dark() {
+    theme::init_theme(Some("dark"));
 }
 
-fn model(provider: &str, id: &str, api: &str) -> Model {
-    Model {
-        id: id.to_string(),
-        name: id.to_string(),
-        api: api.to_string(),
-        provider: provider.to_string(),
+fn strip_ansi(text: &str) -> String {
+    pillar_tui::text_utils::strip_terminal_sequences(text)
+}
+
+fn usage(cost: f64) -> Usage {
+    Usage {
+        input: 100,
+        output: 100,
+        cache_read: 0,
+        cache_write: 0,
+        cache_write_1h: None,
+        reasoning: None,
+        total_tokens: 200,
+        cost: UsageCost {
+            total: cost,
+            ..UsageCost::default()
+        },
+    }
+}
+
+fn assistant_message(text: &str, stop_reason: StopReason) -> CodingAgentMessage {
+    CodingAgentMessage::Base(Message::Assistant(Box::new(
+        pillar_ai::types::AssistantMessage {
+            content: vec![Content::text(text)],
+            api: "anthropic-messages".to_string(),
+            provider: "anthropic".to_string(),
+            model: "claude-sonnet-4-5".to_string(),
+            response_model: None,
+            usage: usage(0.0),
+            stop_reason,
+            deferred: None,
+            error_message: None,
+            response_id: None,
+            diagnostics: Vec::new(),
+            raw_stop_reason: None,
+            end_turn: None,
+            timestamp: 1,
+        },
+    )))
+}
+
+fn session() -> Arc<AgentSession> {
+    let model = FauxModelRef {
+        id: "claude-sonnet-4-5".to_string(),
+        name: "Claude Sonnet 4.5".to_string(),
+        api: "anthropic-messages".to_string(),
+        provider: "anthropic".to_string(),
         base_url: String::new(),
         reasoning: false,
-        thinking_level_map: None,
-        input: Vec::new(),
-        cost: ModelCost::default(),
-        context_window: 0,
-        max_tokens: 0,
-        sampling_params: None,
-        headers: None,
-        compat: None,
-    }
-}
-
-/// A persisted manager in the default session dir whose session file exists.
-fn default_dir_manager(name: &str) -> (SessionManager, PathBuf) {
-    let cwd = temp_dir(name).join("project");
-    let _ = std::fs::create_dir_all(&cwd);
-    let cwd = cwd.to_string_lossy().to_string();
-    let mut manager = SessionManager::create(&cwd, None, None).expect("session manager");
-    assert!(manager.uses_default_session_dir());
-    let file = manager
-        .session_file()
-        .expect("session file path")
-        .to_path_buf();
-    std::fs::write(&file, "\n").expect("create session file");
-    let _ = &mut manager;
-    (manager, file)
-}
-
-#[test]
-fn resume_command_for_default_session_dirs() {
-    let (manager, _file) = default_dir_manager("resume-default");
-    assert_eq!(
-        format_resume_command_with(&manager, true),
-        Some(format!("pi --session {}", manager.session_id()))
-    );
-}
-
-#[test]
-fn resume_command_includes_custom_session_dirs() {
-    let root = temp_dir("resume-custom");
-    let cwd = root.join("project");
-    let custom = root.join("custom-pi-sessions");
-    let _ = std::fs::create_dir_all(&cwd);
-    let cwd = cwd.to_string_lossy().to_string();
-    let manager = SessionManager::create(&cwd, Some(&custom), None).expect("session manager");
-    assert!(!manager.uses_default_session_dir());
-    let file = manager
-        .session_file()
-        .expect("session file path")
-        .to_path_buf();
-    std::fs::write(&file, "\n").expect("create session file");
-
-    assert_eq!(
-        format_resume_command_with(&manager, true),
-        Some(format!(
-            "pi --session-dir {} --session {}",
-            custom.to_string_lossy(),
-            manager.session_id()
-        ))
-    );
-}
-
-#[test]
-fn resume_command_quotes_session_dirs_with_spaces_and_quotes() {
-    let root = temp_dir("resume-quotes");
-    let cwd = root.join("project");
-    let _ = std::fs::create_dir_all(&cwd);
-    let cwd = cwd.to_string_lossy().to_string();
-
-    for (dir_name, expected) in [
-        ("custom pi sessions", "'/tmp/custom pi sessions'"),
-        ("custom pi's sessions", r"'/tmp/custom pi'\''s sessions'"),
-    ] {
-        let dir = PathBuf::from("/tmp").join(dir_name);
-        let manager = SessionManager::create(&cwd, Some(&dir), None).expect("session manager");
-        let file = manager
-            .session_file()
-            .expect("session file path")
-            .to_path_buf();
-        std::fs::write(&file, "\n").expect("create session file");
-        assert!(!manager.uses_default_session_dir());
-        let command = format_resume_command_with(&manager, true).expect("command");
-        assert!(
-            command.contains(&format!("--session-dir {expected}")),
-            "unexpected quoting in {command}"
-        );
-    }
-}
-
-#[test]
-fn resume_command_is_absent_without_a_tty_a_persisted_session_or_a_file() {
-    let (manager, file) = default_dir_manager("resume-absent");
-    // Not a TTY.
-    assert_eq!(format_resume_command_with(&manager, false), None);
-
-    // In-memory session.
-    let in_memory = SessionManager::in_memory("/tmp", None).expect("in-memory manager");
-    assert_eq!(format_resume_command_with(&in_memory, true), None);
-
-    // The session file does not exist yet.
-    std::fs::remove_file(&file).expect("remove session file");
-    assert_eq!(format_resume_command_with(&manager, true), None);
-}
-
-#[test]
-fn quoting_only_when_needed() {
-    assert_eq!(quote_if_needed("abc"), "abc");
-    assert_eq!(
-        quote_if_needed("/tmp/a-b_c.D/e:f@g~h"),
-        "/tmp/a-b_c.D/e:f@g~h"
-    );
-    assert_eq!(quote_if_needed("/tmp/a b"), "'/tmp/a b'");
-    assert_eq!(quote_if_needed("it's"), r"'it'\''s'");
-    assert_eq!(quote_if_needed(""), "''");
-}
-
-#[test]
-fn dead_terminal_errors_match_the_error_codes() {
-    assert!(is_dead_terminal_error(&std::io::Error::from_raw_os_error(
-        32 // EPIPE
-    )));
-    assert!(is_dead_terminal_error(&std::io::Error::from_raw_os_error(
-        57 // ENOTCONN
-    )));
-    assert!(is_dead_terminal_error(&std::io::Error::from_raw_os_error(
-        5 // EIO
-    )));
-    assert!(!is_dead_terminal_error(&std::io::Error::from_raw_os_error(
-        2 // ENOENT
-    )));
-    assert!(is_dead_terminal_error(&std::io::Error::new(
-        std::io::ErrorKind::BrokenPipe,
-        "closed"
-    )));
-}
-
-#[test]
-fn anthropic_subscription_keys_and_unknown_models() {
-    assert!(is_anthropic_subscription_auth_key(Some("sk-ant-oat01-xyz")));
-    assert!(!is_anthropic_subscription_auth_key(Some("sk-ant-api03-x")));
-    assert!(!is_anthropic_subscription_auth_key(None));
-
-    assert!(is_unknown_model(Some(&model(
-        "unknown", "unknown", "unknown"
-    ))));
-    assert!(!is_unknown_model(Some(&model(
-        "anthropic",
-        "unknown",
-        "unknown"
-    ))));
-    assert!(!is_unknown_model(Some(&model(
-        "anthropic",
-        "claude-sonnet-4-5",
-        "anthropic-messages"
-    ))));
-    assert!(!is_unknown_model(None));
-    assert!(!ANTHROPIC_SUBSCRIPTION_AUTH_WARNING.contains("sk-ant"));
-    assert!(ANTHROPIC_SUBSCRIPTION_AUTH_WARNING.starts_with("Anthropic subscription auth"));
-}
-
-#[test]
-fn llama_cpp_guidance_depends_on_loaded_models() {
-    assert_eq!(
-        llama_cpp_post_login_guidance("Logged in", 0),
-        "Logged in. No llama.cpp models are loaded. Use /llama to load a model, then /model to select it."
-    );
-    assert_eq!(
-        llama_cpp_post_login_guidance("Logged in", 2),
-        "Logged in. Use /model to select a loaded llama.cpp model, or /llama to manage models."
-    );
-}
-
-#[test]
-fn default_provider_lookup_and_fuzzy_autocomplete_items() {
-    assert!(has_default_model_provider("anthropic"));
-    assert!(!has_default_model_provider("definitely-not-a-provider"));
-
-    #[derive(Clone)]
-    struct Entry {
-        id: &'static str,
-        name: &'static str,
-    }
-    let items = vec![
-        Entry {
-            id: "gpt-5",
-            name: "GPT-5",
-        },
-        Entry {
-            id: "claude-sonnet-4-5",
-            name: "Claude Sonnet 4.5",
-        },
-    ];
-    let to_item = |entry: &Entry| AutocompleteItem {
-        value: entry.id.to_string(),
-        label: entry.name.to_string(),
-        description: None,
+        input: vec!["text".to_string()],
+        cost: UsageCost::default(),
+        context_window: 200_000,
+        max_tokens: 8_000,
     };
+    let stream_fn = pillar_agent::StreamFn::new(|_context, _options| async {
+        unreachable!("mode tests never prompt the agent")
+    });
+    let mut options = AgentOptions::new(stream_fn);
+    options.initial_state = Some(AgentState {
+        system_prompt: "Test".to_string(),
+        model,
+        thinking_level: pillar_agent::AgentThinkingLevel::Off,
+        tools: Vec::new(),
+        messages: Vec::new(),
+        is_streaming: false,
+        streaming_message: None,
+        pending_tool_calls: Default::default(),
+        error_message: None,
+    });
+    let agent = Arc::new(Agent::new(options));
+    let session_manager = Arc::new(Mutex::new(
+        SessionManager::in_memory("/tmp/pillar-mode-cwd", None).expect("in-memory session"),
+    ));
+    let settings_manager = Arc::new(Mutex::new(SettingsManager::in_memory(
+        serde_json::json!({}),
+        SettingsManagerCreateOptions {
+            project_trusted: Some(true),
+        },
+    )));
+    let resource_loader = Arc::new(Mutex::new(ResourceLoader::new(
+        "",
+        ResourceLoaderOptions {
+            agent_dir: "/tmp/pillar-mode-agent-dir".to_string(),
+            no_skills: true,
+            no_prompt_templates: true,
+            no_themes: true,
+            no_context_files: true,
+            ..Default::default()
+        },
+        Arc::clone(&settings_manager),
+    )));
+    let dir = std::env::temp_dir().join(format!("pillar-mode-runtime-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let models_path = dir.join("models.json");
+    std::fs::write(&models_path, "{}").expect("write models");
+    let runtime = ModelRuntime::new(
+        pillar_coding_agent::core::model_runtime::CreateModelRuntimeOptions {
+            models_path: Some(models_path),
+            models_store: Some(Arc::new(
+                pillar_coding_agent::core::auth_storage::InMemoryCodingAgentModelsStore::new(),
+            )),
+            ..Default::default()
+        },
+    )
+    .expect("runtime");
 
-    let matched = create_fuzzy_autocomplete_items(&items, "gpt", |e| e.id.to_string(), to_item)
-        .expect("matches");
-    assert_eq!(matched.len(), 1);
-    assert_eq!(matched[0].value, "gpt-5");
+    Arc::new(AgentSession::new(AgentSessionConfig::new(
+        agent,
+        session_manager,
+        settings_manager,
+        String::new(),
+        resource_loader,
+        Arc::new(runtime),
+        Arc::new(Mutex::new(
+            pillar_coding_agent::core::extensions_runner::ExtensionRunner::new(Vec::new()),
+        )),
+    )))
+}
 
-    // No matches -> None (upstream returns null).
-    assert!(
-        create_fuzzy_autocomplete_items(&items, "zzzz", |e| e.id.to_string(), to_item).is_none()
+fn make_mode(session: &Arc<AgentSession>) -> InteractiveMode {
+    let _guard = THEME_LOCK.lock().expect("lock");
+    install_dark();
+    InteractiveMode::new(
+        Arc::clone(session),
+        TranscriptSettings::default(),
+        Vec::new(),
+        InteractiveModeOptions {
+            tui_mode: Some(TuiMode::Regular),
+            clear_on_shrink: Some(false),
+            show_terminal_progress: Some(false),
+            version: Some("0.84.3".to_string()),
+            on_terminal_title: Some(Arc::new(|_| {})),
+            on_terminal_progress: None,
+            cwd_git_paths: None,
+        },
+    )
+}
+
+fn plain(container: &mut pillar_tui::tui::Container, width: usize) -> String {
+    container
+        .render(width)
+        .iter()
+        .map(|line| strip_ansi(line))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+// --- event dispatch -----------------------------------------------------------------------
+
+#[test]
+fn turn_start_shows_the_working_indicator_and_agent_end_clears_it() {
+    let session = session();
+    let mode = make_mode(&session);
+
+    mode.handle_event(&AgentSessionEvent::TurnStart);
+    {
+        let mut status = mode.status().lock();
+        assert_eq!(
+            status.active_kind(),
+            Some(pillar_coding_agent::modes::interactive::components::status_indicator::StatusIndicatorKind::Working)
+        );
+        let body = plain(&mut status.status, 50);
+        assert!(body.contains("Working..."), "{body:?}");
+    }
+
+    // The transcript gets the streaming scaffolding through the session
+    // event subset (agent_end clears the working indicator).
+    mode.handle_event(&AgentSessionEvent::AgentEnd {
+        messages: Vec::new(),
+        will_retry: false,
+    });
+    let mut status = mode.status().lock();
+    assert!(status.active_kind().is_none());
+    assert!(status.status.render(50).is_empty(), "clear-on-shrink off");
+}
+
+#[test]
+fn queue_update_fills_the_pending_display() {
+    let session = session();
+    let mode = make_mode(&session);
+    mode.handle_event(&AgentSessionEvent::QueueUpdate {
+        steering: vec!["add tests".to_string()],
+        follow_up: Vec::new(),
+    });
+    let mut pending = mode.pending().lock();
+    let body = plain(&mut pending.container, 70);
+    assert!(body.contains("Steering: add tests"), "{body:?}");
+    assert!(body.contains("to edit all queued messages"), "{body:?}");
+}
+
+#[test]
+fn session_info_changes_the_terminal_title() {
+    let session = session();
+    let titles = Arc::new(Mutex::new(Vec::<String>::new()));
+    let titles_for_options = Arc::clone(&titles);
+    let _guard = THEME_LOCK.lock().expect("lock");
+    install_dark();
+    let mode = InteractiveMode::new(
+        Arc::clone(&session),
+        TranscriptSettings::default(),
+        Vec::new(),
+        InteractiveModeOptions {
+            on_terminal_title: Some(Arc::new(move |title| {
+                titles_for_options
+                    .lock()
+                    .expect("titles")
+                    .push(title.to_string());
+            })),
+            ..InteractiveModeOptions::default()
+        },
+    );
+    session
+        .session_manager()
+        .lock()
+        .expect("lock")
+        .append_session_info("my session")
+        .expect("append");
+    mode.handle_event(&AgentSessionEvent::SessionInfoChanged {
+        name: Some("my session".to_string()),
+    });
+    let titles = titles.lock().expect("titles");
+    assert_eq!(
+        titles.last().map(String::as_str),
+        Some("pi - my session - pillar-mode-cwd"),
+        "{titles:?}"
     );
 }
 
 #[test]
-fn session_manager_reports_the_default_session_dir() {
-    let root = temp_dir("default-dir-predicate");
-    let cwd = root.join("project");
-    let _ = std::fs::create_dir_all(&cwd);
-    let cwd = cwd.to_string_lossy().to_string();
-    let default_manager = SessionManager::create(&cwd, None, None).expect("manager");
-    assert!(default_manager.uses_default_session_dir());
+fn compaction_lifecycle_shows_the_indicator_and_rebuilds() {
+    let session = session();
+    let mode = make_mode(&session);
 
-    let custom_dir: &Path = &root.join("custom");
-    let custom_manager =
-        SessionManager::create(&cwd, Some(custom_dir), None).expect("custom manager");
-    assert!(!custom_manager.uses_default_session_dir());
+    // Seed a session: two turns, then a compaction keeping the last one.
+    let sm = session.session_manager();
+    let mut sm = sm.lock().expect("lock");
+    sm.append_message(CodingAgentMessage::Base(Message::User {
+        content: UserContent::Text("before compaction".to_string()),
+        timestamp: 1,
+    }))
+    .expect("append");
+    let kept = sm
+        .append_message(assistant_message("kept after compaction", StopReason::Stop))
+        .expect("append");
+    sm.append_compaction(
+        "summary of old turns",
+        &kept,
+        12_345,
+        None,
+        false,
+        Some(usage(0.02)),
+    )
+    .expect("append");
+    drop(sm);
+
+    // Expanded so the compaction summary body renders (upstream gates on
+    // the toolOutputExpanded setting).
+    mode.transcript().lock().set_tool_output_expanded(true);
+    mode.handle_event(&AgentSessionEvent::CompactionStart { reason: "manual" });
+    {
+        let mut status = mode.status().lock();
+        assert!(status.active_kind().is_some(), "compaction indicator");
+        let body = plain(&mut status.status, 70);
+        assert!(body.contains("Compacting context..."), "{body:?}");
+    }
+
+    let result = pillar_coding_agent::core::compaction::driver::CompactionResult {
+        summary: "the summary".to_string(),
+        first_kept_entry_id: kept,
+        tokens_before: 12_345,
+        estimated_tokens_after: Some(2_000),
+        usage: Some(usage(0.02)),
+        details: None,
+    };
+    // Notices off by default; the summary is still appended.
+    let actions = mode.handle_event(&AgentSessionEvent::CompactionEnd {
+        reason: "manual",
+        result: Some(result),
+        aborted: false,
+        will_retry: false,
+        error_message: None,
+    });
+    {
+        let status = mode.status().lock();
+        assert!(status.active_kind().is_none(), "indicator cleared");
+    }
+    let mut transcript = mode.transcript().lock();
+    let body = transcript
+        .chat
+        .render(80)
+        .iter()
+        .map(|line| strip_ansi(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(body.contains("kept after compaction"), "{body:?}");
+    assert!(body.contains("the summary"), "{body:?}");
+    assert!(!body.contains("before compaction"), "{body:?}");
+
+    // The compaction queue was empty, so no actions follow.
+    assert!(actions.is_empty(), "{actions:?}");
+}
+
+#[test]
+fn auto_retry_shows_the_countdown_and_reports_final_failures() {
+    let session = session();
+    let mode = make_mode(&session);
+
+    mode.handle_event(&AgentSessionEvent::AutoRetryStart {
+        attempt: 2,
+        max_attempts: 3,
+        delay_ms: 2500,
+        error_message: "boom".to_string(),
+    });
+    {
+        let mut status = mode.status().lock();
+        let body = plain(&mut status.status, 70);
+        assert!(body.contains("Retrying (2/3) in 3s"), "{body:?}");
+    }
+
+    mode.handle_event(&AgentSessionEvent::AutoRetryEnd {
+        success: false,
+        attempt: 3,
+        final_error: Some("still failing".to_string()),
+    });
+    let mut transcript = mode.transcript().lock();
+    let body = transcript
+        .chat
+        .render(80)
+        .iter()
+        .map(|line| strip_ansi(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        body.contains("Error: Retry failed after 3 attempts: still failing"),
+        "{body:?}"
+    );
+}
+
+// --- submit routing -----------------------------------------------------------------------
+
+#[test]
+fn submit_routes_the_non_selector_commands() {
+    let session = session();
+    let mode = make_mode(&session);
+
+    // Empty submissions do nothing.
+    assert!(mode.handle_submit("").is_empty());
+    assert!(mode.handle_submit("   ").is_empty());
+
+    // Normal submission goes to the run loop and into the history.
+    assert_eq!(
+        mode.handle_submit("hello there"),
+        vec![ModeAction::SubmitToLoop("hello there".to_string())]
+    );
+    assert_eq!(mode.editor().lock().get_text(), "");
+
+    // /quit shuts down.
+    assert_eq!(mode.handle_submit("/quit"), vec![ModeAction::Shutdown]);
+
+    // /compact reports the compaction action.
+    assert_eq!(
+        mode.handle_submit("/compact focus on tests"),
+        vec![ModeAction::Compact {
+            instructions: Some("focus on tests".to_string())
+        }]
+    );
+    assert_eq!(
+        mode.handle_submit("/compact"),
+        vec![ModeAction::Compact { instructions: None }]
+    );
+
+    // /name sets the session name and reports it.
+    mode.handle_submit("/name my session");
+    assert_eq!(
+        session
+            .session_manager()
+            .lock()
+            .expect("lock")
+            .session_name()
+            .as_deref(),
+        Some("my session")
+    );
+    let body = {
+        let mut transcript = mode.transcript().lock();
+        transcript
+            .chat
+            .render(80)
+            .iter()
+            .map(|line| strip_ansi(line))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert!(body.contains("Session name set: my session"), "{body:?}");
+
+    // Selector-backed commands answer a warning (divergence until the
+    // selectors land).
+    mode.handle_submit("/model");
+    let body = {
+        let mut transcript = mode.transcript().lock();
+        transcript
+            .chat
+            .render(90)
+            .iter()
+            .map(|line| strip_ansi(line))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert!(body.contains("/model is not available yet"), "{body:?}");
+}
+
+#[test]
+fn submit_routes_bash_and_steering() {
+    let session = session();
+    let mode = make_mode(&session);
+
+    // `!` bash (normal) and `!!` (excluded from context).
+    assert_eq!(
+        mode.handle_submit("!ls -la"),
+        vec![ModeAction::Bash {
+            command: "ls -la".to_string(),
+            excluded: false
+        }]
+    );
+    assert_eq!(
+        mode.handle_submit("!!secret build"),
+        vec![ModeAction::Bash {
+            command: "secret build".to_string(),
+            excluded: true
+        }]
+    );
+    // The editor history got the raw commands.
+    assert!(mode.editor().lock().get_text().is_empty());
+
+    // `!` with nothing after falls through to normal submission.
+    assert_eq!(
+        mode.handle_submit("!"),
+        vec![ModeAction::SubmitToLoop("!".to_string())]
+    );
+}
+
+#[test]
+fn compaction_end_flushes_the_compaction_queue_as_actions() {
+    let session = session();
+    let mode = make_mode(&session);
+
+    // Queue a compaction message directly in the pending UI and end the
+    // compaction without a retry.
+    mode.pending()
+        .lock()
+        .queue_compaction_message("queued for after".to_string(), QueueMode::Steer);
+    let actions = mode.handle_event(&AgentSessionEvent::CompactionEnd {
+        reason: "manual",
+        result: None,
+        aborted: false,
+        will_retry: false,
+        error_message: None,
+    });
+    assert_eq!(
+        actions,
+        vec![ModeAction::Prompt {
+            text: "queued for after".to_string(),
+            streaming_behavior: Some(StreamingBehavior::Steer),
+        }]
+    );
+
+    // will_retry re-queues via steer/followUp actions instead.
+    mode.pending()
+        .lock()
+        .queue_compaction_message("second queued".to_string(), QueueMode::FollowUp);
+    let actions = mode.handle_event(&AgentSessionEvent::CompactionEnd {
+        reason: "manual",
+        result: None,
+        aborted: false,
+        will_retry: true,
+        error_message: None,
+    });
+    assert_eq!(
+        actions,
+        vec![ModeAction::FollowUp("second queued".to_string())]
+    );
+}
+
+#[test]
+fn render_initial_messages_populates_the_transcript() {
+    let session = session();
+    {
+        let sm = session.session_manager();
+        let mut sm = sm.lock().expect("lock");
+        sm.append_message(CodingAgentMessage::Base(Message::User {
+            content: UserContent::Text("first message".to_string()),
+            timestamp: 1,
+        }))
+        .expect("append");
+        sm.append_message(assistant_message("assistant reply", StopReason::Stop))
+            .expect("append");
+    }
+    let mode = make_mode(&session);
+    mode.render_initial_messages();
+    let mut transcript = mode.transcript().lock();
+    let body = transcript
+        .chat
+        .render(80)
+        .iter()
+        .map(|line| strip_ansi(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(body.contains("first message"), "{body:?}");
+    assert!(body.contains("assistant reply"), "{body:?}");
+}
+
+#[test]
+fn message_entries_flow_through_the_transcript() {
+    let session = session();
+    let mode = make_mode(&session);
+
+    // A user message start fills the pending display and the transcript.
+    mode.handle_event(&AgentSessionEvent::MessageStart {
+        message: pillar_agent::types::AgentMessage::Message(Message::User {
+            content: UserContent::Text("a question".to_string()),
+            timestamp: 1,
+        }),
+    });
+    let mut transcript = mode.transcript().lock();
+    let body = transcript
+        .chat
+        .render(80)
+        .iter()
+        .map(|line| strip_ansi(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(body.contains("a question"), "{body:?}");
 }

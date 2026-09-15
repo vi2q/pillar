@@ -921,3 +921,13 @@ fn tool_result_to_render_result(
         is_error: false,
     }
 }
+
+impl Component for InteractiveTranscript {
+    fn render(&mut self, width: usize) -> Vec<String> {
+        self.chat.render(width)
+    }
+
+    fn invalidate(&mut self) {
+        self.chat.invalidate();
+    }
+}

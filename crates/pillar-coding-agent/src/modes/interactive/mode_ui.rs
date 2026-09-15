@@ -12,12 +12,12 @@
 //! host-driven and omitted.
 
 use pillar_tui::components::{Spacer, Text, TruncatedText};
-use pillar_tui::tui::{Container, TuiMode};
+use pillar_tui::tui::{Component, Container, TuiMode};
 
 use crate::core::extensions_types::WorkingIndicatorOptions;
 use crate::modes::interactive::components::keybinding_hints::key_display_text;
 use crate::modes::interactive::components::status_indicator::{
-    IdleStatus, StatusIndicator, StatusIndicatorKind, loader_indicator_options,
+    IdleStatus, RetryStatusIndicator, StatusIndicator, StatusIndicatorKind,
     working_status_indicator,
 };
 use crate::modes::interactive::theme::theme;
@@ -37,14 +37,53 @@ pub enum QueueMode {
 /// `activeStatusIndicator` / `statusContainer` fields and methods).
 pub struct StatusUi {
     pub status: Container,
-    active: Option<Shared<StatusIndicator>>,
+    active: Option<ActiveIndicator>,
     tui_mode: TuiMode,
     clear_on_shrink: bool,
     /// Upstream `workingVisible`.
-    working_visible: bool,
+    pub working_visible: bool,
     /// Upstream `workingMessage` / `workingIndicatorOptions`.
     working_message: Option<String>,
     working_indicator_options: Option<WorkingIndicatorOptions>,
+}
+
+/// The active indicator (upstream the `StatusIndicator` base class with
+/// the retry subclass carrying the countdown).
+enum ActiveIndicator {
+    Status(Shared<StatusIndicator>),
+    Retry(Shared<RetryStatusIndicator>),
+}
+
+impl ActiveIndicator {
+    fn kind(&self) -> StatusIndicatorKind {
+        match self {
+            ActiveIndicator::Status(shared) => shared.lock().kind(),
+            ActiveIndicator::Retry(shared) => shared.lock().indicator().kind(),
+        }
+    }
+
+    fn dispose(&self) {
+        match self {
+            ActiveIndicator::Status(shared) => shared.lock().dispose(),
+            ActiveIndicator::Retry(shared) => shared.lock().dispose(),
+        }
+    }
+
+    /// Drive the loader/countdown (host pump). `true` means "changed".
+    fn tick(&self) -> bool {
+        match self {
+            ActiveIndicator::Status(shared) => shared.lock().tick(),
+            ActiveIndicator::Retry(shared) => shared.lock().tick(),
+        }
+    }
+
+    /// The plain indicator for working-message updates.
+    fn as_status(&self) -> Option<&Shared<StatusIndicator>> {
+        match self {
+            ActiveIndicator::Status(shared) => Some(shared),
+            ActiveIndicator::Retry(_) => None,
+        }
+    }
 }
 
 impl StatusUi {
@@ -63,18 +102,30 @@ impl StatusUi {
     /// The active indicator kind, if any (upstream
     /// `activeStatusIndicator?.kind`).
     pub fn active_kind(&self) -> Option<StatusIndicatorKind> {
-        self.active.as_ref().map(|shared| shared.lock().kind())
+        self.active.as_ref().map(ActiveIndicator::kind)
     }
 
-    /// Upstream `showStatusIndicator`.
+    /// Upstream `showStatusIndicator` (any `StatusIndicator` subclass).
     pub fn show_status_indicator(&mut self, indicator: StatusIndicator) {
-        if let Some(active) = &self.active {
-            active.lock().dispose();
+        self.install(ActiveIndicator::Status(Shared::new(indicator)));
+    }
+
+    /// Upstream `showStatusIndicator(new RetryStatusIndicator(...))`.
+    pub fn show_retry_indicator(&mut self, indicator: RetryStatusIndicator) {
+        self.install(ActiveIndicator::Retry(Shared::new(indicator)));
+    }
+
+    fn install(&mut self, active: ActiveIndicator) {
+        if let Some(previous) = &self.active {
+            previous.dispose();
         }
-        let shared = Shared::new(indicator);
-        self.active = Some(shared.clone());
+        let child: Box<dyn Component> = match &active {
+            ActiveIndicator::Status(shared) => Box::new(shared.clone()),
+            ActiveIndicator::Retry(shared) => Box::new(shared.clone()),
+        };
+        self.active = Some(active);
         self.status.clear();
-        self.status.add_child(Box::new(shared));
+        self.status.add_child(child);
     }
 
     /// Upstream `clearStatusIndicator`.
@@ -86,7 +137,7 @@ impl StatusUi {
         }
         let had_active = self.active.is_some();
         if let Some(active) = &self.active {
-            active.lock().dispose();
+            active.dispose();
         }
         self.active = None;
         self.status.clear();
@@ -123,11 +174,11 @@ impl StatusUi {
     pub fn set_working_indicator(&mut self, options: Option<WorkingIndicatorOptions>) {
         self.working_indicator_options = options.clone();
         if self.active_kind() == Some(StatusIndicatorKind::Working) {
-            if let Some(active) = &self.active {
+            if let Some(active) = self.active.as_ref().and_then(ActiveIndicator::as_status) {
                 active
                     .lock()
                     .loader_mut()
-                    .set_indicator(options.map(loader_indicator_options));
+                    .set_indicator(options.map(crate::modes::interactive::components::status_indicator::loader_indicator_options));
             }
         }
     }
@@ -137,7 +188,7 @@ impl StatusUi {
     pub fn set_working_message(&mut self, message: Option<String>) {
         self.working_message = message;
         if self.active_kind() == Some(StatusIndicatorKind::Working) {
-            if let Some(active) = &self.active {
+            if let Some(active) = self.active.as_ref().and_then(ActiveIndicator::as_status) {
                 let message = self
                     .working_message
                     .clone()
@@ -147,11 +198,11 @@ impl StatusUi {
         }
     }
 
-    /// Drive the active loader (host pump; upstream ticks inside the
-    /// indicator's own interval).
+    /// Drive the active loader/countdown (host pump; upstream ticks inside
+    /// the indicator's own interval).
     pub fn tick(&mut self) -> bool {
         match &self.active {
-            Some(active) => active.lock().tick(),
+            Some(active) => active.tick(),
             None => false,
         }
     }
@@ -321,5 +372,25 @@ impl InteractiveTranscript {
         let last_is_text = children_last_is_tracked_text(self, len - 1);
         let second_last_is_spacer = children_second_last_is_tracked_spacer(self, len - 2);
         last_is_text && second_last_is_spacer
+    }
+}
+
+impl Component for StatusUi {
+    fn render(&mut self, width: usize) -> Vec<String> {
+        self.status.render(width)
+    }
+
+    fn invalidate(&mut self) {
+        self.status.invalidate();
+    }
+}
+
+impl Component for PendingMessagesUi {
+    fn render(&mut self, width: usize) -> Vec<String> {
+        self.container.render(width)
+    }
+
+    fn invalidate(&mut self) {
+        self.container.invalidate();
     }
 }
