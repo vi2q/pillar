@@ -2,6 +2,8 @@
 
 This document preserves the repository guidance formerly kept in `AGENTS.md`. The short `AGENTS.md` is intentionally non-binding; use this document and the documents under `docs/rules/` as optional project guidance when relevant.
 
+Current state of the port (what works, what remains, how to verify, known pitfalls): [HANDOFF.md](HANDOFF.md).
+
 ## Project
 
 pillar is a Rust port of pi v0.84.3 with a Luau extension runtime on luaur v0.1.8. Upstream revisions are pinned in [docs/rules/06-upstream-sync.md](../docs/rules/06-upstream-sync.md). The rules docs under `docs/rules/` are optional reference material.

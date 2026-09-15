@@ -161,12 +161,12 @@ use crate::core::session_entries::SessionEntry;
 use crate::core::settings_manager::DoubleEscapeAction;
 use crate::core::truncate::TruncationResult;
 use crate::modes::interactive::components::bash_execution::BashExecutionComponent;
-use crate::modes::interactive::components::thinking_selector::{
-    ThinkingSelectorComponent, ThinkingSelectorOutcome,
-};
 use crate::modes::interactive::components::footer::FooterComponent;
 use crate::modes::interactive::components::status_indicator::{
     CompactionStatusReason, RetryStatusIndicator, StatusIndicatorKind, compaction_status_indicator,
+};
+use crate::modes::interactive::components::thinking_selector::{
+    ThinkingSelectorComponent, ThinkingSelectorOutcome,
 };
 use crate::modes::interactive::mode_ui::{PendingMessagesUi, QueueMode, StatusUi};
 use crate::modes::interactive::theme::get_editor_theme;
@@ -274,11 +274,9 @@ impl ActiveSelector {
     /// The mountable component (upstream `created.component`).
     fn mount(&self) -> Box<dyn pillar_tui::tui::Component> {
         match self {
-            ActiveSelector::Thinking { component, .. } => {
-                Box::new(crate::modes::interactive::transcript::FocusHandle::new(
-                    component.clone(),
-                ))
-            }
+            ActiveSelector::Thinking { component, .. } => Box::new(
+                crate::modes::interactive::transcript::FocusHandle::new(component.clone()),
+            ),
         }
     }
 }
@@ -1192,9 +1190,9 @@ impl InteractiveMode {
         let selector = self.active_selector.lock().expect("active selector");
         match selector.as_ref() {
             Some(selector) => selector.mount(),
-            None => Box::new(
-                crate::modes::interactive::transcript::FocusHandle::new(self.editor.clone()),
-            ),
+            None => Box::new(crate::modes::interactive::transcript::FocusHandle::new(
+                self.editor.clone(),
+            )),
         }
     }
 
@@ -1270,9 +1268,7 @@ impl InteractiveMode {
         let (token, component) = {
             let guard = self.active_selector.lock().expect("active selector");
             match guard.as_ref() {
-                Some(ActiveSelector::Thinking { token, component }) => {
-                    (*token, component.clone())
-                }
+                Some(ActiveSelector::Thinking { token, component }) => (*token, component.clone()),
                 None => return None,
             }
         };
@@ -1281,12 +1277,12 @@ impl InteractiveMode {
             ThinkingSelectorOutcome::Consumed => Vec::new(),
             ThinkingSelectorOutcome::Select(level) => {
                 self.select_thinking_level(&level, false);
-                
+
                 self.close_selector(Some(token))
             }
             ThinkingSelectorOutcome::SelectAsDefault(level) => {
                 self.select_thinking_level(&level, true);
-                
+
                 self.close_selector(Some(token))
             }
             ThinkingSelectorOutcome::Cancel => self.close_selector(Some(token)),

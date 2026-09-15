@@ -466,9 +466,7 @@ fn pump_loop(
         let mut requested_shutdown = false;
         let data = screen.base_mut().terminal_mut().read_input(interval);
         if let Some(data) = data {
-            for action in
-                dispatch_input(&mut screen, &mode, editor_slot, &keybindings, &data)
-            {
+            for action in dispatch_input(&mut screen, &mode, editor_slot, &keybindings, &data) {
                 if matches!(action, ModeAction::Shutdown) {
                     requested_shutdown = true;
                 }

@@ -291,7 +291,8 @@ impl TuiBase {
             last_render_at: None,
             stopped: true,
             full_redraws: 0,
-            show_hardware_cursor: std::env::var("PILLAR_HARDWARE_CURSOR").ok().as_deref() == Some("1"),
+            show_hardware_cursor: std::env::var("PILLAR_HARDWARE_CURSOR").ok().as_deref()
+                == Some("1"),
             clear_on_shrink: std::env::var("PILLAR_CLEAR_ON_SHRINK").ok().as_deref() == Some("1"),
             on_debug: None,
         }
@@ -361,12 +362,12 @@ impl TuiBase {
     /// Replace a root child in place, keeping its id and render position
     /// (the port's stand-in for upstream's stable `editorContainer`, which
     /// swaps the editor for a selector without moving the slot).
-    pub fn replace_child(
-        &mut self,
-        id: ComponentId,
-        component: Box<dyn Component>,
-    ) -> bool {
-        let Some(index) = self.roots.iter().position(|(candidate, _)| *candidate == id) else {
+    pub fn replace_child(&mut self, id: ComponentId, component: Box<dyn Component>) -> bool {
+        let Some(index) = self
+            .roots
+            .iter()
+            .position(|(candidate, _)| *candidate == id)
+        else {
             return false;
         };
         self.roots[index].1 = component;

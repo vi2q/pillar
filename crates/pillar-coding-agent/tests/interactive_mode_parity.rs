@@ -670,7 +670,8 @@ fn thinking_command_shows_the_selector_and_enter_selects_a_level() {
     // Down + Enter selects the next level.
     mode.handle_submit("/thinking");
     assert_eq!(
-        mode.handle_selector_key("\u{1b}[B").expect("selector active"),
+        mode.handle_selector_key("\u{1b}[B")
+            .expect("selector active"),
         Vec::new(),
         "down"
     );
@@ -699,7 +700,10 @@ fn thinking_selector_search_filters_and_escape_cancels() {
     // Fuzzy matching keeps any level whose label/description contains the
     // query characters; the unrelated ones drop out.
     assert!(!body.contains("No reasoning"), "off filtered out: {body:?}");
-    assert!(!body.contains("Deep reasoning"), "high filtered out: {body:?}");
+    assert!(
+        !body.contains("Deep reasoning"),
+        "high filtered out: {body:?}"
+    );
 
     // Escape cancels without changing the level.
     let actions = mode.handle_selector_key("\u{1b}").expect("selector active");
@@ -714,7 +718,8 @@ fn thinking_selector_ctrl_s_persists_the_default_and_command_takes_a_level() {
     let mode = make_mode(&session);
 
     mode.handle_submit("/thinking");
-    mode.handle_selector_key("\u{1b}[B").expect("selector active"); // down
+    mode.handle_selector_key("\u{1b}[B")
+        .expect("selector active"); // down
     let actions = mode.handle_selector_key("\u{13}").expect("selector active"); // ctrl+s
     assert_eq!(actions, vec![ModeAction::EditorSlotChanged]);
     let persisted = session
@@ -722,7 +727,10 @@ fn thinking_selector_ctrl_s_persists_the_default_and_command_takes_a_level() {
         .lock()
         .expect("settings")
         .default_thinking_level();
-    assert_eq!(persisted.as_deref(), Some(session.thinking_level().as_str()));
+    assert_eq!(
+        persisted.as_deref(),
+        Some(session.thinking_level().as_str())
+    );
 
     // `/thinking <level>` sets it directly without opening the selector.
     let actions = mode.handle_submit("/thinking low");

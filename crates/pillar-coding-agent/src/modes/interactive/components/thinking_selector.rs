@@ -125,17 +125,16 @@ impl ThinkingSelectorComponent {
             self.select_list = build_select_list(&self.all_items, selected.as_deref());
             return;
         }
-        let filtered: Vec<SelectItem> = pillar_tui::fuzzy::fuzzy_filter_by(
-            &self.all_items,
-            &query,
-            |item: &SelectItem| match &item.description {
-                Some(description) => format!("{} {description}", item.label),
-                None => item.label.clone(),
-            },
-        )
-        .into_iter()
-        .cloned()
-        .collect();
+        let filtered: Vec<SelectItem> =
+            pillar_tui::fuzzy::fuzzy_filter_by(&self.all_items, &query, |item: &SelectItem| {
+                match &item.description {
+                    Some(description) => format!("{} {description}", item.label),
+                    None => item.label.clone(),
+                }
+            })
+            .into_iter()
+            .cloned()
+            .collect();
         self.select_list = build_select_list(&filtered, selected.as_deref());
     }
 
@@ -217,10 +216,7 @@ impl Component for ThinkingSelectorComponent {
         lines.push(String::new());
         lines.extend(self.search_input.render(width));
         lines.push(String::new());
-        lines.extend(
-            self.select_list
-                .render(width, &get_select_list_theme()),
-        );
+        lines.extend(self.select_list.render(width, &get_select_list_theme()));
         lines.push(String::new());
         lines.extend(
             Text::new(
