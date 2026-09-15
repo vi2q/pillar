@@ -214,8 +214,8 @@ Environment Variables:
   PILLAR_OFFLINE                   - Disable startup network operations when set to 1/true/yes
   PILLAR_TELEMETRY                 - Override install telemetry when set to 1/true/yes or 0/false/no
   PILLAR_SHARE_VIEWER_URL          - Base URL for /share command (default: https://pi.dev/session/)
-  PILLAR_CLIENT_NAME               - Client name sent to providers (default: pi)
-  PILLAR_REFERER_URL               - Referer sent to OpenRouter (default: https://pi.dev; empty disables)
+  PILLAR_CLIENT_NAME               - Client name sent to providers (default: pillar)
+  PILLAR_REFERER_URL               - Referer sent to OpenRouter (default: none; set a URL to send one)
 
 Built-in Tool Names:
   read       - Read file contents

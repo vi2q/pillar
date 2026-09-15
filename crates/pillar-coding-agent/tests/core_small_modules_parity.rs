@@ -50,13 +50,13 @@ fn headers(items: &[(&str, &str)]) -> ProviderHeaders {
 fn openrouter_attribution_headers_when_telemetry_enabled() {
     let m = model("openrouter", "kimi", "https://openrouter.ai/api/v1");
     let merged = merge_provider_attribution_headers(&m, true, None, &[]).expect("headers");
-    assert_eq!(
-        merged.get("HTTP-Referer").unwrap(),
-        &Some("https://pi.dev".to_string())
+    assert!(
+        !merged.contains_key("HTTP-Referer"),
+        "pillar sends no referer by default: {merged:?}"
     );
     assert_eq!(
         merged.get("X-OpenRouter-Title").unwrap(),
-        &Some("pi".to_string())
+        &Some("pillar".to_string())
     );
     assert_eq!(
         merged.get("X-OpenRouter-Categories").unwrap(),
@@ -77,7 +77,7 @@ fn nvidia_nim_attribution_header() {
     let merged = merge_provider_attribution_headers(&m, true, None, &[]).unwrap();
     assert_eq!(
         merged.get("X-BILLING-INVOKE-ORIGIN").unwrap(),
-        &Some("Pi".to_string())
+        &Some("Pillar".to_string())
     );
 }
 
@@ -91,7 +91,7 @@ fn cloudflare_attribution_user_agent() {
     let merged = merge_provider_attribution_headers(&m, true, None, &[]).unwrap();
     assert_eq!(
         merged.get("User-Agent").unwrap(),
-        &Some("pi-coding-agent".to_string())
+        &Some("pillar-coding-agent".to_string())
     );
     // Also via the AI gateway host.
     let m = model("x", "m", "https://gateway.ai.cloudflare.com/v1");
@@ -121,7 +121,7 @@ fn opencode_session_headers() {
     );
     assert_eq!(
         merged.get("x-opencode-client").unwrap(),
-        &Some("pi".to_string())
+        &Some("pillar".to_string())
     );
 }
 

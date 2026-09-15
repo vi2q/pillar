@@ -107,11 +107,14 @@ pub const CLIENT_NAME_ENV: &str = "PILLAR_CLIENT_NAME";
 /// The referer-URL environment variable (`PILLAR_REFERER_URL`).
 pub const REFERER_URL_ENV: &str = "PILLAR_REFERER_URL";
 
-/// The default client name sent to providers (upstream hard-codes `pi`).
-pub const DEFAULT_CLIENT_NAME: &str = "pi";
+/// The default client name sent to providers (upstream hard-codes `pi`; the
+/// port identifies as `pillar`).
+pub const DEFAULT_CLIENT_NAME: &str = "pillar";
 
-/// The default referer URL (upstream hard-codes `https://pi.dev`).
-pub const DEFAULT_REFERER_URL: &str = "https://pi.dev";
+/// The default referer URL. Upstream hard-codes `https://pi.dev`; pillar has
+/// no equivalent site, so it sends no referer unless `PILLAR_REFERER_URL` is
+/// set.
+pub const DEFAULT_REFERER_URL: Option<&str> = None;
 
 /// Resolve the client name from `PILLAR_CLIENT_NAME` (blank keeps the
 /// default).
@@ -131,7 +134,7 @@ pub fn client_name() -> String {
 /// value means "send no referer".
 pub fn referer_url_with(env: Option<&str>) -> Option<String> {
     match env {
-        None => Some(DEFAULT_REFERER_URL.to_string()),
+        None => DEFAULT_REFERER_URL.map(str::to_string),
         Some(value) if value.trim().is_empty() => None,
         Some(value) => Some(value.trim().to_string()),
     }

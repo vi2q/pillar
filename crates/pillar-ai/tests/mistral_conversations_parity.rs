@@ -243,7 +243,7 @@ async fn serializes_sdk_style_payloads_to_the_mistral_wire_format() {
     assert!(
         header_value(&request, "user-agent")
             .unwrap()
-            .starts_with("pi (")
+            .starts_with("pillar (")
     );
 
     let payload = captured_payload

@@ -218,7 +218,7 @@ async fn opencode_session_requests_carry_the_session_headers() {
         headers
             .get("x-opencode-client")
             .and_then(|value| value.as_deref()),
-        Some("pi"),
+        Some("pillar"),
         "{headers:?}"
     );
 }

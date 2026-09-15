@@ -25,7 +25,7 @@ impl Default for ClientIdentity {
     fn default() -> Self {
         Self {
             client_name: DEFAULT_CLIENT_NAME.to_string(),
-            referer_url: Some(DEFAULT_REFERER_URL.to_string()),
+            referer_url: DEFAULT_REFERER_URL.map(str::to_string),
         }
     }
 }

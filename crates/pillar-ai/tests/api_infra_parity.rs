@@ -883,17 +883,17 @@ fn reqwest_fetch_constructs() {
 // --- client identity (PILLAR_CLIENT_NAME / PILLAR_REFERER_URL) -----------------
 
 #[test]
-fn client_name_defaults_to_pi_and_accepts_an_override() {
-    assert_eq!(client_name_with(None), "pi");
-    assert_eq!(client_name_with(Some("")), "pi");
-    assert_eq!(client_name_with(Some("   ")), "pi");
-    assert_eq!(client_name_with(Some("pillar")), "pillar");
-    assert_eq!(client_name_with(Some("  pillar  ")), "pillar");
+fn client_name_defaults_to_pillar_and_accepts_an_override() {
+    assert_eq!(client_name_with(None), "pillar");
+    assert_eq!(client_name_with(Some("")), "pillar");
+    assert_eq!(client_name_with(Some("   ")), "pillar");
+    assert_eq!(client_name_with(Some("pi")), "pi");
+    assert_eq!(client_name_with(Some("  pi  ")), "pi");
 }
 
 #[test]
-fn referer_url_defaults_to_pi_dev_and_empty_disables_it() {
-    assert_eq!(referer_url_with(None).as_deref(), Some("https://pi.dev"));
+fn referer_url_defaults_to_none_and_accepts_an_override() {
+    assert_eq!(referer_url_with(None), None, "pillar sends no referer by default");
     assert_eq!(referer_url_with(Some("")), None);
     assert_eq!(referer_url_with(Some("   ")), None);
     assert_eq!(
@@ -905,8 +905,8 @@ fn referer_url_defaults_to_pi_dev_and_empty_disables_it() {
 #[test]
 fn user_agent_uses_the_client_name() {
     assert_eq!(
-        user_agent_for("pi"),
-        format!("pi ({} {})", std::env::consts::OS, std::env::consts::ARCH)
+        user_agent_for("pillar"),
+        format!("pillar ({} {})", std::env::consts::OS, std::env::consts::ARCH)
     );
-    assert!(user_agent_for("pillar").starts_with("pillar ("));
+    assert!(user_agent_for("pi").starts_with("pi ("));
 }
