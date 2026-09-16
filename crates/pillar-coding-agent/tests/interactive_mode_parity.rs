@@ -2665,3 +2665,51 @@ fn a_select_ask_without_options_answers_an_error() {
     let answered = answer.try_recv().expect("answered immediately");
     assert!(answered.is_err(), "{answered:?}");
 }
+
+// ============================================================================
+// Action queue safety (docs/ARCHITECTURE-REVIEW-s05c0.md 3)
+// ============================================================================
+
+/// The pump's action channel (pump -> executor) is unbounded because its only
+/// producers are user input and per-request completions. Streaming events must
+/// stay action-free: if one reported an action, a fast provider would queue
+/// one executor action per token.
+#[test]
+fn streaming_events_do_not_queue_executor_actions() {
+    use pillar_coding_agent::core::agent_session_class::AgentSessionEvent;
+
+    let session = session();
+    let mode = make_mode(&session);
+    let CodingAgentMessage::Base(Message::Assistant(partial)) =
+        assistant_message("streaming", StopReason::ToolUse)
+    else {
+        panic!("expected an assistant message");
+    };
+    let events = vec![
+        AgentSessionEvent::MessageUpdate {
+            message: pillar_agent::types::AgentMessage::Message(Message::Assistant(partial.clone())),
+            assistant_message_event: Box::new(pillar_ai::types::AssistantMessageEvent::TextDelta {
+                content_index: 0,
+                partial: (*partial).clone(),
+                delta: "token".to_string(),
+            }),
+        },
+        AgentSessionEvent::MessageEnd {
+            message: pillar_agent::types::AgentMessage::Message(Message::Assistant(partial)),
+        },
+        AgentSessionEvent::ToolExecutionUpdate {
+            tool_call_id: "call-1".to_string(),
+            tool_name: "bash".to_string(),
+            args: serde_json::json!({}),
+            partial_result: serde_json::json!({ "output": "chunk" }),
+        },
+    ];
+
+    for event in &events {
+        let actions = mode.handle_event(event);
+        assert!(
+            actions.is_empty(),
+            "{event:?} queued executor work: {actions:?}"
+        );
+    }
+}

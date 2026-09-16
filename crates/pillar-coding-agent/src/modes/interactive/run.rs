@@ -295,6 +295,13 @@ pub async fn run_interactive(
         })
     });
 
+    // Pump -> executor work. Unlike the event backlog this stays unbounded on
+    // purpose: its producers are user input (`dispatch_input`), per-request
+    // completions and the initial message, while session events never queue an
+    // action (`handle_event` reports none — streaming tokens therefore cannot
+    // generate one action per token). Bounding it would mean dropping an
+    // abort or a submission, which is worse than the queue a human can build.
+    // `streaming_events_do_not_queue_executor_actions` pins that invariant.
     let (action_tx, mut action_rx) = tokio::sync::mpsc::unbounded_channel::<ModeAction>();
     let (ui_tx, ui_rx) = tokio::sync::mpsc::unbounded_channel::<UiCommand>();
     // Refuses an extension's UI request once the pump is this far behind, so a

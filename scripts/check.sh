@@ -74,7 +74,10 @@ export HTTP_PROXY="$HTTPS_PROXY"
 export ALL_PROXY="$HTTPS_PROXY"
 
 version=$(run_timeout 60 "$binary" --version)
-[ -n "$version" ] || { echo "smoke: --version printed nothing" >&2; exit 1; }
+[ -n "$version" ] || {
+    echo "smoke: --version printed nothing" >&2
+    exit 1
+}
 
 run_timeout 60 "$binary" --help | grep -q "Usage:" || {
     echo "smoke: --help has no usage line" >&2
@@ -86,8 +89,14 @@ set +e
 output=$(run_timeout 120 "$binary" --mode json "hello" 2>&1)
 status=$?
 set -e
-[ "$status" -ne 0 ] || { echo "smoke: an unauthenticated run must fail" >&2; exit 1; }
-[ "$status" -ne 124 ] || { echo "smoke: the run hung" >&2; exit 1; }
+[ "$status" -ne 0 ] || {
+    echo "smoke: an unauthenticated run must fail" >&2
+    exit 1
+}
+[ "$status" -ne 124 ] || {
+    echo "smoke: the run hung" >&2
+    exit 1
+}
 printf '%s' "$output" | grep -qi "model" || {
     echo "smoke: the failure does not explain the missing model: $output" >&2
     exit 1
