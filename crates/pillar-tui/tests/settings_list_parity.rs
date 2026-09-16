@@ -1,9 +1,7 @@
 //! Parity tests for the settings-list component (pi v0.84.3
 //! components/settings-list.ts).
 
-use pillar_tui::settings_list::{
-    SettingsActivation, SettingItem, SettingsList, SettingsListTheme,
-};
+use pillar_tui::settings_list::{SettingItem, SettingsActivation, SettingsList, SettingsListTheme};
 
 fn passthrough(text: &str, _selected: bool) -> String {
     text.to_string()

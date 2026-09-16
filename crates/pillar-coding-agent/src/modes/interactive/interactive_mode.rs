@@ -2187,7 +2187,7 @@ impl InteractiveMode {
 
     /// The `/settings` panel's config snapshot (upstream the `SettingsConfig`
     /// literal in `showSettingsSelector`).
-fn settings_config(&self) -> SettingsConfig {
+    fn settings_config(&self) -> SettingsConfig {
         // Collect the session-derived values first: several of these helpers
         // lock the settings manager, which must not be held here (the port's
         // settings mutex is not reentrant).
@@ -2197,7 +2197,9 @@ fn settings_config(&self) -> SettingsConfig {
         let terminal_theme = *self.terminal_theme.lock().expect("terminal theme");
         let active_theme_name = current_theme_name();
         let available_themes = crate::modes::interactive::theme::get_available_themes();
-        let supports_images = pillar_tui::terminal_image::get_capabilities().images.is_some();
+        let supports_images = pillar_tui::terminal_image::get_capabilities()
+            .images
+            .is_some();
         let tui_mode = match self.tui_mode {
             TuiMode::Fullscreen => "fullscreen",
             TuiMode::Regular => "regular",
@@ -2226,9 +2228,9 @@ fn settings_config(&self) -> SettingsConfig {
             steering_mode: settings.steering_mode().to_string(),
             follow_up_mode: settings.follow_up_mode().to_string(),
             transport: settings.transport().to_string(),
-            http_idle_timeout_ms: settings.http_idle_timeout_ms().unwrap_or(
-                crate::core::http_dispatcher::DEFAULT_HTTP_IDLE_TIMEOUT_MS,
-            ),
+            http_idle_timeout_ms: settings
+                .http_idle_timeout_ms()
+                .unwrap_or(crate::core::http_dispatcher::DEFAULT_HTTP_IDLE_TIMEOUT_MS),
             thinking_level: settings
                 .default_thinking_level()
                 .unwrap_or_else(|| "medium".to_string()),
@@ -2290,7 +2292,7 @@ fn settings_config(&self) -> SettingsConfig {
     /// (`agent.transport`, `configureHttpDispatcher`) are not ported yet, and
     /// switching TUI mode reports a status instead of re-layouting
     /// (fullscreen is not ported).
-pub fn apply_setting_change(&self, id: &str, value: &str) -> Vec<ModeAction> {
+    pub fn apply_setting_change(&self, id: &str, value: &str) -> Vec<ModeAction> {
         let mut actions: Vec<ModeAction> = Vec::new();
         // These write through the session, which locks the settings manager
         // itself (holding the lock here would deadlock).
@@ -2315,7 +2317,11 @@ pub fn apply_setting_change(&self, id: &str, value: &str) -> Vec<ModeAction> {
             _ => {}
         }
         {
-            let mut settings = self.session.settings_manager().lock().expect("settings lock");
+            let mut settings = self
+                .session
+                .settings_manager()
+                .lock()
+                .expect("settings lock");
             match id {
                 "show-images" => settings.set_show_images(value == "true"),
                 "image-width-cells" => settings.set_image_width_cells(value.parse().unwrap_or(60)),
@@ -2456,11 +2462,12 @@ pub fn apply_setting_change(&self, id: &str, value: &str) -> Vec<ModeAction> {
                         .settings_manager()
                         .lock()
                         .expect("settings lock");
-                    (settings.show_images(), settings.image_width_cells() as usize)
+                    (
+                        settings.show_images(),
+                        settings.image_width_cells() as usize,
+                    )
                 };
-                self.transcript
-                    .lock()
-                    .set_tool_image_settings(show, width);
+                self.transcript.lock().set_tool_image_settings(show, width);
             }
             "skill-commands" => self.rebuild_autocomplete(),
             "hide-thinking" => {
@@ -2477,7 +2484,11 @@ pub fn apply_setting_change(&self, id: &str, value: &str) -> Vec<ModeAction> {
     /// Upstream `onModelThinkingLevelChange` / `onModelThinkingLevelRemove`.
     pub fn apply_model_thinking_level(&self, provider: &str, model_id: &str, level: Option<&str>) {
         {
-            let mut settings = self.session.settings_manager().lock().expect("settings lock");
+            let mut settings = self
+                .session
+                .settings_manager()
+                .lock()
+                .expect("settings lock");
             match level {
                 Some(level) => settings.set_model_thinking_level(provider, model_id, level),
                 None => settings.remove_model_thinking_level(provider, model_id),

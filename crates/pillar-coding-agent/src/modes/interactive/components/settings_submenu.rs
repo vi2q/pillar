@@ -193,12 +193,18 @@ impl Component for SelectSubmenu {
         let theme_handle = theme();
         let mut lines: Vec<String> = Vec::new();
         lines.extend(
-            Text::new(&theme_handle.bold(&theme_handle.fg("accent", &self.title)), 0, 0)
-                .render(width),
+            Text::new(
+                &theme_handle.bold(&theme_handle.fg("accent", &self.title)),
+                0,
+                0,
+            )
+            .render(width),
         );
         if !self.description.is_empty() {
             lines.push(String::new());
-            lines.extend(Text::new(&theme_handle.fg("muted", &self.description), 0, 0).render(width));
+            lines.extend(
+                Text::new(&theme_handle.fg("muted", &self.description), 0, 0).render(width),
+            );
         }
         if let Some(input) = self.search_input.as_mut() {
             lines.push(String::new());
@@ -276,7 +282,9 @@ impl SteppedSubmenu {
         start_at_step: Option<usize>,
         initial_context: StepContext,
     ) -> Self {
-        let step_index = start_at_step.unwrap_or(0).min(steps.len().saturating_sub(1));
+        let step_index = start_at_step
+            .unwrap_or(0)
+            .min(steps.len().saturating_sub(1));
         let mut submenu = Self {
             steps,
             context: initial_context,
@@ -405,15 +413,15 @@ mod tests {
         let rendered = plain(&mut submenu);
         assert!(rendered.contains("Theme"), "{rendered}");
         assert!(rendered.contains("Pick one"), "{rendered}");
-        assert!(rendered.contains("Enter to select · Esc to go back"), "{rendered}");
+        assert!(
+            rendered.contains("Enter to select · Esc to go back"),
+            "{rendered}"
+        );
         // "light" is pre-selected.
         assert_eq!(submenu.selected_value().as_deref(), Some("light"));
 
         // Up wraps to the last option, Enter selects it.
-        assert_eq!(
-            submenu.handle_key("\x1b[A"),
-            SelectSubmenuOutcome::Consumed
-        );
+        assert_eq!(submenu.handle_key("\x1b[A"), SelectSubmenuOutcome::Consumed);
         assert_eq!(
             submenu.handle_key("\r"),
             SelectSubmenuOutcome::Select("dark".to_string())
@@ -427,7 +435,10 @@ mod tests {
         let mut submenu = SelectSubmenu::new(
             "Model",
             "",
-            vec![item("claude-opus-5", "Opus"), item("claude-sonnet-4-5", "Sonnet")],
+            vec![
+                item("claude-opus-5", "Opus"),
+                item("claude-sonnet-4-5", "Sonnet"),
+            ],
             "",
             true,
             SubmenuLayout::submenu_default(),
@@ -435,7 +446,12 @@ mod tests {
         for ch in "opus".chars() {
             submenu.handle_key(&ch.to_string());
         }
-        assert_eq!(submenu.visible_items().len(), 1, "{:?}", submenu.visible_items());
+        assert_eq!(
+            submenu.visible_items().len(),
+            1,
+            "{:?}",
+            submenu.visible_items()
+        );
         assert_eq!(
             submenu.handle_key("\r"),
             SelectSubmenuOutcome::Select("claude-opus-5".to_string())
@@ -450,9 +466,7 @@ mod tests {
                 key: "model".to_string(),
                 title: Box::new(|_| "Per-Model Thinking Level".to_string()),
                 description: Box::new(|_| "Select a model to configure".to_string()),
-                options: Box::new(|_| {
-                    vec![item("m/one", "one"), item("m/two", "two")]
-                }),
+                options: Box::new(|_| vec![item("m/one", "one"), item("m/two", "two")]),
                 preselect: None,
                 searchable: false,
                 layout: None,
@@ -481,13 +495,13 @@ mod tests {
             .map(|line| strip_terminal_sequences(line))
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(rendered.contains("Step 1/2 · Select a model to configure"), "{rendered}");
+        assert!(
+            rendered.contains("Step 1/2 · Select a model to configure"),
+            "{rendered}"
+        );
 
         // Pick the first model -> advance to step 2.
-        assert_eq!(
-            submenu.handle_key("\r"),
-            SteppedSubmenuOutcome::Consumed
-        );
+        assert_eq!(submenu.handle_key("\r"), SteppedSubmenuOutcome::Consumed);
         assert_eq!(submenu.step_index(), 1);
         assert_eq!(submenu.context()["model"], "m/one");
         let rendered = submenu
@@ -514,10 +528,7 @@ mod tests {
         let mut submenu = two_step_submenu();
         submenu.handle_key("\r");
         assert_eq!(submenu.step_index(), 1);
-        assert_eq!(
-            submenu.handle_key("\x1b"),
-            SteppedSubmenuOutcome::Consumed
-        );
+        assert_eq!(submenu.handle_key("\x1b"), SteppedSubmenuOutcome::Consumed);
         assert_eq!(submenu.step_index(), 0);
         // Esc drops the *current* step's answer (upstream deletes
         // `steps[stepIndex].key`) and keeps the earlier ones.

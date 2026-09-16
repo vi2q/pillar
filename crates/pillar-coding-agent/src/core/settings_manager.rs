@@ -1186,10 +1186,7 @@ impl SettingsManager {
     }
 
     pub fn set_http_idle_timeout_ms(&mut self, timeout_ms: u64) {
-        self.set_global_setting(
-            "httpIdleTimeoutMs",
-            Value::Number(timeout_ms.into()),
-        );
+        self.set_global_setting("httpIdleTimeoutMs", Value::Number(timeout_ms.into()));
     }
 
     pub fn set_hide_thinking_block(&mut self, hide: bool) {
@@ -1320,10 +1317,7 @@ impl SettingsManager {
     }
 
     pub fn set_editor_padding_x(&mut self, padding: i64) {
-        self.set_global_setting(
-            "editorPaddingX",
-            Value::Number(padding.clamp(0, 3).into()),
-        );
+        self.set_global_setting("editorPaddingX", Value::Number(padding.clamp(0, 3).into()));
     }
 
     pub fn set_output_pad(&mut self, padding: u8) {
@@ -1377,10 +1371,7 @@ impl SettingsManager {
     }
 
     pub fn set_fullscreen_exit_output(&mut self, output: &str) {
-        self.set_global_setting(
-            "fullscreenExitOutput",
-            Value::String(output.to_string()),
-        );
+        self.set_global_setting("fullscreenExitOutput", Value::String(output.to_string()));
     }
 
     /// Upstream `getFullscreenScrollbar` (`auto` | `always` | `hidden`).

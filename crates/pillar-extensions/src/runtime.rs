@@ -121,11 +121,20 @@ declare pillar: {
     register_command: (name: string, opts: any) -> (),
     register_shortcut: (key: string, opts: any) -> (),
     register_flag: (name: string, opts: any) -> (),
+    get_flag: (name: string) -> any,
     append_entry: (kind: string, data: any?) -> (),
     send_message: (message: any) -> (),
     send_user_message: (message: any) -> (),
     set_session_name: (name: string) -> (),
     exec: (command: string, args: { number }?, opts: any?) -> any,
+    schema: {
+        string: (opts: any?) -> any,
+        number: (opts: any?) -> any,
+        boolean: (opts: any?) -> any,
+        enum: (values: { any }) -> any,
+        array: (item: any) -> any,
+        object: (properties: any, opts: any?) -> any,
+    },
 }
 "#;
 
@@ -134,6 +143,19 @@ declare pillar: {
 /// `{ stdout, stderr, code, killed }`.
 pub type ExecHost = Arc<dyn Fn(&str, &[String]) -> serde_json::Value + Send + Sync>;
 
+/// Host callback for `pillar.get_flag` (upstream `getFlag`).
+pub type GetFlagFn = Arc<dyn Fn(&str) -> Option<serde_json::Value> + Send + Sync>;
+
+/// The host callbacks the `@pillar` API reads (upstream the pieces of
+/// the runtime the ExtensionAPI reaches). Each is optional: a missing
+/// callback answers the documented default (`nil`).
+#[derive(Clone, Default)]
+pub struct HostApi {
+    /// `pillar.get_flag(name)` → the parsed CLI flag value (upstream
+    /// `getFlag`).
+    pub get_flag: Option<GetFlagFn>,
+}
+
 /// The process-wide extension runtime.
 pub struct ExtensionRuntime {
     lua: Lua,
@@ -141,6 +163,8 @@ pub struct ExtensionRuntime {
     /// Host exec callback (None until the host installs one; calls
     /// before installation return the not-installed failure result).
     exec_host: Arc<Mutex<Option<ExecHost>>>,
+    /// Host callbacks for the read-only API methods (`get_flag`, …).
+    host_api: Arc<Mutex<HostApi>>,
 }
 
 /// Result of dispatching one event to a handler (upstream the
@@ -169,12 +193,23 @@ impl ExtensionRuntime {
         let lua = Lua::new();
         let registry = HostRegistry::shared();
         let exec_host = Arc::new(Mutex::new(None));
-        install_pillar_api(&lua, &registry, &exec_host);
+        let host_api = Arc::new(Mutex::new(HostApi::default()));
+        install_pillar_api(&lua, &registry, &exec_host, &host_api);
         Self {
             lua,
             registry,
             exec_host,
+            host_api,
         }
+    }
+
+    /// Install the host callbacks the read-only API reads (upstream the
+    /// runtime wiring the CLI flags into the ExtensionAPI).
+    pub fn set_host_api(&self, api: HostApi) {
+        *self
+            .host_api
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = api;
     }
 
     /// Install the host exec callback (upstream the runtime wiring the
@@ -408,6 +443,7 @@ fn install_pillar_api(
     lua: &Lua,
     registry: &SharedRegistry,
     exec_host: &Arc<Mutex<Option<ExecHost>>>,
+    host_api: &Arc<Mutex<HostApi>>,
 ) {
     let module = lua.create_table();
 
@@ -605,9 +641,270 @@ fn install_pillar_api(
         )
         .expect("set pillar.set_session_name");
 
+    // pillar.get_flag(name): the parsed CLI flag value (upstream
+    // `getFlag`); `nil` when the flag was not given.
+    let flag_slot = Arc::clone(host_api);
+    let lua_get_flag = lua.clone();
+    module
+        .set(
+            "get_flag",
+            Function::wrap(move |name: String| {
+                let value = {
+                    let guard = flag_slot
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    guard.get_flag.as_ref().and_then(|get_flag| get_flag(&name))
+                };
+                match value {
+                    Some(value) => lua_get_flag
+                        .to_value(&value)
+                        .map_err(luaur_rt::Error::external),
+                    None => Ok(Value::Nil),
+                }
+            }),
+        )
+        .expect("set pillar.get_flag");
+
+    install_schema_module(lua, &module);
+
     // Registration cannot fail for a fresh VM; surface for clarity.
     if let Err(error) = lua.register_module("@pillar", module) {
         panic!("register @pillar failed: {error}");
+    }
+}
+
+/// Convert an optional Lua options table to a JSON object (mirrors the
+/// value bridge: `nil` and non-tables become an empty object).
+fn options_to_json(
+    lua: &Lua,
+    options: Option<Value>,
+) -> Result<serde_json::Value, luaur_rt::Error> {
+    match options {
+        None | Some(Value::Nil) => Ok(serde_json::json!({})),
+        Some(value) => {
+            let json = lua.from_value::<serde_json::Value>(value)?;
+            Ok(if json.is_object() {
+                json
+            } else {
+                serde_json::json!({})
+            })
+        }
+    }
+}
+
+/// Install `pillar.schema` (upstream the typebox builders): each builder
+/// returns a plain JSON-Schema-shaped table, which the host converts at
+/// the tool-registration boundary.
+///
+/// divergence: upstream returns typebox schema objects with a metatable
+/// marker; the port returns plain tables (the boundary conversion is
+/// identical) and keeps the documented field names.
+fn install_schema_module(lua: &Lua, module: &luaur_rt::Table) {
+    let schema = lua.create_table();
+
+    // The scalar builders only attach `type` to the caller's options.
+    for type_name in ["string", "number", "boolean"] {
+        let lua_builder = lua.clone();
+        schema
+            .set(
+                type_name,
+                Function::wrap(move |options: Option<Value>| {
+                    let mut json = options_to_json(&lua_builder, options)?;
+                    if let Some(object) = json.as_object_mut() {
+                        object.insert(
+                            "type".to_string(),
+                            serde_json::Value::String(type_name.to_string()),
+                        );
+                    }
+                    lua_builder.to_value(&json).map_err(luaur_rt::Error::external)
+                }),
+            )
+            .expect("set pillar.schema scalar");
+    }
+
+    // pillar.schema.enum({...}) → { type = "string", enum = {...} }
+    let lua_enum = lua.clone();
+    schema
+        .set(
+            "enum",
+            Function::wrap(move |values: Value| {
+                let values = lua_enum.from_value::<serde_json::Value>(values)?;
+                let json = serde_json::json!({ "type": "string", "enum": values });
+                lua_enum.to_value(&json).map_err(luaur_rt::Error::external)
+            }),
+        )
+        .expect("set pillar.schema.enum");
+
+    // pillar.schema.array(item) → { type = "array", items = item }
+    let lua_array = lua.clone();
+    schema
+        .set(
+            "array",
+            Function::wrap(move |item: Value| {
+                let item = lua_array.from_value::<serde_json::Value>(item)?;
+                let json = serde_json::json!({ "type": "array", "items": item });
+                lua_array.to_value(&json).map_err(luaur_rt::Error::external)
+            }),
+        )
+        .expect("set pillar.schema.array");
+
+    // pillar.schema.object(properties, opts?) →
+    // { type = "object", properties = ..., ...opts }
+    let lua_object = lua.clone();
+    schema
+        .set(
+            "object",
+            Function::wrap(move |properties: Value, options: Option<Value>| {
+                let properties = lua_object.from_value::<serde_json::Value>(properties)?;
+                let mut json = options_to_json(&lua_object, options)?;
+                if let Some(object) = json.as_object_mut() {
+                    object.insert(
+                        "type".to_string(),
+                        serde_json::Value::String("object".to_string()),
+                    );
+                    object.insert("properties".to_string(), properties);
+                }
+                lua_object.to_value(&json).map_err(luaur_rt::Error::external)
+            }),
+        )
+        .expect("set pillar.schema.object");
+
+    module
+        .set("schema", schema)
+        .expect("set pillar.schema");
+}
+
+#[cfg(test)]
+mod api_tests {
+    use super::*;
+
+    /// Run one inline extension's top-level body (the `require("@pillar")`
+    /// convention: `load_extension` executes the chunk) and return the
+    /// registry snapshot.
+    fn run(body: &str) -> HostRegistry {
+        let mut runtime = ExtensionRuntime::new();
+        runtime
+            .load_extension("api.luau", &format!("local pillar = require(\"@pillar\")\n{body}\nreturn nil"))
+            .unwrap();
+        runtime.registry()
+    }
+
+    /// `pillar.get_flag(name)` reads the host flag values (upstream
+    /// `getFlag`); a missing flag is nil.
+    #[test]
+    fn get_flag_reads_the_host_values() {
+        let mut runtime = ExtensionRuntime::new();
+        runtime.set_host_api(HostApi {
+            get_flag: Some(Arc::new(|name: &str| match name {
+                "level" => Some(serde_json::json!("high")),
+                _ => None,
+            })),
+        });
+        runtime
+            .load_extension(
+                "flags.luau",
+                r#"
+                local pillar = require("@pillar")
+                pillar.append_entry("flag", { value = pillar.get_flag("level") })
+                -- A Lua table cannot hold a nil field, so record presence.
+                pillar.append_entry("missing", { present = pillar.get_flag("nope") ~= nil })
+                return nil
+                "#,
+            )
+            .unwrap();
+        let registry = runtime.registry();
+        assert_eq!(registry.appended_entries.len(), 2);
+        assert_eq!(
+            registry.appended_entries[0].1,
+            Some(serde_json::json!({ "value": "high" }))
+        );
+        assert_eq!(
+            registry.appended_entries[1].1,
+            Some(serde_json::json!({ "present": false }))
+        );
+    }
+
+    /// Without a host callback every flag is nil (the documented
+    /// default).
+    #[test]
+    fn get_flag_without_a_host_answers_nil() {
+        let registry = run(
+            r#"pillar.append_entry("flag", { present = pillar.get_flag("level") ~= nil })"#,
+        );
+        assert_eq!(
+            registry.appended_entries[0].1,
+            Some(serde_json::json!({ "present": false }))
+        );
+    }
+
+    /// The `pillar.schema` builders emit JSON-Schema-shaped tables that
+    /// the tool boundary converts verbatim.
+    #[test]
+    fn schema_builders_emit_json_schema() {
+        let registry = run(
+            r#"
+            pillar.register_tool({
+                name = "greet",
+                label = "Greet",
+                description = "Greet someone",
+                parameters = pillar.schema.object({
+                    name = pillar.schema.string({ description = "Name to greet" }),
+                    count = pillar.schema.number({ minimum = 0 }),
+                    loud = pillar.schema.boolean(),
+                    level = pillar.schema.enum({ "low", "high" }),
+                    tags = pillar.schema.array(pillar.schema.string()),
+                }, { required = { "name" } }),
+            })
+            "#,
+        );
+        let tool = &registry.tools[0];
+        assert_eq!(tool["name"], serde_json::json!("greet"));
+        let parameters = &tool["parameters"];
+        assert_eq!(parameters["type"], serde_json::json!("object"));
+        assert_eq!(parameters["required"], serde_json::json!(["name"]));
+        let properties = &parameters["properties"];
+        assert_eq!(properties["name"]["type"], serde_json::json!("string"));
+        assert_eq!(
+            properties["name"]["description"],
+            serde_json::json!("Name to greet")
+        );
+        assert_eq!(properties["count"]["type"], serde_json::json!("number"));
+        assert_eq!(properties["count"]["minimum"], serde_json::json!(0));
+        assert_eq!(properties["loud"]["type"], serde_json::json!("boolean"));
+        assert_eq!(
+            properties["level"],
+            serde_json::json!({ "type": "string", "enum": ["low", "high"] })
+        );
+        assert_eq!(properties["tags"]["type"], serde_json::json!("array"));
+        assert_eq!(
+            properties["tags"]["items"]["type"],
+            serde_json::json!("string")
+        );
+    }
+
+    /// The API surface installed by the runtime type-checks with the
+    /// shipped definitions.
+    #[test]
+    fn api_surface_type_checks() {
+        let runtime = ExtensionRuntime::new();
+        runtime
+            .type_check(
+                "typed.luau",
+                r#"
+                --!strict
+                local pillar = require("@pillar")
+                local flag = pillar.get_flag("level")
+                local params = pillar.schema.object({
+                    name = pillar.schema.string({ description = "Name" }),
+                }, { required = { "name" } })
+                pillar.register_tool({ name = "t", parameters = params })
+                pillar.on("tool_call", function(event)
+                    return nil
+                end)
+                return flag
+                "#,
+            )
+            .unwrap_or_else(|diagnostics| panic!("type check failed: {diagnostics:?}"));
     }
 }
 

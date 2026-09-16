@@ -2095,9 +2095,16 @@ fn settings_command_shows_the_panel_and_applies_a_cycled_value() {
     // Filter to the Transport row and cycle it. The fixture's transport is
     // the "auto" default, so the cycle wraps to the first value.
     search_settings(&mode, "transport");
-    assert_eq!(mode.handle_selector_key("\r").expect("settings"), Vec::new());
     assert_eq!(
-        session.settings_manager().lock().expect("settings").transport(),
+        mode.handle_selector_key("\r").expect("settings"),
+        Vec::new()
+    );
+    assert_eq!(
+        session
+            .settings_manager()
+            .lock()
+            .expect("settings")
+            .transport(),
         "sse"
     );
 
@@ -2172,9 +2179,15 @@ fn settings_tui_mode_switch_is_reported_not_applied() {
     let mode = make_mode(&session);
 
     // The fullscreen mode is not ported: the row is reverted with a status.
-    assert_eq!(mode.apply_setting_change("tui-mode", "fullscreen"), Vec::new());
+    assert_eq!(
+        mode.apply_setting_change("tui-mode", "fullscreen"),
+        Vec::new()
+    );
     let body = plain(&mut mode.transcript().lock().chat, 120);
-    assert!(body.contains("TUI mode switching is not ported yet"), "{body:?}");
+    assert!(
+        body.contains("TUI mode switching is not ported yet"),
+        "{body:?}"
+    );
 }
 
 #[test]
@@ -2185,10 +2198,7 @@ fn settings_editor_and_output_padding_are_applied() {
 
     assert_eq!(mode.apply_setting_change("editor-padding", "3"), Vec::new());
     assert_eq!(mode.editor().lock().get_padding_x(), 3);
-    assert_eq!(
-        mode.apply_setting_change("output-padding", "0"),
-        Vec::new()
-    );
+    assert_eq!(mode.apply_setting_change("output-padding", "0"), Vec::new());
     assert_eq!(mode.transcript().lock().settings_mut().output_pad, 0);
 }
 

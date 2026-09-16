@@ -215,9 +215,7 @@ fn single_mode_theme_items(available_themes: &[String]) -> Vec<SelectItem> {
     let mut items = vec![SelectItem {
         value: AUTOMATIC_THEME_VALUE.to_string(),
         label: "Automatic".to_string(),
-        description: Some(
-            "Use separate themes for light and dark terminal appearance".to_string(),
-        ),
+        description: Some("Use separate themes for light and dark terminal appearance".to_string()),
     }];
     items.extend(theme_items(available_themes));
     items
@@ -499,7 +497,8 @@ impl ThemeSubmenu {
     }
 
     fn sync_automatic_values(&mut self) {
-        self.automatic.update_value("light-theme", &self.light_theme);
+        self.automatic
+            .update_value("light-theme", &self.light_theme);
         self.automatic.update_value("dark-theme", &self.dark_theme);
     }
 
@@ -626,7 +625,10 @@ impl ThemeSubmenu {
         lines.push(String::new());
         lines.extend(
             Text::new(
-                &theme_handle.fg("muted", "Choose themes for terminal light and dark appearance."),
+                &theme_handle.fg(
+                    "muted",
+                    "Choose themes for terminal light and dark appearance.",
+                ),
                 0,
                 0,
             )
@@ -665,8 +667,7 @@ pub struct SettingsSelectorComponent {
 
 impl SettingsSelectorComponent {
     pub fn new(config: SettingsConfig) -> Self {
-        let list =
-            SettingsList::new(build_items(&config), 10, &mut |_, _| {}, &mut || {}, true);
+        let list = SettingsList::new(build_items(&config), 10, &mut |_, _| {}, &mut || {}, true);
         Self {
             list,
             config,
@@ -884,7 +885,10 @@ impl SettingsSelectorComponent {
                             SelectItem {
                                 value: key.clone(),
                                 label: model_item_label(model),
-                                description: options_config.model_thinking_levels.get(&key).cloned(),
+                                description: options_config
+                                    .model_thinking_levels
+                                    .get(&key)
+                                    .cloned(),
                             }
                         })
                         .collect();
@@ -946,7 +950,10 @@ impl SettingsSelectorComponent {
                             description: Some(thinking_description(&level).to_string()),
                         })
                         .collect();
-                    if options_config.model_thinking_levels.contains_key(&model_key) {
+                    if options_config
+                        .model_thinking_levels
+                        .contains_key(&model_key)
+                    {
                         items.push(SelectItem {
                             value: CLEAR_OVERRIDE_VALUE.to_string(),
                             label: "(clear override)".to_string(),
@@ -969,7 +976,12 @@ impl SettingsSelectorComponent {
             }
         };
 
-        SteppedSubmenu::new(vec![models_step, levels_step], true, None, StepContext::new())
+        SteppedSubmenu::new(
+            vec![models_step, levels_step],
+            true,
+            None,
+            StepContext::new(),
+        )
     }
 
     fn complete_model_thinking(&mut self, context: &StepContext) -> SettingsSelectorOutcome {
@@ -1254,7 +1266,11 @@ fn build_items(config: &SettingsConfig) -> Vec<SettingItem> {
             "auto-resize-images",
             "Auto-resize images",
             "Resize large images to 2000x2000 max for better model compatibility",
-            if config.auto_resize_images { "true" } else { "false" },
+            if config.auto_resize_images {
+                "true"
+            } else {
+                "false"
+            },
             &["true", "false"],
         ),
     );
@@ -1276,7 +1292,11 @@ fn build_items(config: &SettingsConfig) -> Vec<SettingItem> {
             "skill-commands",
             "Skill commands",
             "Register skills as /skill:name commands",
-            if config.enable_skill_commands { "true" } else { "false" },
+            if config.enable_skill_commands {
+                "true"
+            } else {
+                "false"
+            },
             &["true", "false"],
         ),
     );
@@ -1287,7 +1307,11 @@ fn build_items(config: &SettingsConfig) -> Vec<SettingItem> {
             "show-hardware-cursor",
             "Show hardware cursor",
             "Show the terminal cursor while still positioning it for IME support",
-            if config.show_hardware_cursor { "true" } else { "false" },
+            if config.show_hardware_cursor {
+                "true"
+            } else {
+                "false"
+            },
             &["true", "false"],
         ),
     );
@@ -1331,7 +1355,11 @@ fn build_items(config: &SettingsConfig) -> Vec<SettingItem> {
             "clear-on-shrink",
             "Clear on shrink",
             "Clear empty rows when content shrinks (may cause flicker)",
-            if config.clear_on_shrink { "true" } else { "false" },
+            if config.clear_on_shrink {
+                "true"
+            } else {
+                "false"
+            },
             &["true", "false"],
         ),
     );
@@ -1342,7 +1370,11 @@ fn build_items(config: &SettingsConfig) -> Vec<SettingItem> {
             "terminal-progress",
             "Terminal progress",
             "Show OSC 9;4 progress indicators in the terminal tab bar",
-            if config.show_terminal_progress { "true" } else { "false" },
+            if config.show_terminal_progress {
+                "true"
+            } else {
+                "false"
+            },
             &["true", "false"],
         ),
     );
@@ -1476,7 +1508,10 @@ mod tests {
             "Fullscreen copy on select",
             "Theme",
         ] {
-            assert!(labels.iter().any(|l| l == label), "{label:?} missing in {labels:?}");
+            assert!(
+                labels.iter().any(|l| l == label),
+                "{label:?} missing in {labels:?}"
+            );
         }
         // The image rows are inserted after auto-compact (upstream order).
         let auto_pos = body.find("Auto-compact").unwrap();
@@ -1571,10 +1606,7 @@ mod tests {
         let _guard = setup();
         let mut selector = SettingsSelectorComponent::new(config());
         selector.select_item("theme");
-        assert_eq!(
-            selector.handle_key("\r"),
-            SettingsSelectorOutcome::Consumed
-        );
+        assert_eq!(selector.handle_key("\r"), SettingsSelectorOutcome::Consumed);
         assert!(selector.is_submenu_open());
         let body = plain(&mut selector);
         assert!(body.contains("Automatic"), "{body}");
@@ -1607,10 +1639,7 @@ mod tests {
         // Picking the Dark theme row opens the nested picker; choosing "light"
         // updates the preview.
         selector.handle_key("\x1b[B"); // -> Dark theme
-        assert_eq!(
-            selector.handle_key("\r"),
-            SettingsSelectorOutcome::Consumed
-        );
+        assert_eq!(selector.handle_key("\r"), SettingsSelectorOutcome::Consumed);
         let body = plain(&mut selector);
         assert!(body.contains("Dark Theme"), "{body}");
         selector.handle_key("\x1b[B"); // dark -> light... preselect is dark
@@ -1637,10 +1666,7 @@ mod tests {
         let _guard = setup();
         let mut selector = SettingsSelectorComponent::new(config());
         selector.select_item("warnings");
-        assert_eq!(
-            selector.handle_key("\r"),
-            SettingsSelectorOutcome::Consumed
-        );
+        assert_eq!(selector.handle_key("\r"), SettingsSelectorOutcome::Consumed);
         assert_eq!(
             selector.handle_key("\r"),
             SettingsSelectorOutcome::Change {
@@ -1655,15 +1681,9 @@ mod tests {
         let _guard = setup();
         let mut selector = SettingsSelectorComponent::new(config());
         selector.select_item("model-thinking");
-        assert_eq!(
-            selector.handle_key("\r"),
-            SettingsSelectorOutcome::Consumed
-        );
+        assert_eq!(selector.handle_key("\r"), SettingsSelectorOutcome::Consumed);
         // Step 1: the only model is pre-selected.
-        assert_eq!(
-            selector.handle_key("\r"),
-            SettingsSelectorOutcome::Consumed
-        );
+        assert_eq!(selector.handle_key("\r"), SettingsSelectorOutcome::Consumed);
         // Step 2: "off" is pre-selected (no override yet); down -> minimal.
         selector.handle_key("\x1b[B");
         assert_eq!(

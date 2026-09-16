@@ -1170,7 +1170,10 @@ async fn settings_command_cycles_a_value_and_closes() {
 
     assert_eq!(result, InteractiveOutcome::Exit(0));
     let output = rendered(&harness.writes);
-    assert!(output.contains("Auto-compact"), "panel rendered: {output:?}");
+    assert!(
+        output.contains("Auto-compact"),
+        "panel rendered: {output:?}"
+    );
     assert!(
         output.contains("Type to search"),
         "search box rendered: {output:?}"

@@ -345,7 +345,8 @@ fn in_memory_settings_are_loaded_and_migrated() {
 
 #[test]
 fn settings_selector_accessors_default_and_write() {
-    let mut manager = SettingsManager::in_memory(json!({}), SettingsManagerCreateOptions::default());
+    let mut manager =
+        SettingsManager::in_memory(json!({}), SettingsManagerCreateOptions::default());
 
     // Defaults.
     assert!(manager.image_auto_resize());
@@ -426,7 +427,8 @@ fn settings_selector_accessors_default_and_write() {
 
 #[test]
 fn model_thinking_levels_map_and_removal() {
-    let mut manager = SettingsManager::in_memory(json!({}), SettingsManagerCreateOptions::default());
+    let mut manager =
+        SettingsManager::in_memory(json!({}), SettingsManagerCreateOptions::default());
     manager.set_model_thinking_level("anthropic", "claude-opus-5", "high");
     manager.set_model_thinking_level("opencode-go", "omen-alpha", "low");
 
