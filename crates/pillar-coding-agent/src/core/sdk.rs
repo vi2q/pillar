@@ -581,11 +581,20 @@ pub async fn create_agent_session(
         let cell = Arc::clone(&agent_cell);
         let settings = Arc::clone(&settings_manager);
         let session_id = session_manager.session_id().to_string();
-        StreamFn::new(move |context, _options| {
+        StreamFn::new(move |context, stream_options| {
             let runtime = Arc::clone(&runtime);
             let settings = Arc::clone(&settings);
             let session_id = session_id.clone();
             let model = cell.get().map(|agent| agent.state().model);
+            // The agent's abort signal must reach the provider: it is what
+            // cancels an in-flight request when the user presses Escape
+            // (upstream passes `options.signal` straight through to the
+            // stream function). The port's agent and provider layers use
+            // separate signal types, so one is forwarded to the other.
+            let signal = stream_options
+                .as_ref()
+                .and_then(|options| options.abort.as_ref())
+                .map(bridge_abort_signal);
             async move {
                 match model {
                     Some(model) if model.id != "unknown" => {
@@ -596,6 +605,7 @@ pub async fn create_agent_session(
                                 settings,
                                 session_id,
                             )),
+                            signal,
                             ..Default::default()
                         };
                         runtime.stream_simple(&request_model, &context, Some(options))
@@ -686,6 +696,30 @@ fn default_agent_dir_string() -> Option<String> {
                 .map(|home| Path::new(&home).join(".pillar").join("agent"))
                 .map(|path| path.to_string_lossy().to_string())
         })
+}
+
+/// Forward the agent layer's abort signal onto a provider-layer signal
+/// (upstream has a single `AbortSignal` shared by both; the port's
+/// `pillar-agent` signal notifies through wakers, `pillar-ai`'s through a
+/// watch channel, so one task bridges them).
+fn bridge_abort_signal(source: &pillar_agent::AbortSignal) -> pillar_ai::abort::AbortSignal {
+    let target = pillar_ai::abort::AbortSignal::new();
+    if source.is_aborted() {
+        target.abort(None);
+        return target;
+    }
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        // No runtime to forward on (wasm / tests without tokio): the request
+        // keeps running, which matches the pre-bridge behavior.
+        return target;
+    };
+    let source = source.clone();
+    let forward = target.clone();
+    handle.spawn(async move {
+        source.aborted().await;
+        forward.abort(None);
+    });
+    target
 }
 
 fn no_model_stream() -> pillar_ai::event_stream::AssistantMessageEventStream {
