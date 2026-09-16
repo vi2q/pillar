@@ -12,7 +12,8 @@ use std::sync::{Arc, Mutex};
 
 use luaur_rt::{Function, Lua, LuaSerdeExt, TypeDiagnostic, Value, check_with_definitions};
 use pillar_coding_agent::core::extensions_types::{
-    ExtensionContextFn, ExtensionUiAskFn, ExtensionUiFn, ExtensionUiRequest,
+    ExtensionContextFn, ExtensionCustomEvent, ExtensionCustomFn, ExtensionCustomSurface,
+    ExtensionUiAskFn, ExtensionUiFn, ExtensionUiRequest,
 };
 
 /// One registration and the extension that made it. The shared VM records
@@ -179,7 +180,7 @@ pub type SharedRegistry = Arc<Mutex<HostRegistry>>;
 /// `false` when the host has no UI context, which is when the wrappers are
 /// no-ops (upstream `noOpUIContext`).
 const CONTEXT_LUA: &str = r#"
-local facts, ui_call, theme, themes, session_id, session_entries, is_idle, ui_ask = ...
+local facts, ui_call, theme, themes, session_id, session_entries, is_idle, ui_request, custom, keybindings_match = ...
 
 local ui = {}
 local function call(op, args)
@@ -197,8 +198,92 @@ ui.set_editor_text = function(text) call("set_editor_text", { text = text }) end
 ui.paste_to_editor = function(text) call("paste_to_editor", { text = text }) end
 ui.set_tools_expanded = function(expanded) call("set_tools_expanded", { expanded = expanded }) end
 ui.get_all_themes = function() return themes end
--- Blocking dialogs (upstream the awaited `ctx.ui` methods).
-ui.confirm = function(title, message) return ui_ask(title, message or "") end
+-- Blocking dialogs (upstream the awaited `ctx.ui` methods): `confirm`
+-- answers a boolean, `select` the chosen option, and `input` / `editor` the
+-- submitted text; a cancelled dialog answers `nil` (upstream `undefined`).
+ui.confirm = function(title, message)
+    return ui_request("confirm", { title = title, message = message or "" }) == true
+end
+ui.select = function(title, options)
+    return ui_request("select", { title = title, options = options })
+end
+ui.input = function(title, placeholder)
+    return ui_request("input", { title = title, placeholder = placeholder })
+end
+ui.editor = function(title, initial_text)
+    return ui_request("editor", { title = title, initialText = initial_text })
+end
+
+-- The `(tui, theme, keybindings, done)` factory arguments (upstream the live
+-- TUI / KeybindingsManager / Theme). divergence: `tui` exposes only
+-- `requestRender` (a no-op: every paint already repaints) and `keybindings`
+-- matches the resolved global bindings, not the host's user overrides.
+local keybindings = {}
+keybindings.matches = function(data, name) return keybindings_match(data, name) end
+
+local tui = {}
+tui.requestRender = function() end
+
+-- `ctx.ui.custom(factory, options)` (upstream `await ctx.ui.custom<T>`): the
+-- host mounts the returned component in the editor slot and this loop drives
+-- it from the extension's own thread until the component calls `done` or the
+-- host closes it. Upstream's `overlay` / `overlayOptions` / `onHandle` are not
+-- ported (the component fills the editor slot).
+ui.custom = function(factory, options)
+    if not facts.hasUI then return nil end
+    local id = custom.open(options)
+    if id == nil then return nil end
+    local doneCalled, doneValue = false, nil
+    local function done(result)
+        doneCalled = true
+        doneValue = result
+    end
+    local ok, component = pcall(factory, tui, theme, keybindings, done)
+    if not ok then
+        custom.close(id)
+        error(component)
+    end
+    if type(component) ~= "table" then
+        custom.close(id)
+        error("ctx.ui.custom: the factory must return a component table")
+    end
+    local function finish()
+        custom.close(id)
+        if component.dispose then pcall(component.dispose) end
+    end
+    if doneCalled then
+        finish()
+        return doneValue
+    end
+    local width = 0
+    while true do
+        local event = custom.next(id)
+        if event.kind == "close" then
+            finish()
+            return nil
+        end
+        if event.width ~= nil then width = event.width end
+        if event.kind == "input" and component.handle_input then
+            local handled, failure = pcall(component.handle_input, event.data)
+            if not handled then
+                finish()
+                error(failure)
+            end
+        end
+        if component.render then
+            local painted, lines = pcall(component.render, width)
+            if not painted then
+                finish()
+                error(lines)
+            end
+            if type(lines) == "table" then custom.paint(id, lines) end
+        end
+        if doneCalled then
+            finish()
+            return doneValue
+        end
+    end
+end
 
 local function styled(map, reset, color, text)
     local ansi = map[color]
@@ -364,6 +449,11 @@ pub struct HostApi {
     /// `ctx.ui.confirm(title, message)` and friends: the request/answer half
     /// of the UI bridge (upstream the awaited `ExtensionUIContext` methods).
     pub ui_ask: Option<ExtensionUiAskFn>,
+    /// `ctx.ui.custom(factory, options)` → the interactive run's installer
+    /// (upstream the mode mounting the factory's component). Without it the
+    /// surface waits for the run loop (the pre-loop queue), matching the
+    /// upstream pre-prompt queueing.
+    pub ui_custom: Option<ExtensionCustomFn>,
     /// The `ctx` facts (`cwd` / `mode` / `hasUI`; upstream the live
     /// `ExtensionContext` fields).
     pub context: Option<ExtensionContextFn>,
@@ -374,6 +464,17 @@ pub struct HostApi {
     /// `ctx.sessionManager.getEntries()` — the session entries as JSON
     /// (upstream the read-only session manager).
     pub session_entries: Option<GetJsonFn>,
+}
+
+/// One live `ctx.ui.custom` render loop: the pump's events and the frame the
+/// loop paints (upstream the factory's live component). The event sender lives
+/// on the pump's [`ExtensionCustomSurface`], so its drop tells the loop that
+/// the component is gone.
+struct CustomSession {
+    receiver: std::sync::mpsc::Receiver<ExtensionCustomEvent>,
+    lines: Arc<Mutex<Vec<String>>>,
+    revision: Arc<std::sync::atomic::AtomicU64>,
+    closed: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// The process-wide extension runtime.
@@ -833,11 +934,13 @@ impl ExtensionRuntime {
                 .to_value(&value)
                 .map_err(luaur_rt::Error::external)
         });
-        // `ctx.ui.confirm(title, message)` (upstream `await ctx.ui.confirm`):
-        // the host shows a dialog and answers a boolean. Without a dialog host
-        // the answer is `false`, matching upstream's `noOpUIContext`.
+        // `ctx.ui.confirm/select/input/editor` (upstream the awaited
+        // `ExtensionUIContext` methods): the host shows a dialog and answers
+        // its value. A cancelled dialog answers `null`, which the port maps to
+        // Lua `nil` (luaur's serde null sentinel would otherwise be truthy).
         let ask_slot = Arc::clone(&self.host_api);
-        let ui_ask = Function::wrap(move |title: String, message: String| {
+        let ask_lua = self.lua.clone();
+        let ui_request = Function::wrap(move |op: String, args: Value| {
             let callback = {
                 let guard = ask_slot
                     .lock()
@@ -845,15 +948,156 @@ impl ExtensionRuntime {
                 guard.ui_ask.clone()
             };
             let Some(callback) = callback else {
-                return Ok::<bool, luaur_rt::Error>(false);
+                return Ok::<Value, luaur_rt::Error>(Value::Nil);
             };
-            let answer = callback(ExtensionUiRequest {
-                op: "confirm".to_string(),
-                args: serde_json::json!({ "title": title, "message": message }),
-            })
-            .map_err(luaur_rt::Error::external)?;
-            Ok(answer.as_bool().unwrap_or(false))
+            let args = ask_lua
+                .from_value::<serde_json::Value>(args)
+                .map_err(luaur_rt::Error::external)?;
+            let answer = callback(ExtensionUiRequest { op, args })
+                .map_err(luaur_rt::Error::external)?;
+            if answer.is_null() {
+                return Ok(Value::Nil);
+            }
+            ask_lua.to_value(&answer).map_err(luaur_rt::Error::external)
         });
+
+        // `ctx.ui.custom(factory, options)`: the factory's component is rendered
+        // by the extension's own thread (it holds the runtime lock while the UI
+        // is open), so the host only mounts a surface and forwards events. The
+        // primitives below are the loop driver the Lua wrapper uses.
+        let custom_sessions: Arc<Mutex<std::collections::BTreeMap<u64, CustomSession>>> =
+            Arc::new(Mutex::new(std::collections::BTreeMap::new()));
+        let custom_ids = Arc::new(std::sync::atomic::AtomicU64::new(1));
+        let open_slot = Arc::clone(&self.host_api);
+        let open_sessions = Arc::clone(&custom_sessions);
+        let open_ids = Arc::clone(&custom_ids);
+        let custom_open = Function::wrap(move |_options: Option<Value>| {
+            let installer = {
+                let guard = open_slot
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                guard.ui_custom.clone()
+            };
+            let Some(installer) = installer else {
+                return Ok::<Option<f64>, luaur_rt::Error>(None);
+            };
+            let id = open_ids.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let lines = Arc::new(Mutex::new(Vec::new()));
+            let revision = Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let surface = ExtensionCustomSurface {
+                lines: Arc::clone(&lines),
+                revision: Arc::clone(&revision),
+                closed: Arc::clone(&closed),
+                events: pillar_coding_agent::core::extensions_types::ExtensionCustomEvents::new(
+                    sender,
+                ),
+            };
+            installer(surface).map_err(luaur_rt::Error::external)?;
+            open_sessions
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(
+                    id,
+                    CustomSession {
+                        receiver,
+                        lines,
+                        revision,
+                        closed,
+                    },
+                );
+            Ok(Some(id as f64))
+        });
+        let next_sessions = Arc::clone(&custom_sessions);
+        let next_lua = self.lua.clone();
+        let custom_next = Function::wrap(move |id: f64| {
+            let event = {
+                let guard = next_sessions
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let Some(session) = guard.get(&(id as u64)) else {
+                    return next_lua
+                        .to_value(&serde_json::json!({ "kind": "close" }))
+                        .map_err(luaur_rt::Error::external);
+                };
+                // Bounded like the dialog asks: a component awaited before the
+                // interactive run loop starts cannot be answered (the port's
+                // startup ordering), so the loop gives up instead of hanging.
+                session
+                    .receiver
+                    .recv_timeout(std::time::Duration::from_secs(600))
+            };
+            let payload = match event {
+                Ok(ExtensionCustomEvent::Resize(width)) => {
+                    serde_json::json!({ "kind": "resize", "width": width })
+                }
+                Ok(ExtensionCustomEvent::Input(data)) => {
+                    serde_json::json!({ "kind": "input", "data": data })
+                }
+                Ok(ExtensionCustomEvent::Close) | Err(_) => {
+                    serde_json::json!({ "kind": "close" })
+                }
+            };
+            next_lua
+                .to_value(&payload)
+                .map_err(luaur_rt::Error::external)
+        });
+        let paint_lua = self.lua.clone();
+        let paint_sessions = Arc::clone(&custom_sessions);
+        let custom_paint = Function::wrap(move |id: f64, lines: Value| {
+            let lines: Vec<String> = paint_lua
+                .from_value(lines)
+                .map_err(luaur_rt::Error::external)?;
+            let guard = paint_sessions
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(session) = guard.get(&(id as u64)) {
+                *session
+                    .lines
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = lines;
+                session
+                    .revision
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            Ok::<(), luaur_rt::Error>(())
+        });
+        let close_sessions = Arc::clone(&custom_sessions);
+        let custom_close = Function::wrap(move |id: f64| {
+            let session = close_sessions
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .remove(&(id as u64));
+            if let Some(session) = session {
+                session
+                    .closed
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                session
+                    .revision
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            Ok::<(), luaur_rt::Error>(())
+        });
+        let keybindings = Function::wrap(move |data: String, name: String| {
+            Ok::<bool, luaur_rt::Error>(pillar_tui::keybindings::with_global_keybindings(
+                |manager| manager.matches(&data, &name),
+            ))
+        });
+        let custom = self.lua.create_table();
+        let setup_error = |error: luaur_rt::Error| ExtensionLoadError::Setup(error.to_string());
+        custom
+            .set("open", custom_open)
+            .map_err(setup_error)?;
+        custom
+            .set("next", custom_next)
+            .map_err(setup_error)?;
+        custom
+            .set("paint", custom_paint)
+            .map_err(setup_error)?;
+        custom
+            .set("close", custom_close)
+            .map_err(setup_error)?;
 
         let idle_reader = Arc::clone(&self.host_api);
         let is_idle = Function::wrap(move || {
@@ -876,7 +1120,9 @@ impl ExtensionRuntime {
                 session_id,
                 session_entries,
                 is_idle,
-                ui_ask,
+                ui_request,
+                custom,
+                keybindings,
             ))
             .map_err(|error| ExtensionLoadError::Setup(error.to_string()))
     }
@@ -2332,6 +2578,165 @@ mod api_tests {
             serde_json::json!(active.fg("accent", "X"))
         );
         assert_eq!(result["details"]["plain"], serde_json::json!("Y"));
+    }
+
+    /// `ctx.ui.custom` mounts the factory's component, the pump's events drive
+    /// the loop, and the value the component hands to `done` is the call's
+    /// result (upstream `await ctx.ui.custom<T>`).
+    #[test]
+    fn context_ui_custom_drives_the_component_loop() {
+        use pillar_coding_agent::core::extensions_types::{
+            ExtensionContextFacts, ExtensionCustomEvent, ExtensionCustomSurface, ExtensionMode,
+        };
+
+        let shared: Arc<(Mutex<Option<ExtensionCustomSurface>>, std::sync::Condvar)> =
+            Arc::new((Mutex::new(None), std::sync::Condvar::new()));
+        let installed = Arc::clone(&shared);
+        let mut runtime = ExtensionRuntime::new();
+        runtime.set_host_api(HostApi {
+            context: Some(Arc::new(|| ExtensionContextFacts {
+                cwd: "/tmp".to_string(),
+                mode: ExtensionMode::Tui,
+                has_ui: true,
+            })),
+            ui_custom: Some(Arc::new(move |surface| {
+                let (lock, signal) = &*installed;
+                *lock.lock().unwrap() = Some(surface);
+                signal.notify_all();
+                Ok(())
+            })),
+            ..Default::default()
+        });
+        runtime
+            .load_extension(
+                "custom.luau",
+                r#"
+                local pillar = require("@pillar")
+                pillar.on("session_start", function(event, ctx)
+                    local result = ctx.ui.custom(function(tui, theme, keybindings, done)
+                        tui.requestRender()
+                        return {
+                            render = function(width) return { "frame " .. tostring(width) } end,
+                            handle_input = function(data)
+                                if data == "x" then done({ value = data }) end
+                            end,
+                        }
+                    end)
+                    return { value = result.value }
+                end)
+                return nil
+                "#,
+            )
+            .unwrap();
+
+        // The loop blocks the dispatching thread, so the pump is simulated
+        // from this one.
+        let driver = std::thread::spawn({
+            let shared = Arc::clone(&shared);
+            move || {
+                let (lock, signal) = &*shared;
+                let surface = {
+                    let mut guard = lock.lock().unwrap();
+                    while guard.is_none() {
+                        guard = signal.wait(guard).unwrap();
+                    }
+                    guard.take().unwrap()
+                };
+                let wait_for = |check: &dyn Fn() -> bool| {
+                    for _ in 0..1000 {
+                        if check() {
+                            return;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                    panic!("the render loop did not answer");
+                };
+                surface.events.send(ExtensionCustomEvent::Resize(12));
+                wait_for(&|| {
+                    surface.lines.lock().unwrap().as_slice() == ["frame 12".to_string()]
+                });
+                surface.events.send(ExtensionCustomEvent::Input("x".to_string()));
+                wait_for(&|| surface.closed.load(std::sync::atomic::Ordering::SeqCst));
+            }
+        });
+        let outcome = runtime
+            .dispatch("session_start", serde_json::json!({}))
+            .unwrap();
+        driver.join().unwrap();
+        match outcome {
+            HandlerOutcome::Table(table) => assert_eq!(table["value"], serde_json::json!("x")),
+            other => panic!("unexpected outcome: {other:?}"),
+        }
+    }
+
+    /// `ctx.ui.select` / `input` / `editor` forward the requested op and
+    /// answer its value; a cancelled dialog (`null`) answers `nil`.
+    #[test]
+    fn context_ui_dialog_wrappers_forward_their_op() {
+        use pillar_coding_agent::core::extensions_types::ExtensionUiRequest;
+        let seen: Arc<Mutex<Vec<ExtensionUiRequest>>> = Arc::new(Mutex::new(Vec::new()));
+        let asks: Arc<Mutex<Vec<ExtensionUiRequest>>> = Arc::clone(&seen);
+        let mut runtime = ExtensionRuntime::new();
+        runtime.set_host_api(HostApi {
+            ui_ask: Some(Arc::new(move |request: ExtensionUiRequest| {
+                let answer = match request.op.as_str() {
+                    "select" => serde_json::json!("two"),
+                    "input" => serde_json::Value::Null,
+                    "editor" => serde_json::json!("body"),
+                    _ => serde_json::json!(true),
+                };
+                asks.lock().unwrap().push(request);
+                Ok(answer)
+            })),
+            ..Default::default()
+        });
+        runtime
+            .load_extension(
+                "dialogs.luau",
+                r#"
+                local pillar = require("@pillar")
+                pillar.on("session_start", function(event, ctx)
+                    return {
+                        confirm = ctx.ui.confirm("Sure?", "Really?"),
+                        select = ctx.ui.select("Pick", { "one", "two" }),
+                        input = ctx.ui.input("Name", "type here") == nil,
+                        editor = ctx.ui.editor("Body", "seed"),
+                    }
+                end)
+                return nil
+                "#,
+            )
+            .unwrap();
+        let outcome = runtime
+            .dispatch("session_start", serde_json::json!({}))
+            .unwrap();
+        match outcome {
+            HandlerOutcome::Table(table) => {
+                assert_eq!(table["confirm"], serde_json::json!(true));
+                assert_eq!(table["select"], serde_json::json!("two"));
+                assert_eq!(table["input"], serde_json::json!(true));
+                assert_eq!(table["editor"], serde_json::json!("body"));
+            }
+            other => panic!("unexpected outcome: {other:?}"),
+        }
+        let calls = seen.lock().unwrap();
+        assert_eq!(calls.len(), 4);
+        assert_eq!(
+            calls[0].args,
+            serde_json::json!({ "title": "Sure?", "message": "Really?" })
+        );
+        assert_eq!(
+            calls[1].args,
+            serde_json::json!({ "title": "Pick", "options": ["one", "two"] })
+        );
+        assert_eq!(
+            calls[2].args,
+            serde_json::json!({ "title": "Name", "placeholder": "type here" })
+        );
+        assert_eq!(
+            calls[3].args,
+            serde_json::json!({ "title": "Body", "initialText": "seed" })
+        );
     }
 
     /// A `ui` host error surfaces to the caller as a catchable error.

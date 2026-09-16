@@ -18,6 +18,7 @@ pub mod custom_entry;
 pub mod custom_message;
 pub mod diff;
 pub mod dynamic_border;
+pub mod extension_custom;
 pub mod extension_input;
 pub mod extension_selector;
 pub mod footer;

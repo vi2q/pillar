@@ -498,6 +498,18 @@ fn install_host_api(
                 }
             }))
         },
+        // `ctx.ui.custom(...)`: the interactive run's installer; without one
+        // the surface is queued until the run loop starts.
+        ui_custom: {
+            let slot = Arc::clone(ui_slot);
+            Some(Arc::new(
+                move |surface: pillar_coding_agent::core::extensions_types::ExtensionCustomSurface| {
+                    let mut state = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    state.install_custom(surface);
+                    Ok(())
+                },
+            ))
+        },
         // `ctx.isIdle()` (upstream the session's `isIdle`).
         is_idle: {
             let slot = Arc::clone(slot);

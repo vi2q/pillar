@@ -60,6 +60,7 @@ Each pillar crate mirrors an upstream package directory. Port one upstream modul
 | `pillar-coding-agent/src/core/*` | `packages/coding-agent/src/core/*` |
 | `pillar-coding-agent/src/cli/*` | `packages/coding-agent/src/cli/*` |
 | `pillar-coding-agent/src/modes/*` | `packages/coding-agent/src/modes/*` |
+| `pillar-coding-agent/src/migrations.rs` | `packages/coding-agent/src/migrations.ts` |
 | `pillar-tui/src/*` | `packages/tui/src/*` |
 | `pillar-extensions/src/*` | no upstream module; semantics from `packages/coding-agent/src/core/extensions/*` |
 | `pillar-cli/src/*` | no upstream module; wires `packages/coding-agent/src/cli.ts` + `main.ts` to the Luau runtime |

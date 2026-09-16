@@ -5,8 +5,10 @@
 //! `coding-agent/main.ts`, because it is the only layer that can join the
 //! coding agent with the Luau extension runtime (docs/rules/01-architecture.md).
 //! The package subcommands (`install` / `remove` / `update` / `list`) live in
-//! [`pillar_cli::commands`]; `config` / `auth` and the migrations are not ported
-//! yet.
+//! [`pillar_cli::commands`], the `auth` commands in [`pillar_cli::auth`] (parsed
+//! before the normal option parser, as upstream does), and the startup
+//! migrations in `pillar_coding_agent::migrations`. `pillar config` is not
+//! ported yet.
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -58,6 +60,12 @@ use pillar_coding_agent::core::extensions_types::{ExtensionContextFacts, Extensi
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // `pillar auth …` parses its own options (upstream `runAuthCommand` runs
+    // before the normal parser, because the subcommand selects the legal
+    // options).
+    if let Some(code) = pillar_cli::auth::run_auth_command(&args, &agent_dir()).await {
+        return ExitCode::from(code as u8);
+    }
     let parsed = parse_args(&args);
 
     let mut has_error = false;
@@ -117,10 +125,18 @@ async fn main() -> ExitCode {
         std::io::stdin().is_terminal(),
         std::io::stdout().is_terminal(),
     );
+    // The one-time startup migrations (upstream `runMigrations`); the
+    // subcommands above returned before them.
+    let migrations = pillar_coding_agent::migrations::run_migrations(
+        &std::env::current_dir()
+            .unwrap_or_default()
+            .to_string_lossy(),
+        Path::new(&agent_dir()),
+    );
     match app_mode {
         AppMode::Print | AppMode::Json => run_print(&parsed, app_mode).await,
         AppMode::Rpc => run_rpc(&parsed).await,
-        AppMode::Interactive => run_interactive(&parsed).await,
+        AppMode::Interactive => run_interactive(&parsed, &migrations).await,
     }
 }
 
@@ -689,7 +705,14 @@ async fn run_rpc(parsed: &Args) -> ExitCode {
 
 /// Run the interactive TUI (upstream `main.ts`'s interactive branch plus the
 /// host loop in [`pillar_coding_agent::modes::interactive::run`]).
-async fn run_interactive(parsed: &Args) -> ExitCode {
+async fn run_interactive(
+    parsed: &Args,
+    migrations: &pillar_coding_agent::migrations::MigrationResult,
+) -> ExitCode {
+    // Upstream shows the deprecation warnings before the TUI takes the screen.
+    pillar_coding_agent::migrations::show_deprecation_warnings(
+        &migrations.deprecation_warnings,
+    );
     let (session, wiring) = match build_session(parsed, true).await {
         Ok(built) => built,
         Err(error) => {

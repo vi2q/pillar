@@ -272,6 +272,45 @@ impl ReadOnlyAuthStorage {
     }
 }
 
+#[async_trait]
+impl CredentialStore for ReadOnlyAuthStorage {
+    async fn read(
+        &self,
+        provider_id: &str,
+        _options: Option<&AuthOperationOptions>,
+    ) -> Result<Option<Credential>, AiError> {
+        self.read_credential(provider_id).map_err(AiError::Other)
+    }
+
+    async fn list(
+        &self,
+        _options: Option<&AuthOperationOptions>,
+    ) -> Result<Vec<CredentialInfo>, AiError> {
+        self.list_credentials().map_err(AiError::Other)
+    }
+
+    async fn modify(
+        &self,
+        _provider_id: &str,
+        _f: pillar_ai::auth_types::CredentialModifier<'_>,
+        _options: Option<&AuthOperationOptions>,
+    ) -> Result<Option<Credential>, AiError> {
+        Err(AiError::Other(
+            "Read-only credential storage cannot modify auth.json".to_string(),
+        ))
+    }
+
+    async fn delete(
+        &self,
+        _provider_id: &str,
+        _options: Option<&AuthOperationOptions>,
+    ) -> Result<(), AiError> {
+        Err(AiError::Other(
+            "Read-only credential storage cannot modify auth.json".to_string(),
+        ))
+    }
+}
+
 // --- models-store.ts -------------------------------------------------------------
 
 /// Stored provider catalogs: provider id -> entry.

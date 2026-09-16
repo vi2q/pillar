@@ -2649,6 +2649,58 @@ fn an_input_ask_answers_the_submitted_text() {
     assert_eq!(answer.try_recv(), Ok(Ok(serde_json::Value::Null)));
 }
 
+/// `ctx.ui.custom` mounts the component in the editor slot: the pump forwards
+/// keys and the render width to the extension's loop and shows the last frame
+/// the loop painted.
+#[test]
+fn a_custom_component_forwarded_and_painted() {
+    use pillar_coding_agent::core::extensions_types::{
+        ExtensionCustomEvent, ExtensionCustomEvents, ExtensionCustomSurface,
+    };
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    let session = session();
+    let mode = make_mode(&session);
+    let (events_tx, events_rx) = std::sync::mpsc::channel();
+    let lines = Arc::new(Mutex::new(vec!["frame".to_string()]));
+    let revision = Arc::new(AtomicU64::new(0));
+    let closed = Arc::new(AtomicBool::new(false));
+    let actions = mode.begin_extension_custom(ExtensionCustomSurface {
+        lines: Arc::clone(&lines),
+        revision: Arc::clone(&revision),
+        closed: Arc::clone(&closed),
+        events: ExtensionCustomEvents::new(events_tx),
+    });
+    assert!(actions.contains(&ModeAction::EditorSlotChanged), "{actions:?}");
+
+    // The first render reports the width; the frame the loop painted shows.
+    let mut mounted = mode.editor_slot_component();
+    assert_eq!(mounted.render(20), vec!["frame".to_string()]);
+    assert!(matches!(
+        events_rx.try_recv(),
+        Ok(ExtensionCustomEvent::Resize(20))
+    ));
+
+    // A key goes to the loop, not the editor.
+    mode.handle_selector_key("a").expect("custom selector");
+    assert!(matches!(
+        events_rx.try_recv(),
+        Ok(ExtensionCustomEvent::Input(data)) if data == "a"
+    ));
+
+    // A repaint is requested when the loop paints a new frame.
+    let _ = mode.take_dirty();
+    *lines.lock().unwrap() = vec!["next".to_string()];
+    revision.fetch_add(1, Ordering::SeqCst);
+    assert!(mode.poll_extension_custom().is_empty());
+    assert!(mode.take_dirty(), "the fresh frame repaints");
+
+    // The loop finishing closes the selector.
+    closed.store(true, Ordering::SeqCst);
+    let actions = mode.poll_extension_custom();
+    assert!(actions.contains(&ModeAction::EditorSlotChanged), "{actions:?}");
+}
+
 /// `select` without options is an error instead of an empty dialog.
 #[test]
 fn a_select_ask_without_options_answers_an_error() {

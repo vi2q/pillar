@@ -152,7 +152,7 @@ pub fn create_fuzzy_autocomplete_items<T>(
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use pillar_tui::components::{Spacer, Text};
-use pillar_tui::tui::{ComponentId, TuiBase};
+use pillar_tui::tui::{Component, ComponentId, TuiBase};
 
 use crate::core::agent_session_class::{AgentSession, AgentSessionEvent, StreamingBehavior};
 use crate::core::footer_data_provider::FooterDataProvider;
@@ -164,6 +164,7 @@ use crate::core::settings_manager::DoubleEscapeAction;
 use crate::core::truncate::TruncationResult;
 use crate::modes::interactive::autocomplete::InteractiveAutocomplete;
 use crate::modes::interactive::components::bash_execution::BashExecutionComponent;
+use crate::modes::interactive::components::extension_custom::ExtensionCustomComponent;
 use crate::modes::interactive::components::extension_input::{
     ExtensionInputComponent, ExtensionInputOutcome,
 };
@@ -428,6 +429,10 @@ pub enum ActiveSelector {
         token: u64,
         component: Shared<ExtensionInputComponent>,
     },
+    ExtensionCustom {
+        token: u64,
+        component: Shared<ExtensionCustomComponent>,
+    },
     UserMessage {
         token: u64,
         component: Shared<UserMessageSelectorComponent>,
@@ -448,6 +453,7 @@ impl ActiveSelector {
             ActiveSelector::Tree { token, .. } => *token,
             ActiveSelector::ExtensionSelector { token, .. } => *token,
             ActiveSelector::ExtensionInput { token, .. } => *token,
+            ActiveSelector::ExtensionCustom { token, .. } => *token,
             ActiveSelector::UserMessage { token, .. } => *token,
             ActiveSelector::Settings { token, .. } => *token,
         }
@@ -477,6 +483,7 @@ impl ActiveSelector {
             ActiveSelector::ExtensionInput { component, .. } => Box::new(
                 crate::modes::interactive::transcript::FocusHandle::new(component.clone()),
             ),
+            ActiveSelector::ExtensionCustom { component, .. } => Box::new(component.clone()),
             ActiveSelector::UserMessage { component, .. } => Box::new(
                 crate::modes::interactive::transcript::FocusHandle::new(component.clone()),
             ),
@@ -2185,6 +2192,45 @@ impl InteractiveMode {
         self.show_selector(ActiveSelector::ExtensionInput { token, component })
     }
 
+    /// Mount an extension's `ctx.ui.custom` component (upstream the mode
+    /// adding the factory's component to the editor slot). The extension's
+    /// render loop drives it through the surface.
+    pub fn begin_extension_custom(
+        &self,
+        surface: crate::core::extensions_types::ExtensionCustomSurface,
+    ) -> Vec<ModeAction> {
+        let token = self.next_selector_token.fetch_add(1, Ordering::SeqCst);
+        let component = Shared::new(ExtensionCustomComponent::new(surface));
+        self.show_selector(ActiveSelector::ExtensionCustom { token, component })
+    }
+
+    /// Repaint a `ctx.ui.custom` frame the render loop produced, and close the
+    /// selector once the loop finished. The pump calls this every iteration
+    /// (the render loop runs on the extension's thread, so it cannot request
+    /// the repaint itself).
+    pub fn poll_extension_custom(&self) -> Vec<ModeAction> {
+        let (token, component) = {
+            let guard = self.active_selector.lock().expect("active selector");
+            match guard.as_ref() {
+                Some(ActiveSelector::ExtensionCustom { token, component }) => {
+                    (*token, component.clone())
+                }
+                _ => return Vec::new(),
+            }
+        };
+        let (changed, closed) = {
+            let mut component = component.lock();
+            (component.poll(), component.is_closed())
+        };
+        if changed {
+            self.mark_dirty();
+        }
+        if closed {
+            return self.close_selector(Some(token));
+        }
+        Vec::new()
+    }
+
     /// Route one `ctx.ui` dialog request (the pump's `ExtensionUiAsk`).
     pub fn begin_extension_ask(
         &self,
@@ -3221,6 +3267,7 @@ impl InteractiveMode {
             Tree(u64, Shared<TreeSelectorComponent>),
             ExtensionSelector(u64, Shared<ExtensionSelectorComponent>),
             ExtensionInput(u64, Shared<ExtensionInputComponent>),
+            ExtensionCustom(u64, Shared<ExtensionCustomComponent>),
             UserMessage(u64, Shared<UserMessageSelectorComponent>),
             Settings(u64, Shared<SettingsSelectorComponent>),
         }
@@ -3247,6 +3294,9 @@ impl InteractiveMode {
                 }
                 Some(ActiveSelector::ExtensionInput { token, component }) => {
                     Handle::ExtensionInput(*token, component.clone())
+                }
+                Some(ActiveSelector::ExtensionCustom { token, component }) => {
+                    Handle::ExtensionCustom(*token, component.clone())
                 }
                 Some(ActiveSelector::UserMessage { token, component }) => {
                     Handle::UserMessage(*token, component.clone())
@@ -3389,6 +3439,13 @@ impl InteractiveMode {
                 }
                 UserMessageSelectorOutcome::Cancel => self.close_selector(Some(token)),
             },
+            // The custom component owns the keyboard (upstream it is the
+            // focused component); the pump only forwards the key to the
+            // extension's render loop.
+            Handle::ExtensionCustom(_token, component) => {
+                component.lock().handle_input(data);
+                Vec::new()
+            }
             // `/settings`: the panel stays open while changes apply (upstream
             // the callbacks mutate the live settings).
             Handle::Settings(token, component) => match component.lock().handle_key(data) {

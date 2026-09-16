@@ -419,8 +419,13 @@ pub struct ExtensionUiState {
     pub bridge: Option<ExtensionUiFn>,
     /// The pump-backed request/answer bridge (dialogs).
     pub ask: Option<ExtensionUiAskFn>,
+    /// The pump-backed `ctx.ui.custom` installer.
+    pub custom: Option<ExtensionCustomFn>,
     /// Requests queued before [`ExtensionUiState::bridge`] was installed.
     pub pending: Vec<ExtensionUiRequest>,
+    /// Custom components queued before [`ExtensionUiState::custom`] was
+    /// installed.
+    pub pending_custom: Vec<ExtensionCustomSurface>,
 }
 
 impl ExtensionUiState {
@@ -439,7 +444,86 @@ impl ExtensionUiState {
             }
         }
     }
+
+    /// Mount one `ctx.ui.custom` surface, queueing it until the interactive
+    /// run installs its installer.
+    pub fn install_custom(&mut self, surface: ExtensionCustomSurface) -> bool {
+        match self.custom.clone() {
+            Some(install) => install(surface).is_ok(),
+            None => {
+                if self.pending_custom.len() < 256 {
+                    self.pending_custom.push(surface);
+                }
+                false
+            }
+        }
+    }
 }
+
+/// One event the interactive mode sends to a `ctx.ui.custom` render loop
+/// (upstream the component's own `handleInput` / the TUI's resize).
+pub enum ExtensionCustomEvent {
+    /// A key sequence for the component.
+    Input(String),
+    /// The width the pump renders at.
+    Resize(usize),
+    /// The pump closed the component (session shutdown or a cancelled ask).
+    Close,
+}
+
+/// The shared surface of one `ctx.ui.custom` component: the extension thread
+/// renders into `lines` (upstream the factory's returned `Component` renders
+/// on the main thread; the port splits the two, so the pump reads the last
+/// painted frame).
+pub struct ExtensionCustomSurface {
+    /// The last frame the extension painted.
+    pub lines: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    /// Bumped on every paint so the pump can repaint without a channel.
+    pub revision: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// Set when the render loop gave up; a queued mount is then skipped.
+    pub closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The pump's events.
+    pub events: ExtensionCustomEvents,
+}
+
+impl std::fmt::Debug for ExtensionCustomSurface {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExtensionCustomSurface")
+            .field("revision", &self.revision.load(std::sync::atomic::Ordering::SeqCst))
+            .field("closed", &self.closed.load(std::sync::atomic::Ordering::SeqCst))
+            .finish()
+    }
+}
+
+/// The pump's end of a custom surface. The only owner of the event sender is
+/// the pump (the queued mount or the mounted component), so dropping the last
+/// handle tells the render loop that the component is gone.
+#[derive(Clone)]
+pub struct ExtensionCustomEvents(std::sync::Arc<ExtensionCustomEventsInner>);
+
+struct ExtensionCustomEventsInner(std::sync::mpsc::Sender<ExtensionCustomEvent>);
+
+impl Drop for ExtensionCustomEventsInner {
+    fn drop(&mut self) {
+        let _ = self.0.send(ExtensionCustomEvent::Close);
+    }
+}
+
+impl ExtensionCustomEvents {
+    pub fn new(sender: std::sync::mpsc::Sender<ExtensionCustomEvent>) -> Self {
+        Self(std::sync::Arc::new(ExtensionCustomEventsInner(sender)))
+    }
+
+    /// Send one event; `false` when the render loop is gone.
+    pub fn send(&self, event: ExtensionCustomEvent) -> bool {
+        self.0 .0.send(event).is_ok()
+    }
+}
+
+/// Host installer for `ctx.ui.custom` (upstream the mode mounting the
+/// factory's component in the editor slot).
+pub type ExtensionCustomFn =
+    std::sync::Arc<dyn Fn(ExtensionCustomSurface) -> Result<(), String> + Send + Sync>;
 
 /// Host bridge for the `ctx.ui` methods that answer a value (upstream
 /// `confirm` / `select` / `input` / `editor`): the caller blocks until the

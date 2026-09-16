@@ -117,6 +117,11 @@ enum UiCommand {
     /// The extension stopped waiting for `id` (its timeout expired): close the
     /// dialog if it is still the one showing.
     ExtensionUiAskCancel { id: u64 },
+    /// An extension opened a `ctx.ui.custom` component (upstream the mode
+    /// mounting the factory's component in the editor slot).
+    ExtensionCustom {
+        surface: crate::core::extensions_types::ExtensionCustomSurface,
+    },
     /// An extension called `ctx.ui.*` (upstream the mode's
     /// `ExtensionUIContext` mutating the UI directly; the port queues the
     /// request because the extension holds the Luau runtime lock).
@@ -338,6 +343,7 @@ pub async fn run_interactive(
         // channel, so a stale generation's request cannot reach this pump — its
         // reply sender is dropped with the previous run's queue.
         let ask_sender = ui_tx.clone();
+        let custom_sender = ui_tx.clone();
         let ask_pending = Arc::clone(&ui_pending);
         let ask_cancel_sender = ui_tx.clone();
         let ask_ids = Arc::clone(&ask_ids);
@@ -359,16 +365,38 @@ pub async fn run_interactive(
                 }
             }
         });
+        // `ctx.ui.custom`: the render loop runs on the extension's thread and
+        // drives the surface itself, so the installer only queues a mount.
+        let custom: crate::core::extensions_types::ExtensionCustomFn = {
+            let sender = custom_sender.clone();
+            Arc::new(move |surface| {
+                if surface
+                    .closed
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                {
+                    return Ok(());
+                }
+                sender
+                    .send(UiCommand::ExtensionCustom { surface })
+                    .map_err(|_| "ctx.ui: the interactive mode has stopped".to_string())
+            })
+        };
         // `session_start` runs before this loop, so an extension's UI setup is
         // queued in the slot: install the bridge and replay the queue.
         let queued = {
             let mut state = slot.lock().expect("extension ui slot");
             state.bridge = Some(Arc::clone(&bridge));
             state.ask = Some(ask);
-            std::mem::take(&mut state.pending)
+            state.custom = Some(custom);
+            let queued = std::mem::take(&mut state.pending);
+            let queued_custom = std::mem::take(&mut state.pending_custom);
+            (queued, queued_custom)
         };
-        for request in queued {
+        for request in queued.0 {
             let _ = bridge(request);
+        }
+        for surface in queued.1 {
+            let _ = custom_sender.send(UiCommand::ExtensionCustom { surface });
         }
     }
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
@@ -975,6 +1003,9 @@ fn pump_loop(
                     Vec::new()
                 }
                 UiCommand::ExtensionUiAskCancel { id } => mode.cancel_extension_ask(id),
+                UiCommand::ExtensionCustom { surface } => {
+                    mode.begin_extension_custom(surface)
+                }
                 UiCommand::ExtensionUi { op, args } => {
                     if let Err(error) = mode.handle_extension_ui(
                         &crate::core::extensions_types::ExtensionUiRequest { op, args },
@@ -1024,6 +1055,13 @@ fn pump_loop(
 
         // Host-driven animations (retry countdown, status expiry).
         mode.tick();
+        // `ctx.ui.custom` frames the render loop painted since the last
+        // iteration (and the close when it finished).
+        for action in mode.poll_extension_custom() {
+            if dispatch_action(&mut screen, &mode, editor_slot, &actions, action).is_err() {
+                break;
+            }
+        }
 
         // Terminal input.
         let mut requested_shutdown = false;

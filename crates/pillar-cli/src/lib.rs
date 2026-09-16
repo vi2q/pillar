@@ -5,6 +5,7 @@
 //! so it can be exercised by tests and reused by the runtime bootstrap, the
 //! startup trust decision in [`trust`], and the effect gate in [`effects`].
 
+pub mod auth;
 pub mod commands;
 pub mod effects;
 pub mod runner;

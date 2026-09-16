@@ -116,20 +116,18 @@ fn a_project_install_respects_the_trust_decision() {
 }
 
 #[test]
-fn config_and_auth_report_that_they_are_not_ported() {
-    for name in ["config", "auth"] {
-        let args = command(name, None, false);
-        let mut out: Vec<u8> = Vec::new();
-        let error = run_subcommand(
-            &args,
-            &temp_dir("cmd-x-cwd").to_string_lossy(),
-            &temp_dir("cmd-x-agent").to_string_lossy(),
-            None,
-            &mut out,
-        )
-        .expect_err("not ported");
-        assert!(error.contains("not ported"), "{error}");
-    }
+fn config_reports_that_it_is_not_ported() {
+    let args = command("config", None, false);
+    let mut out: Vec<u8> = Vec::new();
+    let error = run_subcommand(
+        &args,
+        &temp_dir("cmd-x-cwd").to_string_lossy(),
+        &temp_dir("cmd-x-agent").to_string_lossy(),
+        None,
+        &mut out,
+    )
+    .expect_err("not ported");
+    assert!(error.contains("not ported"), "{error}");
 }
 
 /// `--help` on a command prints its usage instead of running it.

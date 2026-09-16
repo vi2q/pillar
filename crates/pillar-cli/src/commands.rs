@@ -30,11 +30,11 @@ pub fn run_subcommand(
         return writeln!(out, "{}", help_for(args.command)).map_err(|error| error.to_string());
     }
     match args.command {
-        Subcommand::Config | Subcommand::Auth => {
-            return Err(format!(
-                "`pillar {}` is not ported yet",
-                args.command.name()
-            ));
+        Subcommand::Config => return Err("`pillar config` is not ported yet".to_string()),
+        // `pillar auth …` parses its own options and runs from the CLI entry
+        // point ([`crate::auth::run_auth_command`]) before the option parser.
+        Subcommand::Auth => {
+            return Err("`pillar auth` runs before subcommand dispatch".to_string());
         }
         _ => {}
     }
@@ -124,9 +124,8 @@ pub fn help_for(command: Subcommand) -> String {
         Subcommand::List => {
             "Usage: pillar list\n\nList the configured package sources and whether they are installed.".to_string()
         }
-        Subcommand::Config | Subcommand::Auth => {
-            format!("pillar {} is not ported yet.", command.name())
-        }
+        Subcommand::Config => "pillar config is not ported yet.".to_string(),
+        Subcommand::Auth => "Usage: pillar auth <command>\n\nPrint credentials or check provider readiness. See `pillar auth --help` for the commands.".to_string(),
     }
 }
 
