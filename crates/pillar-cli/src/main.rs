@@ -458,7 +458,7 @@ async fn fork_session(
 }
 
 async fn run_print(parsed: &Args, app_mode: AppMode) -> ExitCode {
-    let (session, _wiring) = match build_session(parsed).await {
+    let (session, wiring) = match build_session(parsed).await {
         Ok(built) => built,
         Err(error) => {
             eprintln!("Error: {error}");
@@ -471,6 +471,11 @@ async fn run_print(parsed: &Args, app_mode: AppMode) -> ExitCode {
     } else {
         PrintModeMode::Text
     };
+    let session = Arc::new(session);
+    wiring.bind_session(&session);
+    // Refresh before `bind_extensions` fires `session_start`, so extensions
+    // reading the tool / command lists during it see the real data.
+    wiring.refresh_extension_data();
     session
         .bind_extensions(ExtensionBindings {
             ui_context: Some(false),
@@ -478,6 +483,7 @@ async fn run_print(parsed: &Args, app_mode: AppMode) -> ExitCode {
             on_error: None,
         })
         .await;
+    wiring.refresh_extension_data();
 
     let cwd = std::env::current_dir()
         .unwrap_or_default()
@@ -512,7 +518,7 @@ async fn run_rpc(parsed: &Args) -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    let (session, _wiring) = match build_session_with(
+    let (session, wiring) = match build_session_with(
         parsed,
         Arc::clone(&model_runtime),
         SessionBuildInput {
@@ -535,6 +541,10 @@ async fn run_rpc(parsed: &Args) -> ExitCode {
     };
 
     let session = Arc::new(session);
+    wiring.bind_session(&session);
+    // Refresh before `bind_extensions` fires `session_start`, so extensions
+    // reading the tool / command lists during it see the real data.
+    wiring.refresh_extension_data();
     session
         .bind_extensions(ExtensionBindings {
             ui_context: Some(false),
@@ -542,6 +552,7 @@ async fn run_rpc(parsed: &Args) -> ExitCode {
             on_error: None,
         })
         .await;
+    wiring.refresh_extension_data();
 
     let out: Arc<Mutex<Box<dyn std::io::Write + Send>>> =
         Arc::new(Mutex::new(Box::new(std::io::stdout())));
@@ -564,7 +575,7 @@ async fn run_rpc(parsed: &Args) -> ExitCode {
 /// Run the interactive TUI (upstream `main.ts`'s interactive branch plus the
 /// host loop in [`pillar_coding_agent::modes::interactive::run`]).
 async fn run_interactive(parsed: &Args) -> ExitCode {
-    let (session, _wiring) = match build_session(parsed).await {
+    let (session, wiring) = match build_session(parsed).await {
         Ok(built) => built,
         Err(error) => {
             eprintln!("Error: {error}");
@@ -572,6 +583,10 @@ async fn run_interactive(parsed: &Args) -> ExitCode {
         }
     };
     let mut session = Arc::new(session);
+    wiring.bind_session(&session);
+    // Refresh before `bind_extensions` fires `session_start`, so extensions
+    // reading the tool / command lists during it see the real data.
+    wiring.refresh_extension_data();
     session
         .bind_extensions(ExtensionBindings {
             ui_context: Some(false),
@@ -579,6 +594,7 @@ async fn run_interactive(parsed: &Args) -> ExitCode {
             on_error: None,
         })
         .await;
+    wiring.refresh_extension_data();
 
     let cwd = std::env::current_dir()
         .unwrap_or_default()
@@ -708,6 +724,9 @@ async fn run_interactive(parsed: &Args) -> ExitCode {
             on_error: None,
         })
         .await;
+        if let Some(wiring) = wiring.as_ref() {
+            wiring.refresh_extension_data();
+        }
         session = next;
         wirings.extend(wiring);
         options.initial_message = None;
@@ -792,8 +811,12 @@ impl CliRuntimeHost {
             },
         )
         .await?;
-        self.wirings.lock().expect("wirings lock").push(wiring);
         let session = Arc::new(session);
+        wiring.bind_session(&session);
+    // Refresh before `bind_extensions` fires `session_start`, so extensions
+    // reading the tool / command lists during it see the real data.
+    wiring.refresh_extension_data();
+        self.wirings.lock().expect("wirings lock").push(wiring);
         *self.current.lock().expect("current session lock") = Some(Arc::clone(&session));
         Ok(session)
     }

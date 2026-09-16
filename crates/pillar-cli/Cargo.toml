@@ -15,9 +15,9 @@ async-trait = "0.1"
 pillar-coding-agent = { path = "../pillar-coding-agent" }
 pillar-extensions = { path = "../pillar-extensions" }
 pillar-agent = { path = "../pillar-agent" }
+pillar-ai = { path = "../pillar-ai" }
+serde_json.workspace = true
 tokio = { version = "1.47", features = ["rt", "macros"] }
 
 [dev-dependencies]
-pillar-ai = { path = "../pillar-ai" }
-serde_json.workspace = true
 tokio = { version = "1.47", features = ["rt", "macros", "time"] }

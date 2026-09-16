@@ -3053,3 +3053,65 @@ async fn navigate_tree_honours_the_extension_cancel() {
     // The leaf did not move.
     assert_eq!(session.get_leaf_id().as_deref(), Some(ids[3].as_str()));
 }
+
+/// Regression: an extension handler that mutates the session (upstream
+/// allowed — handlers run without a held lock) must not deadlock even though
+/// the port holds the runner mutex for the whole dispatch. The nested event
+/// is queued and delivered after the outer dispatch.
+#[tokio::test]
+async fn extension_handlers_may_trigger_session_mutations_without_deadlocking() {
+    use pillar_coding_agent::core::agent_session_class::ExtensionBindings;
+    use pillar_coding_agent::core::extensions_runner::{ExtensionHandler, HostExtension};
+
+    // The handler needs the session, which does not exist yet (the same
+    // late-binding the CLI uses).
+    let slot: Arc<Mutex<Option<Arc<AgentSession>>>> = Arc::new(Mutex::new(None));
+    let handler: ExtensionHandler = {
+        let slot = Arc::clone(&slot);
+        Arc::new(move |event: &serde_json::Value| {
+            if event["type"] == "session_start" {
+                if let Some(session) = slot.lock().unwrap().clone() {
+                    // Emits `thinking_level_select` from inside the dispatch.
+                    session.set_thinking_level("low", false);
+                }
+            }
+            Ok(None)
+        })
+    };
+    let mut handlers = BTreeMap::new();
+    handlers.insert("session_start".to_string(), vec![handler]);
+    let extension = HostExtension {
+        path: "<inline>".to_string(),
+        handlers,
+        commands: Vec::new(),
+        tools: BTreeMap::new(),
+        flags: BTreeMap::new(),
+        shortcuts: BTreeMap::new(),
+    };
+    let runner = Arc::new(Mutex::new(ExtensionRunner::new(vec![extension])));
+    // A reasoning model, so the level is not clamped back to "off".
+    let mut model = mock_model();
+    model.reasoning = true;
+    let (session, _) = make_session_with_model_and_runner(
+        threshold_compaction_stream(),
+        serde_json::json!({ "retry": { "enabled": false } }),
+        model,
+        runner,
+    );
+    *slot.lock().unwrap() = Some(Arc::clone(&session));
+
+    // A regression would hold the runner lock forever; the timeout turns that
+    // into a failing test instead of a hanging suite.
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        session.bind_extensions(ExtensionBindings {
+            ui_context: Some(true),
+            mode: Some("tui".to_string()),
+            on_error: None,
+        }),
+    )
+    .await
+    .expect("extension dispatch must not deadlock");
+
+    assert_eq!(session.thinking_level(), "low");
+}

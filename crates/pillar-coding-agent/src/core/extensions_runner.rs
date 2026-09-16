@@ -145,6 +145,45 @@ pub fn build_builtin_keybindings(
 
 type ErrorListener = Box<dyn Fn(&ExtensionError) + Send>;
 
+thread_local! {
+    /// Whether this thread is currently inside an extension dispatch.
+    /// The runner mutex is held for the whole dispatch (handlers run under
+    /// it), so a handler that triggers another extension event would
+    /// deadlock: those events are queued instead and delivered right after
+    /// the outermost dispatch on the thread.
+    static IN_EXTENSION_DISPATCH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Events queued while a dispatch is in flight (see above).
+    static PENDING_EXTENSION_EVENTS: std::cell::RefCell<std::collections::VecDeque<serde_json::Value>> =
+        const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
+}
+
+/// Whether the current thread is inside an extension dispatch (upstream has
+/// no such state: its handlers run without a held lock).
+pub fn in_extension_dispatch() -> bool {
+    IN_EXTENSION_DISPATCH.with(std::cell::Cell::get)
+}
+
+/// Queue an extension event for delivery right after the outermost dispatch
+/// on this thread (see [`in_extension_dispatch`]).
+pub fn queue_extension_event(event: serde_json::Value) {
+    PENDING_EXTENSION_EVENTS.with(|queue| queue.borrow_mut().push_back(event));
+}
+
+fn take_queued_extension_event() -> Option<serde_json::Value> {
+    PENDING_EXTENSION_EVENTS.with(|queue| queue.borrow_mut().pop_front())
+}
+
+/// Run one dispatch body: the outermost call drains the events queued by
+/// nested calls (a nested call returns immediately when it only queued).
+pub(crate) fn run_dispatch<T>(run: impl FnOnce() -> T) -> (T, bool) {
+    let nested = IN_EXTENSION_DISPATCH.with(|flag| flag.replace(true));
+    let result = run();
+    if !nested {
+        IN_EXTENSION_DISPATCH.with(|flag| flag.set(false));
+    }
+    (result, !nested)
+}
+
 /// The extension runner (upstream `ExtensionRunner`).
 pub struct ExtensionRunner {
     extensions: Vec<HostExtension>,
@@ -393,6 +432,16 @@ impl ExtensionRunner {
     /// order; errors go to listeners without stopping other handlers;
     /// session-before events short-circuit on `cancel: true`.
     pub fn emit(&self, event: &ExtensionEventPayload) -> Option<serde_json::Value> {
+        let (result, outermost) = run_dispatch(|| self.emit_inner(event));
+        if outermost {
+            while let Some(next) = take_queued_extension_event() {
+                let _ = self.emit_inner(&next);
+            }
+        }
+        result
+    }
+
+    fn emit_inner(&self, event: &ExtensionEventPayload) -> Option<serde_json::Value> {
         let event_type = event
             .get("type")
             .and_then(serde_json::Value::as_str)

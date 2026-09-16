@@ -10,10 +10,37 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use std::sync::Mutex;
+
 use pillar_agent::types::AgentTool;
+use pillar_coding_agent::core::agent_session::CustomDelivery;
+use pillar_coding_agent::core::agent_session_class::{
+    AgentSession, SendCustomMessageOptions, SendUserMessageOptions, StreamingBehavior,
+};
 use pillar_coding_agent::core::extensions_luau::{build_luau_runner, discover_luau_paths};
 use pillar_coding_agent::core::extensions_runner::ExtensionRunner;
 use pillar_extensions::loader::{LuauLoader, SharedRuntime, create_luau_loader};
+
+/// The session handle the `@pillar` host callbacks resolve at call time.
+///
+/// divergence: the runtime is built before the session exists (the runner
+/// must be ready for `createAgentSession`), so the callbacks read the session
+/// through this slot instead of capturing it directly. `bind_session` fills it
+/// once the caller has the `Arc`.
+pub type SessionSlot = Arc<Mutex<Option<Arc<AgentSession>>>>;
+
+/// The command / tool data `get_commands` and the tool getters answer.
+///
+/// divergence: upstream reads these straight from the runner, but the port's
+/// runner is behind a mutex that is *held* while an extension handler runs, so
+/// a handler calling back into it would deadlock. The host refreshes this
+/// snapshot (outside dispatch) and the callbacks read only it.
+#[derive(Clone, Debug, Default)]
+pub struct ExtensionDataSnapshot {
+    pub commands: serde_json::Value,
+    pub all_tools: serde_json::Value,
+    pub active_tools: serde_json::Value,
+}
 
 /// The Luau runtime plus the runner built from the discovered extension
 /// files. The runtime must outlive the runner's extension bridges.
@@ -23,6 +50,10 @@ pub struct ExtensionWiring {
     pub runner: ExtensionRunner,
     /// `(path, error)` for extensions that failed to load.
     pub errors: Vec<(String, String)>,
+    /// The live session the host callbacks resolve (see [`SessionSlot`]).
+    pub session_slot: SessionSlot,
+    /// Command / tool data for the `@pillar` getters.
+    pub data: Arc<Mutex<ExtensionDataSnapshot>>,
 }
 
 /// Discover and load Luau extensions for `cwd` and build the runner.
@@ -39,12 +70,260 @@ pub fn build_extension_runner(
     let paths = discover_luau_paths(global_dir, project_dir, configured, cwd);
     let (runtime, loader) = create_luau_loader(None);
     let (runner, errors) = build_luau_runner(&paths, cwd, &loader, true);
+    let session_slot: SessionSlot = Arc::new(Mutex::new(None));
+    let data = Arc::new(Mutex::new(ExtensionDataSnapshot::default()));
+    install_host_api(&runtime, &session_slot, &data, cwd);
     ExtensionWiring {
         runtime,
         loader,
         runner,
         errors,
+        session_slot,
+        data,
     }
+}
+
+/// Install the `@pillar` host callbacks (upstream the runtime binding the
+/// ExtensionAPI to the session): every callback resolves the live session
+/// through `slot` at call time, so extensions loaded before the session exists
+/// still work once [`ExtensionWiring::bind_session`] runs.
+fn install_host_api(
+    runtime: &SharedRuntime,
+    slot: &SessionSlot,
+    data: &Arc<Mutex<ExtensionDataSnapshot>>,
+    cwd: &str,
+) {
+    use pillar_extensions::runtime::HostApi;
+
+    let session = |slot: &SessionSlot| -> Result<Arc<AgentSession>, String> {
+        slot.lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+            .ok_or_else(|| "extension API: the session is not ready yet".to_string())
+    };
+    let tokio_handle = tokio::runtime::Handle::try_current().ok();
+
+    let api = HostApi {
+        get_flag: Some(Arc::new(|_name: &str| None)),
+        append_entry: {
+            let slot = Arc::clone(slot);
+            Some(Arc::new(
+                move |custom_type: &str, data: Option<serde_json::Value>| {
+                    let session = session(&slot)?;
+                    session
+                        .session_manager()
+                        .lock()
+                        .expect("session lock")
+                        .append_custom_entry(custom_type, data)
+                        .map(|_| ())
+                },
+            ))
+        },
+        send_message: {
+            let slot = Arc::clone(slot);
+            let handle = tokio_handle.clone();
+            Some(Arc::new(move |json: serde_json::Value| {
+                let session = session(&slot)?;
+                let Some(handle) = handle.clone() else {
+                    return Err("extension API: no async runtime for send_message".to_string());
+                };
+                let (message, options) = custom_message_from_json(json);
+                handle.spawn(async move {
+                    if let Err(error) = session.send_custom_message(message, options.as_ref()).await
+                    {
+                        eprintln!("extension send_message failed: {error}");
+                    }
+                });
+                Ok(())
+            }))
+        },
+        send_user_message: {
+            let slot = Arc::clone(slot);
+            let handle = tokio_handle.clone();
+            Some(Arc::new(move |json: serde_json::Value| {
+                let session = session(&slot)?;
+                let Some(handle) = handle.clone() else {
+                    return Err("extension API: no async runtime for send_user_message".to_string());
+                };
+                let (content, options) = user_message_from_json(json);
+                handle.spawn(async move {
+                    if let Err(error) = session.send_user_message(content, options.as_ref()).await
+                    {
+                        eprintln!("extension send_user_message failed: {error}");
+                    }
+                });
+                Ok(())
+            }))
+        },
+        set_session_name: {
+            let slot = Arc::clone(slot);
+            Some(Arc::new(move |name: &str| {
+                session(&slot)?.set_session_name(name)
+            }))
+        },
+        get_session_name: {
+            let slot = Arc::clone(slot);
+            Some(Arc::new(move || {
+                session(&slot)
+                    .ok()
+                    .and_then(|session| {
+                        session
+                            .session_manager()
+                            .lock()
+                            .expect("session lock")
+                            .session_name()
+                    })
+            }))
+        },
+        set_label: {
+            let slot = Arc::clone(slot);
+            Some(Arc::new(move |entry_id: &str, label: Option<&str>| {
+                session(&slot)?
+                    .session_manager()
+                    .lock()
+                    .expect("session lock")
+                    .append_label_change(entry_id, label)
+                    .map(|_| ())
+            }))
+        },
+        get_commands: {
+            let data = Arc::clone(data);
+            Some(Arc::new(move || {
+                data.lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .commands
+                    .clone()
+            }))
+        },
+        get_active_tools: {
+            let data = Arc::clone(data);
+            Some(Arc::new(move || {
+                data.lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .active_tools
+                    .clone()
+            }))
+        },
+        get_all_tools: {
+            let data = Arc::clone(data);
+            Some(Arc::new(move || {
+                data.lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .all_tools
+                    .clone()
+            }))
+        },
+        get_thinking_level: {
+            let slot = Arc::clone(slot);
+            Some(Arc::new(move || session(&slot).ok().map(|s| s.thinking_level())))
+        },
+        set_thinking_level: {
+            let slot = Arc::clone(slot);
+            Some(Arc::new(move |level: &str| {
+                session(&slot)?.set_thinking_level(level, false);
+                Ok(())
+            }))
+        },
+    };
+    let _ = cwd;
+    runtime
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .set_host_api(api);
+}
+
+/// Build the agent custom message from the extension's table (upstream the
+/// `sendMessage` payload).
+fn custom_message_from_json(
+    json: serde_json::Value,
+) -> (pillar_agent::types::CustomMessage, Option<SendCustomMessageOptions>) {
+    let custom_type = json
+        .get("customType")
+        .or_else(|| json.get("custom_type"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let content = json
+        .get("content")
+        .and_then(|value| serde_json::from_value::<pillar_ai::types::UserContent>(value.clone()).ok())
+        .unwrap_or_else(|| pillar_ai::types::UserContent::Text(String::new()));
+    let display = json
+        .get("display")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
+    let details = json.get("details").cloned();
+    let options = json.get("options").and_then(|options| {
+        let deliver_as = options
+            .get("deliverAs")
+            .or_else(|| options.get("deliver_as"))
+            .and_then(serde_json::Value::as_str)
+            .and_then(|value| match value {
+                "steer" => Some(CustomDelivery::Steer),
+                "followUp" => Some(CustomDelivery::FollowUp),
+                "nextTurn" => Some(CustomDelivery::NextTurn),
+                _ => None,
+            });
+        let trigger_turn = options
+            .get("triggerTurn")
+            .or_else(|| options.get("trigger_turn"))
+            .and_then(serde_json::Value::as_bool);
+        (deliver_as.is_some() || trigger_turn.is_some()).then_some(SendCustomMessageOptions {
+            trigger_turn,
+            deliver_as,
+        })
+    });
+    (
+        pillar_agent::types::CustomMessage {
+            custom_type,
+            content,
+            display,
+            details,
+            timestamp: pillar_ai::models::now_ms(),
+        },
+        options,
+    )
+}
+
+/// Build the user message from the extension's table (upstream the
+/// `sendUserMessage` payload: a string or content blocks, plus options).
+fn user_message_from_json(
+    json: serde_json::Value,
+) -> (pillar_ai::types::UserContent, Option<SendUserMessageOptions>) {
+    let content = match &json {
+        serde_json::Value::String(text) => pillar_ai::types::UserContent::Text(text.clone()),
+        serde_json::Value::Array(blocks) => serde_json::from_value::<pillar_ai::types::UserContent>(
+            serde_json::Value::Array(blocks.clone()),
+        )
+        .unwrap_or_else(|_| pillar_ai::types::UserContent::Text(String::new())),
+        other => other
+            .get("content")
+            .and_then(|value| {
+                serde_json::from_value::<pillar_ai::types::UserContent>(value.clone()).ok()
+            })
+            .unwrap_or_else(|| pillar_ai::types::UserContent::Text(String::new())),
+    };
+    let options = json.get("options").and_then(|options| {
+        let deliver_as = options
+            .get("deliverAs")
+            .or_else(|| options.get("deliver_as"))
+            .and_then(serde_json::Value::as_str)
+            .and_then(|value| match value {
+                "steer" => Some(StreamingBehavior::Steer),
+                "followUp" => Some(StreamingBehavior::FollowUp),
+                _ => None,
+            });
+        let expand_prompt_templates = options
+            .get("expandPromptTemplates")
+            .or_else(|| options.get("expand_prompt_templates"))
+            .and_then(serde_json::Value::as_bool);
+        (deliver_as.is_some() || expand_prompt_templates.is_some()).then_some(
+            SendUserMessageOptions {
+                deliver_as,
+                expand_prompt_templates,
+            },
+        )
+    });
+    (content, options)
 }
 
 /// Wrap a pre-built runner in the shared, mutable handle the session takes.
@@ -64,5 +343,79 @@ impl ExtensionWiring {
     /// Built from the runtime, so it must be called after the setup pass.
     pub fn custom_tools(&self) -> Vec<AgentTool> {
         pillar_extensions::bridge::bridge_to_agent_tools(&self.runtime)
+    }
+
+    /// Bind the live session the `@pillar` host callbacks resolve (upstream
+    /// the runtime constructing the ExtensionAPI with the session).
+    pub fn bind_session(&self, session: &Arc<AgentSession>) {
+        *self
+            .session_slot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::clone(session));
+    }
+
+    /// Refresh the command / tool snapshot the `@pillar` getters answer.
+    /// Call it after `bind_extensions` and after a reload — never from inside
+    /// an extension handler (the runner lock is held there).
+    pub fn refresh_extension_data(&self) {
+        let Some(session) = self
+            .session_slot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+        else {
+            return;
+        };
+        let tools = session.state().tools;
+        let (commands, owners) = {
+            let runner = session.extension_runner_arc();
+            let mut runner = runner.lock().expect("runner lock");
+            let commands = serde_json::Value::Array(
+                runner
+                    .registered_commands()
+                    .iter()
+                    .map(|command| {
+                        serde_json::json!({
+                            "name": command.invocation_name,
+                            "description": command.description,
+                            "source": command.source_path,
+                        })
+                    })
+                    .collect(),
+            );
+            let owners: Vec<Option<String>> = tools
+                .iter()
+                .map(|tool| runner.tool_owner(tool.name()))
+                .collect();
+            (commands, owners)
+        };
+        let all_tools = serde_json::Value::Array(
+            tools
+                .iter()
+                .zip(owners)
+                .map(|(tool, owner)| {
+                    serde_json::json!({
+                        "name": tool.name(),
+                        "description": tool.tool.description,
+                        "parameters": tool.tool.parameters,
+                        "source": owner.unwrap_or_else(|| "builtin".to_string()),
+                    })
+                })
+                .collect(),
+        );
+        let active_tools = serde_json::Value::Array(
+            tools
+                .iter()
+                .map(|tool| serde_json::Value::String(tool.name().to_string()))
+                .collect(),
+        );
+        *self
+            .data
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = ExtensionDataSnapshot {
+            commands,
+            all_tools,
+            active_tools,
+        };
     }
 }

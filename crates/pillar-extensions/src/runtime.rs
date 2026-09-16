@@ -126,6 +126,13 @@ declare pillar: {
     send_message: (message: any) -> (),
     send_user_message: (message: any) -> (),
     set_session_name: (name: string) -> (),
+    get_session_name: () -> string?,
+    set_label: (entry_id: string, label: string?) -> (),
+    get_commands: () -> { any },
+    get_active_tools: () -> { string },
+    get_all_tools: () -> { any },
+    get_thinking_level: () -> string?,
+    set_thinking_level: (level: string) -> (),
     exec: (command: string, args: { number }?, opts: any?) -> any,
     events: {
         on: (channel: string, handler: (data: any) -> ()) -> (() -> ()),
@@ -149,15 +156,54 @@ pub type ExecHost = Arc<dyn Fn(&str, &[String]) -> serde_json::Value + Send + Sy
 
 /// Host callback for `pillar.get_flag` (upstream `getFlag`).
 pub type GetFlagFn = Arc<dyn Fn(&str) -> Option<serde_json::Value> + Send + Sync>;
+/// Host callback returning a string, used by `get_session_name` /
+/// `get_thinking_level`.
+pub type GetStringFn = Arc<dyn Fn() -> Option<String> + Send + Sync>;
+/// Host callback returning a JSON array, used by `get_commands` /
+/// `get_active_tools` / `get_all_tools`.
+pub type GetJsonFn = Arc<dyn Fn() -> serde_json::Value + Send + Sync>;
+/// Host callback for `pillar.append_entry(custom_type, data?)`.
+pub type AppendEntryFn = Arc<dyn Fn(&str, Option<serde_json::Value>) -> Result<(), String> + Send + Sync>;
+/// Host callback for `pillar.send_message` / `send_user_message`.
+pub type SendMessageFn = Arc<dyn Fn(serde_json::Value) -> Result<(), String> + Send + Sync>;
+/// Host callback for `pillar.set_session_name`.
+pub type SetSessionNameFn = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
+/// Host callback for `pillar.set_label(entry_id, label?)`.
+pub type SetLabelFn = Arc<dyn Fn(&str, Option<&str>) -> Result<(), String> + Send + Sync>;
+/// Host callback for `pillar.set_thinking_level(level)`.
+pub type SetThinkingLevelFn = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
 
 /// The host callbacks the `@pillar` API reads (upstream the pieces of
-/// the runtime the ExtensionAPI reaches). Each is optional: a missing
-/// callback answers the documented default (`nil`).
+/// the runtime the ExtensionAPI reaches). Each is optional: without a
+/// callback the method falls back to recording in the registry (so the
+/// host can apply it later) or answers the documented default.
 #[derive(Clone, Default)]
 pub struct HostApi {
     /// `pillar.get_flag(name)` → the parsed CLI flag value (upstream
     /// `getFlag`).
     pub get_flag: Option<GetFlagFn>,
+    /// `pillar.append_entry(custom_type, data?)` → the live session.
+    pub append_entry: Option<AppendEntryFn>,
+    /// `pillar.send_message(message)` → the live session.
+    pub send_message: Option<SendMessageFn>,
+    /// `pillar.send_user_message(content)` → the live session.
+    pub send_user_message: Option<SendMessageFn>,
+    /// `pillar.set_session_name(name)` → the live session.
+    pub set_session_name: Option<SetSessionNameFn>,
+    /// `pillar.get_session_name()` → the live session's name.
+    pub get_session_name: Option<GetStringFn>,
+    /// `pillar.set_label(entry_id, label?)` → the session manager.
+    pub set_label: Option<SetLabelFn>,
+    /// `pillar.get_commands()` → the session's slash commands.
+    pub get_commands: Option<GetJsonFn>,
+    /// `pillar.get_active_tools()` → the active tool names.
+    pub get_active_tools: Option<GetJsonFn>,
+    /// `pillar.get_all_tools()` → every configured tool's info.
+    pub get_all_tools: Option<GetJsonFn>,
+    /// `pillar.get_thinking_level()`.
+    pub get_thinking_level: Option<GetStringFn>,
+    /// `pillar.set_thinking_level(level)`.
+    pub set_thinking_level: Option<SetThinkingLevelFn>,
 }
 
 /// The process-wide extension runtime.
@@ -653,8 +699,11 @@ fn install_pillar_api(
         )
         .expect("set pillar.register_flag");
 
-    // pillar.append_entry(type, data?)
+    // pillar.append_entry(type, data?): the host persists it on the live
+    // session; the registry keeps a record so a host that applies later (or
+    // none at all) still sees the call.
     let entries = Arc::clone(registry);
+    let entries_api = Arc::clone(host_api);
     let lua_entries = lua.clone();
     module
         .set(
@@ -664,6 +713,15 @@ fn install_pillar_api(
                     Value::Nil => None,
                     other => Some(lua_entries.from_value::<serde_json::Value>(other)?),
                 };
+                let callback = {
+                    let guard = entries_api
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    guard.append_entry.clone()
+                };
+                if let Some(callback) = callback {
+                    callback(&kind, json.clone()).map_err(luaur_rt::Error::external)?;
+                }
                 entries
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -674,15 +732,31 @@ fn install_pillar_api(
         )
         .expect("set pillar.append_entry");
 
-    // pillar.send_message(msg) / pillar.send_user_message(msg)
+    // pillar.send_message(msg) / pillar.send_user_message(msg): the host
+    // delivers to the live session; the registry keeps a record.
     for name in ["send_message", "send_user_message"] {
         let sink = Arc::clone(registry);
+        let sink_api = Arc::clone(host_api);
         let sink_lua = lua.clone();
+        let is_user_message = name == "send_user_message";
         module
             .set(
                 name,
                 Function::wrap(move |message: Value| {
                     let json = sink_lua.from_value::<serde_json::Value>(message)?;
+                    let callback = {
+                        let guard = sink_api
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        if is_user_message {
+                            guard.send_user_message.clone()
+                        } else {
+                            guard.send_message.clone()
+                        }
+                    };
+                    if let Some(callback) = callback {
+                        callback(json.clone()).map_err(luaur_rt::Error::external)?;
+                    }
                     sink.lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner())
                         .messages
@@ -693,12 +767,23 @@ fn install_pillar_api(
             .expect("set pillar send");
     }
 
-    // pillar.set_session_name(name)
+    // pillar.set_session_name(name): the host sets it on the live session;
+    // the registry keeps a record.
     let names = Arc::clone(registry);
+    let names_api = Arc::clone(host_api);
     module
         .set(
             "set_session_name",
             Function::wrap(move |name: String| {
+                let callback = {
+                    let guard = names_api
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    guard.set_session_name.clone()
+                };
+                if let Some(callback) = callback {
+                    callback(&name).map_err(luaur_rt::Error::external)?;
+                }
                 names
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -708,6 +793,113 @@ fn install_pillar_api(
             }),
         )
         .expect("set pillar.set_session_name");
+
+    // pillar.get_session_name(): the live session's name (upstream
+    // `getSessionName`), nil when unset.
+    let get_name_api = Arc::clone(host_api);
+    module
+        .set(
+            "get_session_name",
+            Function::wrap(move || {
+                let callback = {
+                    let guard = get_name_api
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    guard.get_session_name.clone()
+                };
+                Ok::<Option<String>, luaur_rt::Error>(callback.and_then(|callback| callback()))
+            }),
+        )
+        .expect("set pillar.get_session_name");
+
+    // pillar.set_label(entry_id, label?)
+    let label_api = Arc::clone(host_api);
+    let lua_label = lua.clone();
+    module
+        .set(
+            "set_label",
+            Function::wrap(move |entry_id: String, label: Value| {
+                let label = match label {
+                    Value::Nil => None,
+                    other => Some(lua_label.from_value::<String>(other)?),
+                };
+                let callback = {
+                    let guard = label_api
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    guard.set_label.clone()
+                };
+                if let Some(callback) = callback {
+                    callback(&entry_id, label.as_deref()).map_err(luaur_rt::Error::external)?;
+                }
+                Ok::<(), luaur_rt::Error>(())
+            }),
+        )
+        .expect("set pillar.set_label");
+
+    // The JSON-array getters: `get_commands` / `get_active_tools` /
+    // `get_all_tools`. Without a host callback they answer an empty array.
+    for name in ["get_commands", "get_active_tools", "get_all_tools"] {
+        let getter_api = Arc::clone(host_api);
+        let getter_lua = lua.clone();
+        module
+            .set(
+                name,
+                Function::wrap(move || {
+                    let callback = {
+                        let guard = getter_api
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        match name {
+                            "get_commands" => guard.get_commands.clone(),
+                            "get_active_tools" => guard.get_active_tools.clone(),
+                            _ => guard.get_all_tools.clone(),
+                        }
+                    };
+                    let json = callback
+                        .map(|callback| callback())
+                        .unwrap_or_else(|| serde_json::json!([]));
+                    getter_lua.to_value(&json).map_err(luaur_rt::Error::external)
+                }),
+            )
+            .expect("set pillar tool/command getter");
+    }
+
+    // pillar.get_thinking_level() / set_thinking_level(level)
+    let thinking_get_api = Arc::clone(host_api);
+    module
+        .set(
+            "get_thinking_level",
+            Function::wrap(move || {
+                let callback = {
+                    let guard = thinking_get_api
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    guard.get_thinking_level.clone()
+                };
+                Ok::<Option<String>, luaur_rt::Error>(callback.and_then(|callback| callback()))
+            }),
+        )
+        .expect("set pillar.get_thinking_level");
+
+    let thinking_set_api = Arc::clone(host_api);
+    module
+        .set(
+            "set_thinking_level",
+            Function::wrap(move |level: String| {
+                let callback = {
+                    let guard = thinking_set_api
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    guard.set_thinking_level.clone()
+                };
+                if let Some(callback) = callback {
+                    callback(&level).map_err(luaur_rt::Error::external)?;
+                }
+                Ok::<(), luaur_rt::Error>(())
+            }),
+        )
+        .expect("set pillar.set_thinking_level");
 
     // pillar.get_flag(name): the parsed CLI flag value (upstream
     // `getFlag`); `nil` when the flag was not given.
@@ -931,6 +1123,7 @@ mod api_tests {
                 "level" => Some(serde_json::json!("high")),
                 _ => None,
             })),
+            ..Default::default()
         });
         runtime
             .load_extension(
@@ -972,8 +1165,7 @@ mod api_tests {
     /// handle unsubscribes (upstream `EventBus`).
     #[test]
     fn events_deliver_in_order_and_unsubscribe() {
-        let registry = run(
-            r#"
+        let registry = run(r#"
             local seen = {}
             local unsubscribe = pillar.events.on("chan", function(data)
                 table.insert(seen, data)
@@ -983,8 +1175,7 @@ mod api_tests {
             unsubscribe()
             pillar.events.emit("chan", "c")
             pillar.append_entry("seen", { values = seen })
-            "#,
-        );
+            "#);
         assert_eq!(
             registry.appended_entries[0].1,
             Some(serde_json::json!({ "values": ["a", "b"] }))
@@ -995,8 +1186,7 @@ mod api_tests {
     /// `safeHandler`).
     #[test]
     fn events_handler_errors_are_caught() {
-        let registry = run(
-            r#"
+        let registry = run(r#"
             pillar.events.on("chan", function()
                 error("boom")
             end)
@@ -1004,8 +1194,7 @@ mod api_tests {
                 pillar.append_entry("ok", { value = data })
             end)
             pillar.events.emit("chan", 7)
-            "#,
-        );
+            "#);
         assert_eq!(
             registry.appended_entries[0].1,
             Some(serde_json::json!({ "value": 7 }))
@@ -1073,6 +1262,147 @@ mod api_tests {
         assert_eq!(
             properties["tags"]["items"]["type"],
             serde_json::json!("string")
+        );
+    }
+
+    /// The session-facing methods call their host callbacks with the
+    /// upstream argument shapes (upstream the ExtensionAPI actions).
+    #[test]
+    fn session_methods_call_the_host_callbacks() {
+        type Appended = Vec<(String, Option<serde_json::Value>)>;
+        let appended: Arc<Mutex<Appended>> = Arc::new(Mutex::new(Vec::new()));
+        let sent: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
+        let names: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        type Labels = Vec<(String, Option<String>)>;
+        let labels: Arc<Mutex<Labels>> = Arc::new(Mutex::new(Vec::new()));
+        let levels: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+
+        let mut runtime = ExtensionRuntime::new();
+        let sink = Arc::clone(&appended);
+        let sink_send = Arc::clone(&sent);
+        let sink_names = Arc::clone(&names);
+        let sink_labels = Arc::clone(&labels);
+        let sink_levels = Arc::clone(&levels);
+        runtime.set_host_api(HostApi {
+            append_entry: Some(Arc::new(move |kind, data| {
+                sink.lock().unwrap().push((kind.to_string(), data));
+                Ok(())
+            })),
+            send_message: Some(Arc::new(move |json| {
+                sink_send.lock().unwrap().push(json);
+                Ok(())
+            })),
+            send_user_message: Some(Arc::new(|_json| Ok(()))),
+            set_session_name: Some(Arc::new(move |name| {
+                sink_names.lock().unwrap().push(name.to_string());
+                Ok(())
+            })),
+            get_session_name: Some(Arc::new(|| Some("session-name".to_string()))),
+            set_label: Some(Arc::new(move |entry_id, label| {
+                sink_labels
+                    .lock()
+                    .unwrap()
+                    .push((entry_id.to_string(), label.map(str::to_string)));
+                Ok(())
+            })),
+            get_commands: Some(Arc::new(|| serde_json::json!([{ "name": "hello" }]))),
+            get_active_tools: Some(Arc::new(|| serde_json::json!(["read", "write"]))),
+            get_all_tools: Some(Arc::new(|| serde_json::json!([{ "name": "read" }]))),
+            get_thinking_level: Some(Arc::new(|| Some("high".to_string()))),
+            set_thinking_level: Some(Arc::new(move |level| {
+                sink_levels.lock().unwrap().push(level.to_string());
+                Ok(())
+            })),
+            ..Default::default()
+        });
+        runtime
+            .load_extension(
+                "session.luau",
+                r#"
+                local pillar = require("@pillar")
+                pillar.append_entry("note", { text = "hi" })
+                pillar.send_message({ customType = "ext", content = "msg" })
+                pillar.send_user_message("hello")
+                pillar.set_session_name("named")
+                pillar.set_label("entry-1", "bookmark")
+                pillar.set_label("entry-2", nil)
+                pillar.set_thinking_level("low")
+                local level = pillar.get_thinking_level()
+                local name = pillar.get_session_name()
+                local commands = pillar.get_commands()
+                local active = pillar.get_active_tools()
+                local all = pillar.get_all_tools()
+                __api_seen = {
+                    level = level,
+                    name = name,
+                    commands = commands,
+                    active = active,
+                    all = all,
+                }
+                return nil
+                "#,
+            )
+            .unwrap();
+
+        assert_eq!(
+            appended.lock().unwrap().as_slice(),
+            &[(
+                "note".to_string(),
+                Some(serde_json::json!({ "text": "hi" }))
+            )]
+        );
+        assert_eq!(sent.lock().unwrap().len(), 1);
+        assert_eq!(names.lock().unwrap().as_slice(), &["named".to_string()]);
+        assert_eq!(
+            labels.lock().unwrap().as_slice(),
+            &[("entry-1".to_string(), Some("bookmark".to_string())), ("entry-2".to_string(), None)]
+        );
+        assert_eq!(levels.lock().unwrap().as_slice(), &["low".to_string()]);
+
+        let seen: serde_json::Value = runtime
+            .vm()
+            .load("return __api_seen")
+            .call(())
+            .and_then(|value| runtime.vm().from_value(value))
+            .unwrap();
+        assert_eq!(seen["level"], serde_json::json!("high"));
+        assert_eq!(seen["name"], serde_json::json!("session-name"));
+        assert_eq!(seen["commands"], serde_json::json!([{ "name": "hello" }]));
+        assert_eq!(seen["active"], serde_json::json!(["read", "write"]));
+        assert_eq!(seen["all"], serde_json::json!([{ "name": "read" }]));
+    }
+
+    /// A failing host callback surfaces as a catchable Lua error.
+    #[test]
+    fn host_callback_errors_are_catchable() {
+        let mut runtime = ExtensionRuntime::new();
+        runtime.set_host_api(HostApi {
+            set_session_name: Some(Arc::new(|_| Err("nope".to_string()))),
+            ..Default::default()
+        });
+        let error = runtime
+            .load_extension(
+                "failing.luau",
+                r#"
+                local pillar = require("@pillar")
+                local ok, err = pcall(function()
+                    pillar.set_session_name("x")
+                end)
+                __caught = tostring(err)
+                return nil
+                "#,
+            )
+            .unwrap_or_else(|error| panic!("load failed: {error:?}"));
+        assert!(error.path.ends_with("failing.luau"));
+        let caught: serde_json::Value = runtime
+            .vm()
+            .load("return __caught")
+            .call(())
+            .and_then(|value| runtime.vm().from_value(value))
+            .unwrap();
+        assert!(
+            caught.as_str().unwrap_or_default().contains("nope"),
+            "{caught:?}"
         );
     }
 

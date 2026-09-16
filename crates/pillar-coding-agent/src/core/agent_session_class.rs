@@ -451,6 +451,24 @@ struct SessionInner {
 impl SessionInner {
     /// Emit to all listeners (upstream `_emit`). Listeners run outside the
     /// state lock so they may call back into the session.
+    /// Emit a payload to the extension runner. When a handler is already
+    /// dispatching on this thread (the runner mutex is held for the whole
+    /// dispatch), the payload is queued and delivered right after the
+    /// outermost dispatch finishes.
+    ///
+    /// divergence: upstream delivers a nested emit immediately; the port
+    /// queues it (same order, after the outer dispatch).
+    fn emit_extensions(&self, payload: &Value) -> Option<Value> {
+        if crate::core::extensions_runner::in_extension_dispatch() {
+            crate::core::extensions_runner::queue_extension_event(payload.clone());
+            return None;
+        }
+        self.extension_runner
+            .lock()
+            .expect("runner lock")
+            .emit(payload)
+    }
+
     fn emit(&self, event: &AgentSessionEvent) {
         let listeners: Vec<AgentSessionEventListener> = self
             .state
@@ -1858,15 +1876,11 @@ impl AgentSession {
                     self.inner.emit(&AgentSessionEvent::ThinkingLevelChanged {
                         level: level.clone(),
                     });
-                    self.inner
-                        .extension_runner
-                        .lock()
-                        .expect("runner lock")
-                        .emit(&serde_json::json!({
-                            "type": "thinking_level_select",
-                            "level": level,
-                            "previousLevel": previous_level,
-                        }));
+                    self.inner.emit_extensions(&serde_json::json!({
+                        "type": "thinking_level_select",
+                        "level": level,
+                        "previousLevel": previous_level,
+                    }));
                 }
                 MutationEvent::ModelSelect { source, .. } => {
                     let model_json = model
@@ -1875,16 +1889,12 @@ impl AgentSession {
                     let previous_json = previous_model
                         .and_then(|model| serde_json::to_value(model).ok())
                         .unwrap_or(Value::Null);
-                    self.inner
-                        .extension_runner
-                        .lock()
-                        .expect("runner lock")
-                        .emit(&serde_json::json!({
-                            "type": "model_select",
-                            "model": model_json,
-                            "previousModel": previous_json,
-                            "source": source,
-                        }));
+                    self.inner.emit_extensions(&serde_json::json!({
+                        "type": "model_select",
+                        "model": model_json,
+                        "previousModel": previous_json,
+                        "source": source,
+                    }));
                 }
             }
         }

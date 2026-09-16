@@ -104,8 +104,5 @@ async fn configured_extensions_contribute_callable_tools() {
     )
     .await
     .expect("tool executes");
-    assert_eq!(
-        result.content[0],
-        pillar_ai::types::Content::text("HI")
-    );
+    assert_eq!(result.content[0], pillar_ai::types::Content::text("HI"));
 }
