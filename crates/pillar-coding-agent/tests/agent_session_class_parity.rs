@@ -2032,6 +2032,7 @@ async fn create_agent_session_wires_agent_tools_prompt_and_persistence() {
         system_prompt_rebuild: None,
         extension_runner_rebuild: None,
         stream_fn: Some(threshold_compaction_stream()),
+            command_handler: None,
     })
     .await
     .expect("session created");

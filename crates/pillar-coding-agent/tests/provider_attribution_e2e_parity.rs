@@ -192,6 +192,7 @@ async fn opencode_session_requests_carry_the_session_headers() {
         system_prompt_rebuild: None,
         extension_runner_rebuild: None,
         stream_fn: None,
+            command_handler: None,
     })
     .await
     .expect("session created");
