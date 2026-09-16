@@ -13,9 +13,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use pillar_coding_agent::core::tools::search::{
-    FindOptions, GrepOptions, find_files, grep_files,
-};
+use pillar_coding_agent::core::tools::search::{FindOptions, GrepOptions, find_files, grep_files};
 
 const CORPUS_FILES: usize = 1000;
 const CORPUS_LINES: usize = 40;
@@ -72,7 +70,11 @@ fn peak_rss_kb() -> Option<i64> {
         if unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) } == 0 {
             // Linux reports KB, macOS bytes.
             let raw = usage.ru_maxrss;
-            return Some(if cfg!(target_os = "macos") { raw / 1024 } else { raw });
+            return Some(if cfg!(target_os = "macos") {
+                raw / 1024
+            } else {
+                raw
+            });
         }
         None
     }
@@ -146,7 +148,11 @@ fn measure_search_corpus() {
                 },
             )
             .expect("grep");
-            result.text.lines().filter(|line| line.contains("needle")).count()
+            result
+                .text
+                .lines()
+                .filter(|line| line.contains("needle"))
+                .count()
         }),
         timed("grep no-hit", || {
             let result = grep_files(
@@ -171,7 +177,11 @@ fn measure_search_corpus() {
                 },
             )
             .expect("grep");
-            result.text.lines().filter(|line| line.contains("needle")).count()
+            result
+                .text
+                .lines()
+                .filter(|line| line.contains("needle"))
+                .count()
         }),
         timed("grep big.txt (200k lines)", || {
             let result = grep_files(
@@ -194,7 +204,10 @@ fn measure_search_corpus() {
         peak_rss_kb()
     );
     for (label, count, elapsed) in &cases {
-        println!("  {label:32} {count:6} results  {:8.1} ms", elapsed.as_secs_f64() * 1000.0);
+        println!(
+            "  {label:32} {count:6} results  {:8.1} ms",
+            elapsed.as_secs_f64() * 1000.0
+        );
     }
 
     // Contract guards: the hits are found (not dropped by batching or limits),

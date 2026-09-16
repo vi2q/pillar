@@ -200,7 +200,7 @@ fn configured_extensions_register_renderers() {
         .runner
         .get_message_renderer("notice")
         .expect("message renderer registered");
-    let mut component = renderer(
+    let rendered = renderer(
         &message,
         &MessageRenderOptions {
             expanded: false,
@@ -208,8 +208,8 @@ fn configured_extensions_register_renderers() {
         },
         &active,
     )
-    .expect("component");
-    let rendered = component.render(60).join("\n");
+    .expect("rendered lines")
+    .join("\n");
     assert!(rendered.contains("NOTICE"), "{rendered:?}");
     assert!(rendered.contains("deployed"), "{rendered:?}");
     assert!(rendered.contains("pad=4"), "{rendered:?}");
@@ -226,9 +226,9 @@ fn configured_extensions_register_renderers() {
         .runner
         .get_entry_renderer("widget")
         .expect("entry renderer registered");
-    let mut component = entry_renderer(&entry, &EntryRenderOptions { expanded: false }, &active)
-        .expect("component");
-    let rendered = component.render(60).join("\n");
+    let rendered = entry_renderer(&entry, &EntryRenderOptions { expanded: false }, &active)
+        .expect("rendered lines")
+        .join("\n");
     assert!(rendered.contains("widget 11"), "{rendered:?}");
 
     let transformers = wiring.runner.get_markdown_transformers();

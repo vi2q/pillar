@@ -59,14 +59,15 @@ impl CustomEntryComponent {
         let options = EntryRenderOptions {
             expanded: self.expanded,
         };
-        let rendered = (self.renderer)(&self.entry, &options, &theme());
-
-        let Some(component) = rendered else {
+        let Some(lines) = (self.renderer)(&self.entry, &options, &theme()) else {
             return;
         };
         self.has_content = true;
         self.container.add_child(Box::new(Spacer::new(1)));
-        self.container.add_child(component);
+        // The renderer answers themed lines; the component is the
+        // presentation adapter's (upstream's renderer returns a Component).
+        self.container
+            .add_child(Box::new(Text::new(&lines.join("\n"), 0, 0)));
     }
 
     /// Render the renderer failure notice upstream shows when the renderer

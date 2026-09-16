@@ -434,25 +434,17 @@ fn extension_renderers_reach_the_transcript() {
         };
         let message_renderer: pillar_coding_agent::core::extensions_types::MessageRenderer =
             std::sync::Arc::new(|message, options, _theme| {
-                Some(Box::new(pillar_tui::components::Text::new(
-                    &format!(
-                        "card body {} expanded={}",
-                        message.custom_type, options.expanded
-                    ),
-                    0,
-                    0,
-                )) as Box<dyn pillar_tui::tui::Component>)
+                Some(vec![format!(
+                    "card body {} expanded={}",
+                    message.custom_type, options.expanded
+                )])
             });
         extension
             .message_renderers
             .insert("card".to_string(), message_renderer);
         let entry_renderer: pillar_coding_agent::core::extensions_types::EntryRenderer =
             std::sync::Arc::new(|entry, _options, _theme| {
-                Some(Box::new(pillar_tui::components::Text::new(
-                    &format!("entry body {}", entry.custom_type),
-                    0,
-                    0,
-                )) as Box<dyn pillar_tui::tui::Component>)
+                Some(vec![format!("entry body {}", entry.custom_type)])
             });
         extension
             .entry_renderers

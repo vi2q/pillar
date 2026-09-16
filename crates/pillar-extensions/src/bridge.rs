@@ -25,8 +25,6 @@ use pillar_coding_agent::core::extensions_types::{
 use pillar_coding_agent::core::messages::{CustomContent, CustomMessage};
 use pillar_coding_agent::core::session_entries::CustomEntry;
 use pillar_coding_agent::modes::interactive::theme::Theme;
-use pillar_tui::components::Text;
-use pillar_tui::tui::Component;
 
 use crate::runtime::{ExtensionLoadError, ExtensionRuntime};
 
@@ -171,8 +169,8 @@ pub fn bridge_to_runner(
     // Custom renderers (upstream the extension's `messageRenderers` /
     // `entryRenderers` maps and its single `markdownTransformer`): the Lua
     // function answers a declarative component description
-    // ([`declarative_component`]) which the bridge converts with the active
-    // theme. A renderer error is reported to stderr and answers the upstream
+    // ([`declarative_lines`]) which the bridge converts with the active
+    // theme into themed lines. The presentation adapter wraps them. A renderer error is reported to stderr and answers the upstream
     // failure notice so the transcript still shows something.
     let mut message_renderers = std::collections::BTreeMap::new();
     for custom_type in registry
@@ -198,8 +196,8 @@ pub fn bridge_to_runner(
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .render_custom_message(&key, &payload, &options);
                 match result {
-                    Ok(value) => value.and_then(|value| declarative_component(theme, &value)),
-                    Err(error) => Some(renderer_error_component(theme, &hook, &error)),
+                    Ok(value) => value.and_then(|value| declarative_lines(theme, &value)),
+                    Err(error) => Some(renderer_error_lines(theme, &hook, &error)),
                 }
             },
         );
@@ -228,8 +226,8 @@ pub fn bridge_to_runner(
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .render_custom_entry(&key, &payload, &options);
                 match result {
-                    Ok(value) => value.and_then(|value| declarative_component(theme, &value)),
-                    Err(error) => Some(renderer_error_component(theme, &hook, &error)),
+                    Ok(value) => value.and_then(|value| declarative_lines(theme, &value)),
+                    Err(error) => Some(renderer_error_lines(theme, &hook, &error)),
                 }
             },
         );
@@ -340,20 +338,17 @@ fn custom_entry_payload(entry: &CustomEntry) -> serde_json::Value {
     }))
 }
 
-/// A rendered component from the active theme's error colour (upstream the
-/// failure notice `CustomEntryComponent` shows when a renderer throws).
-fn renderer_error_component(theme: &Theme, custom_type: &str, message: &str) -> Box<dyn Component> {
+/// The lines the failure notice shows when a renderer throws (upstream the
+/// notice `CustomEntryComponent` shows), styled with the theme's error colour.
+fn renderer_error_lines(theme: &Theme, custom_type: &str, message: &str) -> Vec<String> {
     eprintln!("pillar-extensions: [{custom_type}] renderer failed: {message}");
     let text = format!("[{custom_type}] renderer failed: {message}");
-    Box::new(Text::new(
-        &theme.try_fg("error", &text).unwrap_or(text),
-        0,
-        0,
-    ))
+    vec![theme.try_fg("error", &text).unwrap_or(text)]
 }
 
-/// Convert a Lua renderer's declarative result into a component (upstream the
-/// renderer returns a live `Component`; the port takes a description):
+/// Convert a Lua renderer's declarative result into themed lines (upstream the
+/// renderer returns a live `Component`; the port returns the description and
+/// the presentation adapter wraps it):
 ///
 /// - `nil` → `None`: fall back to the default rendering (messages) or skip
 ///   the entry (entries).
@@ -365,7 +360,7 @@ fn renderer_error_component(theme: &Theme, custom_type: &str, message: &str) -> 
 ///
 /// `style` is a theme foreground colour name (`text`, `dim`, `accent`,
 /// `success`, `error`, …); an unknown name renders unstyled.
-fn declarative_component(theme: &Theme, value: &serde_json::Value) -> Option<Box<dyn Component>> {
+fn declarative_lines(theme: &Theme, value: &serde_json::Value) -> Option<Vec<String>> {
     let lines = match value {
         serde_json::Value::String(text) => vec![text.clone()],
         serde_json::Value::Object(object) => {
@@ -382,11 +377,10 @@ fn declarative_component(theme: &Theme, value: &serde_json::Value) -> Option<Box
         }
         _ => return None,
     };
-    let rendered = lines.join("\n");
-    if rendered.trim().is_empty() {
+    if lines.join("\n").trim().is_empty() {
         return None;
     }
-    Some(Box::new(Text::new(&rendered, 0, 0)))
+    Some(lines)
 }
 
 /// One declarative line: a plain string or a list of styled segments.
@@ -860,8 +854,9 @@ mod tests {
             expanded: true,
             output_pad: 0,
         };
-        let mut component = renderer(&message, &options, &theme).expect("component");
-        let rendered = component.render(40).join("\n");
+        let rendered = renderer(&message, &options, &theme)
+            .expect("rendered lines")
+            .join("\n");
         // The accent colour wraps the styled segment and the unstyled one
         // follows it.
         assert!(
@@ -909,8 +904,9 @@ mod tests {
             custom_type: "widget".to_string(),
             data: Some(serde_json::json!({ "value": 3 })),
         };
-        let mut component = renderer(&entry, &options, &theme).expect("component");
-        let rendered = component.render(40).join("\n");
+        let rendered = renderer(&entry, &options, &theme)
+            .expect("rendered lines")
+            .join("\n");
         assert!(rendered.contains("widget 3"), "{rendered:?}");
 
         // No data → nil → fall back.
@@ -959,7 +955,7 @@ mod tests {
             details: None,
             timestamp: 0,
         };
-        let mut component = renderer(
+        let rendered = renderer(
             &message,
             &MessageRenderOptions {
                 expanded: false,
@@ -967,8 +963,8 @@ mod tests {
             },
             &theme,
         )
-        .expect("failure notice");
-        let rendered = component.render(200).join("\n");
+        .expect("failure notice")
+        .join("\n");
         assert!(rendered.contains("renderer failed"), "{rendered:?}");
         assert!(rendered.contains("renderer blew up"), "{rendered:?}");
     }

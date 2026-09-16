@@ -484,15 +484,11 @@ fn custom_entry_renders_through_the_renderer_and_toggles_expanded() {
             sink.lock()
                 .unwrap()
                 .push((entry.custom_type.clone(), options.expanded));
-            Some(Box::new(Text::new(
-                if options.expanded {
-                    "expanded"
-                } else {
-                    "collapsed"
-                },
-                0,
-                0,
-            )))
+            Some(vec![if options.expanded {
+                "expanded".to_string()
+            } else {
+                "collapsed".to_string()
+            }])
         },
     );
 
@@ -929,7 +925,7 @@ fn custom_message_prefers_the_registered_renderer() {
                 options.expanded,
                 options.output_pad,
             ));
-            Some(Box::new(Text::new("custom!", 0, 0)))
+            Some(vec!["custom!".to_string()])
         });
     let mut component = CustomMessageComponent::new(
         custom_message("note", vec![CustomContent::Text("ignored".to_string())]),

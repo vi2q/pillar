@@ -218,15 +218,9 @@ pub fn build_extension_runner_with_slots(
     // The host callbacks must exist before the extension factories run: a
     // factory may already call `pillar.fs` / `pillar.get_flag` / `ctx.ui`.
     install_exec_host(&runtime, &slots.broker, cwd);
-    install_host_api(
-        &runtime,
-        &session_slot,
-        &data,
-        &ui_slot,
-        &context,
-        &slots.broker,
-        cwd,
-    );
+    // `global_dir` is `<agent dir>/extensions`, so its parent is the agent
+    // directory the custom-UI keybinding lookup reads `keybindings.json` from.
+    install_host_api(&runtime, slots, cwd, global_dir.and_then(Path::parent));
     let (runner, errors) = build_luau_runner(&paths, cwd, &loader, true);
     ExtensionWiring {
         runtime,
@@ -298,13 +292,15 @@ fn install_exec_host(runtime: &SharedRuntime, broker: &Arc<EffectBroker>, cwd: &
 /// still work once [`ExtensionWiring::bind_session`] runs.
 fn install_host_api(
     runtime: &SharedRuntime,
-    slot: &SessionSlot,
-    data: &Arc<Mutex<ExtensionDataSnapshot>>,
-    ui_slot: &ExtensionUiSlot,
-    context: &Arc<Mutex<ExtensionContextFacts>>,
-    broker: &Arc<EffectBroker>,
+    slots: &ExtensionHostSlots,
     cwd: &str,
+    agent_dir: Option<&Path>,
 ) {
+    let slot = &slots.session_slot;
+    let data = &slots.data;
+    let ui_slot = &slots.ui_slot;
+    let context = &slots.context;
+    let broker = &slots.broker;
     use pillar_extensions::runtime::HostApi;
 
     let session = |slot: &SessionSlot| -> Result<Arc<AgentSession>, String> {
@@ -509,6 +505,26 @@ fn install_host_api(
                     Ok(())
                 },
             ))
+        },
+        // `keybindings.matches(data, name)` for a `ctx.ui.custom` factory:
+        // the manager is built once from the agent directory's
+        // `keybindings.json` (upstream passes the live KeybindingsManager).
+        keybindings_match: {
+            let manager: Arc<
+                Mutex<Option<Arc<pillar_coding_agent::core::keybindings::KeybindingsManager>>>,
+            > = Arc::new(Mutex::new(None));
+            let agent_dir = agent_dir.map(Path::to_path_buf);
+            Some(Arc::new(move |data: &str, name: &str| {
+                let mut cached = manager
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let manager = cached.get_or_insert_with(|| {
+                    Arc::new(pillar_coding_agent::core::keybindings::KeybindingsManager::create(
+                        agent_dir.as_deref().unwrap_or(Path::new(".")),
+                    ))
+                });
+                manager.matches(data, name)
+            }))
         },
         // `ctx.isIdle()` (upstream the session's `isIdle`).
         is_idle: {

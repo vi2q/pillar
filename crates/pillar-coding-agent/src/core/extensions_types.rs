@@ -337,8 +337,15 @@ pub struct EntryRenderOptions {
     pub expanded: bool,
 }
 
-/// Renders a custom session entry (upstream `EntryRenderer`). The renderer
-/// owns the returned component; failures are reported by the caller.
+/// The lines a custom renderer answers, already styled with the active theme.
+///
+/// divergence: upstream's renderer returns a live `Component`; the port keeps
+/// the extension contract presentation-neutral (the presentation adapter wraps
+/// these lines in its own component), so the contract names no TUI type and
+/// the VM crate does not depend on the terminal layer.
+pub type RenderedLines = Vec<String>;
+
+/// Renders a custom session entry (upstream `EntryRenderer`).
 ///
 /// divergence: upstream returns a live `Component`; the port holds the
 /// renderer in an `Arc` so the runner can hand it to the transcript.
@@ -347,7 +354,7 @@ pub type EntryRenderer = std::sync::Arc<
             &crate::core::session_entries::CustomEntry,
             &EntryRenderOptions,
             &crate::modes::interactive::theme::Theme,
-        ) -> Option<Box<dyn pillar_tui::tui::Component>>
+        ) -> Option<RenderedLines>
         + Send
         + Sync,
 >;
@@ -569,7 +576,7 @@ pub type MessageRenderer = std::sync::Arc<
             &crate::core::messages::CustomMessage,
             &MessageRenderOptions,
             &crate::modes::interactive::theme::Theme,
-        ) -> Option<Box<dyn pillar_tui::tui::Component>>
+        ) -> Option<RenderedLines>
         + Send
         + Sync,
 >;

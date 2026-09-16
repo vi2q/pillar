@@ -156,7 +156,7 @@ loop starts (the usual `session_start` setup) are replayed when it does.
 | `theme` (property) | `ctx.ui.theme` (table: `name`, `mode`, `fg`, `bg`, `bold`, `italic`, `underline`, `strikethrough`, `inverse`) |
 | `confirm` / `select` / `input` | ported: a dialog in the editor slot, answered through a per-request id with a timeout that cancels it (`ctx.ui.confirm` → boolean, `select` → the option or `null`, `input` → the text or `null`) |
 | `editor` | ported: the multi-line editor seeded with `initialText`; `tui.input.submit` submits, `tui.input.newLine` adds a line, Escape answers `null` |
-| `custom(factory, options?)` | ported: the factory receives `(tui, theme, keybindings, done)` and returns a component table (`render(width)` → lines, `handle_input(data)`, `dispose`); `done(result)` answers the call. divergence: the port runs the component on the extension's thread, so `tui` exposes only `requestRender` (a no-op) and `keybindings.matches` uses the resolved global bindings; `overlay` / `overlayOptions` / `onHandle` are not ported (the component fills the editor slot), and a component awaited before the interactive run loop starts cancels after the same 600 s bound the dialogs use |
+| `custom(factory, options?)` | ported: the factory receives `(tui, theme, keybindings, done)` and returns a component table (`render(width)` → lines, `handle_input(data)`, `dispose`); `done(result)` answers the call. divergence: the port runs the component on the extension's thread, so `tui` exposes only `requestRender` (a no-op) and `keybindings.matches` asks the host, which resolves the user's `keybindings.json` (edits to that file apply on the next start); `overlay` / `overlayOptions` / `onHandle` are not ported (the component fills the editor slot), and a component awaited before the interactive run loop starts cancels after the same 600 s bound the dialogs use |
 | `setWidget` / `setFooter` / `setHeader` / `setEditorComponent` | not ported yet (TASKS 2f) |
 | `getEditorText()` / `getTheme(name)` / `setTheme(name)` / `onTerminalInput` / `addAutocompleteProvider` | not ported yet (TASKS 2d-b/2d-c) |
 
@@ -237,6 +237,14 @@ end)
 
 `style` is a theme foreground colour name (`text`, `dim`, `accent`, `muted`,
 `success`, `error`, `customMessageText`, …); an unknown name renders unstyled.
+
+divergence (Rust contract): upstream's renderer returns a live `Component`;
+the port's `MessageRenderer` / `EntryRenderer` answer **themed lines**
+(`RenderedLines = Vec<String>`) and the presentation adapter wraps them in its
+own component. That keeps the extension contract free of TUI types, so
+`pillar-extensions` does not depend on the terminal layer (the dependency
+table in [01-architecture.md](01-architecture.md) is asserted by
+`tests/dependency_direction.rs`).
 
 Payloads: a message renderer gets `{ customType, content, display, details,
 timestamp }` and `{ expanded, outputPad }`; an entry renderer gets

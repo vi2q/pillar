@@ -33,7 +33,7 @@ pillar-ai          (leaf among pillars; providers + catalog)
 pillar-agent       → ai, telemetry
 pillar-session-store → agent, ai (standalone backend; no crate wires it in yet)
 pillar-client      → protocol
-pillar-extensions  → coding-agent, agent, ai, tui (plus luaur-rt / luaur-analysis / luaur-config)
+pillar-extensions  → coding-agent, agent, ai (plus luaur-rt / luaur-analysis / luaur-config)
 pillar-coding-agent → agent, ai, tui, protocol
 pillar-server      → ai, protocol, client
 pillar-cli         → coding-agent, extensions, agent, ai

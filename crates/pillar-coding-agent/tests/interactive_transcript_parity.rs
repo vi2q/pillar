@@ -426,12 +426,7 @@ fn transcript_splices_custom_entries_before_the_streaming_component() {
                     if text.is_empty() {
                         return None;
                     }
-                    Some(Box::new(pillar_tui::components::Text::new(
-                        &format!("widget body {}", entry.custom_type),
-                        0,
-                        0,
-                    ))
-                        as Box<dyn pillar_tui::tui::Component>)
+                    Some(vec![format!("widget body {}", entry.custom_type)])
                 },
             ))
         } else {

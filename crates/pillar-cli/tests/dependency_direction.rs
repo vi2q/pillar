@@ -24,14 +24,12 @@ const ALLOWED: &[(&str, &[&str])] = &[
         "pillar-coding-agent",
         &["pillar-agent", "pillar-ai", "pillar-protocol", "pillar-tui"],
     ),
+    // The VM crate must not name the presentation layer: custom renderers
+    // answer themed lines and `keybindings.matches` goes through the host
+    // callback (docs/DEVELOPMENT-STRATEGY.md §4/§5).
     (
         "pillar-extensions",
-        &[
-            "pillar-agent",
-            "pillar-ai",
-            "pillar-coding-agent",
-            "pillar-tui",
-        ],
+        &["pillar-agent", "pillar-ai", "pillar-coding-agent"],
     ),
     ("pillar-protocol", &[]),
     (

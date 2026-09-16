@@ -383,6 +383,10 @@ pub type ExecHost = Arc<
         + Sync,
 >;
 
+/// Host callback for `keybindings.matches(data, name)` (upstream the live
+/// `KeybindingsManager` the `ctx.ui.custom` factory receives).
+pub type KeybindingsMatchFn = Arc<dyn Fn(&str, &str) -> bool + Send + Sync>;
+
 /// Host callback for `pillar.get_flag` (upstream `getFlag`).
 pub type GetFlagFn = Arc<dyn Fn(&str) -> Option<serde_json::Value> + Send + Sync>;
 /// Host callback returning a string, used by `get_session_name` /
@@ -472,6 +476,10 @@ pub struct HostApi {
     /// `ctx.sessionManager.getEntries()` — the session entries as JSON
     /// (upstream the read-only session manager).
     pub session_entries: Option<GetJsonFn>,
+    /// `keybindings.matches(data, name)` for a `ctx.ui.custom` factory
+    /// (upstream the live `KeybindingsManager`). The host owns the resolved
+    /// bindings, so the VM crate does not name the TUI's keybinding table.
+    pub keybindings_match: Option<KeybindingsMatchFn>,
 }
 
 /// One live `ctx.ui.custom` render loop: the pump's events and the frame the
@@ -1169,10 +1177,19 @@ impl ExtensionRuntime {
             }
             Ok::<(), luaur_rt::Error>(())
         });
+        let keybindings_slot = Arc::clone(&self.host_api);
         let keybindings = Function::wrap(move |data: String, name: String| {
-            Ok::<bool, luaur_rt::Error>(pillar_tui::keybindings::with_global_keybindings(
-                |manager| manager.matches(&data, &name),
-            ))
+            let callback = {
+                let guard = keybindings_slot
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                guard.keybindings_match.clone()
+            };
+            Ok::<bool, luaur_rt::Error>(
+                callback
+                    .map(|callback| callback(&data, &name))
+                    .unwrap_or(false),
+            )
         });
         let custom = self.lua.create_table();
         let setup_error = |error: luaur_rt::Error| ExtensionLoadError::Setup(error.to_string());
@@ -2719,6 +2736,11 @@ mod api_tests {
                 signal.notify_all();
                 Ok(())
             })),
+            // The factory's `keybindings.matches` asks the host for the
+            // resolved bindings (the VM crate has no keybinding table).
+            keybindings_match: Some(Arc::new(|data: &str, name: &str| {
+                name == "tui.select.confirm" && data == "\r"
+            })),
             ..Default::default()
         });
         runtime
@@ -2729,14 +2751,15 @@ mod api_tests {
                 pillar.on("session_start", function(event, ctx)
                     local result = ctx.ui.custom(function(tui, theme, keybindings, done)
                         tui.requestRender()
+                        local confirm_key = keybindings.matches("\r", "tui.select.confirm")
                         return {
                             render = function(width) return { "frame " .. tostring(width) } end,
                             handle_input = function(data)
-                                if data == "x" then done({ value = data }) end
+                                if data == "x" then done({ value = data, confirm = confirm_key }) end
                             end,
                         }
                     end)
-                    return { value = result.value }
+                    return { value = result.value, confirm = result.confirm }
                 end)
                 return nil
                 "#,
@@ -2778,7 +2801,10 @@ mod api_tests {
             .unwrap();
         driver.join().unwrap();
         match outcome {
-            HandlerOutcome::Table(table) => assert_eq!(table["value"], serde_json::json!("x")),
+            HandlerOutcome::Table(table) => {
+                assert_eq!(table["value"], serde_json::json!("x"));
+                assert_eq!(table["confirm"], serde_json::json!(true));
+            }
             other => panic!("unexpected outcome: {other:?}"),
         }
     }

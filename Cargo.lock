@@ -1152,7 +1152,6 @@ dependencies = [
  "pillar-agent",
  "pillar-ai",
  "pillar-coding-agent",
- "pillar-tui",
  "serde",
  "serde_json",
  "tempfile",

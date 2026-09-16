@@ -80,9 +80,13 @@ impl CustomMessageComponent {
                 expanded: self.expanded,
                 output_pad: self.output_pad,
             };
-            if let Some(component) = renderer(&self.message, &options, &theme()) {
+            if let Some(lines) = renderer(&self.message, &options, &theme()) {
                 self.used_custom_renderer = true;
-                self.container.add_child(component);
+                // The renderer answers themed lines; the component is the
+                // presentation adapter's (upstream's renderer returns a
+                // Component).
+                self.container
+                    .add_child(Box::new(Text::new(&lines.join("\n"), 0, 0)));
                 return;
             }
         }
