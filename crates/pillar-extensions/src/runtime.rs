@@ -133,6 +133,8 @@ declare pillar: {
     get_all_tools: () -> { any },
     get_thinking_level: () -> string?,
     set_thinking_level: (level: string) -> (),
+    set_model: (model: any) -> (),
+    set_active_tools: (names: { string }) -> (),
     exec: (command: string, args: { number }?, opts: any?) -> any,
     events: {
         on: (channel: string, handler: (data: any) -> ()) -> (() -> ()),
@@ -163,7 +165,8 @@ pub type GetStringFn = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 /// `get_active_tools` / `get_all_tools`.
 pub type GetJsonFn = Arc<dyn Fn() -> serde_json::Value + Send + Sync>;
 /// Host callback for `pillar.append_entry(custom_type, data?)`.
-pub type AppendEntryFn = Arc<dyn Fn(&str, Option<serde_json::Value>) -> Result<(), String> + Send + Sync>;
+pub type AppendEntryFn =
+    Arc<dyn Fn(&str, Option<serde_json::Value>) -> Result<(), String> + Send + Sync>;
 /// Host callback for `pillar.send_message` / `send_user_message`.
 pub type SendMessageFn = Arc<dyn Fn(serde_json::Value) -> Result<(), String> + Send + Sync>;
 /// Host callback for `pillar.set_session_name`.
@@ -172,6 +175,10 @@ pub type SetSessionNameFn = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync
 pub type SetLabelFn = Arc<dyn Fn(&str, Option<&str>) -> Result<(), String> + Send + Sync>;
 /// Host callback for `pillar.set_thinking_level(level)`.
 pub type SetThinkingLevelFn = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
+/// Host callback for `pillar.set_model(model)`.
+pub type SetModelFn = Arc<dyn Fn(serde_json::Value) -> Result<(), String> + Send + Sync>;
+/// Host callback for `pillar.set_active_tools(names)`.
+pub type SetActiveToolsFn = Arc<dyn Fn(serde_json::Value) -> Result<(), String> + Send + Sync>;
 
 /// The host callbacks the `@pillar` API reads (upstream the pieces of
 /// the runtime the ExtensionAPI reaches). Each is optional: without a
@@ -204,6 +211,10 @@ pub struct HostApi {
     pub get_thinking_level: Option<GetStringFn>,
     /// `pillar.set_thinking_level(level)`.
     pub set_thinking_level: Option<SetThinkingLevelFn>,
+    /// `pillar.set_model(model)` → the live session.
+    pub set_model: Option<SetModelFn>,
+    /// `pillar.set_active_tools(names)` → the live session.
+    pub set_active_tools: Option<SetActiveToolsFn>,
 }
 
 /// The process-wide extension runtime.
@@ -859,11 +870,58 @@ fn install_pillar_api(
                     let json = callback
                         .map(|callback| callback())
                         .unwrap_or_else(|| serde_json::json!([]));
-                    getter_lua.to_value(&json).map_err(luaur_rt::Error::external)
+                    getter_lua
+                        .to_value(&json)
+                        .map_err(luaur_rt::Error::external)
                 }),
             )
             .expect("set pillar tool/command getter");
     }
+
+    // pillar.set_model(model) (upstream `setModel`; the host resolves the
+    // model from its provider/id and switches the session).
+    let model_api = Arc::clone(host_api);
+    let lua_model = lua.clone();
+    module
+        .set(
+            "set_model",
+            Function::wrap(move |model: Value| {
+                let json = lua_model.from_value::<serde_json::Value>(model)?;
+                let callback = {
+                    let guard = model_api
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    guard.set_model.clone()
+                };
+                if let Some(callback) = callback {
+                    callback(json).map_err(luaur_rt::Error::external)?;
+                }
+                Ok::<(), luaur_rt::Error>(())
+            }),
+        )
+        .expect("set pillar.set_model");
+
+    // pillar.set_active_tools(names)
+    let active_api = Arc::clone(host_api);
+    let lua_active = lua.clone();
+    module
+        .set(
+            "set_active_tools",
+            Function::wrap(move |names: Value| {
+                let json = lua_active.from_value::<serde_json::Value>(names)?;
+                let callback = {
+                    let guard = active_api
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    guard.set_active_tools.clone()
+                };
+                if let Some(callback) = callback {
+                    callback(json).map_err(luaur_rt::Error::external)?;
+                }
+                Ok::<(), luaur_rt::Error>(())
+            }),
+        )
+        .expect("set pillar.set_active_tools");
 
     // pillar.get_thinking_level() / set_thinking_level(level)
     let thinking_get_api = Arc::clone(host_api);
@@ -1276,6 +1334,8 @@ mod api_tests {
         type Labels = Vec<(String, Option<String>)>;
         let labels: Arc<Mutex<Labels>> = Arc::new(Mutex::new(Vec::new()));
         let levels: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let models: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
+        let tools: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
 
         let mut runtime = ExtensionRuntime::new();
         let sink = Arc::clone(&appended);
@@ -1283,6 +1343,8 @@ mod api_tests {
         let sink_names = Arc::clone(&names);
         let sink_labels = Arc::clone(&labels);
         let sink_levels = Arc::clone(&levels);
+        let sink_models = Arc::clone(&models);
+        let sink_tools = Arc::clone(&tools);
         runtime.set_host_api(HostApi {
             append_entry: Some(Arc::new(move |kind, data| {
                 sink.lock().unwrap().push((kind.to_string(), data));
@@ -1313,6 +1375,14 @@ mod api_tests {
                 sink_levels.lock().unwrap().push(level.to_string());
                 Ok(())
             })),
+            set_model: Some(Arc::new(move |json| {
+                sink_models.lock().unwrap().push(json);
+                Ok(())
+            })),
+            set_active_tools: Some(Arc::new(move |json| {
+                sink_tools.lock().unwrap().push(json);
+                Ok(())
+            })),
             ..Default::default()
         });
         runtime
@@ -1327,6 +1397,8 @@ mod api_tests {
                 pillar.set_label("entry-1", "bookmark")
                 pillar.set_label("entry-2", nil)
                 pillar.set_thinking_level("low")
+                pillar.set_model({ provider = "p", id = "a" })
+                pillar.set_active_tools({ "read", "write" })
                 local level = pillar.get_thinking_level()
                 local name = pillar.get_session_name()
                 local commands = pillar.get_commands()
@@ -1355,9 +1427,20 @@ mod api_tests {
         assert_eq!(names.lock().unwrap().as_slice(), &["named".to_string()]);
         assert_eq!(
             labels.lock().unwrap().as_slice(),
-            &[("entry-1".to_string(), Some("bookmark".to_string())), ("entry-2".to_string(), None)]
+            &[
+                ("entry-1".to_string(), Some("bookmark".to_string())),
+                ("entry-2".to_string(), None)
+            ]
         );
         assert_eq!(levels.lock().unwrap().as_slice(), &["low".to_string()]);
+        assert_eq!(
+            models.lock().unwrap().as_slice(),
+            &[serde_json::json!({ "provider": "p", "id": "a" })]
+        );
+        assert_eq!(
+            tools.lock().unwrap().as_slice(),
+            &[serde_json::json!(["read", "write"])]
+        );
 
         let seen: serde_json::Value = runtime
             .vm()

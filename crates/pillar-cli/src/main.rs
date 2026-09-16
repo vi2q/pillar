@@ -813,9 +813,9 @@ impl CliRuntimeHost {
         .await?;
         let session = Arc::new(session);
         wiring.bind_session(&session);
-    // Refresh before `bind_extensions` fires `session_start`, so extensions
-    // reading the tool / command lists during it see the real data.
-    wiring.refresh_extension_data();
+        // Refresh before `bind_extensions` fires `session_start`, so extensions
+        // reading the tool / command lists during it see the real data.
+        wiring.refresh_extension_data();
         self.wirings.lock().expect("wirings lock").push(wiring);
         *self.current.lock().expect("current session lock") = Some(Arc::clone(&session));
         Ok(session)

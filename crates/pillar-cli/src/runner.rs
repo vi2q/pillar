@@ -72,6 +72,7 @@ pub fn build_extension_runner(
     let (runner, errors) = build_luau_runner(&paths, cwd, &loader, true);
     let session_slot: SessionSlot = Arc::new(Mutex::new(None));
     let data = Arc::new(Mutex::new(ExtensionDataSnapshot::default()));
+    install_exec_host(&runtime, cwd);
     install_host_api(&runtime, &session_slot, &data, cwd);
     ExtensionWiring {
         runtime,
@@ -81,6 +82,37 @@ pub fn build_extension_runner(
         session_slot,
         data,
     }
+}
+
+/// Install the `pi.exec` host (upstream the process layer behind `exec`):
+/// the command runs with the session's cwd, and the extension receives
+/// `{ stdout, stderr, code, killed }`.
+fn install_exec_host(runtime: &SharedRuntime, cwd: &str) {
+    let cwd = cwd.to_string();
+    let exec: pillar_extensions::runtime::ExecHost = Arc::new(move |command, args| {
+        let output = std::process::Command::new(command)
+            .args(args)
+            .current_dir(&cwd)
+            .output();
+        match output {
+            Ok(output) => serde_json::json!({
+                "stdout": String::from_utf8_lossy(&output.stdout),
+                "stderr": String::from_utf8_lossy(&output.stderr),
+                "code": output.status.code(),
+                "killed": false,
+            }),
+            Err(error) => serde_json::json!({
+                "stdout": "",
+                "stderr": error.to_string(),
+                "code": -1,
+                "killed": false,
+            }),
+        }
+    });
+    runtime
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .set_exec_host(exec);
 }
 
 /// Install the `@pillar` host callbacks (upstream the runtime binding the
@@ -221,6 +253,78 @@ fn install_host_api(
             let slot = Arc::clone(slot);
             Some(Arc::new(move |level: &str| {
                 session(&slot)?.set_thinking_level(level, false);
+                Ok(())
+            }))
+        },
+        set_model: {
+            let slot = Arc::clone(slot);
+            let handle = tokio_handle.clone();
+            Some(Arc::new(move |json: serde_json::Value| {
+                let session = session(&slot)?;
+                let provider = json
+                    .get("provider")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let id = json
+                    .get("id")
+                    .or_else(|| json.get("model"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                if provider.is_empty() || id.is_empty() {
+                    return Err(
+                        "extension set_model: expected { provider = ..., id = ... }".to_string()
+                    );
+                }
+                let Some(handle) = handle.clone() else {
+                    return Err("extension API: no async runtime for set_model".to_string());
+                };
+                handle.spawn(async move {
+                    match session.model_runtime().get_model(&provider, &id) {
+                        Some(model) => {
+                            if let Err(error) = session.set_model(model, false).await {
+                                eprintln!("extension set_model failed: {error}");
+                            }
+                        }
+                        None => eprintln!("extension set_model: unknown model {provider}/{id}"),
+                    }
+                });
+                Ok(())
+            }))
+        },
+        set_active_tools: {
+            let slot = Arc::clone(slot);
+            let data = Arc::clone(data);
+            Some(Arc::new(move |names: serde_json::Value| {
+                let session = session(&slot)?;
+                let names: Vec<String> = serde_json::from_value(names)
+                    .map_err(|error| format!("extension set_active_tools: {error}"))?;
+                // Reuse the tools already built for the session (builtin and
+                // extension) and fall back to the builtin factory for names
+                // that are not currently active.
+                let current = session.state().tools;
+                let mut tools = Vec::new();
+                for name in &names {
+                    if let Some(tool) = current.iter().find(|tool| tool.name() == name).cloned() {
+                        tools.push(tool);
+                    } else if let Some(tool) =
+                        pillar_coding_agent::core::tools::index::create_tool(name, session.cwd())
+                    {
+                        tools.push(tool);
+                    }
+                }
+                session.agent().set_tools(tools);
+                // The active-tool getter answers the snapshot; keep it in
+                // sync without re-entering the runner.
+                data.lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .active_tools = serde_json::Value::Array(
+                    names
+                        .iter()
+                        .map(|name| serde_json::Value::String(name.clone()))
+                        .collect(),
+                );
                 Ok(())
             }))
         },
