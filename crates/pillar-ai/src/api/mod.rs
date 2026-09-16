@@ -231,6 +231,35 @@ pub fn merge_request_headers(
     headers
 }
 
+/// The provider abort error (upstream the SDKs' `AbortError`): the caller
+/// maps it onto `stopReason: "aborted"` and keeps the partial message.
+pub(crate) fn abort_error() -> ProviderRequestError {
+    ProviderRequestError {
+        message: "Request was aborted".to_string(),
+        aborted: true,
+        ..ProviderRequestError::transport("")
+    }
+}
+
+/// Await `future`, answering the abort error as soon as `signal` aborts.
+///
+/// Provider body loops must stop the moment the user aborts: checking
+/// `is_aborted` between chunks only takes effect when the server sends the
+/// next one, so an aborted response would keep streaming to completion.
+pub(crate) async fn race_abort<T>(
+    signal: Option<&AbortSignal>,
+    future: impl std::future::Future<Output = T>,
+) -> Result<T, ProviderRequestError> {
+    match signal {
+        Some(signal) => tokio::select! {
+            biased;
+            _ = signal.aborted_or_pending() => Err(abort_error()),
+            value = future => Ok(value),
+        },
+        None => Ok(future.await),
+    }
+}
+
 /// Transport error carrying HTTP context for the retry layer.
 pub(crate) async fn fetch_json_stream(
     fetch: &SharedFetchFn,

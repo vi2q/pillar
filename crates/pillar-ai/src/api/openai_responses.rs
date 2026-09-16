@@ -351,17 +351,22 @@ async fn run_stream_inner(
         response.body,
     ));
     tokio::pin!(sse);
-    process_responses_stream(
-        &mut sse,
-        output,
-        stream,
-        model,
-        Some(ProcessResponsesStreamOptions {
-            grammar_tool_input_properties: &grammar_tool_input_properties,
-            apply_service_tier_pricing: Some(Box::new(pricing)),
-        }),
+    // Race the abort around the whole event pump: checking the signal after
+    // the stream ends would let an aborted response run to completion.
+    crate::api::race_abort(
+        options.signal.as_ref(),
+        process_responses_stream(
+            &mut sse,
+            output,
+            stream,
+            model,
+            Some(ProcessResponsesStreamOptions {
+                grammar_tool_input_properties: &grammar_tool_input_properties,
+                apply_service_tier_pricing: Some(Box::new(pricing)),
+            }),
+        ),
     )
-    .await
+    .await?
     .map_err(|error| ProviderRequestError::transport(error.to_string()))?;
 
     if options

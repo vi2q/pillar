@@ -827,7 +827,19 @@ async fn run_stream_inner(
 
     let sse = SseDataEvents::new(response.body);
     tokio::pin!(sse);
-    while let Some(payload) = sse.next().await {
+    loop {
+        // Stop reading the body the moment the user aborts (upstream the
+        // SDK's `abortSignal` cancelling the request). `break` rather than
+        // propagate: the open content blocks must be flushed first so the
+        // streamed partial text survives, and the post-loop check reports the
+        // abort.
+        let next = match crate::api::race_abort(options.signal.as_ref(), sse.next()).await {
+            Ok(next) => next,
+            Err(_) => break,
+        };
+        let Some(payload) = next else {
+            break;
+        };
         let payload =
             payload.map_err(|error| ProviderRequestError::transport(error.to_string()))?;
         if payload.trim() == "[DONE]" {

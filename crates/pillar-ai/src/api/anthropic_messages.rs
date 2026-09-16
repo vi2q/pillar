@@ -1922,10 +1922,13 @@ async fn decode_fetch_response(
     tokio::pin!(byte_stream);
 
     loop {
-        if signal.is_some_and(|signal| signal.is_aborted()) {
-            return Err("Request was aborted".to_string());
-        }
-        let chunk = match byte_stream.next().await {
+        // Race the abort: a quiet body must not delay the cancellation
+        // (upstream the SDK's `abortSignal` cancelling the request).
+        let next = match crate::api::race_abort(signal, byte_stream.next()).await {
+            Ok(next) => next,
+            Err(_) => return Err("Request was aborted".to_string()),
+        };
+        let chunk = match next {
             Some(Ok(chunk)) => chunk,
             Some(Err(error)) => return Err(error.to_string()),
             None => break,

@@ -7,6 +7,7 @@
 //! tool-call-without-result, tool-call-id-normalization e2e) are not ported.
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use serde_json::{Value, json};
 use tokio::sync::Mutex as AsyncMutex;
@@ -856,7 +857,16 @@ async fn reports_aborted_requests_as_aborted() {
     let _events = collect_events(&s).await;
     let message = s.result().await;
 
-    assert_eq!(message.stop_reason, StopReason::Aborted);
+    eprintln!(
+        "DBG stop={:?} error={:?} content={:?}",
+        message.stop_reason, message.error_message, message.content
+    );
+    assert_eq!(
+        message.stop_reason,
+        StopReason::Aborted,
+        "error: {:?}",
+        message.error_message
+    );
 }
 
 // "sends bearer auth and the request body to the configured base URL"
@@ -1054,4 +1064,93 @@ async fn retries_retryable_http_failures() {
 #[allow(dead_code)]
 fn assert_error_shape(error: ProviderRequestError) -> ProviderRequestError {
     error
+}
+
+/// Transport whose body yields one SSE delta, then aborts the signal itself
+/// and stalls forever: an aborted response must stop reading the body
+/// immediately instead of waiting for the server to finish.
+struct AbortingBody {
+    signal: AbortSignal,
+}
+
+#[async_trait::async_trait]
+impl FetchFn for AbortingBody {
+    async fn fetch(
+        &self,
+        _request: FetchRequest,
+    ) -> Result<FetchResponse, pillar_ai::error::AiError> {
+        let delta = json!({
+            "id": "chatcmpl-1",
+            "object": "chat.completion.chunk",
+            "created": now(),
+            "model": "gpt-test",
+            "choices": [{ "index": 0, "delta": { "content": "partial text" } }],
+        });
+        let first: Result<Vec<u8>, pillar_ai::error::AiError> =
+            Ok(format!("data: {delta}\n\n").into_bytes());
+        let signal = self.signal.clone();
+        // The abort fires when this item is *pulled* (not when the body is
+        // built), so the delta is read first.
+        let abort = futures::stream::once(async move {
+            signal.abort(None);
+            Ok::<Vec<u8>, pillar_ai::error::AiError>(Vec::new())
+        });
+        let pending: futures::stream::Pending<Result<Vec<u8>, pillar_ai::error::AiError>> =
+            futures::stream::pending();
+        let body = futures::StreamExt::chain(
+            futures::StreamExt::chain(futures::stream::once(async move { first }), abort),
+            pending,
+        );
+        Ok(FetchResponse {
+            status: 200,
+            headers: vec![("content-type".to_string(), "text/event-stream".to_string())],
+            body: Box::pin(body),
+        })
+    }
+}
+
+/// The abort stops the body read mid-stream and the partial text survives
+/// with `stopReason: "aborted"` (upstream the SDK's `abortSignal`).
+#[tokio::test]
+async fn abort_stops_the_body_read_without_waiting_for_the_server() {
+    let signal = AbortSignal::new();
+    let message = tokio::time::timeout(
+        Duration::from_secs(5),
+        run_stream_to_message(
+            base_model(),
+            Context {
+                messages: vec![user_message("Hello")],
+                ..Default::default()
+            },
+            OpenaiCompletionsOptions {
+                api_key: Some("test".to_string()),
+                fetch: Some(Arc::new(AbortingBody {
+                    signal: signal.clone(),
+                })),
+                signal: Some(signal),
+                ..Default::default()
+            },
+        ),
+    )
+    .await
+    .expect("the aborted stream must not wait for the server");
+
+    assert_eq!(
+        message.stop_reason,
+        StopReason::Aborted,
+        "error: {:?}",
+        message.error_message
+    );
+    assert_eq!(
+        message
+            .content
+            .iter()
+            .filter_map(|content| match content {
+                Content::Text { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect::<String>(),
+        "partial text",
+        "the streamed partial text is kept"
+    );
 }

@@ -596,9 +596,13 @@ async fn run_stream_inner(
 
     let sse = crate::api::openai_completions::SseJsonEvents::new(SseDataEvents::new(response.body));
     tokio::pin!(sse);
-    process_responses_stream(&mut sse, output, stream, model, None)
-        .await
-        .map_err(|error| ProviderRequestError::transport(error.to_string()))?;
+    // Race the abort around the whole event pump (see openai_responses).
+    crate::api::race_abort(
+        options.signal.as_ref(),
+        process_responses_stream(&mut sse, output, stream, model, None),
+    )
+    .await?
+    .map_err(|error| ProviderRequestError::transport(error.to_string()))?;
 
     if options
         .signal
