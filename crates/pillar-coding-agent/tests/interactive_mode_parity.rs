@@ -536,9 +536,9 @@ fn submit_routes_the_non_selector_commands() {
     assert!(body.contains("Session name set: my session"), "{body:?}");
 
     // Selector-backed commands answer a warning (divergence until the
-    // selectors land). `/model` moved out of that list with the model
-    // selector (`model_command_shows_the_selector_and_enter_reports_the_switch`).
-    mode.handle_submit("/settings");
+    // selectors land). `/model`, `/settings` and `/hotkeys` moved out of that
+    // list with their slices.
+    mode.handle_submit("/trust");
     let body = {
         let mut transcript = mode.transcript().lock();
         transcript
@@ -549,7 +549,14 @@ fn submit_routes_the_non_selector_commands() {
             .collect::<Vec<_>>()
             .join("\n")
     };
-    assert!(body.contains("/settings is not available yet"), "{body:?}");
+    assert!(body.contains("/trust is not available yet"), "{body:?}");
+
+    // `/settings` now opens the panel in the editor slot.
+    assert_eq!(
+        mode.handle_submit("/settings"),
+        vec![ModeAction::EditorSlotChanged]
+    );
+    mode.handle_selector_key("\u{1b}").expect("settings");
 }
 
 #[test]
@@ -2056,4 +2063,153 @@ fn hotkeys_command_renders_the_keybinding_table() {
     // The resolved keys are rendered (capitalized display form).
     assert!(body.contains("Ctrl+L"), "{body:?}");
     assert!(body.contains("Enter"), "{body:?}");
+}
+
+// --- /settings ----------------------------------------------------------------------------
+
+/// Type a query into the open settings panel's search box.
+fn search_settings(mode: &InteractiveMode, query: &str) {
+    for ch in query.chars() {
+        assert_eq!(
+            mode.handle_selector_key(&ch.to_string()).expect("settings"),
+            Vec::new()
+        );
+    }
+}
+
+#[test]
+fn settings_command_shows_the_panel_and_applies_a_cycled_value() {
+    install_app_keybindings();
+    let session = session();
+    let mode = make_mode(&session);
+
+    assert_eq!(
+        mode.handle_submit("/settings"),
+        vec![ModeAction::EditorSlotChanged]
+    );
+    assert!(mode.has_active_selector());
+    let body = editor_slot_body(&mode, 100);
+    assert!(body.contains("Auto-compact"), "{body:?}");
+    assert!(body.contains("Type to search"), "{body:?}");
+
+    // Filter to the Transport row and cycle it. The fixture's transport is
+    // the "auto" default, so the cycle wraps to the first value.
+    search_settings(&mode, "transport");
+    assert_eq!(mode.handle_selector_key("\r").expect("settings"), Vec::new());
+    assert_eq!(
+        session.settings_manager().lock().expect("settings").transport(),
+        "sse"
+    );
+
+    // Escape closes the panel.
+    assert_eq!(
+        mode.handle_selector_key("\u{1b}").expect("settings"),
+        vec![ModeAction::EditorSlotChanged]
+    );
+    assert!(!mode.has_active_selector());
+}
+
+#[test]
+fn settings_theme_change_applies_and_previews() {
+    install_app_keybindings();
+    let session = session();
+    let mode = make_mode(&session);
+
+    assert_eq!(
+        mode.apply_setting_change("theme", "light"),
+        vec![ModeAction::ThemeApplied("light".to_string())]
+    );
+    assert_eq!(
+        session
+            .settings_manager()
+            .lock()
+            .expect("settings")
+            .theme_setting()
+            .as_deref(),
+        Some("light")
+    );
+
+    // Opening the theme submenu and choosing Automatic previews the automatic
+    // setting (the port does not live-preview on highlight). The current theme
+    // ("light") is pre-selected, so walk up past "dark" to Automatic.
+    mode.handle_submit("/settings");
+    search_settings(&mode, "theme");
+    mode.handle_selector_key("\r").expect("settings");
+    mode.handle_selector_key("\u{1b}[A").expect("settings");
+    mode.handle_selector_key("\u{1b}[A").expect("settings");
+    let actions = mode.handle_selector_key("\r").expect("settings");
+    match actions.as_slice() {
+        [ModeAction::ThemePreview(setting)] => {
+            assert!(setting.contains('/'), "{setting:?}");
+        }
+        other => panic!("expected ThemePreview, got {other:?}"),
+    }
+}
+
+#[test]
+fn settings_screen_options_route_through_the_pump() {
+    install_app_keybindings();
+    let session = session();
+    let mode = make_mode(&session);
+
+    assert_eq!(
+        mode.apply_setting_change("show-hardware-cursor", "true"),
+        vec![ModeAction::SetShowHardwareCursor(true)]
+    );
+    assert_eq!(
+        mode.apply_setting_change("clear-on-shrink", "true"),
+        vec![ModeAction::SetClearOnShrink(true)]
+    );
+    let settings = session.settings_manager().lock().expect("settings");
+    assert!(settings.show_hardware_cursor());
+    assert!(settings.clear_on_shrink());
+}
+
+#[test]
+fn settings_tui_mode_switch_is_reported_not_applied() {
+    install_app_keybindings();
+    let session = session();
+    let mode = make_mode(&session);
+
+    // The fullscreen mode is not ported: the row is reverted with a status.
+    assert_eq!(mode.apply_setting_change("tui-mode", "fullscreen"), Vec::new());
+    let body = plain(&mut mode.transcript().lock().chat, 120);
+    assert!(body.contains("TUI mode switching is not ported yet"), "{body:?}");
+}
+
+#[test]
+fn settings_editor_and_output_padding_are_applied() {
+    install_app_keybindings();
+    let session = session();
+    let mode = make_mode(&session);
+
+    assert_eq!(mode.apply_setting_change("editor-padding", "3"), Vec::new());
+    assert_eq!(mode.editor().lock().get_padding_x(), 3);
+    assert_eq!(
+        mode.apply_setting_change("output-padding", "0"),
+        Vec::new()
+    );
+    assert_eq!(mode.transcript().lock().settings_mut().output_pad, 0);
+}
+
+#[test]
+fn settings_model_thinking_level_applies_to_the_current_model() {
+    install_app_keybindings();
+    let session = session();
+    let mode = make_mode(&session);
+
+    // The fixture's current model is anthropic/claude-sonnet-4-5.
+    mode.apply_model_thinking_level("anthropic", "claude-sonnet-4-5", Some("low"));
+    let settings = session.settings_manager().lock().expect("settings");
+    assert_eq!(
+        settings.model_thinking_level("anthropic", "claude-sonnet-4-5"),
+        Some("low".to_string())
+    );
+    drop(settings);
+    assert_eq!(session.thinking_level(), "low");
+
+    // Removing it reverts to the global default ("off" in the fixture).
+    mode.apply_model_thinking_level("anthropic", "claude-sonnet-4-5", None);
+    let settings = session.settings_manager().lock().expect("settings");
+    assert!(settings.all_model_thinking_levels().is_empty());
 }

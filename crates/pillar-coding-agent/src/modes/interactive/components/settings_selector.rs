@@ -681,6 +681,12 @@ impl SettingsSelectorComponent {
         &self.list
     }
 
+    /// Update one row's value (upstream
+    /// `selector.getSettingsList().updateValue(id, value)`).
+    pub fn refresh_value(&mut self, id: &str, value: &str) {
+        self.list.update_value(id, value);
+    }
+
     /// Move the cursor to a setting by id (upstream
     /// `getSettingsList().selectItem`).
     pub fn select_item(&mut self, id: &str) {

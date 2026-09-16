@@ -525,6 +525,11 @@ async fn execute_action(
         // The pump also owns the fork (it ends the run loop and the caller
         // rebuilds the runtime).
         ModeAction::ForkSession { .. } => Ok(()),
+        // The pump owns the TUI screen and the theme controller.
+        ModeAction::ThemePreview(_)
+        | ModeAction::ThemeApplied(_)
+        | ModeAction::SetShowHardwareCursor(_)
+        | ModeAction::SetClearOnShrink(_) => Ok(()),
         // Upstream `showTreeSelector`'s `onSelect`: stop a streaming response
         // first, then move the leaf (optionally summarizing the branch).
         ModeAction::NavigateTree {
@@ -752,6 +757,9 @@ fn pump_loop(
         // Theme controller: drain terminal color-scheme reports (auto
         // sync) and apply the recorded effects.
         theme_controller.pump(screen.base_mut());
+        // The `/settings` panel shows the detected terminal brightness
+        // (upstream `themeController.getTerminalTheme()`).
+        mode.set_terminal_theme(theme_controller.get_terminal_theme());
         if theme_changed.swap(false, Ordering::SeqCst) {
             mode.update_editor_border_color();
         }
@@ -798,6 +806,27 @@ fn pump_loop(
             if let ModeAction::ResumeSession { session_path } = action {
                 resume_path = Some(session_path);
                 break;
+            }
+            // The theme controller lives on the pump (upstream the mode owns
+            // it); the screen options are applied here too.
+            match &action {
+                ModeAction::ThemePreview(setting) => {
+                    theme_controller.preview(screen.base_mut(), setting);
+                    continue;
+                }
+                ModeAction::ThemeApplied(setting) => {
+                    theme_controller.set_theme_setting(screen.base_mut(), setting);
+                    continue;
+                }
+                ModeAction::SetShowHardwareCursor(enabled) => {
+                    screen.base_mut().set_show_hardware_cursor(*enabled);
+                    continue;
+                }
+                ModeAction::SetClearOnShrink(enabled) => {
+                    screen.base_mut().set_clear_on_shrink(*enabled);
+                    continue;
+                }
+                _ => {}
             }
             // Upstream `runtimeHost.fork`: the branched session replaces the
             // whole runtime, which in this port ends the run loop; the caller

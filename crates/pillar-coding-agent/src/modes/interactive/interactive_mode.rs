@@ -180,6 +180,9 @@ use crate::modes::interactive::components::scoped_models_selector::{
 use crate::modes::interactive::components::session_selector::{
     SessionScope, SessionSelectorComponent, SessionSelectorOutcome, StatusKind,
 };
+use crate::modes::interactive::components::settings_selector::{
+    SettingsConfig, SettingsSelectorComponent, SettingsSelectorOutcome,
+};
 use crate::modes::interactive::components::status_indicator::{
     CompactionStatusReason, RetryStatusIndicator, StatusIndicatorKind,
     branch_summary_status_indicator, compaction_status_indicator,
@@ -196,6 +199,7 @@ use crate::modes::interactive::components::user_message_selector::{
 use crate::modes::interactive::mode_ui::{PendingMessagesUi, QueueMode, StatusUi};
 use crate::modes::interactive::model_picker_recent::RecentModels;
 use crate::modes::interactive::theme::get_editor_theme;
+use crate::modes::interactive::theme::{TerminalTheme, current_theme_name};
 use crate::modes::interactive::transcript::{
     CompactionCostKind, InteractiveTranscript, Shared, TranscriptSettings,
 };
@@ -268,6 +272,16 @@ pub enum ModeAction {
         position: String,
         editor_text: Option<String>,
     },
+    /// The `/settings` theme submenu previewed a theme setting (upstream
+    /// `themeController.preview`).
+    ThemePreview(String),
+    /// The `/settings` theme was committed (upstream
+    /// `themeController.setThemeSetting`, after the settings write).
+    ThemeApplied(String),
+    /// Upstream `ui.setShowHardwareCursor(enabled)`.
+    SetShowHardwareCursor(bool),
+    /// Upstream `ui.setClearOnShrink(enabled)`.
+    SetClearOnShrink(bool),
 }
 
 /// Mode-level options (upstream the settings-derived fields of
@@ -300,7 +314,7 @@ pub struct InteractiveMode {
     editor: Shared<Editor>,
     footer: Shared<FooterComponent>,
     app_title: String,
-    show_terminal_progress: bool,
+    show_terminal_progress: AtomicBool,
     on_terminal_title: Option<TerminalTitleCallback>,
     on_terminal_progress: Option<TerminalProgressCallback>,
     /// Upstream `isBashMode` (the `!` prefix toggles the editor border).
@@ -336,6 +350,11 @@ pub struct InteractiveMode {
     /// The tree-navigation dialog continuation (upstream the awaited
     /// selector/editor chain inside `showTreeSelector`).
     pending_tree_flow: std::sync::Mutex<Option<PendingTreeFlow>>,
+    /// The terminal's detected background brightness (upstream
+    /// `themeController.getTerminalTheme()`; the pump keeps it in sync).
+    terminal_theme: std::sync::Mutex<TerminalTheme>,
+    /// The active TUI mode (upstream `this.ui.mode`).
+    tui_mode: TuiMode,
 }
 
 /// The tree-navigation continuation waiting on a dialog (upstream the
@@ -383,6 +402,10 @@ pub enum ActiveSelector {
         token: u64,
         component: Shared<UserMessageSelectorComponent>,
     },
+    Settings {
+        token: u64,
+        component: Shared<SettingsSelectorComponent>,
+    },
 }
 
 impl ActiveSelector {
@@ -396,6 +419,7 @@ impl ActiveSelector {
             ActiveSelector::ExtensionSelector { token, .. } => *token,
             ActiveSelector::ExtensionInput { token, .. } => *token,
             ActiveSelector::UserMessage { token, .. } => *token,
+            ActiveSelector::Settings { token, .. } => *token,
         }
     }
 
@@ -424,6 +448,9 @@ impl ActiveSelector {
                 crate::modes::interactive::transcript::FocusHandle::new(component.clone()),
             ),
             ActiveSelector::UserMessage { component, .. } => Box::new(
+                crate::modes::interactive::transcript::FocusHandle::new(component.clone()),
+            ),
+            ActiveSelector::Settings { component, .. } => Box::new(
                 crate::modes::interactive::transcript::FocusHandle::new(component.clone()),
             ),
         }
@@ -467,7 +494,9 @@ impl InteractiveMode {
             editor: Shared::new(editor),
             footer: Shared::new(footer),
             app_title: APP_NAME.to_string(),
-            show_terminal_progress: options.show_terminal_progress.unwrap_or(false),
+            show_terminal_progress: AtomicBool::new(
+                options.show_terminal_progress.unwrap_or(false),
+            ),
             on_terminal_title: options.on_terminal_title,
             on_terminal_progress: options.on_terminal_progress,
             bash_mode: AtomicBool::new(false),
@@ -493,6 +522,8 @@ impl InteractiveMode {
                 5,
             )),
             pending_tree_flow: std::sync::Mutex::new(None),
+            terminal_theme: std::sync::Mutex::new(TerminalTheme::Dark),
+            tui_mode: options.tui_mode.unwrap_or_default(),
             session,
         }
     }
@@ -580,7 +611,7 @@ impl InteractiveMode {
     }
 
     fn set_terminal_progress(&self, running: bool) {
-        if self.show_terminal_progress {
+        if self.show_terminal_progress.load(Ordering::SeqCst) {
             if let Some(on_progress) = &self.on_terminal_progress {
                 on_progress(running);
             }
@@ -833,8 +864,7 @@ impl InteractiveMode {
 
         // Selector-backed commands answer a warning until the selectors
         // land (upstream opens the corresponding selector).
-        const SELECTOR_COMMANDS: [&str; 13] = [
-            "/settings",
+        const SELECTOR_COMMANDS: [&str; 12] = [
             "/export",
             "/import",
             "/share",
@@ -877,6 +907,10 @@ impl InteractiveMode {
         if text == "/hotkeys" {
             self.set_editor_text("");
             return self.handle_hotkeys_command();
+        }
+        if text == "/settings" {
+            self.set_editor_text("");
+            return self.show_settings_selector();
         }
         if text == "/quit" {
             self.set_editor_text("");
@@ -2141,6 +2175,352 @@ impl InteractiveMode {
         }]
     }
 
+    /// Upstream `showSettingsSelector` (`/settings`): the full settings panel.
+    /// The config snapshot is read from the session, the settings manager and
+    /// the theme registry; the changes come back through
+    /// [`Self::apply_setting_change`].
+    pub fn show_settings_selector(&self) -> Vec<ModeAction> {
+        let token = self.next_selector_token.fetch_add(1, Ordering::SeqCst);
+        let component = Shared::new(SettingsSelectorComponent::new(self.settings_config()));
+        self.show_selector(ActiveSelector::Settings { token, component })
+    }
+
+    /// The `/settings` panel's config snapshot (upstream the `SettingsConfig`
+    /// literal in `showSettingsSelector`).
+fn settings_config(&self) -> SettingsConfig {
+        // Collect the session-derived values first: several of these helpers
+        // lock the settings manager, which must not be held here (the port's
+        // settings mutex is not reentrant).
+        let auto_compact = self.session.auto_compaction_enabled();
+        let current_model = self.session.current_model();
+        let available_default_models = self.session.model_runtime().get_available_snapshot();
+        let terminal_theme = *self.terminal_theme.lock().expect("terminal theme");
+        let active_theme_name = current_theme_name();
+        let available_themes = crate::modes::interactive::theme::get_available_themes();
+        let supports_images = pillar_tui::terminal_image::get_capabilities().images.is_some();
+        let tui_mode = match self.tui_mode {
+            TuiMode::Fullscreen => "fullscreen",
+            TuiMode::Regular => "regular",
+        }
+        .to_string();
+
+        let settings = self.session.settings_manager();
+        let settings = settings.lock().expect("settings lock");
+        let current_theme = settings
+            .theme_setting()
+            .or(active_theme_name)
+            .unwrap_or_else(|| "dark".to_string());
+        SettingsConfig {
+            auto_compact,
+            default_model: match settings.default_model_and_provider() {
+                Some((provider, id)) => format!("{provider}/{id}"),
+                None => "not set".to_string(),
+            },
+            current_model,
+            available_default_models,
+            show_images: settings.show_images(),
+            image_width_cells: settings.image_width_cells(),
+            auto_resize_images: settings.image_auto_resize(),
+            block_images: settings.block_images(),
+            enable_skill_commands: settings.enable_skill_commands(),
+            steering_mode: settings.steering_mode().to_string(),
+            follow_up_mode: settings.follow_up_mode().to_string(),
+            transport: settings.transport().to_string(),
+            http_idle_timeout_ms: settings.http_idle_timeout_ms().unwrap_or(
+                crate::core::http_dispatcher::DEFAULT_HTTP_IDLE_TIMEOUT_MS,
+            ),
+            thinking_level: settings
+                .default_thinking_level()
+                .unwrap_or_else(|| "medium".to_string()),
+            model_thinking_levels: settings.all_model_thinking_levels(),
+            current_theme,
+            terminal_theme,
+            available_themes,
+            hide_thinking_block: settings.hide_thinking_block(),
+            mermaid_rendering_mode: settings.mermaid_rendering_mode().to_string(),
+            show_cache_miss_notices: settings.show_cache_miss_notices(),
+            collapse_changelog: settings.collapse_changelog(),
+            enable_install_telemetry: settings.enable_install_telemetry(),
+            double_escape_action: match settings.double_escape_action() {
+                DoubleEscapeAction::Fork => "fork",
+                DoubleEscapeAction::Tree => "tree",
+                DoubleEscapeAction::None => "none",
+            }
+            .to_string(),
+            tree_filter_mode: match settings.tree_filter_mode() {
+                crate::core::settings_manager::TreeFilterMode::Default => "default",
+                crate::core::settings_manager::TreeFilterMode::NoTools => "no-tools",
+                crate::core::settings_manager::TreeFilterMode::UserOnly => "user-only",
+                crate::core::settings_manager::TreeFilterMode::LabeledOnly => "labeled-only",
+                crate::core::settings_manager::TreeFilterMode::All => "all",
+            }
+            .to_string(),
+            show_hardware_cursor: settings.show_hardware_cursor(),
+            editor_padding_x: settings.editor_padding_x(),
+            output_pad: settings.output_pad(),
+            autocomplete_max_visible: settings.autocomplete_max_visible(),
+            quiet_startup: settings.quiet_startup(),
+            default_project_trust: match settings.default_project_trust() {
+                crate::core::settings_manager::DefaultProjectTrust::Ask => "ask",
+                crate::core::settings_manager::DefaultProjectTrust::Always => "always",
+                crate::core::settings_manager::DefaultProjectTrust::Never => "never",
+            }
+            .to_string(),
+            clear_on_shrink: settings.clear_on_shrink(),
+            show_terminal_progress: settings.show_terminal_progress(),
+            tui_mode,
+            fullscreen_exit_output: settings.fullscreen_exit_output().to_string(),
+            fullscreen_scrollbar: settings.fullscreen_scrollbar().to_string(),
+            fullscreen_copy_on_select: settings.fullscreen_copy_on_select(),
+            warnings: settings.warnings(),
+            supports_images,
+        }
+    }
+
+    /// The terminal background the theme controller last detected (the pump
+    /// keeps it in sync).
+    pub fn set_terminal_theme(&self, theme: TerminalTheme) {
+        *self.terminal_theme.lock().expect("terminal theme") = theme;
+    }
+
+    /// Upstream the `showSettingsSelector` callbacks: apply one settings
+    /// change to the settings manager and the UI.
+    ///
+    /// divergences: the transport / HTTP-timeout runtime hooks
+    /// (`agent.transport`, `configureHttpDispatcher`) are not ported yet, and
+    /// switching TUI mode reports a status instead of re-layouting
+    /// (fullscreen is not ported).
+pub fn apply_setting_change(&self, id: &str, value: &str) -> Vec<ModeAction> {
+        let mut actions: Vec<ModeAction> = Vec::new();
+        // These write through the session, which locks the settings manager
+        // itself (holding the lock here would deadlock).
+        match id {
+            "autocompact" => {
+                let enabled = value == "true";
+                self.session.set_auto_compaction_enabled(enabled);
+                self.footer.lock().set_auto_compact_enabled(enabled);
+                self.mark_dirty();
+                return actions;
+            }
+            "steering-mode" => {
+                self.session.set_steering_mode(queue_mode(value));
+                self.mark_dirty();
+                return actions;
+            }
+            "follow-up-mode" => {
+                self.session.set_follow_up_mode(queue_mode(value));
+                self.mark_dirty();
+                return actions;
+            }
+            _ => {}
+        }
+        {
+            let mut settings = self.session.settings_manager().lock().expect("settings lock");
+            match id {
+                "show-images" => settings.set_show_images(value == "true"),
+                "image-width-cells" => settings.set_image_width_cells(value.parse().unwrap_or(60)),
+                "auto-resize-images" => settings.set_image_auto_resize(value == "true"),
+                "block-images" => settings.set_block_images(value == "true"),
+                "skill-commands" => settings.set_enable_skill_commands(value == "true"),
+                "transport" => settings.set_transport(value),
+                "http-idle-timeout" => {
+                    let timeout = value.parse().unwrap_or(0);
+                    settings.set_http_idle_timeout_ms(timeout);
+                    drop(settings);
+                    self.transcript.lock().show_status(&format!(
+                        "HTTP idle timeout: {}",
+                        crate::core::http_dispatcher::format_http_idle_timeout_ms(timeout)
+                    ));
+                    self.mark_dirty();
+                    return actions;
+                }
+                "hide-thinking" => settings.set_hide_thinking_block(value == "true"),
+                "mermaid-rendering" => settings.set_mermaid_rendering_mode(value),
+                "cache-miss-notices" => settings.set_show_cache_miss_notices(value == "true"),
+                "collapse-changelog" => settings.set_collapse_changelog(value == "true"),
+                "quiet-startup" => settings.set_quiet_startup(value == "true"),
+                "install-telemetry" => settings.set_enable_install_telemetry(value == "true"),
+                "default-project-trust" => {
+                    settings.set_default_project_trust(match value {
+                        "always" => crate::core::settings_manager::DefaultProjectTrust::Always,
+                        "never" => crate::core::settings_manager::DefaultProjectTrust::Never,
+                        _ => crate::core::settings_manager::DefaultProjectTrust::Ask,
+                    });
+                }
+                "double-escape-action" => {
+                    settings.set_double_escape_action(match value {
+                        "fork" => DoubleEscapeAction::Fork,
+                        "none" => DoubleEscapeAction::None,
+                        _ => DoubleEscapeAction::Tree,
+                    });
+                }
+                "tree-filter-mode" => {
+                    settings.set_tree_filter_mode(match value {
+                        "no-tools" => crate::core::settings_manager::TreeFilterMode::NoTools,
+                        "user-only" => crate::core::settings_manager::TreeFilterMode::UserOnly,
+                        "labeled-only" => {
+                            crate::core::settings_manager::TreeFilterMode::LabeledOnly
+                        }
+                        "all" => crate::core::settings_manager::TreeFilterMode::All,
+                        _ => crate::core::settings_manager::TreeFilterMode::Default,
+                    });
+                }
+                "show-hardware-cursor" => {
+                    settings.set_show_hardware_cursor(value == "true");
+                    actions.push(ModeAction::SetShowHardwareCursor(value == "true"));
+                }
+                "editor-padding" => {
+                    let padding = value.parse().unwrap_or(0);
+                    settings.set_editor_padding_x(padding);
+                    drop(settings);
+                    self.editor().lock().set_padding_x(padding);
+                    self.mark_dirty();
+                    return actions;
+                }
+                "output-padding" => {
+                    let padding: u8 = value.parse().unwrap_or(1);
+                    settings.set_output_pad(padding);
+                    {
+                        let mut transcript = self.transcript.lock();
+                        transcript.settings_mut().output_pad = padding as usize;
+                    }
+                    drop(settings);
+                    self.render_after_rebuild();
+                    return actions;
+                }
+                "autocomplete-max-visible" => {
+                    let max_visible = value.parse().unwrap_or(5);
+                    settings.set_autocomplete_max_visible(max_visible);
+                    drop(settings);
+                    self.editor()
+                        .lock()
+                        .set_autocomplete_max_visible(max_visible as usize);
+                    self.autocomplete
+                        .lock()
+                        .expect("autocomplete")
+                        .set_max_visible(max_visible as usize);
+                    self.mark_dirty();
+                    return actions;
+                }
+                "clear-on-shrink" => {
+                    settings.set_clear_on_shrink(value == "true");
+                    actions.push(ModeAction::SetClearOnShrink(value == "true"));
+                }
+                "terminal-progress" => {
+                    settings.set_show_terminal_progress(value == "true");
+                    self.show_terminal_progress
+                        .store(value == "true", Ordering::SeqCst);
+                }
+                "tui-mode" => {
+                    // divergence: switching to fullscreen is not ported; the
+                    // row is reverted with a status, like upstream's failure
+                    // path for open overlays.
+                    let current = match self.tui_mode {
+                        TuiMode::Fullscreen => "fullscreen",
+                        TuiMode::Regular => "regular",
+                    };
+                    if value != current {
+                        drop(settings);
+                        self.refresh_setting_value("tui-mode", current);
+                        self.transcript
+                            .lock()
+                            .show_status("TUI mode switching is not ported yet");
+                        self.mark_dirty();
+                        return actions;
+                    }
+                }
+                "fullscreen-exit-output" => settings.set_fullscreen_exit_output(value),
+                "fullscreen-scrollbar" => settings.set_fullscreen_scrollbar(value),
+                "fullscreen-copy-on-select" => {
+                    settings.set_fullscreen_copy_on_select(value == "true");
+                }
+                "warnings" => {
+                    if let Ok(warnings) = serde_json::from_str(value) {
+                        settings.set_warnings(warnings);
+                    }
+                }
+                "theme" => {
+                    settings.set_theme(value);
+                    actions.push(ModeAction::ThemeApplied(value.to_string()));
+                }
+                _ => {}
+            }
+        }
+
+        // The effects that rebuild or re-render transcript content.
+        match id {
+            "show-images" | "image-width-cells" => {
+                let (show, width) = {
+                    let settings = self
+                        .session
+                        .settings_manager()
+                        .lock()
+                        .expect("settings lock");
+                    (settings.show_images(), settings.image_width_cells() as usize)
+                };
+                self.transcript
+                    .lock()
+                    .set_tool_image_settings(show, width);
+            }
+            "skill-commands" => self.rebuild_autocomplete(),
+            "hide-thinking" => {
+                let hide = value == "true";
+                self.transcript.lock().set_all_hide_thinking_block(hide);
+            }
+            "mermaid-rendering" | "cache-miss-notices" => self.render_after_rebuild(),
+            _ => {}
+        }
+        self.mark_dirty();
+        actions
+    }
+
+    /// Upstream `onModelThinkingLevelChange` / `onModelThinkingLevelRemove`.
+    pub fn apply_model_thinking_level(&self, provider: &str, model_id: &str, level: Option<&str>) {
+        {
+            let mut settings = self.session.settings_manager().lock().expect("settings lock");
+            match level {
+                Some(level) => settings.set_model_thinking_level(provider, model_id, level),
+                None => settings.remove_model_thinking_level(provider, model_id),
+            }
+        }
+        // Apply to the running session when the override is for the current
+        // model (a removal reverts to the global default).
+        let is_current = self
+            .session
+            .current_model()
+            .is_some_and(|model| model.provider == provider && model.id == model_id);
+        if is_current {
+            let effective = match level {
+                Some(level) => level.to_string(),
+                None => self
+                    .session
+                    .settings_manager()
+                    .lock()
+                    .expect("settings lock")
+                    .default_thinking_level()
+                    .unwrap_or_else(|| "medium".to_string()),
+            };
+            self.select_thinking_level(&effective, false);
+        }
+    }
+
+    /// Rebuild the transcript from the session entries (upstream
+    /// `rebuildChatFromMessages`).
+    fn render_after_rebuild(&self) {
+        self.transcript.lock().clear_conversation();
+        self.render_initial_messages();
+        self.mark_dirty();
+    }
+
+    /// Update one row's value in the open settings selector (upstream
+    /// `selector?.getSettingsList().updateValue(...)`).
+    fn refresh_setting_value(&self, id: &str, value: &str) {
+        let guard = self.active_selector.lock().expect("active selector");
+        if let Some(ActiveSelector::Settings { component, .. }) = guard.as_ref() {
+            component.lock().refresh_value(id, value);
+        }
+    }
+
     /// Upstream `handleModelCommand`, minus the built-in selector: an exact
     /// model reference switches directly and anything else falls through to the
     /// 2-column picker (`/m`).
@@ -2418,6 +2798,7 @@ impl InteractiveMode {
             ExtensionSelector(u64, Shared<ExtensionSelectorComponent>),
             ExtensionInput(u64, Shared<ExtensionInputComponent>),
             UserMessage(u64, Shared<UserMessageSelectorComponent>),
+            Settings(u64, Shared<SettingsSelectorComponent>),
         }
         let handle = {
             let guard = self.active_selector.lock().expect("active selector");
@@ -2445,6 +2826,9 @@ impl InteractiveMode {
                 }
                 Some(ActiveSelector::UserMessage { token, component }) => {
                     Handle::UserMessage(*token, component.clone())
+                }
+                Some(ActiveSelector::Settings { token, component }) => {
+                    Handle::Settings(*token, component.clone())
                 }
                 None => return None,
             }
@@ -2564,6 +2948,30 @@ impl InteractiveMode {
                     self.fork_selected_user_message(token, &entry_id)
                 }
                 UserMessageSelectorOutcome::Cancel => self.close_selector(Some(token)),
+            },
+            // `/settings`: the panel stays open while changes apply (upstream
+            // the callbacks mutate the live settings).
+            Handle::Settings(token, component) => match component.lock().handle_key(data) {
+                SettingsSelectorOutcome::Consumed => Vec::new(),
+                SettingsSelectorOutcome::Change { id, value } => {
+                    self.apply_setting_change(&id, &value)
+                }
+                SettingsSelectorOutcome::ThemePreview(setting) => {
+                    vec![ModeAction::ThemePreview(setting)]
+                }
+                SettingsSelectorOutcome::ModelThinkingLevelChange {
+                    provider,
+                    model_id,
+                    level,
+                } => {
+                    self.apply_model_thinking_level(&provider, &model_id, Some(&level));
+                    Vec::new()
+                }
+                SettingsSelectorOutcome::ModelThinkingLevelRemove { provider, model_id } => {
+                    self.apply_model_thinking_level(&provider, &model_id, None);
+                    Vec::new()
+                }
+                SettingsSelectorOutcome::Close => self.close_selector(Some(token)),
             },
         })
     }
@@ -2898,6 +3306,15 @@ impl InteractiveMode {
                 Vec::new()
             }
         }
+    }
+}
+
+/// The queue delivery mode for the session (upstream the `"all" |
+/// "one-at-a-time"` string).
+fn queue_mode(value: &str) -> pillar_agent::types::QueueMode {
+    match value {
+        "one-at-a-time" => pillar_agent::types::QueueMode::OneAtATime,
+        _ => pillar_agent::types::QueueMode::All,
     }
 }
 

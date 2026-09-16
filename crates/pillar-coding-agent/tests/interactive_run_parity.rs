@@ -1109,3 +1109,78 @@ async fn fork_command_returns_the_fork_outcome_from_the_run_loop() {
         "selector rendered: {output:?}"
     );
 }
+
+/// `/settings` end to end: the panel paints, the search box filters, a cycled
+/// value is persisted, Escape closes the panel and `/quit` exits.
+#[tokio::test]
+async fn settings_command_cycles_a_value_and_closes() {
+    install_dark();
+    let session = session(echo_stream("pong"), "settings");
+    let mut harness = harness(vec!["/settings\r".to_string()], None);
+    let chunks = Arc::clone(&harness.chunks);
+    let writes = Arc::clone(&harness.writes);
+    let state = Arc::clone(&session);
+    std::thread::spawn(move || {
+        let wait_for = |needle: &str| {
+            for _ in 0..800 {
+                if strip_terminal_sequences(&writes.lock().unwrap()).contains(needle) {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            false
+        };
+        wait_for("Auto-compact");
+        // Filter to the Transport row and cycle it ("auto" -> "sse").
+        chunks.lock().unwrap().push("transport".to_string());
+        std::thread::sleep(Duration::from_millis(60));
+        chunks.lock().unwrap().push("\r".to_string());
+        for _ in 0..800 {
+            if state
+                .settings_manager()
+                .lock()
+                .expect("settings")
+                .transport()
+                == "sse"
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        std::thread::sleep(Duration::from_millis(60));
+        chunks.lock().unwrap().push("\u{1b}".to_string());
+        std::thread::sleep(Duration::from_millis(60));
+        chunks.lock().unwrap().push("/quit\r".to_string());
+    });
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        run_interactive(
+            Arc::clone(&session),
+            Box::new(std::mem::replace(
+                &mut harness.terminal,
+                ProcessTerminal::with_io(Box::new(pillar_tui::process_terminal::NullTerminalIo)),
+            )),
+            run_options(temp_dir("keybindings")),
+        ),
+    )
+    .await
+    .expect("run loop finished")
+    .expect("run loop ok");
+
+    assert_eq!(result, InteractiveOutcome::Exit(0));
+    let output = rendered(&harness.writes);
+    assert!(output.contains("Auto-compact"), "panel rendered: {output:?}");
+    assert!(
+        output.contains("Type to search"),
+        "search box rendered: {output:?}"
+    );
+    assert_eq!(
+        session
+            .settings_manager()
+            .lock()
+            .expect("settings")
+            .transport(),
+        "sse"
+    );
+}

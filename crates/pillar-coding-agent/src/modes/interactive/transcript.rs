@@ -377,6 +377,22 @@ impl InteractiveTranscript {
         self.settings.hide_thinking_block
     }
 
+    /// Upstream the `onShowImagesChange` / `onImageWidthCellsChange` loops:
+    /// update the transcript default and every tool component in the chat.
+    pub fn set_tool_image_settings(&mut self, show: bool, width: usize) {
+        self.settings.show_images = show;
+        self.settings.image_width_cells = width;
+        for child in self.chat.children_mut() {
+            let Some(any) = child.as_any_mut() else {
+                continue;
+            };
+            if let Some(tool) = any.downcast_mut::<Shared<ToolExecutionComponent>>() {
+                tool.lock().set_show_images(show);
+                tool.lock().set_image_width_cells(width);
+            }
+        }
+    }
+
     /// Upstream `setToolsExpanded`: replace the default and update every
     /// existing expandable chat child.
     pub fn set_all_tools_expanded(&mut self, expanded: bool) {
