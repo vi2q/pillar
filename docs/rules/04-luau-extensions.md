@@ -155,7 +155,8 @@ Conversion rules for every value crossing the bridge (both directions):
 
 | Rust | Luau |
 | --- | --- |
-| `None`/`null` | `nil` |
+| absent optional field | omitted key (`nil` in Luau; the host drops `null` keys it would otherwise send) |
+| JSON `null` nested inside extension data | empty table (`{}` — luaur's `null` representation, not `nil`) |
 | `bool` | `boolean` |
 | `i64`/`f64` | `number` (Luau numbers are f64; integer precision beyond 2^53 is not preserved — pi payloads never contain such integers) |
 | `String` | `string` |
@@ -176,6 +177,47 @@ Return directions follow the same table. Handler return values that pi types as 
 
 - `pillar.append_entry(custom_type, data)` writes the same `CustomEntry` shape pi writes (`customMessage` role `custom`, `customType`, `data` serialized through the value bridge).
 - Custom entries render via `register_message_renderer`/`register_entry_renderer` registrations; renderers receive the entry data as a table.
+
+## Custom rendering
+
+`pillar.register_message_renderer(custom_type, renderer)` and
+`pillar.register_entry_renderer(custom_type, renderer)` receive the payload
+plus options, and answer a **declarative component description** (pi returns a
+live `Component` object; Luau cannot express one):
+
+```lua
+pillar.register_message_renderer("my-card", function(message, options)
+  return {
+    lines = {
+      { { text = "CARD ", style = "accent" }, { text = message.details.title } },
+      "expanded: " .. tostring(options.expanded),
+    },
+  }
+end)
+```
+
+| answer | meaning |
+| --- | --- |
+| `nil` | fall back to the default rendering (messages) / skip the entry (entries) |
+| a string | one plain line |
+| `{ text = "…", style = "…" }` | one styled line |
+| `{ lines = { line, … } }` | one line per entry; a line is a string or a list of `{ text, style }` segments |
+| `{ lines = {} }` | nothing to show (skipped) |
+
+`style` is a theme foreground colour name (`text`, `dim`, `accent`, `muted`,
+`success`, `error`, `customMessageText`, …); an unknown name renders unstyled.
+
+Payloads: a message renderer gets `{ customType, content, display, details,
+timestamp }` and `{ expanded, outputPad }`; an entry renderer gets
+`{ customType, id, data }` and `{ expanded }`. A renderer that raises shows
+pi's `[type] renderer failed: …` notice and never breaks the transcript.
+
+`pillar.register_markdown_transformer(fn)` receives `(markdown, context)` with
+`context = { messageType = "user" | "assistant" | "assistant-thinking",
+isStreaming, availableWidth }` and answers the rewritten Markdown (or `nil` to
+keep it). pi keeps one transformer per extension; a second registration
+replaces the first. Transformers run for user and assistant Markdown before
+rendering, in extension order.
 
 ## Type-checking gates
 
