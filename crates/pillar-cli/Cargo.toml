@@ -13,11 +13,17 @@ path = "src/main.rs"
 [dependencies]
 async-trait = "0.1"
 pillar-coding-agent = { path = "../pillar-coding-agent" }
-pillar-extensions = { path = "../pillar-extensions" }
+pillar-extensions = { path = "../pillar-extensions", optional = true }
 pillar-agent = { path = "../pillar-agent" }
 pillar-ai = { path = "../pillar-ai" }
 serde_json.workspace = true
 tokio = { version = "1.47", features = ["rt", "macros"] }
+
+[features]
+default = ["luau"]
+# The Luau extension runtime. Without it (`--no-default-features`) the binary
+# builds and runs with no VM, no `luaur`, and no extension loading.
+luau = ["dep:pillar-extensions"]
 
 [dev-dependencies]
 tokio = { version = "1.47", features = ["rt", "macros", "time"] }

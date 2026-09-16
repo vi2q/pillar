@@ -4,6 +4,8 @@
 //! command instead of waiting for it, and `on_update` reaches the agent's
 //! update sink.
 
+#![cfg(feature = "luau")]
+
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 

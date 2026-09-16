@@ -4,8 +4,9 @@
 #   scripts/check.sh          # everything (the CI entry point)
 #   scripts/check.sh --quick  # build, lint and smoke only (skips the test sweep)
 #
-# The dependency-direction check runs as part of `cargo test` and reads
-# `crates/*/Cargo.toml` against the table in docs/rules/01-architecture.md.
+# The dependency checks run as part of `cargo test`: the architecture table
+# (`dependency_direction`) and the profile / feature-resolved graph
+# (`dependency_profiles`, which also builds nothing).
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -46,6 +47,12 @@ run_timeout() {
 say "build (locked)"
 cargo build --locked --workspace
 
+# The build axis of docs/DEVELOPMENT-STRATEGY.md §5-3: the binary must compile
+# without the Luau runtime (`cargo test` gates the resolved graph; this proves
+# it compiles).
+say "build without Luau"
+cargo build --locked -p pillar-cli --no-default-features
+
 say "clippy"
 cargo clippy --locked --workspace --all-targets -- -D warnings
 
@@ -56,7 +63,44 @@ else
     say "tests (skipped: --quick)"
 fi
 
-say "smoke (isolated HOME / cwd, offline, dead proxy)"
+# The smoke assertions run against both feature sets: the build axis of
+# docs/DEVELOPMENT-STRATEGY.md §5-3 is only met if the binary also *runs*
+# without the VM (it binds an empty runner and needs no extension file).
+smoke() {
+    local label=$1 binary=$2
+    say "smoke: $label (isolated HOME / cwd, offline, dead proxy)"
+    local version
+    version=$(run_timeout 60 "$binary" --version)
+    [ -n "$version" ] || {
+        echo "smoke: --version printed nothing" >&2
+        exit 1
+    }
+
+    run_timeout 60 "$binary" --help | grep -q "Usage:" || {
+        echo "smoke: --help has no usage line" >&2
+        exit 1
+    }
+
+    cd "$sandbox/project"
+    set +e
+    local output status
+    output=$(run_timeout 120 "$binary" --mode json "hello" 2>&1)
+    status=$?
+    set -e
+    [ "$status" -ne 0 ] || {
+        echo "smoke: an unauthenticated run must fail" >&2
+        exit 1
+    }
+    [ "$status" -ne 124 ] || {
+        echo "smoke: the run hung" >&2
+        exit 1
+    }
+    printf '%s' "$output" | grep -qi "model" || {
+        echo "smoke: the failure does not explain the missing model: $output" >&2
+        exit 1
+    }
+}
+
 sandbox=$(mktemp -d)
 cleanup() { rm -rf "$sandbox"; }
 trap cleanup EXIT
@@ -65,7 +109,9 @@ binary="$root/target/debug/pillar"
 
 # No user configuration, no credentials, no reachable network: the binary must
 # still start, answer its own flags, and fail a run with a clear error rather
-# than hang or fall back to the real home.
+# than hang or fall back to the real home. The real HOME is kept so the
+# mid-script rebuild below still finds the toolchain (rustup lives in it).
+real_home=${HOME:-}
 export HOME="$sandbox/home"
 export PILLAR_CODING_AGENT_DIR="$sandbox/agent"
 export PILLAR_OFFLINE=1
@@ -73,36 +119,16 @@ export HTTPS_PROXY=http://127.0.0.1:9
 export HTTP_PROXY="$HTTPS_PROXY"
 export ALL_PROXY="$HTTPS_PROXY"
 
-version=$(run_timeout 60 "$binary" --version)
-[ -n "$version" ] || {
-    echo "smoke: --version printed nothing" >&2
-    exit 1
-}
+# `target/debug/pillar` currently holds the no-Luau build.
+smoke "no Luau" "$binary"
 
-run_timeout 60 "$binary" --help | grep -q "Usage:" || {
-    echo "smoke: --help has no usage line" >&2
-    exit 1
-}
+say "rebuild with Luau (the smoke run below uses the default binary)"
+cd "$root"
+env HOME="$real_home" cargo build --locked -p pillar-cli
 
-cd "$sandbox/project"
-set +e
-output=$(run_timeout 120 "$binary" --mode json "hello" 2>&1)
-status=$?
-set -e
-[ "$status" -ne 0 ] || {
-    echo "smoke: an unauthenticated run must fail" >&2
-    exit 1
-}
-[ "$status" -ne 124 ] || {
-    echo "smoke: the run hung" >&2
-    exit 1
-}
-printf '%s' "$output" | grep -qi "model" || {
-    echo "smoke: the failure does not explain the missing model: $output" >&2
-    exit 1
-}
+smoke "default" "$binary"
 
-# Isolation: everything the run wrote stays in the sandbox (the agent dir is
+# Isolation: everything the runs wrote stays in the sandbox (the agent dir is
 # redirected, so no ~/.pillar appears).
 [ ! -e "$sandbox/home/.pillar" ] || {
     echo "smoke: the run wrote to the real home layout" >&2

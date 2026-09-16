@@ -129,6 +129,8 @@ composition roots
 
 Cargo featureはビルド内容の選択であり、セキュリティ境界ではない。独立profileの依存解決を検査し、workspace全体のfeature unionやリンク時dead-code除去だけで「外せた」と判定しない。
 
+現状の実装: 開発CLIのLuau軸だけが実featureになっている（`pillar-cli`の`luau` feature、既定on。`--no-default-features`でVM・`luaur`抜きにビルド・起動できる）。LMPC最小／LMPC＋Luauはまだcrate集合として定義し、`crates/pillar-cli/tests/dependency_profiles.rs`が解決済みgraphを検査している（crate分割・feature化は未着手）。terminal層を外す軸（azparam/LMPC）はCLIでは未実装。
+
 ## 5. 疎結合の合格条件
 
 「traitがある」「crateが多い」ではなく、**外しても動き、差し替えても契約が保たれること**を検証する。
@@ -136,6 +138,7 @@ Cargo featureはビルド内容の選択であり、セキュリティ境界で�
 1. 実行核＋in-memory状態＋fake model＋fake toolで、TUI/Luau/OS環境なしに一turnとtool往復が動く。
 2. 同じ核をnative hostとazparam用Wasm hostで駆動できる。compiledだけでなくstreaming・cancel・保存／復帰・shutdownまで実行する。
 3. Luau有／無が独立してビルド・動作する。有の場合もTUIを要求せず、実拡張からhost toolを呼べる。
+   進捗: ビルド軸と起動は満たした（`scripts/check.sh`が`--no-default-features`のビルドとsmokeを実行、`dependency_profiles.rs::the_luau_feature_gates_the_vm_dependency`がfeature解決後のgraphを検査）。「TUIを要求せず実拡張からhost toolを呼べる」はVM単体＋契約で満たし、常時ゲート（headlessでの実拡張tool呼び出し）は未着手。
 4. native検索backendをhost/VFS backendへ替えても、採用した検索契約が同じ。NPC構成からは検索自体を外せる。
 5. 通信・ツール・UI・保存の遅延応答にsession/generation/request識別があり、取消・切替後に別sessionを変更しない。
 6. import/exportとtransitive dependencyを機械検査し、最小構成へterminal・process・暗黙FS・package取得が混入したら落とす。
@@ -193,7 +196,7 @@ LMPCの世界状態・権限・行動適用はホストが所有する。Wasmゲ
 | nativeのfind/grepは`ignore::WalkParallel`＋globset/regex。同期走査、file全読取、context再読取、共有match集合を使用。toolのabort判定は開始時 | 独自強化を維持し、cancel・buffer・並列予算・backend境界を改善する出発点。最速／メモリ上限達成済みとは判定しない | `crates/pillar-coding-agent/src/core/tools/search.rs` |
 | `run_agent_loop`は注入されたsink/modelでawait可能、便利関数`agent_loop`は`tokio::spawn`。内部時刻はSystemTime | 全面再実装せずhost駆動入口を活かす。clock・残るspawn/timerを切り出す | `crates/pillar-agent/src/agent_loop.rs` |
 | `FetchFn`を注入でき、native HTTP依存はtarget条件付き。Wasm既定は未設定エラー | transport境界は活用可能。ただし資格情報・executor・全providerの実行可能性は別検証 | `crates/pillar-ai/src/transport.rs`, `crates/pillar-ai/Cargo.toml` |
-| extensionsはcoding-agentとtuiに依存。renderer契約にTheme/Component。Luau custom UIは同期`recv_timeout`待ち | Luau機能を削るのでなくpresentationと非同期request/replyを分離する | `crates/pillar-extensions/Cargo.toml`, `crates/pillar-coding-agent/src/core/extensions_types.rs`, `crates/pillar-extensions/src/runtime.rs::context_value` |
+| 解決済み（2026-09-17）: `pillar-extensions`はcoding-agentにもtuiにも依存しない。共有型は`pillar-extensions-contract`（`ThemeStyle`/中立payload、`ThemeProvider`）。残る負債はLuau custom UIの同期`recv_timeout`待ち | 非同期request/replyへ移す | `crates/pillar-extensions-contract/src/lib.rs`, `crates/pillar-extensions/src/runtime.rs::context_value` |
 | Luau `call_tool`のsignal/on_updateはnil。ExecHostは同期callback | 開発支援の必要上限の不足として扱う。build/asset処理の進捗・停止をbuilt-in同等にする | `crates/pillar-extensions/src/runtime.rs::call_tool`, `ExecHost` |
 | CLIのEffectBrokerに認可と監査があり、execは同期process出力収集、監査はVecに保持 | 強制点の土台は維持。host化・deadline・出力上限・監査sinkの保持予算を追加する | `crates/pillar-cli/src/effects.rs` |
 | crate依存allowlistの回帰テストはある。coding-agent→tui、extensions→coding-agent/tuiは現状許可 | 現在の表を固定するだけでは将来の疎結合を証明しない。profile別transitive依存と実行検証を追加する | `crates/pillar-cli/tests/dependency_direction.rs` |

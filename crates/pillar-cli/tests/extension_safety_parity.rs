@@ -6,6 +6,8 @@
 //! host snapshot) instead of running the old VM, and every extension effect
 //! goes through the one authorizer.
 
+#![cfg(feature = "luau")]
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -499,14 +501,14 @@ fn tool_context(name: &str) -> pillar_agent::BeforeToolCallContext {
 /// a path that does would skip both the policy and the audit trail.
 #[test]
 fn host_callbacks_do_not_bypass_the_effect_broker() {
-    let runner = include_str!("../src/runner.rs");
+    let runner = include_str!("../src/runner/luau.rs");
     assert!(
         !runner.contains("std::process::"),
-        "runner.rs must go through the effect broker to run a process"
+        "the Luau wiring must go through the effect broker to run a process"
     );
     assert!(
         !runner.contains("std::fs::"),
-        "runner.rs must go through the effect broker to touch the filesystem"
+        "the Luau wiring must go through the effect broker to touch the filesystem"
     );
 }
 

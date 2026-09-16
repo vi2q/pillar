@@ -2,6 +2,8 @@
 //! extension runtime: a configured `.luau` file is discovered, loaded, and
 //! bridged into an `ExtensionRunner` the session can bind to.
 
+#![cfg(feature = "luau")]
+
 use pillar_cli::runner::build_extension_runner;
 
 fn temp_dir(name: &str) -> std::path::PathBuf {

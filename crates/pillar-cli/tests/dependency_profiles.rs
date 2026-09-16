@@ -15,6 +15,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::process::Command;
 
 /// The runtime core (a game host embeds this without a terminal).
 const LMPC_MINIMAL: [&str; 2] = ["pillar-agent", "pillar-ai"];
@@ -265,5 +266,66 @@ fn lmpc_luau_excludes_the_presentation_shell_and_terminal() {
         leaked.is_empty(),
         "the Luau profile reaches {leaked:?}; taking the VM must not pull the coding agent, \
          the TUI, or the terminal layer in"
+    );
+}
+
+/// The names `cargo tree` resolves for one feature set of a crate.
+///
+/// The lock graph above is a superset (every feature and target variant), so
+/// it cannot express "the Luau axis is off". `cargo tree` resolves the feature
+/// set exactly, which is what the build axis has to be gated on.
+fn tree_names(package: &str, no_default_features: bool) -> BTreeSet<String> {
+    let mut command = Command::new(env!("CARGO"));
+    command.args([
+        "tree",
+        "-p",
+        package,
+        "-e",
+        "normal",
+        "--prefix",
+        "none",
+        "--no-dedupe",
+        "--locked",
+        // The gate must not touch the network (CI runs offline).
+        "--offline",
+    ]);
+    if no_default_features {
+        command.arg("--no-default-features");
+    }
+    let output = command.output().expect("run cargo tree");
+    assert!(
+        output.status.success(),
+        "cargo tree failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.split_whitespace().next())
+        .map(str::to_string)
+        .collect()
+}
+
+/// The Luau runtime is a *build* axis, not only a dependency property: with
+/// `--no-default-features` the binary must resolve without the VM crate or
+/// `luaur` (docs/DEVELOPMENT-STRATEGY.md §5-3). The default build keeps them,
+/// so a feature that silently stops gating anything fails here too.
+#[test]
+fn the_luau_feature_gates_the_vm_dependency() {
+    let without = tree_names("pillar-cli", true);
+    assert!(
+        !without.contains("pillar-extensions"),
+        "a --no-default-features build still resolves the VM crate"
+    );
+    assert!(
+        !without
+            .iter()
+            .any(|name| name.starts_with("luaur") || name.starts_with("mlua")),
+        "a --no-default-features build still resolves a Luau engine: {without:?}"
+    );
+
+    let with = tree_names("pillar-cli", false);
+    assert!(
+        with.contains("pillar-extensions") && with.iter().any(|name| name.starts_with("luaur")),
+        "the default build must contain the Luau runtime (the gate above would be vacuous)"
     );
 }
