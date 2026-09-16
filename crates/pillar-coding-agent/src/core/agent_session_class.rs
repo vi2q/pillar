@@ -276,6 +276,10 @@ pub type SystemPromptRebuildFn = Arc<dyn Fn(&[String]) -> String + Send + Sync>;
 pub type ExtensionRunnerFactory =
     Arc<dyn Fn(BTreeMap<String, Value>) -> ExtensionRunner + Send + Sync>;
 
+/// Host hook publishing the host-owned extension data after a rebuilt runner
+/// is installed (upstream the host re-reading the runtime's registries).
+pub type ExtensionReloadPublishFn = Arc<dyn Fn() + Send + Sync>;
+
 /// Deferred `beforeSessionStart` callback passed to
 /// [`AgentSession::reload`].
 pub type BeforeSessionStartFn =
@@ -329,10 +333,14 @@ pub struct AgentSessionConfig {
     /// Host hook rebuilding the base system prompt from active tool names
     /// (upstream `_rebuildSystemPrompt`).
     pub system_prompt_rebuild: Option<SystemPromptRebuildFn>,
-    /// Host hook rebuilding the extension runner on reload (upstream
-    /// `_buildRuntime`). Without it, `reload` stops after the old runner
-    /// shuts down.
+/// Host hook rebuilding the extension runner on reload (upstream
+/// `_buildRuntime`). Without it, `reload` stops after the old runner
+/// shuts down.
     pub extension_runner_rebuild: Option<ExtensionRunnerFactory>,
+    /// Host hook run after the rebuilt runner is in place (upstream the host
+    /// re-reading its own extension registries). The host must not run it
+    /// while the old runner is still installed.
+    pub extension_reload_publish: Option<ExtensionReloadPublishFn>,
 }
 
 impl AgentSessionConfig {
@@ -363,6 +371,7 @@ impl AgentSessionConfig {
             scoped_models: Vec::new(),
             system_prompt_rebuild: None,
             extension_runner_rebuild: None,
+            extension_reload_publish: None,
         }
     }
 }
@@ -431,6 +440,7 @@ struct SessionInner {
     session_start_event: Option<SessionEventMeta>,
     system_prompt_rebuild: Option<SystemPromptRebuildFn>,
     extension_runner_rebuild: Option<ExtensionRunnerFactory>,
+    extension_reload_publish: Mutex<Option<ExtensionReloadPublishFn>>,
     initial_active_tool_names: Option<Vec<String>>,
     allowed_tool_names: Option<BTreeSet<String>>,
     excluded_tool_names: Option<BTreeSet<String>>,
@@ -558,6 +568,7 @@ impl AgentSession {
             session_start_event: config.session_start_event,
             system_prompt_rebuild: config.system_prompt_rebuild,
             extension_runner_rebuild: config.extension_runner_rebuild,
+            extension_reload_publish: Mutex::new(config.extension_reload_publish),
             initial_active_tool_names: config.initial_active_tool_names,
             allowed_tool_names: config.allowed_tool_names,
             excluded_tool_names: config.excluded_tool_names,
@@ -1522,6 +1533,33 @@ impl AgentSession {
     /// Install tool interception hooks on the agent (upstream
     /// `_installAgentToolHooks`). The hooks read the runner at execution
     /// time so extension reloads swap in without reinstalling.
+    /// Install the host's post-reload publish hook (upstream the host
+    /// re-reading the runtime's registries after `_buildRuntime`).
+    pub fn set_extension_reload_publish(&self, publish: ExtensionReloadPublishFn) {
+        *self
+            .inner
+            .extension_reload_publish
+            .lock()
+            .expect("publish lock") = Some(publish);
+    }
+
+    /// Replace the extension-owned tools with a rebuilt generation's, keeping
+    /// the builtin and host tools (upstream `_buildRuntime` re-registering the
+    /// runtime's custom tools). Call it while the previous runner is still
+    /// installed — that is what identifies the tools being replaced.
+    pub fn replace_extension_tools(&self, tools: Vec<pillar_agent::types::AgentTool>) {
+        let current = self.inner.agent.state().tools;
+        let mut kept: Vec<pillar_agent::types::AgentTool> = {
+            let runner = self.inner.extension_runner.lock().expect("runner lock");
+            current
+                .into_iter()
+                .filter(|tool| runner.tool_owner(tool.name()).is_none())
+                .collect()
+        };
+        kept.extend(tools);
+        self.inner.agent.set_tools(kept);
+    }
+
     pub fn install_tool_hooks(&self) {
         let inner = Arc::clone(&self.inner);
         let before = Arc::new(
@@ -2073,8 +2111,18 @@ impl AgentSession {
         let new_runner = factory(previous_flag_values);
         *self.inner.extension_runner.lock().expect("runner lock") = new_runner;
         self.apply_extension_bindings();
-        // divergence: upstream `_buildRuntime` also rebinds the extension core
-        // callbacks and refreshes the host-owned tool registry.
+        // The generation is fully installed at this point: the host factory
+        // also swapped the command handler and the extension tools, so publish
+        // before the new generation reacts to `session_start`.
+        if let Some(publish) = self
+            .inner
+            .extension_reload_publish
+            .lock()
+            .expect("publish lock")
+            .clone()
+        {
+            publish();
+        }
 
         if let Some(rebuild) = &self.inner.system_prompt_rebuild {
             let tool_names: Vec<String> = self

@@ -683,6 +683,7 @@ pub async fn create_agent_session(
         scoped_models: options.scoped_models,
         system_prompt_rebuild: options.system_prompt_rebuild,
         extension_runner_rebuild: options.extension_runner_rebuild,
+        extension_reload_publish: None,
     });
     session.install_tool_hooks();
 

@@ -46,8 +46,8 @@ use pillar_coding_agent::modes::rpc::rpc_mode::{
 };
 
 use pillar_cli::runner::{
-    ExtensionWiring, build_extension_runner, build_extension_runner_with_slots,
-    extension_command_handler,
+    ExtensionCommandSlot, ExtensionWiring, build_extension_runner,
+    build_extension_runner_with_slots, refresh_extension_data_for,
 };
 use pillar_cli::trust::{project_extension_dir, resolve_project_trust, stored_project_trust};
 use pillar_coding_agent::core::extensions_types::{ExtensionContextFacts, ExtensionMode};
@@ -303,6 +303,9 @@ async fn build_session_with(
     }
     let rebuild_inputs = wiring.rebuild.clone();
     let extension_runner: Arc<Mutex<ExtensionRunner>> = Arc::new(Mutex::new(wiring.take_runner()));
+    // The session keeps this stable handler; `/reload` repoints the slot, so
+    // the rebuilt VM takes over without rebinding the session.
+    let command_slot = ExtensionCommandSlot::new(&wiring.runtime);
 
     let selection = resolve_cli_model_selection(parsed, &model_runtime)?;
 
@@ -326,13 +329,17 @@ async fn build_session_with(
             reason: start_reason,
             previous_session_file,
         }),
-        command_handler: Some(extension_command_handler(&wiring.runtime)),
+        command_handler: Some(command_slot.handler()),
         system_prompt_rebuild: None,
         // `/reload`: re-run discovery into a fresh VM, keeping the host slots
         // (the session binding, the `ctx.ui` bridge, the facts and the
-        // command snapshot) so the new runner behaves like the old one.
+        // command snapshot). A generation swap owns every capability derived
+        // from the VM — the runner, the command handler and the extension
+        // tools — otherwise the old generation keeps running
+        // (docs/ARCHITECTURE-REVIEW-s05c0.md C).
         extension_runner_rebuild: {
             let inputs = rebuild_inputs;
+            let command_slot = command_slot.clone();
             Some(Arc::new(move |flag_values| {
                 let mut rebuilt = build_extension_runner_with_slots(
                     &inputs.cwd,
@@ -347,13 +354,35 @@ async fn build_session_with(
                 for (path, error) in &rebuilt.errors {
                     eprintln!("Warning: failed to load extension {path}: {error}");
                 }
-                rebuilt.refresh_extension_data();
+                command_slot.set_runtime(&rebuilt.runtime);
+                // The previous runner is still installed here, which is what
+                // tells the session which tools the new generation replaces.
+                if let Some(session) = inputs
+                    .slots
+                    .session_slot
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .clone()
+                {
+                    session.replace_extension_tools(rebuilt.custom_tools());
+                }
                 rebuilt.runner
             }))
         },
         stream_fn: None,
     })
     .await?;
+    // Publish the host snapshot after the session installed the rebuilt
+    // runner: refreshing inside the factory would read the outgoing runner.
+    {
+        let session_slot = Arc::clone(&wiring.session_slot);
+        let data = Arc::clone(&wiring.data);
+        created
+            .session
+            .set_extension_reload_publish(Arc::new(move || {
+                refresh_extension_data_for(&session_slot, &data);
+            }));
+    }
     if let Some(message) = &created.model_fallback_message {
         eprintln!("Warning: {message}");
     }
@@ -799,6 +828,11 @@ async fn run_interactive(parsed: &Args) -> ExitCode {
 
         let next = Arc::new(next);
         if let Some(wiring) = wiring.as_ref() {
+            // The replacement wiring is bound to the replacement session
+            // before its extensions react, exactly like the initial startup:
+            // otherwise the `@pillar` host callbacks have no session to
+            // resolve.
+            wiring.bind_session(&next);
             wiring.set_extension_context(ExtensionContextFacts {
                 cwd: next
                     .session_manager()

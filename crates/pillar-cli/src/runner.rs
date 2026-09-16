@@ -224,6 +224,45 @@ pub fn extension_command_handler(runtime: &SharedRuntime) -> ExtensionCommandHan
     })
 }
 
+/// The command handler the session holds, resolved per call so `/reload`
+/// reaches the rebuilt VM without rebinding the session. A handler captured
+/// at session creation would keep running the previous generation
+/// (docs/ARCHITECTURE-REVIEW-s05c0.md C).
+#[derive(Clone)]
+pub struct ExtensionCommandSlot {
+    current: Arc<Mutex<ExtensionCommandHandler>>,
+}
+
+impl ExtensionCommandSlot {
+    pub fn new(runtime: &SharedRuntime) -> Self {
+        Self {
+            current: Arc::new(Mutex::new(extension_command_handler(runtime))),
+        }
+    }
+
+    /// Point the slot at a rebuilt runtime (called by the `/reload` factory).
+    pub fn set_runtime(&self, runtime: &SharedRuntime) {
+        *self
+            .current
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            extension_command_handler(runtime);
+    }
+
+    /// The stable handler to give the session; it resolves the slot at call
+    /// time.
+    pub fn handler(&self) -> ExtensionCommandHandler {
+        let current = Arc::clone(&self.current);
+        Arc::new(move |name: &str, args: &str| {
+            let handler = current
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone();
+            handler(name, args)
+        })
+    }
+}
+
 /// Install the `pi.exec` host (upstream the process layer behind `exec`):
 /// the command runs with the session's cwd, and the extension receives
 /// `{ stdout, stderr, code, killed }`.
@@ -776,64 +815,72 @@ impl ExtensionWiring {
     /// Call it after `bind_extensions` and after a reload — never from inside
     /// an extension handler (the runner lock is held there).
     pub fn refresh_extension_data(&self) {
-        let Some(session) = self
-            .session_slot
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
-        else {
-            return;
-        };
-        let tools = session.state().tools;
-        let (commands, owners) = {
-            let runner = session.extension_runner_arc();
-            let mut runner = runner.lock().expect("runner lock");
-            let commands = serde_json::Value::Array(
-                runner
-                    .registered_commands()
-                    .iter()
-                    .map(|command| {
-                        serde_json::json!({
-                            "name": command.invocation_name,
-                            "description": command.description,
-                            "source": command.source_path,
-                        })
-                    })
-                    .collect(),
-            );
-            let owners: Vec<Option<String>> = tools
+        refresh_extension_data_for(&self.session_slot, &self.data);
+    }
+}
+
+/// [`ExtensionWiring::refresh_extension_data`] over bare slots, so the reload
+/// hook can refresh the host snapshot after the session installed the rebuilt
+/// runner (before that the old runner answers and the snapshot would be a
+/// generation behind).
+pub fn refresh_extension_data_for(
+    session_slot: &SessionSlot,
+    data: &Arc<Mutex<ExtensionDataSnapshot>>,
+) {
+    let Some(session) = session_slot
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+    else {
+        return;
+    };
+    let tools = session.state().tools;
+    let (commands, owners) = {
+        let runner = session.extension_runner_arc();
+        let mut runner = runner.lock().expect("runner lock");
+        let commands = serde_json::Value::Array(
+            runner
+                .registered_commands()
                 .iter()
-                .map(|tool| runner.tool_owner(tool.name()))
-                .collect();
-            (commands, owners)
-        };
-        let all_tools = serde_json::Value::Array(
-            tools
-                .iter()
-                .zip(owners)
-                .map(|(tool, owner)| {
+                .map(|command| {
                     serde_json::json!({
-                        "name": tool.name(),
-                        "description": tool.tool.description,
-                        "parameters": tool.tool.parameters,
-                        "source": owner.unwrap_or_else(|| "builtin".to_string()),
+                        "name": command.invocation_name,
+                        "description": command.description,
+                        "source": command.source_path,
                     })
                 })
                 .collect(),
         );
-        let active_tools = serde_json::Value::Array(
-            tools
-                .iter()
-                .map(|tool| serde_json::Value::String(tool.name().to_string()))
-                .collect(),
-        );
-        *self
-            .data
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = ExtensionDataSnapshot {
+        let owners: Vec<Option<String>> = tools
+            .iter()
+            .map(|tool| runner.tool_owner(tool.name()))
+            .collect();
+        (commands, owners)
+    };
+    let all_tools = serde_json::Value::Array(
+        tools
+            .iter()
+            .zip(owners)
+            .map(|(tool, owner)| {
+                serde_json::json!({
+                    "name": tool.name(),
+                    "description": tool.tool.description,
+                    "parameters": tool.tool.parameters,
+                    "source": owner.unwrap_or_else(|| "builtin".to_string()),
+                })
+            })
+            .collect(),
+    );
+    let active_tools = serde_json::Value::Array(
+        tools
+            .iter()
+            .map(|tool| serde_json::Value::String(tool.name().to_string()))
+            .collect(),
+    );
+    *data.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) =
+        ExtensionDataSnapshot {
             commands,
             all_tools,
             active_tools,
         };
-    }
 }
