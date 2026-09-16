@@ -1,7 +1,9 @@
 //! Parity tests for the settings-list component (pi v0.84.3
 //! components/settings-list.ts).
 
-use pillar_tui::settings_list::{SettingItem, SettingsList, SettingsListTheme};
+use pillar_tui::settings_list::{
+    SettingsActivation, SettingItem, SettingsList, SettingsListTheme,
+};
 
 fn passthrough(text: &str, _selected: bool) -> String {
     text.to_string()
@@ -29,6 +31,7 @@ fn items() -> Vec<SettingItem> {
             description: Some("Color scheme".to_string()),
             current_value: "dark".to_string(),
             values: vec!["dark".to_string(), "light".to_string()],
+            submenu: None,
         },
         SettingItem {
             id: "model".to_string(),
@@ -36,6 +39,7 @@ fn items() -> Vec<SettingItem> {
             description: None,
             current_value: "sonnet".to_string(),
             values: vec!["sonnet".to_string(), "opus".to_string()],
+            submenu: None,
         },
         SettingItem {
             id: "nosub".to_string(),
@@ -43,6 +47,7 @@ fn items() -> Vec<SettingItem> {
             description: None,
             current_value: "fixed".to_string(),
             values: vec![],
+            submenu: None,
         },
     ]
 }
@@ -87,7 +92,7 @@ fn item_without_values_does_not_change() {
     let mut list = SettingsList::new(items(), 10, &mut |_, _| {}, &mut || {}, false);
     list.set_selected_index_by_id("nosub");
     let changed = list.activate_selected(&mut |_, _| {});
-    assert_eq!(changed, None);
+    assert_eq!(changed, SettingsActivation::None);
 }
 
 // --- selection / movement -------------------------------------------------------------------------
@@ -247,5 +252,45 @@ fn search_moves_selection_onto_filtered_items() {
     list.apply_filter("model");
     // Selection is on the filtered "model" row → activates model values.
     let changed = list.activate_selected(&mut |_, _| {});
-    assert_eq!(changed, Some(("model".to_string(), "opus".to_string())));
+    assert_eq!(
+        changed,
+        SettingsActivation::Cycled {
+            id: "model".to_string(),
+            value: "opus".to_string(),
+        }
+    );
+}
+
+// --- submenus ---------------------------------------------------------------------------------------
+
+#[test]
+fn activate_reports_the_submenu_key_and_current_value() {
+    let mut items = items();
+    items[0].submenu = Some("theme".to_string());
+    let mut list = SettingsList::new(items, 10, &mut |_, _| {}, &mut || {}, false);
+    // The submenu wins over the item's values.
+    assert_eq!(
+        list.activate_selected(&mut |_, _| {}),
+        SettingsActivation::OpenSubmenu {
+            id: "theme".to_string(),
+            submenu: "theme".to_string(),
+            current_value: "dark".to_string(),
+        }
+    );
+    // The value did not cycle.
+    let lines = list.render(200, &theme());
+    let row = lines.iter().find(|l| l.contains("Theme")).unwrap();
+    assert!(row.contains("dark"), "{row:?}");
+}
+
+#[test]
+fn activate_without_submenu_or_values_is_none() {
+    let mut items = items();
+    items[2].values.clear();
+    let mut list = SettingsList::new(items, 10, &mut |_, _| {}, &mut || {}, false);
+    list.select_item("nosub");
+    assert_eq!(
+        list.activate_selected(&mut |_, _| {}),
+        SettingsActivation::None
+    );
 }

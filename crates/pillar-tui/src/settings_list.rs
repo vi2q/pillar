@@ -21,6 +21,31 @@ pub struct SettingItem {
     pub current_value: String,
     /// Enter/Space cycles through these when present.
     pub values: Vec<String>,
+    /// When present, Enter opens a submenu. The value is an opaque key: the
+    /// owner (the coding agent) builds the component, so this crate keeps no
+    /// dependency on the submenu widgets.
+    ///
+    /// divergence: upstream stores a `submenu(currentValue, done) => Component`
+    /// closure on the item; the port keeps the component assembly in the
+    /// caller (the port's components answer outcomes instead of invoking
+    /// callbacks).
+    pub submenu: Option<String>,
+}
+
+/// What activating a setting did (upstream `activateItem`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SettingsActivation {
+    /// Nothing selected.
+    None,
+    /// A value was cycled: `(id, new value)`.
+    Cycled { id: String, value: String },
+    /// The item opens a submenu: the item id, the opaque submenu key and the
+    /// item's current value (upstream passes it for pre-selection).
+    OpenSubmenu {
+        id: String,
+        submenu: String,
+        current_value: String,
+    },
 }
 
 /// Hook type for label/value theming: receives the text and whether the
@@ -152,13 +177,12 @@ impl SettingsList {
         }
     }
 
-    /// Activate the selected item: open its submenu or cycle values
-    /// (upstream `activateItem`). Returns (changed_id, new_value) when a
-    /// value cycle occurred.
+    /// Activate the selected item: report a submenu to open or cycle its
+    /// values (upstream `activateItem`).
     pub fn activate_selected(
         &mut self,
         on_change: &mut dyn FnMut(&str, &str),
-    ) -> Option<(String, String)> {
+    ) -> SettingsActivation {
         let selected = if self.search_enabled {
             self.filtered_items.get(self.selected_index).copied()
         } else if self.selected_index < self.items.len() {
@@ -166,7 +190,20 @@ impl SettingsList {
         } else {
             None
         };
-        let index = selected?;
+        let Some(index) = selected else {
+            return SettingsActivation::None;
+        };
+
+        // A submenu opens before any value cycling (upstream checks `submenu`
+        // first).
+        if let Some(submenu) = self.items[index].submenu.clone() {
+            return SettingsActivation::OpenSubmenu {
+                id: self.items[index].id.clone(),
+                submenu,
+                current_value: self.items[index].current_value.clone(),
+            };
+        }
+
         let values_len = self.items[index].values.len();
         if values_len > 0 {
             let current = self.items[index].current_value.clone();
@@ -178,9 +215,12 @@ impl SettingsList {
             let next = self.items[index].values[(current_index + 1) % values_len].clone();
             self.items[index].current_value = next.clone();
             on_change(&self.items[index].id, &next);
-            Some((self.items[index].id.clone(), next))
+            SettingsActivation::Cycled {
+                id: self.items[index].id.clone(),
+                value: next,
+            }
         } else {
-            None
+            SettingsActivation::None
         }
     }
 
