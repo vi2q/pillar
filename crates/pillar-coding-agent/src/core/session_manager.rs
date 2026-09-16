@@ -8,6 +8,26 @@
 //! streaming header scan and concurrent info loading are simplified to
 //! plain synchronous reads; v1/v2 migrations (firstKeptEntryIndex ->
 //! firstKeptEntryId, hookMessage -> custom role) are applied on load.
+//!
+//! # Durability
+//!
+//! The file is the record of truth, so a write never leaves the file in a
+//! state the loader cannot describe:
+//!
+//! - **append** writes one line with `write_all` on an append handle (no
+//!   fsync: one per turn step would be paid per token delta). A crash mid-append
+//!   leaves a truncated last line, which the loader drops and repairs on the
+//!   next open.
+//! - **rewrite** (new session, migration, branch extraction, torn-tail repair)
+//!   goes through a sibling temp file, `fsync`, then `rename`: an interrupted
+//!   rewrite leaves the previous file intact.
+//! - a **failed append** rolls the live state back, so the in-memory session
+//!   never claims an entry the file does not have.
+//! - a **damaged middle line** fails the open with its line numbers instead of
+//!   silently shortening the transcript; files older than the current version
+//!   may carry entries without ids (migration assigns them), so only a
+//!   current-version file treats a missing id as damage.
+//! - a **migration** keeps the pre-migration bytes as `<file>.bak`.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -357,6 +377,13 @@ fn usage_from_json(value: Option<&Value>) -> Option<Usage> {
 /// Parse a single JSONL line into a file entry; None for malformed lines
 /// (upstream `parseSessionEntryLine`).
 pub fn parse_session_entry_line(line: &str) -> Option<FileEntry> {
+    parse_session_entry_line_opt(line, false)
+}
+
+/// [`parse_session_entry_line`] with the pre-migration tolerance: files older
+/// than the current version may carry entries without ids, which migration
+/// assigns on load (upstream keeps `id` optional until then).
+fn parse_session_entry_line_opt(line: &str, allow_missing_id: bool) -> Option<FileEntry> {
     let trimmed = line.trim();
     if trimmed.is_empty() {
         return None;
@@ -367,7 +394,11 @@ pub fn parse_session_entry_line(line: &str) -> Option<FileEntry> {
         let header: SessionHeader = serde_json::from_value(value).ok()?;
         return Some(FileEntry::Header(header));
     }
-    let id = value.get("id")?.as_str()?.to_string();
+    let id = match value.get("id").and_then(Value::as_str) {
+        Some(id) => id.to_string(),
+        None if allow_missing_id => String::new(),
+        None => return None,
+    };
     let parent_id = match value.get("parentId") {
         Some(Value::String(parent)) => Some(parent.clone()),
         _ => None,
@@ -630,6 +661,15 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let doy = (153 * mp + 2) / 5 + d - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     era * 146_097 + doe - 719_468
+}
+
+/// The sibling path that keeps a file's pre-migration bytes.
+fn session_backup_path(path: &Path) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| "session".to_string());
+    path.with_file_name(format!("{file_name}.bak"))
 }
 
 /// Publish a session file atomically: the content goes to a sibling temp file
@@ -976,9 +1016,18 @@ pub fn load_session_file(file_path: &Path) -> SessionFileLoad {
         return load;
     };
     let lines: Vec<&str> = content.lines().collect();
+    // The header decides how tolerant the entry parse is; a file whose first
+    // line is not a header is rejected below either way.
+    let allow_missing_id = match lines.first().and_then(|line| parse_session_entry_line(line)) {
+        Some(FileEntry::Header(header)) => header
+            .version
+            .map(|version| version < CURRENT_SESSION_VERSION)
+            .unwrap_or(true),
+        _ => false,
+    };
     let last = lines.len().saturating_sub(1);
     for (index, line) in lines.iter().enumerate() {
-        match parse_session_entry_line(line) {
+        match parse_session_entry_line_opt(line, allow_missing_id) {
             Some(entry) => load.entries.push(entry),
             // A blank line is a trailing newline, not damage.
             None if line.trim().is_empty() => {}
@@ -1105,9 +1154,21 @@ impl SessionManager {
                 .unwrap_or_else(pillar_ai::uuid::uuidv7);
 
             if migrate_session_entries(&mut self.file_entries) {
+                // A migration rewrites the file in the current format: keep the
+                // bytes it replaced, so a wrong migration stays recoverable.
+                let original = fs::read(session_file).ok();
                 if let Err(error) = self.rewrite_file() {
                     self.session_file = previous_file;
                     return Err(error);
+                }
+                if let Some(original) = original {
+                    let backup = session_backup_path(session_file);
+                    if let Err(error) = fs::write(&backup, original) {
+                        eprintln!(
+                            "Warning: failed to back up the pre-migration session {}: {error}",
+                            backup.display()
+                        );
+                    }
                 }
             } else if load.torn_tail {
                 // The last line was cut mid-write (the process died while

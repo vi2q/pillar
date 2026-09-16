@@ -787,3 +787,105 @@ fn a_damaged_middle_line_is_reported_instead_of_dropped() {
     );
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// A pre-migration file (v1: no header version, entries without ids) loads,
+/// gets migrated, and keeps its original bytes next to it.
+#[test]
+fn a_pre_migration_file_is_migrated_and_backed_up() {
+    let dir = std::env::temp_dir().join(format!(
+        "pillar-session-migrate-{}-{}",
+        std::process::id(),
+        chrono_unique()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("v1.jsonl");
+    let original = concat!(
+        "{\"type\":\"session\",\"id\":\"s1\",\"timestamp\":\"2026-01-01T00:00:00Z\",\"cwd\":\"/tmp\"}\n",
+        "{\"type\":\"model_change\",\"provider\":\"p\",\"modelId\":\"m\",\"timestamp\":1000}\n"
+    );
+    std::fs::write(&file, original).unwrap();
+
+    let manager = SessionManager::open(&file, None, None).expect("a v1 file migrates");
+    let entries = manager.get_entries();
+    assert_eq!(entries.len(), 1, "the id-less entry survived the load");
+    assert!(!entries[0].id().is_empty(), "migration assigned an id");
+    match &load_session_file(&file).entries[0] {
+        FileEntry::Header(header) => assert_eq!(header.version, Some(CURRENT_SESSION_VERSION)),
+        _ => panic!("expected header"),
+    }
+    // The pre-migration bytes stay recoverable.
+    let backup = dir.join("v1.jsonl.bak");
+    assert_eq!(std::fs::read_to_string(&backup).unwrap(), original);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The file must describe exactly the live state after every write: a reload
+/// sees the same entries, parents and leaf.
+#[test]
+fn the_file_matches_the_live_state_after_appends() {
+    let dir = std::env::temp_dir().join(format!(
+        "pillar-session-roundtrip-{}-{}",
+        std::process::id(),
+        chrono_unique()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut manager = SessionManager::create("/tmp", Some(&dir), None).unwrap();
+    // The first write is deferred until an assistant message (upstream
+    // contract); after it the file exists and is complete.
+    let user = manager.append_message(user_msg("hello")).unwrap();
+    manager.append_message(assistant_msg("reply")).unwrap();
+    let custom = manager
+        .append_custom_entry("ext", Some(serde_json::json!({ "a": 1 })))
+        .unwrap();
+    manager.append_label_change(&user, Some("label")).unwrap();
+    let file = manager.session_file().map(Path::to_path_buf).unwrap();
+
+    let reloaded = SessionManager::open(&file, None, None).expect("reopen");
+    let live: Vec<String> = manager.get_entries().iter().map(|e| e.id().to_string()).collect();
+    let stored: Vec<String> = reloaded.get_entries().iter().map(|e| e.id().to_string()).collect();
+    assert_eq!(stored, live);
+    assert_eq!(reloaded.get_leaf_id(), manager.get_leaf_id());
+    assert!(stored.contains(&custom));
+    // The label survives as an entry too.
+    let labels: Vec<&str> = reloaded
+        .get_entries()
+        .iter()
+        .filter_map(|entry| match entry {
+            Entry::Label(label) => label.label.as_deref(),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(labels, vec!["label"]);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// An interrupted rewrite must leave the previous file bytes untouched: the
+/// repair that a torn tail triggers fails, and the file still holds the tail
+/// instead of half a rewrite.
+#[test]
+fn an_interrupted_rewrite_keeps_the_previous_file() {
+    let dir = std::env::temp_dir().join(format!(
+        "pillar-session-rewrite-fail-{}-{}",
+        std::process::id(),
+        chrono_unique()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = write_session_file(&dir, "/tmp", None, "hello");
+    let mut content = std::fs::read_to_string(&file).unwrap();
+    content.push_str("{\"type\":\"message\",\"id\":\"torn\",");
+    std::fs::write(&file, &content).unwrap();
+    // Block the rewrite's temp file: `File::create` fails on a directory.
+    let temp = dir.join(format!(
+        "{}.tmp",
+        file.file_name().unwrap().to_string_lossy()
+    ));
+    std::fs::create_dir(&temp).unwrap();
+
+    let error = match SessionManager::open(&file, None, None) {
+        Ok(_) => panic!("the repair must report the failed rewrite"),
+        Err(error) => error,
+    };
+    assert!(error.contains("Failed to write session"), "{error}");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), content);
+    std::fs::remove_dir_all(&dir).ok();
+}

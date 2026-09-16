@@ -909,11 +909,9 @@ fn pump_loop(
                 command,
                 UiCommand::ExtensionUi { .. } | UiCommand::ExtensionUiAsk { .. }
             ) {
-                let _ = ui_pending.fetch_update(
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
-                    |pending| Some(pending.saturating_sub(1)),
-                );
+                let _ = ui_pending.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |pending| {
+                    Some(pending.saturating_sub(1))
+                });
             }
             let reported: Vec<ModeAction> = match command {
                 UiCommand::BashComplete {
