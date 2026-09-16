@@ -127,6 +127,23 @@ impl SettingsList {
         self.selected_index
     }
 
+    /// The setting rows in order (upstream `items`).
+    pub fn items(&self) -> &[SettingItem] {
+        &self.items
+    }
+
+    /// The id of the highlighted item (test / host convenience).
+    pub fn selected_item_id(&self) -> Option<String> {
+        let display: Vec<usize> = if self.search_enabled {
+            self.filtered_items.clone()
+        } else {
+            (0..self.items.len()).collect()
+        };
+        display
+            .get(self.selected_index)
+            .map(|&index| self.items[index].id.clone())
+    }
+
     pub fn search_input_mut(&mut self) -> Option<&mut Input> {
         self.search_input.as_mut()
     }
