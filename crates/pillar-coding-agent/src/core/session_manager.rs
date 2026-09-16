@@ -991,6 +991,10 @@ pub struct SessionManager {
     label_timestamps_by_id: BTreeMap<String, u64>,
     leaf_id: Option<String>,
     now_ms: fn() -> u64,
+    /// The file length this manager last wrote (None before its first write).
+    /// A different length means another writer touched the file
+    /// (docs/rules/01-architecture.md, "Session store contract").
+    expected_len: Option<u64>,
 }
 
 /// Result of loading a session file (upstream `loadEntriesFromFile` plus the
@@ -1073,6 +1077,7 @@ impl SessionManager {
             label_timestamps_by_id: BTreeMap::new(),
             leaf_id: None,
             now_ms: pillar_ai::models::now_ms,
+            expected_len: None,
         };
         if persist && !session_dir.exists() {
             fs::create_dir_all(session_dir)
@@ -1186,6 +1191,9 @@ impl SessionManager {
 
             self.build_index();
             self.flushed = true;
+            // Adopt the file as it is now: from here on a length we did not
+            // write means a second writer.
+            self.remember_file_len(session_file);
         } else {
             let explicit_path = session_file.to_path_buf();
             self.new_session(None);
@@ -1256,28 +1264,32 @@ impl SessionManager {
         }
     }
 
-    fn rewrite_file(&self) -> Result<(), String> {
+    fn rewrite_file(&mut self) -> Result<(), String> {
         if !self.persist {
             return Ok(());
         }
-        let Some(session_file) = &self.session_file else {
+        let Some(session_file) = self.session_file.clone() else {
             return Ok(());
         };
+        self.refuse_foreign_writer(&session_file)?;
         let mut content = String::new();
         for entry in &self.file_entries {
             content.push_str(&serde_json::to_string(&entry.to_json()).unwrap_or_default());
             content.push('\n');
         }
-        write_session_file_atomically(session_file, &content)
+        write_session_file_atomically(&session_file, &content)?;
+        self.remember_file_len(&session_file);
+        Ok(())
     }
 
     fn persist_entry(&mut self, entry: &Entry) -> Result<(), String> {
         if !self.persist {
             return Ok(());
         }
-        let Some(session_file) = &self.session_file else {
+        let Some(session_file) = self.session_file.clone() else {
             return Ok(());
         };
+        self.refuse_foreign_writer(&session_file)?;
         let has_assistant = self.file_entries.iter().any(|e| {
             matches!(
                 e,
@@ -1298,9 +1310,10 @@ impl SessionManager {
                 fs::OpenOptions::new()
                     .append(true)
                     .create(true)
-                    .open(session_file)
+                    .open(&session_file)
                     .and_then(|mut f| f.write_all(serialized.as_bytes()))
                     .map_err(|e| format!("Failed to append session entry: {e}"))?;
+                self.remember_file_len(&session_file);
             }
             // Otherwise defer: everything gets written when the first
             // assistant message arrives.
@@ -1318,7 +1331,7 @@ impl SessionManager {
             let mut file = fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
-                .open(session_file)
+                .open(&session_file)
                 .map_err(|e| format!("Failed to write session: {e}"))?;
             file.write_all(content.as_bytes())
                 .map_err(|e| format!("Failed to write session: {e}"))?;
@@ -1331,11 +1344,37 @@ impl SessionManager {
             fs::OpenOptions::new()
                 .append(true)
                 .create(true)
-                .open(session_file)
+                .open(&session_file)
                 .and_then(|mut f| f.write_all(serialized.as_bytes()))
                 .map_err(|e| format!("Failed to append session entry: {e}"))?;
         }
+        self.remember_file_len(&session_file);
         Ok(())
+    }
+
+    /// A session file has one writer (docs/rules/01-architecture.md). A length
+    /// we did not write means another process (or an editor) is changing the
+    /// file: report it instead of interleaving entries into it.
+    fn refuse_foreign_writer(&self, session_file: &Path) -> Result<(), String> {
+        let Some(expected) = self.expected_len else {
+            return Ok(());
+        };
+        let actual = fs::metadata(session_file).map(|meta| meta.len()).ok();
+        if actual == Some(expected) {
+            return Ok(());
+        }
+        Err(format!(
+            "Session file changed outside this process ({}): expected {expected} bytes, found {}. \
+             Refusing to write; another session may have the file open.",
+            session_file.display(),
+            actual
+                .map(|len| len.to_string())
+                .unwrap_or_else(|| "nothing".to_string())
+        ))
+    }
+
+    fn remember_file_len(&mut self, session_file: &Path) {
+        self.expected_len = fs::metadata(session_file).ok().map(|meta| meta.len());
     }
 
     fn append_entry(&mut self, entry: Entry) -> Result<String, String> {
@@ -2013,6 +2052,10 @@ impl SessionManager {
         self.session_file = Some(new_session_file.clone());
         self.build_index();
         self.flushed = has_assistant;
+        self.expected_len = None;
+        if has_assistant {
+            self.remember_file_len(&new_session_file);
+        }
 
         Ok(Some(new_session_file))
     }

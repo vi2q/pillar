@@ -62,6 +62,39 @@ Each pillar crate mirrors an upstream package directory. Port one upstream modul
 
 `pillar-extensions` is the deliberate divergence: pi's extension system is TypeScript-in-TS-runtime (loader.ts, runner.ts, wrapper.ts); pillar replaces the loader and runner with a Luau VM while keeping every event, payload shape, and API method documented in [04-luau-extensions.md](04-luau-extensions.md).
 
+## Session store contract
+
+A session is one append-only entry tree plus a leaf pointer: entries carry
+`id` / `parentId` / `timestamp`, and labels and session names are entries too,
+so replaying the file rebuilds the live state. `pillar-coding-agent`'s session
+manager owns that state and its JSONL codec (v3) is the canonical store for the
+CLI.
+
+- **Operations**: `open` (load → migrate → repair), `append` (one entry, one
+  line), `rewrite` (migration, torn-tail repair, branch extraction), and the
+  read-only listing used by the pickers. The loader is the only reader.
+- **Damage**: a truncated last line is a torn append — it is dropped and the
+  file repaired on the next open. A damaged line in the middle fails the open
+  with its line numbers. A file older than `CURRENT_SESSION_VERSION` may carry
+  entries without ids, which migration assigns; migration keeps the replaced
+  bytes as `<file>.bak`.
+- **Durability**: `append` is a buffered `write_all` with no fsync (one per
+  token delta would dominate the cost) — the next open repairs a torn tail.
+  `rewrite` publishes through a sibling temp file, fsync, rename. A failed
+  append rolls the live state back, so memory never claims an entry the file
+  does not have.
+- **Single writer**: one process per session file. The manager remembers the
+  length it last wrote and reports a different one (another process, an editor,
+  or a deleted file) instead of interleaving or recreating. There is no OS
+  lock: `create` already uses an exclusive create, and a lock per entry costs
+  more than the interleaving it would prevent.
+- **Other backends**: `pillar-agent`'s harness session (`harness/session`) is
+  the eval harness's own storage, not the CLI session contract, and
+  `pillar-session-store`'s SQLite backend is a standalone implementation of
+  this contract that no crate wires in yet. The formats stay separate; a
+  backend that replaces the JSONL one has to satisfy the same invariants
+  (reload == live state, torn tail repaired, foreign write reported).
+
 ## Upstream checkouts
 
 The pinned pi and luaur revisions live outside the repo (see [06-upstream-sync.md](06-upstream-sync.md)). Never vendor upstream source into the workspace, even as reference copies.

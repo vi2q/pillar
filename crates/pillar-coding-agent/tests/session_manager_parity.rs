@@ -696,6 +696,7 @@ fn a_failed_append_rolls_the_session_state_back() {
         .map(|entry| entry.id().to_string())
         .collect();
 
+    let original = std::fs::read(&file).unwrap();
     // Replace the session file with a directory: every write path fails.
     std::fs::remove_file(&file).unwrap();
     std::fs::create_dir(&file).unwrap();
@@ -710,9 +711,14 @@ fn a_failed_append_rolls_the_session_state_back() {
         branch_before
     );
 
-    // Once the file is writable again the next append continues from the
-    // rolled-back leaf, leaving no gap.
+    // A session file that vanished is reported, not silently recreated (an
+    // append would otherwise write a headerless file).
     std::fs::remove_dir(&file).unwrap();
+    assert!(manager.append_message(stamp_msg("later", true)).is_err());
+
+    // Restoring the file resumes the session: the next append continues from
+    // the rolled-back leaf, leaving no gap.
+    std::fs::write(&file, &original).unwrap();
     let id = manager
         .append_message(stamp_msg("later", true))
         .expect("append after the failed one");
@@ -887,5 +893,37 @@ fn an_interrupted_rewrite_keeps_the_previous_file() {
     };
     assert!(error.contains("Failed to write session"), "{error}");
     assert_eq!(std::fs::read_to_string(&file).unwrap(), content);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A second writer is reported instead of interleaved: the file changed under
+/// a manager that already knows what it wrote.
+#[test]
+fn a_foreign_append_is_reported_not_interleaved() {
+    let dir = std::env::temp_dir().join(format!(
+        "pillar-session-foreign-{}-{}",
+        std::process::id(),
+        chrono_unique()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = write_session_file(&dir, "/tmp", None, "hello");
+    let mut manager = SessionManager::open(&file, None, None).expect("open");
+
+    let mut foreign = std::fs::read_to_string(&file).unwrap();
+    foreign.push_str(
+        "{\"type\":\"session_info\",\"id\":\"other\",\"parentId\":null,\"timestamp\":2000,\"name\":\"other\"}\n",
+    );
+    std::fs::write(&file, &foreign).unwrap();
+
+    let error = match manager.append_message(stamp_msg("mine", true)) {
+        Ok(_) => panic!("a foreign write must be reported"),
+        Err(error) => error,
+    };
+    assert!(error.contains("changed outside this process"), "{error}");
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        foreign,
+        "nothing of ours is written into the other writer's file"
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
