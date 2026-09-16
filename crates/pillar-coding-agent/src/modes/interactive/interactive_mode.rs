@@ -2166,6 +2166,25 @@ impl InteractiveMode {
         self.show_extension_input_with_placeholder(title, placeholder)
     }
 
+    /// Show an extension's `ctx.ui.editor(title, initialText)` dialog: the
+    /// multi-line editor in the editor slot, answered like `input`.
+    pub fn show_extension_ask_editor(
+        &self,
+        id: u64,
+        title: &str,
+        initial: &str,
+        reply: std::sync::mpsc::SyncSender<Result<serde_json::Value, String>>,
+    ) -> Vec<ModeAction> {
+        *self.pending_confirm.lock().expect("pending confirm") = Some(PendingExtensionAsk {
+            id,
+            kind: PendingAskKind::Input,
+            reply,
+        });
+        let token = self.next_selector_token.fetch_add(1, Ordering::SeqCst);
+        let component = Shared::new(ExtensionInputComponent::new_multi_line(title, initial));
+        self.show_selector(ActiveSelector::ExtensionInput { token, component })
+    }
+
     /// Route one `ctx.ui` dialog request (the pump's `ExtensionUiAsk`).
     pub fn begin_extension_ask(
         &self,
@@ -2212,6 +2231,15 @@ impl InteractiveMode {
                     .get("placeholder")
                     .and_then(serde_json::Value::as_str);
                 self.show_extension_ask_input(id, title, placeholder, reply);
+            }
+            "editor" => {
+                let initial = request
+                    .args
+                    .get("initialText")
+                    .or_else(|| request.args.get("initial_text"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default();
+                self.show_extension_ask_editor(id, title, initial, reply);
             }
             other => {
                 let _ = reply.send(Err(format!("ctx.ui.{other}: not supported")));

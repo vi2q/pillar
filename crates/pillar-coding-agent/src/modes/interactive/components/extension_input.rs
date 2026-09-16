@@ -1,6 +1,8 @@
 //! Port of packages/coding-agent/src/modes/interactive/components/
-//! extension-input.ts (pi v0.84.3): a single-line text dialog for extensions
-//! (and the port's own custom branch-summary instructions prompt).
+//! extension-input.ts (pi v0.84.3): a text dialog for extensions (and the
+//! port's own custom branch-summary instructions prompt). The same component
+//! covers `ctx.ui.editor` with a multi-line body (upstream mounts the full
+//! editor there).
 //!
 //! divergences:
 //! - pillar-tui keeps keybinding dispatch host-side, so
@@ -9,6 +11,7 @@
 //! - The `timeout` option (upstream `CountdownTimer`) is not wired yet.
 
 use pillar_tui::components::Text;
+use pillar_tui::editor::{Editor, EditorInputEvent};
 use pillar_tui::input::{Input, dispatch_input_keybinding};
 use pillar_tui::keybindings::with_global_keybindings;
 use pillar_tui::tui::{Component, Focusable};
@@ -28,10 +31,17 @@ pub enum ExtensionInputOutcome {
     Cancel,
 }
 
-/// Single-line text dialog (upstream `ExtensionInputComponent`).
+/// What the dialog edits with: one line, or the multi-line editor
+/// (`ctx.ui.editor`).
+enum Body {
+    Single(Input),
+    Multi(Box<Editor>),
+}
+
+/// Text dialog (upstream `ExtensionInputComponent`).
 pub struct ExtensionInputComponent {
     title: String,
-    input: Input,
+    body: Body,
     focused: bool,
 }
 
@@ -40,7 +50,19 @@ impl ExtensionInputComponent {
     pub fn new(title: &str, _placeholder: Option<&str>) -> Self {
         Self {
             title: title.to_string(),
-            input: Input::new(),
+            body: Body::Single(Input::new()),
+            focused: false,
+        }
+    }
+
+    /// `ctx.ui.editor(title, initialText)`: the multi-line editor, seeded with
+    /// `initial` (`tui.input.submit` submits, `tui.input.newLine` adds a line).
+    pub fn new_multi_line(title: &str, initial: &str) -> Self {
+        let mut editor = Editor::new();
+        editor.set_text(initial);
+        Self {
+            title: title.to_string(),
+            body: Body::Multi(Box::new(editor)),
             focused: false,
         }
     }
@@ -49,14 +71,32 @@ impl ExtensionInputComponent {
     pub fn handle_key(&mut self, data: &str) -> ExtensionInputOutcome {
         let matches = |keybinding: &str| with_global_keybindings(|kb| kb.matches(data, keybinding));
 
-        if matches("tui.select.confirm") || data == "\n" {
-            return ExtensionInputOutcome::Submit(self.input.get_value().to_string());
-        }
         if matches("tui.select.cancel") {
             return ExtensionInputOutcome::Cancel;
         }
-        if !dispatch_input_keybinding(&mut self.input, data) {
-            self.input.handle_input(data);
+        match &mut self.body {
+            Body::Single(input) => {
+                if matches("tui.select.confirm") || data == "\n" {
+                    return ExtensionInputOutcome::Submit(input.get_value().to_string());
+                }
+                if !dispatch_input_keybinding(input, data) {
+                    input.handle_input(data);
+                }
+            }
+            Body::Multi(editor) => {
+                // The editor owns submit / newline / cursor keys: Enter submits
+                // (the same binding the prompt editor uses).
+                editor.handle_input(data);
+                let submitted = editor.take_input_events().into_iter().find_map(|event| {
+                    match event {
+                        EditorInputEvent::Submitted(text) => Some(text),
+                        EditorInputEvent::Changed => None,
+                    }
+                });
+                if let Some(text) = submitted {
+                    return ExtensionInputOutcome::Submit(text);
+                }
+            }
         }
         ExtensionInputOutcome::Consumed
     }
@@ -70,7 +110,10 @@ impl Component for ExtensionInputComponent {
         lines.push(String::new());
         lines.extend(Text::new(&theme_handle.fg("accent", &self.title), 1, 0).render(width));
         lines.push(String::new());
-        lines.extend(self.input.render(width));
+        match &mut self.body {
+            Body::Single(input) => lines.extend(input.render(width)),
+            Body::Multi(editor) => lines.extend(editor.render(width)),
+        }
         lines.push(String::new());
         lines.extend(
             Text::new(
@@ -93,7 +136,10 @@ impl Component for ExtensionInputComponent {
 impl Focusable for ExtensionInputComponent {
     fn set_focused(&mut self, focused: bool) {
         self.focused = focused;
-        self.input.focused = focused;
+        match &mut self.body {
+            Body::Single(input) => input.focused = focused,
+            Body::Multi(editor) => editor.set_focused(focused),
+        }
     }
 
     fn is_focused(&self) -> bool {

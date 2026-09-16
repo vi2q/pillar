@@ -2565,7 +2565,8 @@ fn cancelling_an_extension_ask_closes_its_dialog() {
 }
 
 /// An operation the mode does not implement answers an error instead of
-/// leaving the extension waiting.
+/// leaving the extension waiting (`ctx.ui.custom` needs the Luau component
+/// bridge).
 #[test]
 fn an_unsupported_extension_ask_answers_an_error() {
     let session = session();
@@ -2574,7 +2575,7 @@ fn an_unsupported_extension_ask_answers_an_error() {
     mode.begin_extension_ask(
         3,
         pillar_coding_agent::core::extensions_types::ExtensionUiRequest {
-            op: "editor".to_string(),
+            op: "custom".to_string(),
             args: serde_json::json!({}),
         },
         reply,
@@ -2712,4 +2713,38 @@ fn streaming_events_do_not_queue_executor_actions() {
             "{event:?} queued executor work: {actions:?}"
         );
     }
+}
+
+/// `ctx.ui.editor` opens the multi-line editor seeded with the initial text:
+/// Enter submits it, Escape answers `null`.
+#[test]
+fn an_editor_ask_answers_the_edited_text() {
+    let session = session();
+    let mode = make_mode(&session);
+    let (reply, answer) = std::sync::mpsc::sync_channel(1);
+    mode.begin_extension_ask(
+        11,
+        pillar_coding_agent::core::extensions_types::ExtensionUiRequest {
+            op: "editor".to_string(),
+            args: serde_json::json!({ "title": "Draft", "initialText": "first" }),
+        },
+        reply,
+    );
+    for ch in " line".chars() {
+        mode.handle_selector_key(&ch.to_string()).expect("editor");
+    }
+    mode.handle_selector_key("\r").expect("editor");
+    assert_eq!(answer.try_recv(), Ok(Ok(serde_json::json!("first line"))));
+
+    let (reply, answer) = std::sync::mpsc::sync_channel(1);
+    mode.begin_extension_ask(
+        12,
+        pillar_coding_agent::core::extensions_types::ExtensionUiRequest {
+            op: "editor".to_string(),
+            args: serde_json::json!({ "title": "Draft" }),
+        },
+        reply,
+    );
+    mode.handle_selector_key("\u{1b}").expect("editor");
+    assert_eq!(answer.try_recv(), Ok(Ok(serde_json::Value::Null)));
 }
