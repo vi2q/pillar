@@ -298,7 +298,10 @@ fn configured_extensions_receive_ctx_and_forward_ui_requests() {
         calls[0].args,
         serde_json::json!({ "message": "hello from ctx", "type": "warning" })
     );
-    assert_eq!(calls[1].args, serde_json::json!({ "key": "probe", "text": "1" }));
+    assert_eq!(
+        calls[1].args,
+        serde_json::json!({ "key": "probe", "text": "1" })
+    );
     assert_eq!(calls[2].args, serde_json::json!({ "text": "draft" }));
 }
 
@@ -307,9 +310,7 @@ fn configured_extensions_receive_ctx_and_forward_ui_requests() {
 /// `ctx` facts and the flag values survive.
 #[test]
 fn rebuild_re_discovers_extensions_into_a_fresh_vm() {
-    use pillar_cli::runner::{
-        ExtensionHostSlots, build_extension_runner_with_slots,
-    };
+    use pillar_cli::runner::{ExtensionHostSlots, build_extension_runner_with_slots};
 
     let dir = temp_dir("rebuild");
     std::fs::write(
@@ -325,8 +326,13 @@ fn rebuild_re_discovers_extensions_into_a_fresh_vm() {
 
     let configured = vec![dir.to_string_lossy().to_string()];
     let slots = ExtensionHostSlots::new("/tmp/pillar-rebuild-cwd");
-    let mut wiring =
-        build_extension_runner_with_slots("/tmp/pillar-rebuild-cwd", None, None, &configured, &slots);
+    let mut wiring = build_extension_runner_with_slots(
+        "/tmp/pillar-rebuild-cwd",
+        None,
+        None,
+        &configured,
+        &slots,
+    );
     assert!(wiring.errors.is_empty(), "{:?}", wiring.errors);
     let names = |runner: &mut pillar_coding_agent::core::extensions_runner::ExtensionRunner| {
         runner
@@ -359,7 +365,10 @@ fn rebuild_re_discovers_extensions_into_a_fresh_vm() {
     // The host slots are the same cells, so an installed `ctx.ui` bridge and
     // the bound session keep working after the rebuild.
     assert!(std::sync::Arc::ptr_eq(&wiring.ui_slot, &rebuilt.ui_slot));
-    assert!(std::sync::Arc::ptr_eq(&wiring.session_slot, &rebuilt.session_slot));
+    assert!(std::sync::Arc::ptr_eq(
+        &wiring.session_slot,
+        &rebuilt.session_slot
+    ));
     assert!(std::sync::Arc::ptr_eq(&wiring.context, &rebuilt.context));
     assert!(std::sync::Arc::ptr_eq(&wiring.data, &rebuilt.data));
 }

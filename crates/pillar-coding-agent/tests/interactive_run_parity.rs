@@ -368,7 +368,7 @@ fn run_options(agent_dir: PathBuf) -> InteractiveRunOptions {
         initial_editor_text: None,
         initial_status: None,
         agent_dir,
-            extension_ui: None,
+        extension_ui: None,
     }
 }
 
@@ -644,7 +644,7 @@ async fn escape_aborts_a_streaming_turn() {
     let mut harness = harness(
         vec![
             "\u{1b}[?7u".to_string(), // kitty flags reply
-            "hello\r".to_string(),     // submit a prompt
+            "hello\r".to_string(),    // submit a prompt
         ],
         None,
     );
@@ -698,13 +698,7 @@ async fn escape_aborts_a_streaming_turn() {
 async fn submitting_during_a_turn_steers_it() {
     install_dark();
     let session = session(open_stream("partial"), "steer");
-    let mut harness = harness(
-        vec![
-            "\u{1b}[?7u".to_string(),
-            "hello\r".to_string(),
-        ],
-        None,
-    );
+    let mut harness = harness(vec!["\u{1b}[?7u".to_string(), "hello\r".to_string()], None);
     let chunks = Arc::clone(&harness.chunks);
     let writes = Arc::clone(&harness.writes);
     let state = Arc::clone(&session);

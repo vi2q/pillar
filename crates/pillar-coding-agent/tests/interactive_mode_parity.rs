@@ -321,7 +321,11 @@ fn extension_ui_requests_are_applied_by_the_mode() {
     ))
     .unwrap();
     assert_eq!(
-        mode.footer().lock().footer_data().extension_statuses().get("demo"),
+        mode.footer()
+            .lock()
+            .footer_data()
+            .extension_statuses()
+            .get("demo"),
         Some(&"42".to_string())
     );
     mode.handle_extension_ui(&request("set_status", serde_json::json!({ "key": "demo" })))
@@ -341,7 +345,10 @@ fn extension_ui_requests_are_applied_by_the_mode() {
         serde_json::json!({ "title": "ctx title" }),
     ))
     .unwrap();
-    assert_eq!(titles.lock().unwrap().as_slice(), &["ctx title".to_string()]);
+    assert_eq!(
+        titles.lock().unwrap().as_slice(),
+        &["ctx title".to_string()]
+    );
 
     // Working-indicator knobs.
     mode.handle_extension_ui(&request(
@@ -368,8 +375,11 @@ fn extension_ui_requests_are_applied_by_the_mode() {
     ))
     .unwrap();
     assert_eq!(mode.editor_text(), "draft");
-    mode.handle_extension_ui(&request("paste_to_editor", serde_json::json!({ "text": " tail" })))
-        .unwrap();
+    mode.handle_extension_ui(&request(
+        "paste_to_editor",
+        serde_json::json!({ "text": " tail" }),
+    ))
+    .unwrap();
     assert_eq!(mode.editor_text(), "draft tail");
 
     // Tool expansion flips the transcript setting.
@@ -386,7 +396,10 @@ fn extension_ui_requests_are_applied_by_the_mode() {
         .unwrap_err();
     assert!(error.contains("not supported"), "{error}");
     let error = mode
-        .handle_extension_ui(&request("set_editor_text", serde_json::json!({ "text": 4 })))
+        .handle_extension_ui(&request(
+            "set_editor_text",
+            serde_json::json!({ "text": 4 }),
+        ))
         .unwrap_err();
     assert!(error.contains("must be a string"), "{error}");
     // `nil` frames restore the default indicator (upstream omit = default).

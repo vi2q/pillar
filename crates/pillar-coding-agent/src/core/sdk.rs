@@ -397,6 +397,10 @@ pub struct CreateAgentSessionOptions {
     pub exclude_tools: Vec<String>,
     pub custom_tools: Vec<AgentTool>,
     pub extension_runner: Arc<Mutex<ExtensionRunner>>,
+    /// The resolved project-trust decision. The CLI resolves it before any
+    /// project resource is read; the library default is `true` only for
+    /// embedders that own their own trust policy.
+    pub project_trusted: Option<bool>,
     /// Host handler executing a registered extension command (upstream the
     /// runner invoking `RegisteredCommand.handler`).
     pub command_handler: Option<ExtensionCommandHandler>,
@@ -461,7 +465,7 @@ pub async fn create_agent_session(
             &cwd,
             Path::new(&agent_dir),
             SettingsManagerCreateOptions {
-                project_trusted: Some(true),
+                project_trusted: Some(options.project_trusted.unwrap_or(true)),
             },
         ))),
     };

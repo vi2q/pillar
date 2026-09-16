@@ -56,7 +56,9 @@ impl Fixture {
                                 let modified_ms = metadata
                                     .modified()
                                     .ok()
-                                    .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                                    .and_then(|time| {
+                                        time.duration_since(std::time::UNIX_EPOCH).ok()
+                                    })
                                     .map(|duration| duration.as_millis() as u64)
                                     .unwrap_or(0);
                                 Ok(serde_json::json!({
@@ -71,7 +73,9 @@ impl Fixture {
                     }
                 }))
             },
-            session_id: Some(Arc::new(|| Some("0199a1b2-3456-7abc-8def-0123456789ab".to_string()))),
+            session_id: Some(Arc::new(|| {
+                Some("0199a1b2-3456-7abc-8def-0123456789ab".to_string())
+            })),
             session_entries: {
                 let entries = Arc::clone(&entries);
                 Some(Arc::new(move || {
@@ -97,7 +101,9 @@ impl Fixture {
 
     fn load(&mut self) {
         let source = std::fs::read_to_string(extension_path()).expect("extension source");
-        self.runtime.type_check("instructions.luau", &source).unwrap();
+        self.runtime
+            .type_check("instructions.luau", &source)
+            .unwrap();
         let loaded = self
             .runtime
             .load_extension("instructions.luau", &source)
@@ -182,13 +188,23 @@ fn tasks_init_creates_the_templates_once() {
         .expect("tasks_init");
     let text = result["content"][0]["text"].as_str().expect("text");
     assert!(text.contains("created docs/TASKS.md (skeleton)"), "{text}");
-    assert!(text.contains("created docs/RULES.md (recording rules)"), "{text}");
+    assert!(
+        text.contains("created docs/RULES.md (recording rules)"),
+        "{text}"
+    );
     assert_eq!(
         result["details"],
         serde_json::json!({ "createdTasks": true, "createdRules": true })
     );
-    assert_eq!(fixture.read("docs/TASKS.md"), "# TASKS\n\n<!-- Work-instruction record. See docs/RULES.md for conventions. -->\n\n## Active\n\n## Completed\n");
-    assert!(fixture.read("docs/RULES.md").starts_with("# TASKS recording rules"));
+    assert_eq!(
+        fixture.read("docs/TASKS.md"),
+        "# TASKS\n\n<!-- Work-instruction record. See docs/RULES.md for conventions. -->\n\n## Active\n\n## Completed\n"
+    );
+    assert!(
+        fixture
+            .read("docs/RULES.md")
+            .starts_with("# TASKS recording rules")
+    );
 
     // A second call reports the existing files and leaves them alone.
     fixture.write("docs/TASKS.md", "hand written\n");
@@ -217,14 +233,17 @@ fn tasks_tidy_normalizes_without_reordering() {
         .call_tool("tasks_tidy", "call-1", serde_json::json!({}))
         .expect("tasks_tidy");
     let text = result["content"][0]["text"].as_str().expect("text");
-    assert!(text.starts_with("Tidied docs/TASKS.md: 5 item(s)"), "{text}");
-    assert_eq!(
-        result["details"]["status"],
-        serde_json::json!("changed")
+    assert!(
+        text.starts_with("Tidied docs/TASKS.md: 5 item(s)"),
+        "{text}"
     );
+    assert_eq!(result["details"]["status"], serde_json::json!("changed"));
     // Continuation lines travel with their item and stay untouched; the
     // nested checkbox item gets the normalized confirm prefix.
-    assert_eq!(fixture.read("docs/TASKS.md"), "# TASKS\n\nIntro prose stays.\n\n## Active\n\n- [x] Done item\n  - [ ] Nested child\n    - [ ] Confirm (user): check the visual result\n- [ ] Another item\n\nSome free-form line.\n\n## Completed\n\n- [x] Closed\n");
+    assert_eq!(
+        fixture.read("docs/TASKS.md"),
+        "# TASKS\n\nIntro prose stays.\n\n## Active\n\n- [x] Done item\n  - [ ] Nested child\n    - [ ] Confirm (user): check the visual result\n- [ ] Another item\n\nSome free-form line.\n\n## Completed\n\n- [x] Closed\n"
+    );
 
     // Idempotent: a second tidy changes nothing.
     let result = fixture
@@ -259,7 +278,10 @@ fn session_start_injects_the_pointer_once() {
     fixture.emit("session_start");
     let messages = fixture.messages_of("instructions:init");
     assert_eq!(messages.len(), 1, "{messages:?}");
-    assert_eq!(messages[0]["customType"], serde_json::json!("instructions:init"));
+    assert_eq!(
+        messages[0]["customType"],
+        serde_json::json!("instructions:init")
+    );
     assert_eq!(messages[0]["display"], serde_json::json!(true));
     let content = messages[0]["content"].as_str().expect("content");
     // No files yet: the pointer asks for tasks_init.
@@ -291,12 +313,18 @@ fn pointer_and_per_turn_tag_track_file_state() {
         .last()
         .and_then(|message| message["content"].as_str().map(str::to_string))
         .expect("pointer");
-    assert!(content.contains("Start by reading docs/RULES.md"), "{content}");
+    assert!(
+        content.contains("Start by reading docs/RULES.md"),
+        "{content}"
+    );
     assert!(content.contains("(s89ab)"), "{content}");
 
     // The first turn establishes the baseline and answers the plain tag.
     let outcome = fixture.emit_table("before_agent_start");
-    assert_eq!(outcome["message"]["customType"], serde_json::json!("instructions:auto-tag"));
+    assert_eq!(
+        outcome["message"]["customType"],
+        serde_json::json!("instructions:auto-tag")
+    );
     assert_eq!(
         outcome["message"]["content"],
         serde_json::json!("Auto-message: Please update docs/TASKS.md as needed.")
@@ -320,7 +348,10 @@ fn pointer_and_per_turn_tag_track_file_state() {
     fixture.write("docs/RULES.md", "# rules\n\n- [ ] new convention\n");
     let outcome = fixture.emit_table("before_agent_start");
     let rules = outcome["message"]["content"].as_str().unwrap();
-    assert!(rules.contains("docs/RULES.md has changed on disk"), "{rules}");
+    assert!(
+        rules.contains("docs/RULES.md has changed on disk"),
+        "{rules}"
+    );
 }
 
 /// `session_compact` re-injects the pointer only when the tasks file exists.

@@ -116,7 +116,10 @@ impl ExtensionWiring {
     /// Re-run discovery and loading into a fresh VM, sharing the host slots.
     /// This is the `/reload` path (upstream `_buildRuntime`): the new runner
     /// replaces the session's in place.
-    pub fn rebuild(&self, flag_values: &std::collections::BTreeMap<String, serde_json::Value>) -> ExtensionWiring {
+    pub fn rebuild(
+        &self,
+        flag_values: &std::collections::BTreeMap<String, serde_json::Value>,
+    ) -> ExtensionWiring {
         let inputs = self.rebuild.clone();
         let mut wiring = build_extension_runner_with_slots(
             &inputs.cwd,
@@ -147,6 +150,11 @@ impl ExtensionWiring {
 /// `global_dir` is the user extension directory (e.g. `~/.pillar/agent/...`),
 /// `project_dir` the project-local one; `configured` are explicit
 /// `--extension` paths (files or directories).
+///
+/// The caller must resolve `project_dir` through
+/// [`crate::trust::project_extension_dir`]: loading an extension evaluates
+/// arbitrary Luau with `pi.exec` / `pillar.fs` available, so an untrusted
+/// checkout must not reach this function.
 pub fn build_extension_runner(
     cwd: &str,
     global_dir: Option<&Path>,
@@ -313,8 +321,7 @@ fn install_host_api(
                 };
                 let (content, options) = user_message_from_json(json);
                 handle.spawn(async move {
-                    if let Err(error) = session.send_user_message(content, options.as_ref()).await
-                    {
+                    if let Err(error) = session.send_user_message(content, options.as_ref()).await {
                         eprintln!("extension send_user_message failed: {error}");
                     }
                 });
@@ -330,15 +337,13 @@ fn install_host_api(
         get_session_name: {
             let slot = Arc::clone(slot);
             Some(Arc::new(move || {
-                session(&slot)
-                    .ok()
-                    .and_then(|session| {
-                        session
-                            .session_manager()
-                            .lock()
-                            .expect("session lock")
-                            .session_name()
-                    })
+                session(&slot).ok().and_then(|session| {
+                    session
+                        .session_manager()
+                        .lock()
+                        .expect("session lock")
+                        .session_name()
+                })
             }))
         },
         set_label: {
@@ -381,7 +386,9 @@ fn install_host_api(
         },
         get_thinking_level: {
             let slot = Arc::clone(slot);
-            Some(Arc::new(move || session(&slot).ok().map(|s| s.thinking_level())))
+            Some(Arc::new(move || {
+                session(&slot).ok().map(|s| s.thinking_level())
+            }))
         },
         set_thinking_level: {
             let slot = Arc::clone(slot);
@@ -433,9 +440,7 @@ fn install_host_api(
         ui: {
             let slot = Arc::clone(ui_slot);
             Some(Arc::new(move |request: ExtensionUiRequest| {
-                let mut state = slot
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let mut state = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                 // No bridge yet (before the run loop starts): the request is
                 // queued and replayed when it is installed.
                 state.dispatch(request);
@@ -448,9 +453,7 @@ fn install_host_api(
             let slot = Arc::clone(ui_slot);
             Some(Arc::new(move |request: ExtensionUiRequest| {
                 let ask = {
-                    let guard = slot
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let guard = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                     guard.ask.clone()
                 };
                 match ask {
@@ -641,7 +644,10 @@ fn install_host_api(
 /// `sendMessage` payload).
 fn custom_message_from_json(
     json: serde_json::Value,
-) -> (pillar_agent::types::CustomMessage, Option<SendCustomMessageOptions>) {
+) -> (
+    pillar_agent::types::CustomMessage,
+    Option<SendCustomMessageOptions>,
+) {
     let custom_type = json
         .get("customType")
         .or_else(|| json.get("custom_type"))
@@ -650,7 +656,9 @@ fn custom_message_from_json(
         .to_string();
     let content = json
         .get("content")
-        .and_then(|value| serde_json::from_value::<pillar_ai::types::UserContent>(value.clone()).ok())
+        .and_then(|value| {
+            serde_json::from_value::<pillar_ai::types::UserContent>(value.clone()).ok()
+        })
         .unwrap_or_else(|| pillar_ai::types::UserContent::Text(String::new()));
     let display = json
         .get("display")
@@ -693,13 +701,18 @@ fn custom_message_from_json(
 /// `sendUserMessage` payload: a string or content blocks, plus options).
 fn user_message_from_json(
     json: serde_json::Value,
-) -> (pillar_ai::types::UserContent, Option<SendUserMessageOptions>) {
+) -> (
+    pillar_ai::types::UserContent,
+    Option<SendUserMessageOptions>,
+) {
     let content = match &json {
         serde_json::Value::String(text) => pillar_ai::types::UserContent::Text(text.clone()),
-        serde_json::Value::Array(blocks) => serde_json::from_value::<pillar_ai::types::UserContent>(
-            serde_json::Value::Array(blocks.clone()),
-        )
-        .unwrap_or_else(|_| pillar_ai::types::UserContent::Text(String::new())),
+        serde_json::Value::Array(blocks) => {
+            serde_json::from_value::<pillar_ai::types::UserContent>(serde_json::Value::Array(
+                blocks.clone(),
+            ))
+            .unwrap_or_else(|_| pillar_ai::types::UserContent::Text(String::new()))
+        }
         other => other
             .get("content")
             .and_then(|value| {

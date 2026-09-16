@@ -19,8 +19,8 @@ use pillar_coding_agent::core::extensions_types::{
 /// the ExtensionAPI's internal registries).
 #[derive(Debug, Clone, PartialEq)]
 pub struct HostRegistry {
-    /// `pillar.on(event, handler)` — handler identity is
-    /// (extension, function reference index).
+    /// `pillar.on(event, handler)` — the handler identity the runtime's
+    /// `dispatch_handler` resolves (`"@N"`, in registration order).
     pub event_handlers: Vec<(String, String)>,
     /// `pillar.register_tool(def)` — JSON-normalized definition.
     pub tools: Vec<serde_json::Value>,
@@ -416,7 +416,13 @@ impl ExtensionRuntime {
                 r#"
                 local event = ...
                 local list = __pillar_handlers and __pillar_handlers[event] or {}
-                return list
+                local by_id = __pillar_handler_by_id or {}
+                local handlers = {}
+                for _, id in ipairs(list) do
+                    local handler = by_id[id]
+                    if handler ~= nil then table.insert(handlers, handler) end
+                end
+                return handlers
             "#,
             )
             .call((event,))
@@ -436,31 +442,7 @@ impl ExtensionRuntime {
             let result: Value = function
                 .call((arg, context.clone()))
                 .map_err(|error| ExtensionLoadError::Setup(error.to_string()))?;
-            let outcome = match &result {
-                Value::Nil => {
-                    #[cfg(test)]
-                    if std::env::var("DISPATCH_DEBUG").is_ok() {
-                        eprintln!("DBG dispatch: nil result from handler");
-                    }
-                    HandlerOutcome::None
-                }
-                other => {
-                    let json = self
-                        .lua
-                        .from_value::<serde_json::Value>(other.clone())
-                        .map_err(|error| ExtensionLoadError::Setup(error.to_string()))?;
-                    if json.get("block").and_then(serde_json::Value::as_bool) == Some(true) {
-                        HandlerOutcome::Block {
-                            reason: json
-                                .get("reason")
-                                .and_then(serde_json::Value::as_str)
-                                .map(|reason| reason.to_string()),
-                        }
-                    } else {
-                        HandlerOutcome::Table(json)
-                    }
-                }
-            };
+            let outcome = self.handler_outcome(&result)?;
             if matches!(outcome, HandlerOutcome::Block { .. }) {
                 return Ok(outcome);
             }
@@ -469,6 +451,80 @@ impl ExtensionRuntime {
             }
         }
         Ok(last_table.unwrap_or(HandlerOutcome::None))
+    }
+
+    /// Dispatch an event to exactly one registered handler identity
+    /// (`pillar.on` returns it as `"@N"`). The runner owns the chain and the
+    /// payload transformation, so one bridge handler must invoke one Luau
+    /// handler — dispatching the whole event from every bridge handler runs
+    /// N handlers N times (docs/ARCHITECTURE-REVIEW-s05c0.md B).
+    pub fn dispatch_handler(
+        &mut self,
+        event: &str,
+        handler_id: &str,
+        payload: serde_json::Value,
+    ) -> Result<HandlerOutcome, ExtensionLoadError> {
+        let Some(function) = self.handler_function(event, handler_id)? else {
+            return Ok(HandlerOutcome::None);
+        };
+        let context = self.context_value()?;
+        let arg = self
+            .lua
+            .to_value(&payload)
+            .map_err(|error| ExtensionLoadError::Setup(error.to_string()))?;
+        let result: Value = function
+            .call((arg, context))
+            .map_err(|error| ExtensionLoadError::Setup(error.to_string()))?;
+        self.handler_outcome(&result)
+    }
+
+    /// The Lua function stored for one handler identity, if any (a
+    /// non-function value was registered under that identity).
+    fn handler_function(
+        &self,
+        _event: &str,
+        handler_id: &str,
+    ) -> Result<Option<Function>, ExtensionLoadError> {
+        let value: Value = self
+            .lua
+            .load(
+                r#"
+                local handler_id = ...
+                local by_id = __pillar_handler_by_id
+                if by_id == nil then return nil end
+                return by_id[handler_id]
+            "#,
+            )
+            .call((handler_id,))
+            .map_err(|error| ExtensionLoadError::Setup(error.to_string()))?;
+        Ok(match value {
+            Value::Function(function) => Some(function),
+            _ => None,
+        })
+    }
+
+    /// One handler's return value as a dispatch outcome (upstream the handler
+    /// return semantics).
+    fn handler_outcome(&self, result: &Value) -> Result<HandlerOutcome, ExtensionLoadError> {
+        match result {
+            Value::Nil => Ok(HandlerOutcome::None),
+            other => {
+                let json = self
+                    .lua
+                    .from_value::<serde_json::Value>(other.clone())
+                    .map_err(|error| ExtensionLoadError::Setup(error.to_string()))?;
+                if json.get("block").and_then(serde_json::Value::as_bool) == Some(true) {
+                    Ok(HandlerOutcome::Block {
+                        reason: json
+                            .get("reason")
+                            .and_then(serde_json::Value::as_str)
+                            .map(|reason| reason.to_string()),
+                    })
+                } else {
+                    Ok(HandlerOutcome::Table(json))
+                }
+            }
+        }
     }
 
     /// Call a registered Luau tool's `execute` (upstream the tool's execute
@@ -1013,29 +1069,29 @@ fn install_pillar_api(
         .set(
             "on",
             Function::wrap(move |event: String, handler: Value| {
-                let name = match &handler {
-                    Value::Function(function) => format!("{:p}", function.to_pointer()),
-                    other => format!("<{}>", other.type_name()),
-                };
-                let store = store_lua
+                // The identity is the value later handed to
+                // `dispatch_handler`: one registration, one dispatch.
+                let id: String = store_lua
                     .load(
                         r#"
                         local event, handler = ...
                         __pillar_handlers = __pillar_handlers or {}
+                        __pillar_handler_by_id = __pillar_handler_by_id or {}
+                        __pillar_next_handler_id = (__pillar_next_handler_id or 0) + 1
+                        local id = "@" .. tostring(__pillar_next_handler_id)
                         __pillar_handlers[event] = __pillar_handlers[event] or {}
-                        table.insert(__pillar_handlers[event], handler)
-                        return true
+                        table.insert(__pillar_handlers[event], id)
+                        __pillar_handler_by_id[id] = handler
+                        return id
                     "#,
                     )
-                    .call::<bool>((event.as_str(), handler))
-                    .is_ok();
-                if store {
-                    registry_sink
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .event_handlers
-                        .push((event, name));
-                }
+                    .call::<String>((event.as_str(), handler))
+                    .map_err(luaur_rt::Error::external)?;
+                registry_sink
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .event_handlers
+                    .push((event, id));
                 Ok::<(), luaur_rt::Error>(())
             }),
         )

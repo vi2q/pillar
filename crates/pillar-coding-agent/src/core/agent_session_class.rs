@@ -1544,8 +1544,14 @@ impl AgentSession {
                     drop(runner);
                     match result {
                         Ok(Some(value)) => {
+                            // `block` is the tool_call key; a handler may also
+                            // answer the `cancel` shape, so honor both.
                             let block =
-                                value.get("block").and_then(Value::as_bool).unwrap_or(false);
+                                value.get("block").and_then(Value::as_bool).unwrap_or(false)
+                                    || value
+                                        .get("cancel")
+                                        .and_then(Value::as_bool)
+                                        .unwrap_or(false);
                             if block {
                                 Some(pillar_agent::types::BeforeToolCallResult {
                                     block: true,
@@ -1559,7 +1565,14 @@ impl AgentSession {
                                 None
                             }
                         }
-                        _ => None,
+                        Ok(None) => None,
+                        // A safety hook that failed must not let the tool run
+                        // (docs/ARCHITECTURE-REVIEW-s05c0.md A).
+                        Err(message) => Some(pillar_agent::types::BeforeToolCallResult {
+                            block: true,
+                            reason: Some(format!("extension tool_call hook failed: {message}")),
+                            terminate: false,
+                        }),
                     }
                 })
             },

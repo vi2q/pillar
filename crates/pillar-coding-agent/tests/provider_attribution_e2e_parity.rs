@@ -188,11 +188,12 @@ async fn opencode_session_requests_carry_the_session_headers() {
         exclude_tools: Vec::new(),
         custom_tools: Vec::new(),
         extension_runner: Arc::new(Mutex::new(ExtensionRunner::new(Vec::new()))),
+        project_trusted: Some(true),
         session_start_event: None,
         system_prompt_rebuild: None,
         extension_runner_rebuild: None,
         stream_fn: None,
-            command_handler: None,
+        command_handler: None,
     })
     .await
     .expect("session created");

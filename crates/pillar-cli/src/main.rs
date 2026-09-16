@@ -49,9 +49,8 @@ use pillar_cli::runner::{
     ExtensionWiring, build_extension_runner, build_extension_runner_with_slots,
     extension_command_handler,
 };
-use pillar_coding_agent::core::extensions_types::{
-    ExtensionContextFacts, ExtensionMode,
-};
+use pillar_cli::trust::{project_extension_dir, resolve_project_trust, stored_project_trust};
+use pillar_coding_agent::core::extensions_types::{ExtensionContextFacts, ExtensionMode};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
@@ -160,6 +159,10 @@ struct SessionBuildInput {
     resource_loader: Option<Arc<Mutex<ResourceLoader>>>,
     start_reason: String,
     previous_session_file: Option<String>,
+    project_trust_override: Option<bool>,
+    /// Whether an unresolved trust decision may prompt on the terminal (the
+    /// interactive startup only: later rebuilds run under the TUI).
+    prompt_for_trust: bool,
 }
 
 /// Create the model runtime over the agent directory config.
@@ -267,15 +270,32 @@ async fn build_session_with(
         resource_loader,
         start_reason,
         previous_session_file,
+        project_trust_override,
+        prompt_for_trust,
     } = input;
 
     let global_extensions = PathBuf::from(&agent_dir).join("extensions");
-    let project_extensions = PathBuf::from(&cwd).join(".pillar").join("extensions");
+    // An untrusted project's extensions are never evaluated: loading one runs
+    // arbitrary Luau with `pi.exec` / `pillar.fs` available
+    // (docs/ARCHITECTURE-REVIEW-s05c0.md A). The gate result travels into the
+    // rebuild inputs too, so `/reload` cannot resurrect them.
+    let project_trusted =
+        resolve_project_trust(&cwd, &agent_dir, project_trust_override, prompt_for_trust);
+    let project_extensions = project_extension_dir(&cwd, project_trusted);
+    if project_extensions.is_none()
+        && !project_trusted
+        && Path::new(&cwd).join(".pillar").join("extensions").is_dir()
+    {
+        eprintln!(
+            "Warning: skipping {cwd}/.pillar/extensions: project not trusted (use --approve, \
+             or add the path to {agent_dir}/trust.json)"
+        );
+    }
     let configured = parsed.extensions.clone().unwrap_or_default();
     let mut wiring = build_extension_runner(
         &cwd,
         Some(&global_extensions),
-        Some(&project_extensions),
+        project_extensions.as_deref(),
         &configured,
     );
     for (path, error) in &wiring.errors {
@@ -301,6 +321,7 @@ async fn build_session_with(
         exclude_tools: parsed.exclude_tools.clone().unwrap_or_default(),
         custom_tools: wiring.custom_tools(),
         extension_runner,
+        project_trusted: Some(project_trusted),
         session_start_event: Some(SessionEventMeta {
             reason: start_reason,
             previous_session_file,
@@ -339,7 +360,12 @@ async fn build_session_with(
     Ok((created.session, wiring))
 }
 
-async fn build_session(parsed: &Args) -> Result<(AgentSession, ExtensionWiring), String> {
+/// `prompt_for_trust` is true only for the interactive startup: a rebuild
+/// runs under the TUI, which owns the terminal.
+async fn build_session(
+    parsed: &Args,
+    prompt_for_trust: bool,
+) -> Result<(AgentSession, ExtensionWiring), String> {
     let cwd = std::env::current_dir()
         .unwrap_or_default()
         .to_string_lossy()
@@ -357,6 +383,8 @@ async fn build_session(parsed: &Args) -> Result<(AgentSession, ExtensionWiring),
             resource_loader: None,
             start_reason: "startup".to_string(),
             previous_session_file: None,
+            project_trust_override: parsed.project_trust_override,
+            prompt_for_trust,
         },
     )
     .await
@@ -419,6 +447,8 @@ async fn resume_session(
             resource_loader: Some(resource_loader),
             start_reason: "resume".to_string(),
             previous_session_file: previous,
+            project_trust_override: parsed.project_trust_override,
+            prompt_for_trust: false,
         },
     )
     .await
@@ -481,6 +511,8 @@ async fn fork_session(
             resource_loader: Some(resource_loader),
             start_reason: "fork".to_string(),
             previous_session_file: previous,
+            project_trust_override: parsed.project_trust_override,
+            prompt_for_trust: false,
         },
     )
     .await?;
@@ -488,7 +520,7 @@ async fn fork_session(
 }
 
 async fn run_print(parsed: &Args, app_mode: AppMode) -> ExitCode {
-    let (session, wiring) = match build_session(parsed).await {
+    let (session, wiring) = match build_session(parsed, false).await {
         Ok(built) => built,
         Err(error) => {
             eprintln!("Error: {error}");
@@ -559,6 +591,8 @@ async fn run_rpc(parsed: &Args) -> ExitCode {
             resource_loader: None,
             start_reason: "startup".to_string(),
             previous_session_file: None,
+            project_trust_override: parsed.project_trust_override,
+            prompt_for_trust: false,
         },
     )
     .await
@@ -605,7 +639,7 @@ async fn run_rpc(parsed: &Args) -> ExitCode {
 /// Run the interactive TUI (upstream `main.ts`'s interactive branch plus the
 /// host loop in [`pillar_coding_agent::modes::interactive::run`]).
 async fn run_interactive(parsed: &Args) -> ExitCode {
-    let (session, wiring) = match build_session(parsed).await {
+    let (session, wiring) = match build_session(parsed, true).await {
         Ok(built) => built,
         Err(error) => {
             eprintln!("Error: {error}");
@@ -870,6 +904,8 @@ impl CliRuntimeHost {
                 resource_loader: Some(resource_loader),
                 start_reason: start_reason.to_string(),
                 previous_session_file,
+                project_trust_override: self.parsed.project_trust_override,
+                prompt_for_trust: false,
             },
         )
         .await?;
@@ -891,11 +927,16 @@ fn replacement_factory<'a>(
     agent_dir: &'a str,
 ) -> impl FnMut(RuntimeFactoryInput) -> Result<RuntimeFactoryResult, String> + 'a {
     move |input: RuntimeFactoryInput| {
+        // A replacement can land in another cwd, so the trust decision is
+        // resolved per cwd (never prompted: the TUI owns the terminal here).
+        let project_trusted =
+            stored_project_trust(&input.cwd, agent_dir, parsed.project_trust_override);
         let services = create_agent_session_services(
             &input.cwd,
             CreateAgentSessionServicesOptions {
                 agent_dir: Some(agent_dir.to_string()),
                 additional_extension_paths: parsed.extensions.clone().unwrap_or_default(),
+                project_trusted: Some(project_trusted),
                 ..Default::default()
             },
         )?;

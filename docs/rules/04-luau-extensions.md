@@ -14,12 +14,12 @@ The extension runtime contract. Extensions are Luau scripts executed by an embed
 
 | Location | Scope |
 | --- | --- |
-| `~/.pillar/extensions/*.luau` | Global |
-| `~/.pillar/extensions/*/index.luau` | Global (subdirectory) |
+| `~/.pillar/agent/extensions/*.luau` | Global |
+| `~/.pillar/agent/extensions/*/index.luau` | Global (subdirectory) |
 | `.pillar/extensions/*.luau` | Project-local |
 | `.pillar/extensions/*/index.luau` | Project-local (subdirectory) |
 
-Load order matches pi: global first, then project-local; within a directory, sorted by file name. Project-local extensions load only after project trust is granted (`project_trust` event fires before project-local loads).
+Load order matches pi: global first, then project-local; within a directory, sorted by file name. Loading a project-local extension evaluates its code with `pillar.exec` / `pillar.fs` available, so the CLI resolves project trust before any project resource is read — the interactive startup prompt, `--approve` / `--no-approve`, or the nearest entry in `~/.pillar/agent/trust.json` — and otherwise skips `.pillar/extensions` with a warning. divergence: the `project_trust` extension event itself is not ported; the decision is host-side and never reaches the VM.
 
 `pillar -e ./ext.luau` loads an extra extension for one run, same as pi's `--extension`.
 

@@ -63,27 +63,30 @@ pub fn bridge_to_runner(
     let mut handlers: std::collections::BTreeMap<String, Vec<ExtensionHandler>> =
         Default::default();
     // Group the registry's (event, identity) pairs by event, keeping
-    // registration order; one runner handler per Luau handler.
-    for (event, _identity) in &registry.event_handlers {
+    // registration order; one runner handler per Luau handler, and each
+    // runner handler invokes exactly that Luau handler — the runner owns the
+    // chain, so dispatching the whole event here would run N handlers N times.
+    for (event, identity) in &registry.event_handlers {
         let runtime = Arc::clone(runtime);
         let dispatch_event = event.clone();
+        let handler_id = identity.clone();
         let handler: ExtensionHandler = Arc::new(move |payload: &ExtensionEventPayload| {
             let mut runtime = runtime
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             let outcome = runtime
-                .dispatch(&dispatch_event, payload.clone())
+                .dispatch_handler(&dispatch_event, &handler_id, payload.clone())
                 .map_err(|error: ExtensionLoadError| error.to_string())?;
             match outcome {
                 crate::runtime::HandlerOutcome::None => Ok(None),
                 crate::runtime::HandlerOutcome::Block { reason } => {
-                    // Upstream the runner's session-before short-circuit
-                    // reads `cancel: true`; tool_call reads
-                    // `block: true` — surface both shapes.
-                    let mut result = serde_json::json!({ "cancel": true });
+                    // A handler that blocks must stop the action whichever key
+                    // its consumer reads: `block` (tool_call) or `cancel`
+                    // (session_before_*). The reason is optional, so the safe
+                    // keys are set unconditionally.
+                    let mut result = serde_json::json!({ "block": true, "cancel": true });
                     if let Some(reason) = reason {
                         result["reason"] = serde_json::Value::String(reason);
-                        result["block"] = serde_json::Value::Bool(true);
                     }
                     Ok(Some(result))
                 }
@@ -202,8 +205,8 @@ pub fn bridge_to_runner(
     let markdown_transformer = registry.markdown_transformers.last().map(|identity| {
         let runtime = Arc::clone(runtime);
         let identity = identity.clone();
-        let transformer: MarkdownTransformer = Arc::new(
-            move |markdown: &str, context: &MarkdownTransformContext| {
+        let transformer: MarkdownTransformer =
+            Arc::new(move |markdown: &str, context: &MarkdownTransformContext| {
                 let context = serde_json::json!({
                     "messageType": context.message_type.as_str(),
                     "isStreaming": context.is_streaming,
@@ -220,8 +223,7 @@ pub fn bridge_to_runner(
                         None
                     }
                 }
-            },
-        );
+            });
         transformer
     });
 
@@ -326,7 +328,10 @@ fn declarative_component(theme: &Theme, value: &serde_json::Value) -> Option<Box
         serde_json::Value::String(text) => vec![text.clone()],
         serde_json::Value::Object(object) => {
             if let Some(lines) = object.get("lines").and_then(serde_json::Value::as_array) {
-                lines.iter().map(|line| declarative_line(theme, line)).collect()
+                lines
+                    .iter()
+                    .map(|line| declarative_line(theme, line))
+                    .collect()
             } else if object.contains_key("text") {
                 vec![declarative_line(theme, value)]
             } else {
@@ -362,7 +367,9 @@ fn declarative_segment(theme: &Theme, segment: &serde_json::Value) -> String {
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default();
     match segment.get("style").and_then(serde_json::Value::as_str) {
-        Some(style) => theme.try_fg(style, text).unwrap_or_else(|| text.to_string()),
+        Some(style) => theme
+            .try_fg(style, text)
+            .unwrap_or_else(|| text.to_string()),
         None => text.to_string(),
     }
 }
@@ -396,9 +403,10 @@ pub fn bridge_to_agent_tools(runtime: &Arc<Mutex<ExtensionRuntime>>) -> Vec<Agen
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or(&name)
                 .to_string();
-            let parameters = definition.get("parameters").cloned().unwrap_or_else(
-                || serde_json::json!({ "type": "object", "properties": {} }),
-            );
+            let parameters = definition
+                .get("parameters")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({ "type": "object", "properties": {} }));
 
             let runtime = Arc::clone(runtime);
             let execute_name = name.clone();
@@ -460,9 +468,9 @@ fn tool_result_from_json(json: serde_json::Value) -> AgentToolResult {
         usage: json
             .get("usage")
             .and_then(|value| serde_json::from_value(value.clone()).ok()),
-        added_tool_names: json.get("addedToolNames").and_then(|value| {
-            serde_json::from_value::<Vec<String>>(value.clone()).ok()
-        }),
+        added_tool_names: json
+            .get("addedToolNames")
+            .and_then(|value| serde_json::from_value::<Vec<String>>(value.clone()).ok()),
         terminate: json
             .get("terminate")
             .and_then(serde_json::Value::as_bool)
@@ -681,14 +689,9 @@ mod tests {
         }
         let tools = bridge_to_agent_tools(&runtime);
         assert_eq!(tools.len(), 1);
-        let error = (tools[0].execute)(
-            "call-2".to_string(),
-            serde_json::json!({}),
-            None,
-            None,
-        )
-        .await
-        .expect_err("no execute");
+        let error = (tools[0].execute)("call-2".to_string(), serde_json::json!({}), None, None)
+            .await
+            .expect_err("no execute");
         assert!(error.0.contains("noop"), "{error:?}");
     }
 
@@ -718,10 +721,7 @@ mod tests {
         assert_eq!(extension.flags["name"].description, "");
         // Shortcut keys are normalized to lowercase.
         assert!(extension.shortcuts.contains_key("ctrl+alt+k"));
-        assert_eq!(
-            extension.shortcuts["ctrl+alt+k"].description,
-            "Do a thing"
-        );
+        assert_eq!(extension.shortcuts["ctrl+alt+k"].description, "Do a thing");
         assert_eq!(extension.shortcuts["ctrl+alt+k"].extension_path, "reg.luau");
 
         let mut runner = ExtensionRunner::new(vec![extension]);
@@ -817,7 +817,10 @@ mod tests {
         let rendered = component.render(40).join("\n");
         // The accent colour wraps the styled segment and the unstyled one
         // follows it.
-        assert!(rendered.contains(&theme.fg("accent", "TITLE ")), "{rendered:?}");
+        assert!(
+            rendered.contains(&theme.fg("accent", "TITLE ")),
+            "{rendered:?}"
+        );
         assert!(rendered.contains("hello"), "{rendered:?}");
         assert!(!rendered.contains("style"), "{rendered:?}");
     }
@@ -871,7 +874,9 @@ mod tests {
         assert!(renderer(&empty, &options, &theme).is_none());
 
         // An empty line list renders nothing, so the entry is skipped.
-        let empty_renderer = runner.get_entry_renderer("empty-widget").expect("registered");
+        let empty_renderer = runner
+            .get_entry_renderer("empty-widget")
+            .expect("registered");
         assert!(empty_renderer(&entry, &options, &theme).is_none());
     }
 

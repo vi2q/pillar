@@ -2028,11 +2028,12 @@ async fn create_agent_session_wires_agent_tools_prompt_and_persistence() {
         exclude_tools: Vec::new(),
         custom_tools: Vec::new(),
         extension_runner: Arc::new(Mutex::new(ExtensionRunner::new(Vec::new()))),
+        project_trusted: Some(true),
         session_start_event: None,
         system_prompt_rebuild: None,
         extension_runner_rebuild: None,
         stream_fn: Some(threshold_compaction_stream()),
-            command_handler: None,
+        command_handler: None,
     })
     .await
     .expect("session created");

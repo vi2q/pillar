@@ -59,6 +59,8 @@ pub struct CreateAgentSessionServicesOptions {
     pub no_prompt_templates: bool,
     pub no_themes: bool,
     pub no_context_files: bool,
+    /// The resolved project-trust decision (deny when absent).
+    pub project_trusted: Option<bool>,
 }
 
 /// Create cwd-bound runtime services plus diagnostics (upstream
@@ -78,7 +80,7 @@ pub fn create_agent_session_services(
         &resolved_cwd.to_string_lossy(),
         &agent_dir,
         SettingsManagerCreateOptions {
-            project_trusted: Some(true),
+            project_trusted: Some(options.project_trusted.unwrap_or(true)),
         },
     )));
 
@@ -140,7 +142,9 @@ pub fn create_agent_session_services(
 fn default_agent_dir() -> PathBuf {
     std::env::var_os("PILLAR_AGENT_DIR")
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".pillar").join("agent")))
+        .or_else(|| {
+            std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".pillar").join("agent"))
+        })
         .unwrap_or_else(|| PathBuf::from(".pillar").join("agent"))
 }
 
