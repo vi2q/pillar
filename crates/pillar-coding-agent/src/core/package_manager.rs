@@ -152,6 +152,24 @@ pub enum ParsedSource {
     Local(String),
 }
 
+impl ParsedSource {
+    /// The source as it would appear in settings — what the effect intent
+    /// carries, so the policy sees the same string the user configured.
+    pub fn source_string(&self) -> String {
+        match self {
+            ParsedSource::Npm(npm) => npm.spec.clone(),
+            ParsedSource::Git(git) => {
+                let shorthand = format!("{}/{}", git.host, git.path);
+                match &git.ref_ {
+                    Some(reference) => format!("{shorthand}@{reference}"),
+                    None => shorthand,
+                }
+            }
+            ParsedSource::Local(path) => path.clone(),
+        }
+    }
+}
+
 /// Package filter from object-form sources (upstream `PackageFilter`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PackageFilter {
@@ -1135,6 +1153,10 @@ pub struct DefaultPackageManager {
     settings: Arc<Mutex<SettingsManager>>,
     progress_callback: Option<ProgressCallback>,
     global_npm_root_cache: Mutex<Option<(String, String)>>,
+    /// The host's policy for fetching or deleting packages. `None` refuses
+    /// both: adding a package is an effect the user approves, never something
+    /// a load does on its own (docs/ARCHITECTURE-REVIEW-s05c0.md 0/6).
+    effect_authorizer: Option<crate::core::effects::EffectAuthorizer>,
 }
 
 impl DefaultPackageManager {
@@ -1145,6 +1167,48 @@ impl DefaultPackageManager {
             settings,
             progress_callback: None,
             global_npm_root_cache: Mutex::new(None),
+            effect_authorizer: None,
+        }
+    }
+
+    /// Install the host's effect policy (the CLI passes the broker's
+    /// authorizer; without one this manager cannot install or remove).
+    pub fn set_effect_authorizer(
+        &mut self,
+        authorizer: crate::core::effects::EffectAuthorizer,
+    ) {
+        self.effect_authorizer = Some(authorizer);
+    }
+
+    /// Authorize one package effect, failing closed when the host has no
+    /// policy.
+    fn authorize_package_effect(
+        &self,
+        source: &str,
+        project_scope: bool,
+        remove: bool,
+    ) -> Result<(), String> {
+        use crate::core::effects::{EffectDecision, EffectIntent};
+        let Some(authorizer) = &self.effect_authorizer else {
+            return Err(format!(
+                "refusing to {} {source}: the host provides no package policy",
+                if remove { "remove" } else { "install" }
+            ));
+        };
+        let intent = if remove {
+            EffectIntent::PackageRemove {
+                source: source.to_string(),
+                project_scope,
+            }
+        } else {
+            EffectIntent::PackageInstall {
+                source: source.to_string(),
+                project_scope,
+            }
+        };
+        match authorizer(&intent) {
+            EffectDecision::Allow => Ok(()),
+            EffectDecision::Deny { reason } => Err(format!("{source}: {reason}")),
         }
     }
 
@@ -2297,6 +2361,7 @@ impl DefaultPackageManager {
             SourceScope::User
         };
         self.assert_project_trusted_for_scope(scope)?;
+        self.authorize_package_effect(source, local, false)?;
         self.with_progress(
             ProgressAction::Install,
             source,
@@ -2331,6 +2396,9 @@ impl DefaultPackageManager {
             SourceScope::User
         };
         self.assert_project_trusted_for_scope(scope)?;
+        // Removing deletes an install directory the user configured, so it
+        // faces the same policy as installing.
+        self.authorize_package_effect(source, local, true)?;
         self.with_progress(
             ProgressAction::Remove,
             source,
@@ -2549,6 +2617,12 @@ impl DefaultPackageManager {
         let mut git_candidates: Vec<(&ConfiguredUpdateSource, GitSource)> = Vec::new();
 
         for entry in sources {
+            // Fetching a newer version installs that source again: same policy.
+            self.authorize_package_effect(
+                &entry.source,
+                entry.scope == SourceScope::Project,
+                false,
+            )?;
             match parse_source(&entry.source) {
                 // Pinned npm versions are fixed; pinned git refs are
                 // checkout targets that still reconcile.
@@ -3014,6 +3088,14 @@ impl DefaultPackageManager {
         parsed: &ParsedSource,
         scope: SourceScope,
     ) -> Result<(), String> {
+        // The single choke point for fetching a package: every caller (explicit
+        // install, or a resolve whose host answered "install") goes through the
+        // policy here.
+        self.authorize_package_effect(
+            &parsed.source_string(),
+            scope == SourceScope::Project,
+            false,
+        )?;
         match parsed {
             ParsedSource::Npm(npm) => self.install_npm(npm, scope, scope == SourceScope::Temporary),
             ParsedSource::Git(git) => self.install_git(git, scope),

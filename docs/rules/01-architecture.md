@@ -66,6 +66,23 @@ Each pillar crate mirrors an upstream package directory. Port one upstream modul
 
 `pillar-extensions` is the deliberate divergence: pi's extension system is TypeScript-in-TS-runtime (loader.ts, runner.ts, wrapper.ts); pillar replaces the loader and runner with a Luau VM while keeping every event, payload shape, and API method documented in [04-luau-extensions.md](04-luau-extensions.md).
 
+## Effect gate
+
+Every side effect the host performs for an extension or for itself passes one
+port, `pillar-coding-agent`'s `core::effects` (`EffectIntent` →
+`EffectDecision`). The CLI implements the execution and the audit trail in
+`pillar-cli`'s `EffectBroker`, and `crates/pillar-cli/tests/extension_safety_parity.rs`
+fails if `runner.rs` grows a direct process or filesystem call.
+
+Intents: `ToolCall`, `Exec`, `Fs{Read,Write,List,Stat}`, `PackageInstall`,
+`PackageRemove`. Two defaults are deliberate:
+
+- the session's tool hook denies a call whose authorizer answers `Deny`, and a
+  missing authorizer allows (the host owns the trust decision);
+- the package manager is the other way round: without an authorizer it refuses
+  to install, remove or update a package, because those fetch or delete code the
+  user never approved (startup resolution never installs).
+
 ## Session store contract
 
 A session is one append-only entry tree plus a leaf pointer: entries carry

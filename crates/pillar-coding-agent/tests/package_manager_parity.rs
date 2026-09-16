@@ -13,6 +13,7 @@ use pillar_coding_agent::core::package_manager::{
     matches_any_exact_pattern, matches_any_pattern, package_filter_of, package_source_string,
     parse_git_url, parse_npm_source, parse_npm_spec, parse_source, resource_precedence_rank,
 };
+use pillar_coding_agent::core::effects::{EffectDecision, EffectIntent, allow_all};
 use pillar_coding_agent::core::settings_manager::{
     PackageSource, SettingsManager, SettingsManagerCreateOptions,
 };
@@ -832,7 +833,9 @@ fn install_local_missing_path_errors() {
     let cwd = temp_dir("instlocal-cwd");
     let agent_dir = temp_dir("instlocal-agent");
     let settings = make_manager(&cwd, &agent_dir);
-    let manager = DefaultPackageManager::new(&cwd.to_string_lossy(), &agent_dir, settings);
+    let mut manager = DefaultPackageManager::new(&cwd.to_string_lossy(), &agent_dir, settings);
+    // Installing needs a host policy; this test is about the path check.
+    manager.set_effect_authorizer(allow_all());
 
     let error = manager
         .install("./does-not-exist-anywhere", false)
@@ -852,6 +855,7 @@ fn install_emits_progress_events() {
     manager.set_progress_callback(Arc::new(Mutex::new(move |event| {
         events2.lock().unwrap().push(event);
     })));
+    manager.set_effect_authorizer(allow_all());
 
     let _ = manager.install("./does-not-exist-anywhere", false);
     let events = events.lock().unwrap();
@@ -1004,4 +1008,67 @@ fn resource_type_naming_matches_upstream_dirs() {
     std::fs::write(prompts.join("p.md"), "x").unwrap();
     let files = collect_resource_files(&prompts, ResourceType::Prompts);
     assert_eq!(files, vec![prompts.join("p.md")]);
+}
+
+// --- install policy (docs/ARCHITECTURE-REVIEW-s05c0.md 0) ------------------------
+
+/// Installing fetches code, so it is an effect the host has to authorize: with
+/// no policy the manager refuses instead of installing whatever the settings
+/// mention.
+#[test]
+fn a_package_install_is_refused_without_a_policy() {
+    let cwd = temp_dir("policy-cwd");
+    let agent_dir = temp_dir("policy-agent");
+    let settings = make_manager(&cwd, &agent_dir);
+    let manager = DefaultPackageManager::new(&cwd.to_string_lossy(), &agent_dir, settings);
+
+    let error = manager.install("npm:anything@1.2.3", false).unwrap_err();
+    assert!(error.contains("no package policy"), "{error}");
+
+    let error = manager.remove("npm:anything@1.2.3", false).unwrap_err();
+    assert!(error.contains("no package policy"), "{error}");
+}
+
+/// The policy sees the normalized source and scope, and a denial is what the
+/// caller gets — no network attempt happens.
+#[test]
+fn a_denied_package_install_reports_the_policy_reason() {
+    let cwd = temp_dir("deny-cwd");
+    let agent_dir = temp_dir("deny-agent");
+    let settings = make_manager(&cwd, &agent_dir);
+    let mut manager = DefaultPackageManager::new(&cwd.to_string_lossy(), &agent_dir, settings);
+    let seen: Arc<Mutex<Vec<EffectIntent>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen_for_policy = Arc::clone(&seen);
+    manager.set_effect_authorizer(Arc::new(move |intent| {
+        seen_for_policy.lock().unwrap().push(intent.clone());
+        EffectDecision::Deny {
+            reason: "not now".to_string(),
+        }
+    }));
+
+    let error = manager.install("npm:anything@1.2.3", true).unwrap_err();
+    assert!(error.contains("not now"), "{error}");
+    assert_eq!(
+        seen.lock().unwrap().clone(),
+        vec![EffectIntent::PackageInstall {
+            source: "npm:anything@1.2.3".to_string(),
+            project_scope: true,
+        }]
+    );
+}
+
+/// An allowing policy lets a local source through (a local source is only a
+/// path reference, so nothing is fetched).
+#[test]
+fn an_allowed_local_install_proceeds() {
+    let cwd = temp_dir("allow-cwd");
+    let agent_dir = temp_dir("allow-agent");
+    let source = temp_dir("allow-source");
+    let settings = make_manager(&cwd, &agent_dir);
+    let mut manager = DefaultPackageManager::new(&cwd.to_string_lossy(), &agent_dir, settings);
+    manager.set_effect_authorizer(allow_all());
+
+    manager
+        .install(&source.to_string_lossy(), false)
+        .expect("an allowed install goes through");
 }

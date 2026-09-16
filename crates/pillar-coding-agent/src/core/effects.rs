@@ -33,6 +33,17 @@ pub enum EffectIntent {
     FsStat {
         path: String,
     },
+    /// Fetch a package source (npm / git) into the agent or project directory.
+    PackageInstall {
+        source: String,
+        /// Project scope (`-l`) instead of the user scope.
+        project_scope: bool,
+    },
+    /// Delete an installed package source.
+    PackageRemove {
+        source: String,
+        project_scope: bool,
+    },
 }
 
 /// What the policy decided for one intent.
