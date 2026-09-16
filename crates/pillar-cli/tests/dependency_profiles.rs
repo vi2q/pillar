@@ -18,8 +18,13 @@ use std::path::PathBuf;
 
 /// The runtime core (a game host embeds this without a terminal).
 const LMPC_MINIMAL: [&str; 2] = ["pillar-agent", "pillar-ai"];
-/// The minimal profile plus the Luau runtime.
-const LMPC_LUAU: [&str; 3] = ["pillar-agent", "pillar-ai", "pillar-extensions"];
+/// The minimal profile plus the Luau runtime and its contract.
+const LMPC_LUAU: [&str; 4] = [
+    "pillar-agent",
+    "pillar-ai",
+    "pillar-extensions",
+    "pillar-extensions-contract",
+];
 /// Crates a core crate must never reach.
 const PRESENTATION_AND_SHELL: [&str; 4] = [
     "pillar-tui",
@@ -188,6 +193,22 @@ fn the_lock_graph_and_the_manifests_agree() {
     }
 }
 
+/// The contract crate is a leaf for the embedding profiles: taking the shared
+/// extension shapes must not drag the coding agent, the TUI, or the CLI in.
+#[test]
+fn the_extension_contract_is_a_leaf() {
+    let graph = lock_graph();
+    let reached = closure(&graph, &["pillar-extensions-contract"]);
+    let leaked: Vec<&String> = reached
+        .iter()
+        .filter(|name| {
+            PRESENTATION_AND_SHELL.contains(&name.as_str())
+                || TERMINAL_LAYER.contains(&name.as_str())
+        })
+        .collect();
+    assert!(leaked.is_empty(), "the contract reaches {leaked:?}");
+}
+
 #[test]
 fn lmpc_minimal_excludes_the_presentation_shell_and_terminal() {
     let graph = lock_graph();
@@ -210,7 +231,12 @@ fn lmpc_minimal_excludes_the_presentation_shell_and_terminal() {
 #[test]
 fn core_crates_do_not_reach_the_presentation_or_shell() {
     let graph = lock_graph();
-    for core in ["pillar-ai", "pillar-agent", "pillar-telemetry", "pillar-protocol"] {
+    for core in [
+        "pillar-ai",
+        "pillar-agent",
+        "pillar-telemetry",
+        "pillar-protocol",
+    ] {
         let reached = closure(&graph, &[core]);
         let leaked: Vec<&String> = reached
             .iter()

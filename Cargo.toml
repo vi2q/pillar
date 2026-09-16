@@ -4,6 +4,7 @@ members = [
     "crates/pillar-cli",
     "crates/pillar-client",
     "crates/pillar-extensions",
+    "crates/pillar-extensions-contract",
     "crates/pillar-protocol",
     "crates/pillar-server",
     "crates/pillar-session-store",

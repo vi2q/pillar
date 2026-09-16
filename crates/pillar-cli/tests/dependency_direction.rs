@@ -22,15 +22,31 @@ const ALLOWED: &[(&str, &[&str])] = &[
     ("pillar-client", &["pillar-protocol"]),
     (
         "pillar-coding-agent",
-        &["pillar-agent", "pillar-ai", "pillar-protocol", "pillar-tui"],
+        &[
+            "pillar-agent",
+            "pillar-ai",
+            "pillar-extensions-contract",
+            "pillar-protocol",
+            "pillar-tui",
+        ],
     ),
     // The VM crate must not name the presentation layer: custom renderers
     // answer themed lines and `keybindings.matches` goes through the host
-    // callback (docs/DEVELOPMENT-STRATEGY.md §4/§5).
+    // callback (docs/DEVELOPMENT-STRATEGY.md §4/§5). The shared shapes live in
+    // the contract crate; what still ties the VM to coding-agent is the runner
+    // and renderer glue (TASKS: the remaining stages).
     (
         "pillar-extensions",
-        &["pillar-agent", "pillar-ai", "pillar-coding-agent"],
+        &[
+            "pillar-agent",
+            "pillar-ai",
+            "pillar-coding-agent",
+            "pillar-extensions-contract",
+        ],
     ),
+    // The contract is a leaf: the VM and the coding agent both take it, and
+    // it takes neither.
+    ("pillar-extensions-contract", &["pillar-agent"]),
     ("pillar-protocol", &[]),
     (
         "pillar-server",

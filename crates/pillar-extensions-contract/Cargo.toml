@@ -1,0 +1,12 @@
+[package]
+name = "pillar-extensions-contract"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "The extension contract shared by the Luau runtime and the coding agent (no TUI, no CLI)."
+
+[dependencies]
+pillar-agent = { path = "../pillar-agent" }
+serde.workspace = true
+serde_json.workspace = true

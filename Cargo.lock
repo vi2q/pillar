@@ -1134,6 +1134,7 @@ dependencies = [
  "libc",
  "pillar-agent",
  "pillar-ai",
+ "pillar-extensions-contract",
  "pillar-protocol",
  "pillar-tui",
  "regex",
@@ -1152,10 +1153,20 @@ dependencies = [
  "pillar-agent",
  "pillar-ai",
  "pillar-coding-agent",
+ "pillar-extensions-contract",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "pillar-extensions-contract"
+version = "0.1.0"
+dependencies = [
+ "pillar-agent",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

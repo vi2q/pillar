@@ -17,6 +17,7 @@ crates/
 ├── pillar-server/       # pi-server port: experimental remote server
 ├── pillar-telemetry/    # pi-telemetry port: telemetry contracts
 ├── pillar-session-store/ # pi session-backends/sqlite-node port: sqlite session backend
+├── pillar-extensions-contract/ # NEW: the extension shapes the VM and the coding agent share
 ├── pillar-extensions/   # NEW (no pi counterpart): Luau extension runtime on luaur-rt
 └── pillar-cli/          # NEW (no pi counterpart): the `pillar` binary; joins coding-agent and the Luau runtime
 ```
@@ -33,8 +34,9 @@ pillar-ai          (leaf among pillars; providers + catalog)
 pillar-agent       → ai, telemetry
 pillar-session-store → agent, ai (standalone backend; no crate wires it in yet)
 pillar-client      → protocol
-pillar-extensions  → coding-agent, agent, ai (plus luaur-rt / luaur-analysis / luaur-config)
-pillar-coding-agent → agent, ai, tui, protocol
+pillar-extensions-contract → agent
+pillar-extensions  → coding-agent, extensions-contract, agent, ai (plus luaur-rt / luaur-analysis / luaur-config)
+pillar-coding-agent → agent, ai, tui, protocol, extensions-contract
 pillar-server      → ai, protocol, client
 pillar-cli         → coding-agent, extensions, agent, ai
 ```

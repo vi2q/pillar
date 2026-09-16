@@ -9,6 +9,7 @@ description = "Coding agent core. Port of pi packages/coding-agent (pi v0.84.3).
 [dependencies]
 pillar-ai = { path = "../pillar-ai" }
 pillar-agent = { path = "../pillar-agent" }
+pillar-extensions-contract = { path = "../pillar-extensions-contract" }
 pillar-protocol = { path = "../pillar-protocol" }
 pillar-tui = { path = "../pillar-tui" }
 serde.workspace = true

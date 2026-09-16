@@ -11,9 +11,9 @@
 use std::sync::{Arc, Mutex};
 
 use luaur_rt::{Function, Lua, LuaSerdeExt, TypeDiagnostic, Value, check_with_definitions};
-use pillar_coding_agent::core::extensions_types::{
-    ExtensionContextFn, ExtensionCustomEvent, ExtensionCustomFn, ExtensionCustomSurface,
-    ExtensionUiAskFn, ExtensionUiFn, ExtensionUiRequest,
+use pillar_extensions_contract::{
+    ExecOptions, ExecResult, ExtensionContextFn, ExtensionCustomEvent, ExtensionCustomFn,
+    ExtensionCustomSurface, ExtensionUiAskFn, ExtensionUiFn, ExtensionUiRequest,
 };
 
 /// One registration and the extension that made it. The shared VM records
@@ -377,8 +377,8 @@ pub type ExecHost = Arc<
     dyn Fn(
             &str,
             &[String],
-            &pillar_coding_agent::core::exec::ExecOptions,
-        ) -> pillar_coding_agent::core::exec::ExecResult
+            &ExecOptions,
+        ) -> ExecResult
         + Send
         + Sync,
 >;
@@ -1088,7 +1088,7 @@ impl ExtensionRuntime {
                 lines: Arc::clone(&lines),
                 revision: Arc::clone(&revision),
                 closed: Arc::clone(&closed),
-                events: pillar_coding_agent::core::extensions_types::ExtensionCustomEvents::new(
+                events: pillar_extensions_contract::ExtensionCustomEvents::new(
                     sender,
                 ),
             };
@@ -1520,7 +1520,7 @@ fn install_pillar_api(
                             .get(&id)
                             .cloned()
                     });
-                    let exec_options = pillar_coding_agent::core::exec::ExecOptions {
+                    let exec_options = ExecOptions {
                         signal,
                         timeout_ms,
                         cwd,
@@ -1530,7 +1530,7 @@ fn install_pillar_api(
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
                     let result = match guard.as_ref() {
                         Some(exec) => exec(&command, &args, &exec_options),
-                        None => pillar_coding_agent::core::exec::ExecResult::spawn_failure(
+                        None => ExecResult::spawn_failure(
                             "exec host not installed",
                         ),
                     };
@@ -2548,7 +2548,7 @@ mod api_tests {
     /// the upstream no-op.
     #[test]
     fn context_is_passed_to_handlers() {
-        use pillar_coding_agent::core::extensions_types::{
+        use pillar_extensions_contract::{
             ExtensionContextFacts, ExtensionMode, ExtensionUiRequest,
         };
         let seen: Arc<Mutex<Vec<ExtensionUiRequest>>> = Arc::new(Mutex::new(Vec::new()));
@@ -2716,7 +2716,7 @@ mod api_tests {
     /// result (upstream `await ctx.ui.custom<T>`).
     #[test]
     fn context_ui_custom_drives_the_component_loop() {
-        use pillar_coding_agent::core::extensions_types::{
+        use pillar_extensions_contract::{
             ExtensionContextFacts, ExtensionCustomEvent, ExtensionCustomSurface, ExtensionMode,
         };
 
@@ -2813,7 +2813,7 @@ mod api_tests {
     /// answer its value; a cancelled dialog (`null`) answers `nil`.
     #[test]
     fn context_ui_dialog_wrappers_forward_their_op() {
-        use pillar_coding_agent::core::extensions_types::ExtensionUiRequest;
+        use pillar_extensions_contract::ExtensionUiRequest;
         let seen: Arc<Mutex<Vec<ExtensionUiRequest>>> = Arc::new(Mutex::new(Vec::new()));
         let asks: Arc<Mutex<Vec<ExtensionUiRequest>>> = Arc::clone(&seen);
         let mut runtime = ExtensionRuntime::new();
@@ -4017,7 +4017,7 @@ mod exec_tests {
         let runtime = ExtensionRuntime::new();
         runtime.set_exec_host(Arc::new(|command: &str, args: &[String], _options| {
             assert_eq!(command, "git");
-            pillar_coding_agent::core::exec::ExecResult {
+            ExecResult {
                 stdout: format!("args={args:?}"),
                 stderr: String::new(),
                 code: 0,
@@ -4066,7 +4066,7 @@ mod exec_tests {
     fn exec_accepts_nil_args() {
         let runtime = ExtensionRuntime::new();
         runtime.set_exec_host(Arc::new(|command: &str, args: &[String], _options| {
-            pillar_coding_agent::core::exec::ExecResult {
+            ExecResult {
                 stdout: command.to_string(),
                 stderr: String::new(),
                 code: args.len() as i32,

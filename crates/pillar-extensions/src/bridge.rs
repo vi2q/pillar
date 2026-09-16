@@ -19,8 +19,10 @@ use pillar_coding_agent::core::extensions_runner::{
     RegisteredCommand,
 };
 use pillar_coding_agent::core::extensions_types::{
-    EntryRenderOptions, EntryRenderer, MarkdownTransformContext, MarkdownTransformer,
-    MessageRenderOptions, MessageRenderer,
+    EntryRenderer, MessageRenderer,
+};
+use pillar_extensions_contract::{
+    EntryRenderOptions, MarkdownTransformContext, MarkdownTransformer, MessageRenderOptions,
 };
 use pillar_coding_agent::core::messages::{CustomContent, CustomMessage};
 use pillar_coding_agent::core::session_entries::CustomEntry;
@@ -995,7 +997,7 @@ mod tests {
         let transformers = runner.get_markdown_transformers();
         assert_eq!(transformers.len(), 1);
         let context = MarkdownTransformContext {
-            message_type: pillar_coding_agent::core::extensions_types::MarkdownMessageType::User,
+            message_type: pillar_extensions_contract::MarkdownMessageType::User,
             is_streaming: false,
             available_width: 80,
         };
@@ -1005,7 +1007,7 @@ mod tests {
         );
         let assistant = MarkdownTransformContext {
             message_type:
-                pillar_coding_agent::core::extensions_types::MarkdownMessageType::Assistant,
+                pillar_extensions_contract::MarkdownMessageType::Assistant,
             ..context.clone()
         };
         assert_eq!(transformers[0]("hello", &assistant), None);

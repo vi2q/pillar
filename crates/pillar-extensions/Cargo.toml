@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 pillar-coding-agent = { path = "../pillar-coding-agent" }
 pillar-agent = { path = "../pillar-agent" }
+pillar-extensions-contract = { path = "../pillar-extensions-contract" }
 pillar-ai = { path = "../pillar-ai" }
 luaur-rt = { version = "0.1.8", features = ["serde", "typecheck", "send"] }
 serde.workspace = true

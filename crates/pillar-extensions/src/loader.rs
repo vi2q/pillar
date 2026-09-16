@@ -169,8 +169,8 @@ mod tests {
         "#,
         );
         let runtime = create_shared_runtime(Some(Arc::new(
-            |command: &str, _: &[String], _: &pillar_coding_agent::core::exec::ExecOptions| {
-                pillar_coding_agent::core::exec::ExecResult {
+            |command: &str, _: &[String], _: &pillar_extensions_contract::ExecOptions| {
+                pillar_extensions_contract::ExecResult {
                     stdout: command.to_string(),
                     stderr: String::new(),
                     code: 0,

@@ -15,7 +15,6 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use pillar_agent::abort::AbortSignal;
 
 /// How often the wait loop checks the child and the abort / timeout state.
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
@@ -25,38 +24,9 @@ const TERM_GRACE: Duration = Duration::from_secs(5);
 /// whatever arrived by then).
 const DRAIN_GRACE: Duration = Duration::from_millis(100);
 
-/// Options for one command execution (upstream `ExecOptions`).
-#[derive(Debug, Clone, Default)]
-pub struct ExecOptions {
-    /// Cancels the command; an aborted signal kills it before it starts.
-    pub signal: Option<AbortSignal>,
-    /// Timeout in milliseconds; `None` or `0` means no timeout.
-    pub timeout_ms: Option<u64>,
-    /// Working directory override (upstream `options.cwd`, default: the
-    /// caller's cwd).
-    pub cwd: Option<String>,
-}
-
-/// Result of one command execution (upstream `ExecResult`).
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct ExecResult {
-    pub stdout: String,
-    pub stderr: String,
-    pub code: i32,
-    pub killed: bool,
-}
-
-impl ExecResult {
-    /// The failure shape upstream produces when the command cannot be spawned.
-    pub fn spawn_failure(error: impl std::fmt::Display) -> Self {
-        Self {
-            stdout: String::new(),
-            stderr: error.to_string(),
-            code: -1,
-            killed: false,
-        }
-    }
-}
+// The `ExecOptions` / `ExecResult` shapes live in the contract crate (the VM's
+// exec host callback names them); the spawn implementation stays here.
+pub use pillar_extensions_contract::{ExecOptions, ExecResult};
 
 /// Execute a command and return its output, honouring `signal` / `timeout`
 /// (upstream `execCommand`).
@@ -190,6 +160,7 @@ fn terminate(child: &mut Child) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pillar_agent::abort::AbortSignal;
 
     fn args(items: &[&str]) -> Vec<String> {
         items.iter().map(|item| item.to_string()).collect()
