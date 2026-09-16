@@ -1,20 +1,20 @@
 # 02 — Porting policy
 
-pillar is a hybrid port: the external boundary of pi is reproduced exactly, the internals are idiomatic Rust. This document defines which is which, and the TypeScript→Rust conversion rules.
+pillar は pi を参照する hybrid port であり、全機能の完全再現を目的にしない。[開発方針](../DEVELOPMENT-STRATEGY.md) が機能採否を決め、本書は**採用した互換面**と内部実装の扱いを定める。grep等の独自強化は意図的差分として設計・検証する。
 
 ## The two layers
 
 ### Strict-compatibility layer (behavior pinned to pi)
 
-These surfaces must be byte- or schema-identical to pi v0.84.3. Breaking them breaks sessions, tools, and extensions written against pi.
+以下は互換性を検査する面の分類であり、全項目の実装義務ではない。提供する互換面は pinned pi の挙動・schemaを基準とし、意図的差分は理由・影響・テストを記録する。既存のsession/tool/extension契約を、機能選択や高速化の都合で黙って壊さない。未実装APIを実装済みとして公開しない。
 
-1. **CLI**: every flag (`--model`, `--print`, `--extension`, `--resume`, `--continue`, `--mode`, `--no-session`, …), flag aliases, argument order semantics, exit codes, and the version string format.
+1. **CLI**: supported flags (`--model`, `--print`, `--extension`, `--resume`, `--continue`, `--mode`, `--no-session`, …), flag aliases, argument order semantics, exit codes, and the version string format.
 2. **Session files**: JSONL at `~/.pillar/agent/sessions/--<path>--/<timestamp>_<uuid>.jsonl`, version-3 tree structure (`id`/`parentId` linking), every entry `type` (`message`, `model_change`, `thinking_level_change`, `compaction`, `branch_summary`, `custom`, `label`, `session_info`, `custom_message`), the `SessionHeader` shape, and v1/v2→v3 migration on load. pillar must read pi sessions and pi must read pillar sessions.
 3. **Agent↔tool contract**: built-in tool names (`bash`, `edit`, `find`, `grep`, `ls`, `read`, `write`, `powershell` on Windows), their input schemas, result `content` blocks, and `details` shapes.
-4. **LLM request/response semantics**: provider request bodies, streaming event order, usage accounting, retry/backoff behavior per provider. A provider implementation is correct when pi's own provider tests pass against it.
+4. **LLM request/response semantics**: 採用したproviderのrequest body、streaming順序、usage、retry/backoff。upstream由来の検査と実際のhost経路検査の両方を行う。
 5. **CBOR protocol** (`pillar-protocol`): framing, codec, and schema bytes must interoperate with pi's `pi-server`/`pi-client`.
 6. **Settings/config files**: `~/.pillar/agent/settings.json` keys and precedence, `AGENTS.md` discovery, skill/theme/prompt-template discovery paths.
-7. **Extension semantics**: event names, firing order, payload shapes, result handling (block/modify), and the full `ExtensionAPI` method surface. The Luau mapping is defined in [04-luau-extensions.md](04-luau-extensions.md) and is itself part of this layer.
+7. **Extension semantics**: 採用したイベント名・発火順・payload・block/modify結果とAPI面。Luau対応は [04-luau-extensions.md](04-luau-extensions.md) を参照。必要範囲はゲーム開発工程と実拡張で決め、upstreamの全`ExtensionAPI`を自動的に必須にしない。
 8. **Slash commands and keybindings**: default names and behavior.
 
 ### Free layer (idiomatic Rust allowed)
@@ -25,7 +25,7 @@ These surfaces must be byte- or schema-identical to pi v0.84.3. Breaking them br
 - Concurrency model (tokio tasks, channels) as long as event ordering matches.
 - Anything reachable only from Rust code, not from sessions/CLI/network.
 
-When in doubt: if a user can observe it (terminal output, session file, network bytes, extension script), it is strict. If only a Rust caller sees it, it is free.
+外部から観測できる変更は、互換面の維持か、明示した独自強化かを判断してテストする。観測可能だから変更禁止という意味ではない。内部Rustの構造は、責任境界・性能・再利用性に従って変更できる。
 
 ## TypeScript → Rust conversion table
 

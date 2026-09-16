@@ -1,14 +1,14 @@
 # 04 — Luau extensions
 
-The extension runtime contract. Extensions are Luau scripts executed by an embedded luaur VM; every event, payload, and API method mirrors pi's TypeScript extension system as defined in `packages/coding-agent/docs/extensions.md` and `packages/coding-agent/src/core/extensions/types.ts` (pi v0.84.3).
+Luau拡張のAPI対応と契約の参照資料。pi v0.84.3の `packages/coding-agent/docs/extensions.md` / `core/extensions/types.ts` を参照するが、全APIの実装完了を主張するものではない。必要機能上限・built-in同等の進捗／中断・UI分離・Wasm再利用は [開発方針](../DEVELOPMENT-STRATEGY.md) に従う。API対応表と、実装・配線・検証済み状態を区別する。
 
 ## Runtime
 
-- VM: `luaur-rt` (luaur v0.1.8) with features `serde`, `async`, `typecheck`.
-- One `Lua` instance per pi process for global extensions; each extension file loads as a module returning a setup function, mirroring pi's default-export factory.
+- VM: `luaur-rt` (luaur v0.1.8)。現在のmanifestで有効なfeaturesは `serde`, `typecheck`, `send`。
+- `ExtensionRuntime`は`Lua`を所有し、loader/bridgeは同じruntime handleを共有する。reloadでは新しい世代を構築する。
 - Every extension file is type-checked with `luaur-analysis` against the `@pillar` definitions before it runs. Files that fail type-checking are skipped with a warning listing the diagnostics; they do not abort startup. (pi compiles TS with jiti and fails the same way: per-file load error, other extensions continue.)
 - Extensions declare `--!strict` at the top; non-strict files still type-check under the checker's non-strict mode.
-- The VM is sandboxed by capability: an extension only reaches what the host injects. There is no `io`, `os.execute`, or `require` of arbitrary paths. `require("@pillar")` and `require("@pillar.tui")` are the only roots. Note the placement rules: extension scripts run with the user's full permissions via host calls (`pillar.exec`, tool registration) exactly like pi extensions; the sandbox limits the script language surface, not the host authority.
+- Luauからの外部作用はhost API経由。CLIの信頼判定・Effect Brokerと、VMが提供する言語面は別の境界である。Luau採用だけでOS権限が隔離されるとはみなさない。Wasm構成でも最終的な能力・資源制限は外側のhostが強制する。
 
 ## Discovery locations
 
@@ -95,7 +95,7 @@ pillar.register_command("hello", {
 | `appendEntry(type, data?)` | `pillar.append_entry(type, data?)` |
 | `setSessionName(name)` / `getSessionName()` | `pillar.set_session_name(name)` / `pillar.get_session_name()` |
 | `setLabel(entryId, label?)` | `pillar.set_label(entry_id, label?)` |
-| `exec(cmd, args, opts?)` | `pillar.exec(cmd, args, opts?)` (async; yields) |
+| `exec(cmd, args, opts?)` | `pillar.exec(cmd, args, opts?)`（現在のExecHostは同期callback。非同期・中断・進捗の完成は別途必要） |
 | `getActiveTools()` / `getAllTools()` / `setActiveTools(names)` | `pillar.get_active_tools()` / `pillar.get_all_tools()` / `pillar.set_active_tools(names)` |
 | `getCommands()` | `pillar.get_commands()` |
 | `setModel(m)` / `getThinkingLevel()` / `setThinkingLevel(l)` | `pillar.set_model(m)` / `pillar.get_thinking_level()` / `pillar.set_thinking_level(l)` |
@@ -104,15 +104,11 @@ pillar.register_command("hello", {
 
 ### Events
 
-All 36 pi events, same names, same firing order, same payloads (keys snake_cased per the table above):
+upstreamイベントの参照一覧（全件配線済みという意味ではない。特に`project_trust`は上記のとおりhost側で判断する）:
 
 `project_trust`, `resources_discover`, `session_start`, `session_info_changed`, `session_before_switch`, `session_before_fork`, `session_before_compact`, `session_compact`, `session_compact_failed`, `session_shutdown`, `session_before_tree`, `session_tree`, `context`, `before_provider_request`, `before_provider_headers`, `after_provider_response`, `before_agent_start`, `agent_start`, `agent_end`, `agent_settled`, `ui_prompt_start`, `ui_prompt_end`, `turn_start`, `turn_end`, `message_start`, `message_update`, `message_end`, `tool_execution_start`, `tool_execution_update`, `tool_execution_end`, `model_select`, `thinking_level_select`, `tool_call`, `tool_result`, `user_bash`, `input`.
 
-Handler semantics preserved exactly:
-
-- A handler returning `{ block = true, reason = "..." }` from `tool_call` blocks the tool call, matching pi's `ToolCallEventResult`.
-- Handlers run in registration order; a handler's returned modifications feed the next handler.
-- An error thrown from a handler is caught by the runtime, reported like pi's extension error path, and does not prevent other handlers from running.
+イベント契約は種別ごとに検証する。`tool_call`の`{ block = true }`はreasonの有無によらず遮断する。一登録一呼出と登録順を維持する。通知・変換連鎖・拒否・回答採用を同じ処理とみなさず、例外を安全判定の許可へ変換しない。
 
 ### `ctx`
 
@@ -125,7 +121,8 @@ fifth argument. `ctx` carries the host facts and the UI bridge:
 | `mode` (`"tui" \| "rpc" \| "json" \| "print"`) | `ctx.mode` |
 | `hasUI` | `ctx.hasUI` |
 | `ui` | `ctx.ui` (table, see below) |
-| `isIdle()` / `hasPendingMessages()` / `abort()` / `shutdown()` / `getContextUsage()` / `compact()` / `getSystemPrompt()` / `model` / `scopedModels` / `thinkingLevel` / `sessionManager` / `signal` / `isProjectTrusted()` | not ported yet (TASKS 2d-b/2d-c) |
+| `isIdle()` / `sessionManager` | 現在は`ctx.isIdle()`と`ctx.sessionManager.getSessionId()` / `getEntries()`を提供 |
+| その他のcontext操作 | 完了状態はruntime・host配線・実経路テストで確認する。`call_tool`の`signal` / `on_update`引数は現在nil |
 
 ### `ctx.ui`
 
@@ -190,11 +187,11 @@ Conversion rules for every value crossing the bridge (both directions):
 
 Return directions follow the same table. Handler return values that pi types as `X \| undefined` accept `nil` in Luau. Malformed returns (wrong shape) raise a catchable error with a message naming the expected shape.
 
-## Async semantics
+## 実行・非同期の現在地と目標
 
-- Handler functions may be synchronous or coroutines (`coroutine`-based). The host drives coroutines to completion, awaiting host calls (`pillar.exec`, `ctx.ui.confirm`) that yield.
-- Rust futures exposed to Luau (from `luaur-rt`'s `async` feature) are bridged: an async host call returns a promise-like handle that a handler can `coroutine.yield` on; the runtime resumes the coroutine on completion. Extension-facing behavior matches pi's `await`: sequential, error-propagating.
-- Event delivery order is identical to pi: synchronous dispatch on the agent thread for non-async handlers; async handlers do not delay subsequent events beyond what pi's own async handlers allow.
+現在のhost bridgeには同期callbackがあり、`ctx.ui.custom`はイベントを`recv_timeout`で待つ。`call_tool`のsignal/on_updateも未接続であり、非同期host呼出・coroutine再開・停止保証を完成済みと扱わない。
+
+目標は、既存Luau機能を保ったまま、host要求のrequest/replyと取消・deadlineを接続し、待機がUIや実行核を止めないこと。実装方式はluaurとazparamの実host条件で検証して決める。`spawn_blocking`だけでVMの永久ループを強制停止できるとはみなさない。
 
 ## Session persistence & custom entries
 
@@ -244,9 +241,9 @@ rendering, in extension order.
 
 ## Type-checking gates
 
-- `luaur-analysis` runs on every extension file at load with the `@pillar`/`@pillar.tui` definition files (`.d.luau` shipped inside `pillar-extensions/src/definitions/`).
-- CI runs the definition files against luaur's own conformance suite plus pillar's extension test corpus (see [05-testing-parity.md](05-testing-parity.md)).
-- A definition-file change that breaks type-checking of any corpus file is a breaking change: bump the definitions version and document it.
+- 現在のloaderは`runtime.rs::PILLAR_DEFINITIONS`を使ってload前にtype-checkする。定義に`any`があるため、type-check成功だけで全context契約が正しい証拠にはならない。
+- 実拡張のstrict corpus、必要なluaur conformance、host配線検証をCIへ接続する計画は [05-testing-parity.md](05-testing-parity.md) と [開発方針](../DEVELOPMENT-STRATEGY.md) を参照。CI実行済みとは主張しない。
+- 型契約の変更で既存corpusを壊す場合は互換性への影響を記録し、実行契約と同時に更新する。
 
 ## Feature parity ledger
 
@@ -255,8 +252,8 @@ Extensions features intentionally NOT ported (with replacement):
 | pi feature | pillar replacement |
 | --- | --- |
 | jiti TypeScript loading, npm imports in extensions | Luau modules; no npm. Sharing via git packages works the same (`packages` in settings) |
-| Direct access to `@earendil-works/pi-tui` component classes from extensions | `ctx.ui.custom` receives a Luau-facing TUI bridge covering the same component surface; parity tracked per component in the ledger |
+| Direct access to `@earendil-works/pi-tui` component classes from extensions | Luau-facing `ctx.ui.custom`。現在の対応範囲・制限は上のUI表を参照し、全component面の互換を仮定しない |
 | Node.js builtins (`node:fs`, …) inside extensions | `pillar.fs` module (bounded API: read/write/list/stat), same trust model as tool calls |
 | Dynamic `import()` of other extension files | `require("@ext/<name>")` for files in the same discovery root |
 
-Everything else in `docs/extensions.md`'s "Key capabilities" list is ported: custom tools, event interception, user interaction, custom UI components, custom commands, session persistence, custom rendering.
+機能の完了は、宣言・実装・host配線・型チェック・成功／失敗／中断の検証が揃った能力ごとに判定する。upstream一覧から「それ以外は全て移植済み」と推定しない。

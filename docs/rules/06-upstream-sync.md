@@ -31,7 +31,9 @@ Sync and parity tooling clones upstream at the pinned commit into a cache direct
 
 ## Goal
 
-The target is a complete port of the pinned pi revision: every package, every module, every externally observable behavior. "Done" per module is defined by [05-testing-parity.md](05-testing-parity.md) coverage rules, not by line counts.
+目標は [開発方針](../DEVELOPMENT-STRATEGY.md) に定めるゲーム開発支援の必要機能上限、高性能化、azparam / LMPC向け再利用であり、pinned piの全package・全module・全挙動の完全移植ではない。
+
+upstream更新は、採用面への影響・不具合修正・必要な新能力を分類して選択的に取り込む。非採用面の変更は参照記録に留める。機能の完了は制作工程・実拡張・契約の検証で判断し、行数や移植率で判断しない。
 
 ## Sync procedure
 
@@ -40,8 +42,9 @@ Run when a task requires behavior from a newer pi or luaur, or on a scheduled ca
 1. **Pick the target.** Read upstream CHANGELOGs between the pinned revision and the target. pi: `packages/*/CHANGELOG.md`, sections under `## [Unreleased]` and released versions. Classify every change: strict-layer (observable) or free-layer (internal).
 2. **Bump the pin.** Update `UPSTREAM.toml` in its own commit: `chore(sync): bump pi to <version> (<commit>)`. This commit contains only the pin change.
 3. **Port behavior diffs.** One commit per crate or subsystem, messages `sync(pi/<pkg>): port <change summary>`. For each change:
-   - Strict-layer: port exactly; update or add parity tests.
-   - Free-layer: decide port or skip; record decisions in the commit message.
+   - 採用した互換面: 取り込む挙動を契約と照合し、parity/contract testを更新する。pillarの意図的差分を機械的に上書きしない。
+   - 新しい外部機能: 開発方針の採用条件に照らして採否を決める。採用しない変更を未完了の移植作業として積まない。
+   - 内部実装: pillarの境界・性能に必要か判断して採用／見送りを記録する。
    - Update `// divergence:` comments if upstream removed the reason for one.
 4. **Luaur bumps** additionally require: feature-flag review (`luaur-rt` features pillar enables), definition-file re-check against the extension corpus, and conformance rerun.
 5. Verify the relevant parity layers described in [05-testing-parity.md](05-testing-parity.md), including parity layers against the new pinned checkout.

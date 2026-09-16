@@ -2,6 +2,8 @@
 
 Crate layout, dependency direction, and module ownership for the pillar workspace.
 
+本書の依存表は**現在の構造**を表す。製品目標、目標となる責任境界、profile別の切り出し条件は [開発方針](../DEVELOPMENT-STRATEGY.md) を参照。現在のallowlistを通るだけでは、ランタイム版への疎結合を達成したことにはならない。
+
 ## Workspace layout
 
 ```
@@ -43,13 +45,13 @@ this block.
 
 Rules:
 
-- Dependencies point the same way as upstream package deps. If pi's `packages/agent` does not import `packages/tui`, `pillar-agent` must not depend on `pillar-tui`.
+- 実行核から具体的なUI・VM・CLI・OS adapterへ依存しない方向を目指す。現在許可するedgeは上表とテストで管理し、切断は機能を保ったまま段階的に行う。upstreamのpackage配置は参照であって制約ではない。
 - `pillar-coding-agent` must not depend on `pillar-extensions`: the extension runtime needs the coding-agent runner types, so that edge would cycle. The inversion is the `LuauExtensionLoader` trait (defined in coding-agent, implemented in `pillar-extensions`); `pillar-cli` is the only crate that depends on both and wires them.
 - No crate may depend on a `*-cli` or test-support crate.
 
 ## Module ownership map
 
-Each pillar crate mirrors an upstream package directory. Port one upstream module to one pillar module; keep the mapping greppable.
+現在のcrateは主にupstream packageを参照して構成されている。以下は由来の地図であり、1 TS file = 1 Rust fileを内部設計の制約にしない。分離・独自強化後も元の契約と出所を追跡できるようにする。
 
 | pillar module | upstream source |
 | --- | --- |
@@ -65,7 +67,7 @@ Each pillar crate mirrors an upstream package directory. Port one upstream modul
 | `pillar-extensions/src/*` | no upstream module; semantics from `packages/coding-agent/src/core/extensions/*` |
 | `pillar-cli/src/*` | no upstream module; wires `packages/coding-agent/src/cli.ts` + `main.ts` to the Luau runtime |
 
-`pillar-extensions` is the deliberate divergence: pi's extension system is TypeScript-in-TS-runtime (loader.ts, runner.ts, wrapper.ts); pillar replaces the loader and runner with a Luau VM while keeping every event, payload shape, and API method documented in [04-luau-extensions.md](04-luau-extensions.md).
+`pillar-extensions` は主要な意図的差分の一つ。TypeScript拡張runtimeをLuau VMに置き換え、採用したイベント・payload・API契約を [04-luau-extensions.md](04-luau-extensions.md) の対応に従って提供する。native検索等の独自強化も行う。Luauの必要機能上限と、UIを外せる共通契約の分離方針は [開発方針](../DEVELOPMENT-STRATEGY.md) に従う。
 
 ## Effect gate
 
