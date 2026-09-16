@@ -26,16 +26,20 @@ One binary ships: `pillar-cli` produces `pillar` (pi's `pi`). It owns the host w
 ```
 pillar-telemetry   (leaf)
 pillar-protocol    (leaf; CBOR codec, no deps on sibling crates)
-pillar-ai         → telemetry
-pillar-agent      → ai
-pillar-tui        → (leaf among pillars; mirrors pi-tui standalone)
-pillar-extensions → coding-agent (runner types), agent, luaur-rt, luaur-analysis, luaur-config
-pillar-coding-agent → agent, ai, tui, protocol, telemetry, session-store
-pillar-cli        → coding-agent, extensions
-pillar-server     → protocol, client
-pillar-client     → protocol
-pillar-session-store → (leaf; rusqlite, loaded behind a feature by coding-agent)
+pillar-tui         (leaf among pillars; mirrors pi-tui standalone)
+pillar-ai          (leaf among pillars; providers + catalog)
+pillar-agent       → ai, telemetry
+pillar-session-store → agent, ai (standalone backend; no crate wires it in yet)
+pillar-client      → protocol
+pillar-extensions  → coding-agent, agent, ai, tui (plus luaur-rt / luaur-analysis / luaur-config)
+pillar-coding-agent → agent, ai, tui, protocol
+pillar-server      → ai, protocol, client
+pillar-cli         → coding-agent, extensions, agent, ai
 ```
+
+`crates/pillar-cli/tests/dependency_direction.rs` asserts this table exactly: an
+added or removed edge fails the test, so a new dependency is a deliberate edit of
+this block.
 
 Rules:
 

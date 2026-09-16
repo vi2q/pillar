@@ -2241,9 +2241,7 @@ impl InteractiveMode {
             return false;
         };
         let answer = match ask.kind {
-            PendingAskKind::Confirm => {
-                Ok(serde_json::Value::Bool(option == Some("Yes")))
-            }
+            PendingAskKind::Confirm => Ok(serde_json::Value::Bool(option == Some("Yes"))),
             PendingAskKind::Select => Ok(option
                 .map(|option| serde_json::Value::String(option.to_string()))
                 .unwrap_or(serde_json::Value::Null)),

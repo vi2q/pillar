@@ -1203,7 +1203,6 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "crossterm",
- "pillar-ai",
  "pulldown-cmark",
  "serde",
  "serde_json",
