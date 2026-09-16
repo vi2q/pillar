@@ -6,10 +6,10 @@ use std::sync::Arc;
 use pillar_ai::auth_types::{Credential, CredentialStore};
 use pillar_ai::models::AuthTarget;
 
+use crate::cli::args::Args;
 use crate::cli::auth_command::{
     AuthCommandError, AuthCommandKind, get_auth_credential, validate_auth_command_args,
 };
-use crate::cli::args::Args;
 use crate::core::auth_storage::InMemoryCodingAgentModelsStore;
 use crate::core::model_resolver::{AuthProviders, ResolveCliModelOptions, resolve_cli_model};
 use crate::core::model_runtime::{
@@ -134,9 +134,8 @@ fn resolve_provider(
     model_runtime: &ModelRuntime,
 ) -> Result<String, AuthCommandError> {
     if cli_model.is_none() {
-        return cli_provider.ok_or_else(|| {
-            AuthCommandError("Unable to resolve an auth provider".to_string())
-        });
+        return cli_provider
+            .ok_or_else(|| AuthCommandError("Unable to resolve an auth provider".to_string()));
     }
     let models = model_runtime.get_models(None);
     let auth = AuthProviders(
@@ -156,15 +155,12 @@ fn resolve_provider(
     if let Some(error) = resolved.error {
         return Err(AuthCommandError(error));
     }
-    resolved
-        .model
-        .map(|model| model.provider)
-        .ok_or_else(|| {
-            AuthCommandError(format!(
-                "Unable to resolve model \"{}\"",
-                cli_model.unwrap_or_default()
-            ))
-        })
+    resolved.model.map(|model| model.provider).ok_or_else(|| {
+        AuthCommandError(format!(
+            "Unable to resolve model \"{}\"",
+            cli_model.unwrap_or_default()
+        ))
+    })
 }
 
 /// Upstream `getProviderCredential`: the stored credential (unless a refresh
@@ -175,7 +171,10 @@ pub async fn get_provider_credential(
     credentials: &dyn CredentialStore,
     refresh: bool,
 ) -> Result<Option<String>, String> {
-    let credential = credentials.read(provider_id, None).await.map_err(|e| e.to_string())?;
+    let credential = credentials
+        .read(provider_id, None)
+        .await
+        .map_err(|e| e.to_string())?;
     if !refresh {
         if let Some(Credential::OAuth(oauth)) = credential {
             return Ok(Some(oauth.access));
@@ -189,12 +188,15 @@ pub async fn get_provider_credential(
 }
 
 /// Upstream `createAuthCheckModelRuntime`: an offline runtime over the given
-/// credential store and an in-memory catalog.
+/// credential store and an in-memory catalog cache, with the agent
+/// directory's `models.json` so user-configured providers are visible.
 pub fn create_auth_check_model_runtime(
     credentials: Arc<dyn CredentialStore>,
+    models_path: &std::path::Path,
 ) -> Result<ModelRuntime, String> {
     ModelRuntime::new(CreateModelRuntimeOptions {
         credentials: Some(credentials),
+        models_path: Some(models_path.to_path_buf()),
         models_store: Some(Arc::new(InMemoryCodingAgentModelsStore::new())),
         ..Default::default()
     })

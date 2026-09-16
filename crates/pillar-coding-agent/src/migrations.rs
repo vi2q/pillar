@@ -17,8 +17,7 @@ use crate::core::keybindings::{app_definitions, migrate_keybindings_config};
 use crate::core::settings_manager::CONFIG_DIR_NAME;
 use crate::utils::text::strip_bom;
 
-const MIGRATION_GUIDE_URL: &str =
-    "https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/CHANGELOG.md#extensions-migration";
+const MIGRATION_GUIDE_URL: &str = "https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/CHANGELOG.md#extensions-migration";
 const EXTENSIONS_DOC_URL: &str =
     "https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/docs/extensions.md";
 
@@ -69,7 +68,9 @@ pub fn migrate_auth_to_auth_json(agent_dir: &Path) -> Vec<String> {
     }
     if settings_path.exists() {
         if let Ok(content) = fs::read_to_string(&settings_path) {
-            if let Ok(Value::Object(mut settings)) = serde_json::from_str::<Value>(strip_bom(&content)) {
+            if let Ok(Value::Object(mut settings)) =
+                serde_json::from_str::<Value>(strip_bom(&content))
+            {
                 if let Some(Value::Object(api_keys)) = settings.get("apiKeys").cloned() {
                     for (provider, key) in api_keys {
                         if migrated.contains_key(&provider) {
@@ -86,7 +87,10 @@ pub fn migrate_auth_to_auth_json(agent_dir: &Path) -> Vec<String> {
                     settings.remove("apiKeys");
                     let _ = fs::write(
                         &settings_path,
-                        format!("{}\n", serde_json::to_string_pretty(&settings).unwrap_or_default()),
+                        format!(
+                            "{}\n",
+                            serde_json::to_string_pretty(&settings).unwrap_or_default()
+                        ),
                     );
                 }
             }
@@ -175,9 +179,9 @@ fn migrate_commands_to_prompts(base_dir: &Path, label: &str) -> bool {
                 println!("Migrated {label} commands/ → prompts/");
                 return true;
             }
-            Err(error) => println!(
-                "Warning: Could not migrate {label} commands/ to prompts/: {error}"
-            ),
+            Err(error) => {
+                println!("Warning: Could not migrate {label} commands/ to prompts/: {error}")
+            }
         }
     }
     false
@@ -241,7 +245,11 @@ fn check_deprecated_extension_dirs(base_dir: &Path, label: &str) -> Vec<String> 
     if let Ok(entries) = fs::read_dir(base_dir.join("tools")) {
         let custom = entries.flatten().any(|entry| {
             let name = entry.file_name().to_string_lossy().to_lowercase();
-            name != "fd" && name != "rg" && name != "fd.exe" && name != "rg.exe" && !name.starts_with('.')
+            name != "fd"
+                && name != "rg"
+                && name != "fd.exe"
+                && name != "rg.exe"
+                && !name.starts_with('.')
         });
         if custom {
             warnings.push(format!(

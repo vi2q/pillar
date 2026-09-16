@@ -931,8 +931,10 @@ pub fn try_theme() -> Option<std::sync::Arc<Theme>> {
 /// built-ins plus the registered user/project themes, with the registered
 /// theme's source path when it has one.
 pub fn all_themes() -> Vec<(String, Option<String>)> {
-    let mut themes: std::collections::BTreeMap<String, Option<String>> =
-        builtin_themes().keys().map(|name| (name.clone(), None)).collect();
+    let mut themes: std::collections::BTreeMap<String, Option<String>> = builtin_themes()
+        .keys()
+        .map(|name| (name.clone(), None))
+        .collect();
     for (name, theme) in &REGISTRY.read().expect("theme registry").registered {
         themes.insert(name.clone(), theme.source_path().map(str::to_string));
     }

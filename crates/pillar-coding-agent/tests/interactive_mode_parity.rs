@@ -2671,7 +2671,10 @@ fn a_custom_component_forwarded_and_painted() {
         closed: Arc::clone(&closed),
         events: ExtensionCustomEvents::new(events_tx),
     });
-    assert!(actions.contains(&ModeAction::EditorSlotChanged), "{actions:?}");
+    assert!(
+        actions.contains(&ModeAction::EditorSlotChanged),
+        "{actions:?}"
+    );
 
     // The first render reports the width; the frame the loop painted shows.
     let mut mounted = mode.editor_slot_component();
@@ -2698,7 +2701,10 @@ fn a_custom_component_forwarded_and_painted() {
     // The loop finishing closes the selector.
     closed.store(true, Ordering::SeqCst);
     let actions = mode.poll_extension_custom();
-    assert!(actions.contains(&ModeAction::EditorSlotChanged), "{actions:?}");
+    assert!(
+        actions.contains(&ModeAction::EditorSlotChanged),
+        "{actions:?}"
+    );
 }
 
 /// `select` without options is an error instead of an empty dialog.
@@ -2740,7 +2746,9 @@ fn streaming_events_do_not_queue_executor_actions() {
     };
     let events = vec![
         AgentSessionEvent::MessageUpdate {
-            message: pillar_agent::types::AgentMessage::Message(Message::Assistant(partial.clone())),
+            message: pillar_agent::types::AgentMessage::Message(Message::Assistant(
+                partial.clone(),
+            )),
             assistant_message_event: Box::new(pillar_ai::types::AssistantMessageEvent::TextDelta {
                 content_index: 0,
                 partial: (*partial).clone(),

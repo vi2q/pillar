@@ -9,6 +9,7 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 
+use pillar_ai::auth_types::CredentialStore;
 use pillar_coding_agent::cli::args::{Args, parse_args};
 use pillar_coding_agent::cli::auth_check::{
     AuthCheckReason, AuthCheckResult, AuthCheckStatus, check_provider_auth,
@@ -21,7 +22,6 @@ use pillar_coding_agent::cli::auth_command::{
 use pillar_coding_agent::cli::credential_print::resolve_credential_for_print;
 use pillar_coding_agent::core::auth_storage::{AuthStorage, ReadOnlyAuthStorage};
 use pillar_coding_agent::core::model_runtime::{CreateModelRuntimeOptions, ModelRuntime};
-use pillar_ai::auth_types::CredentialStore;
 
 /// Run one `pillar auth …` invocation. `None` when the arguments are not an
 /// auth command, so the caller continues with the normal parsing.
@@ -40,11 +40,12 @@ pub async fn run_auth_command(args: &[String], agent_dir: &str) -> Option<i32> {
     };
     let parsed = parse_args(&command.args);
     if let Some(option) = parsed.unknown_flags.keys().next() {
+        eprintln!("Unknown option --{option} for \"{}\".", command.kind.name());
         eprintln!(
-            "Unknown option --{option} for \"{}\".",
-            command.kind.name()
+            "Use \"{}\" or \"{}\".",
+            pillar_coding_agent::cli::args::APP_NAME,
+            command.kind.usage()
         );
-        eprintln!("Use \"{}\" or \"{}\".", pillar_coding_agent::cli::args::APP_NAME, command.kind.usage());
         return Some(1);
     }
     Some(match run(&command, &parsed, agent_dir).await {
@@ -60,11 +61,7 @@ pub async fn run_auth_command(args: &[String], agent_dir: &str) -> Option<i32> {
     })
 }
 
-async fn run(
-    command: &AuthCommand,
-    parsed: &Args,
-    agent_dir: &str,
-) -> Result<i32, String> {
+async fn run(command: &AuthCommand, parsed: &Args, agent_dir: &str) -> Result<i32, String> {
     if !parsed.diagnostics.is_empty() {
         return Err(parsed
             .diagnostics
@@ -80,27 +77,26 @@ async fn run(
             ..Default::default()
         })
         .map_err(|error| format!("Failed to create the model runtime: {error}"))?;
-        let credential = resolve_credential_for_print(
-            parsed,
-            &runtime,
-            command.kind,
-            command.min_expiry_ms,
-        )
-        .await
-        .map_err(|error| error.to_string())?;
+        let credential =
+            resolve_credential_for_print(parsed, &runtime, command.kind, command.min_expiry_ms)
+                .await
+                .map_err(|error| error.to_string())?;
         println!("{credential}");
         return Ok(0);
     }
 
-    let requested = validate_auth_command_args(parsed, command.kind)
-        .map_err(|error| error.to_string())?;
+    let requested =
+        validate_auth_command_args(parsed, command.kind).map_err(|error| error.to_string())?;
     let auth_path = Path::new(agent_dir).join("auth.json");
     let credentials: Arc<dyn CredentialStore> = if command.no_refresh {
         Arc::new(ReadOnlyAuthStorage::new(&auth_path))
     } else {
         Arc::new(AuthStorage::new(&auth_path))
     };
-    let runtime = create_auth_check_model_runtime(Arc::clone(&credentials))?;
+    let runtime = create_auth_check_model_runtime(
+        Arc::clone(&credentials),
+        &Path::new(agent_dir).join("models.json"),
+    )?;
     let result = match check_provider_auth(parsed, &runtime, !command.no_refresh).await {
         Ok(result) => result,
         Err(_) => AuthCheckResult {

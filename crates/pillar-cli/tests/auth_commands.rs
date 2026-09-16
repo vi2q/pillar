@@ -49,9 +49,15 @@ fn runtime_for(agent_dir: &Path) -> ModelRuntime {
 #[test]
 fn auth_command_parsing() {
     let args = |args: &[&str]| args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
-    let command = parse_auth_command(&args(&["auth", "check", "--json", "--credentials", "--no-refresh"]))
-        .unwrap()
-        .unwrap();
+    let command = parse_auth_command(&args(&[
+        "auth",
+        "check",
+        "--json",
+        "--credentials",
+        "--no-refresh",
+    ]))
+    .unwrap()
+    .unwrap();
     assert_eq!(command.kind, AuthCommandKind::Check);
     assert!(command.json && command.credentials && command.no_refresh);
     assert!(command.args.is_empty());
@@ -136,9 +142,12 @@ fn auth_credential_extraction() {
     let auth = AuthResult {
         auth: ModelAuth {
             headers: Some(
-                [("authorization".to_string(), Some("Bearer token-1".to_string()))]
-                    .into_iter()
-                    .collect(),
+                [(
+                    "authorization".to_string(),
+                    Some("Bearer token-1".to_string()),
+                )]
+                .into_iter()
+                .collect(),
             ),
             ..Default::default()
         },
@@ -152,9 +161,12 @@ fn auth_credential_extraction() {
 /// not; the exit codes follow the status.
 #[tokio::test]
 async fn auth_check_reports_readiness() {
-    let dir = with_auth("check", r#"{ "openai": { "type": "api_key", "key": "sk-test" } }"#);
+    let dir = with_auth(
+        "check",
+        r#"{ "openai": { "type": "api_key", "key": "sk-test" } }"#,
+    );
     let credentials: Arc<dyn CredentialStore> = Arc::new(AuthStorage::new(dir.join("auth.json")));
-    let runtime = create_auth_check_model_runtime(credentials).unwrap();
+    let runtime = create_auth_check_model_runtime(credentials, &dir.join("models.json")).unwrap();
 
     let args = parse_args(&["--provider".to_string(), "openai".to_string()]);
     let ready = check_provider_auth(&args, &runtime, true).await.unwrap();
@@ -165,12 +177,53 @@ async fn auth_check_reports_readiness() {
     let args = parse_args(&["--provider".to_string(), "anthropic".to_string()]);
     let missing = check_provider_auth(&args, &runtime, true).await.unwrap();
     assert_eq!(missing.status, "not_ready");
-    assert_eq!(missing.reason.as_deref(), Some("credentials_not_configured"));
+    assert_eq!(
+        missing.reason.as_deref(),
+        Some("credentials_not_configured")
+    );
     assert_eq!(missing.exit_code(), 1);
 
     let args = parse_args(&["--provider".to_string(), "nope".to_string()]);
     let unknown = check_provider_auth(&args, &runtime, true).await.unwrap();
     assert_eq!(unknown.reason.as_deref(), Some("provider_not_found"));
+}
+
+/// A provider that only exists in the agent directory's `models.json` is
+/// visible to the check runtime (upstream's `ModelRuntime.create` reads it too;
+/// the in-memory store only replaces the catalog cache).
+#[tokio::test]
+async fn auth_check_sees_configured_providers() {
+    use pillar_coding_agent::core::auth_storage::ReadOnlyAuthStorage;
+
+    let dir = temp_dir("configured");
+    std::fs::write(
+        dir.join("models.json"),
+        serde_json::json!({
+            "providers": {
+                "custom-gateway": {
+                    "name": "Custom Gateway",
+                    "baseUrl": "https://example.test/v1",
+                    "apiKey": "test-key",
+                    "api": "openai-completions",
+                    "models": [{ "id": "custom-model", "name": "Custom Model" }],
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let runtime = create_auth_check_model_runtime(
+        Arc::new(ReadOnlyAuthStorage::new(dir.join("auth.json"))),
+        &dir.join("models.json"),
+    )
+    .unwrap();
+    let args = parse_args(&["--provider".to_string(), "custom-gateway".to_string()]);
+    let result = check_provider_auth(&args, &runtime, true).await.unwrap();
+    assert_ne!(
+        result.reason.as_deref(),
+        Some("provider_not_found"),
+        "{result:?}"
+    );
 }
 
 /// The CLI entry point: non-auth arguments keep going, the help exits 0, and
@@ -180,8 +233,14 @@ async fn auth_entry_point_codes() {
     let dir = temp_dir("entry");
     let agent_dir = dir.to_string_lossy().to_string();
     let args = |args: &[&str]| args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
-    assert_eq!(run_auth_command(&args(&["--model", "x"]), &agent_dir).await, None);
-    assert_eq!(run_auth_command(&args(&["auth"]), &agent_dir).await, Some(0));
+    assert_eq!(
+        run_auth_command(&args(&["--model", "x"]), &agent_dir).await,
+        None
+    );
+    assert_eq!(
+        run_auth_command(&args(&["auth"]), &agent_dir).await,
+        Some(0)
+    );
     assert_eq!(
         run_auth_command(&args(&["auth", "--help"]), &agent_dir).await,
         Some(0)

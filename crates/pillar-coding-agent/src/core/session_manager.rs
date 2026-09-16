@@ -1038,7 +1038,10 @@ pub fn load_session_file(file_path: &Path) -> SessionFileLoad {
     let lines: Vec<&str> = content.lines().collect();
     // The header decides how tolerant the entry parse is; a file whose first
     // line is not a header is rejected below either way.
-    let allow_missing_id = match lines.first().and_then(|line| parse_session_entry_line(line)) {
+    let allow_missing_id = match lines
+        .first()
+        .and_then(|line| parse_session_entry_line(line))
+    {
         Some(FileEntry::Header(header)) => header
             .version
             .map(|version| version < CURRENT_SESSION_VERSION)

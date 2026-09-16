@@ -44,7 +44,10 @@ fn legacy_credentials_become_auth_json() {
         serde_json::from_str(&std::fs::read_to_string(dir.join("auth.json")).unwrap()).unwrap();
     assert_eq!(auth["anthropic"]["type"], serde_json::json!("oauth"));
     assert_eq!(auth["anthropic"]["access"], serde_json::json!("a"));
-    assert_eq!(auth["openai"], serde_json::json!({ "type": "api_key", "key": "sk-1" }));
+    assert_eq!(
+        auth["openai"],
+        serde_json::json!({ "type": "api_key", "key": "sk-1" })
+    );
     assert!(dir.join("oauth.json.migrated").exists());
 
     // `apiKeys` is removed from settings.json, the rest survives.

@@ -953,8 +953,8 @@ impl ExtensionRuntime {
             let args = ask_lua
                 .from_value::<serde_json::Value>(args)
                 .map_err(luaur_rt::Error::external)?;
-            let answer = callback(ExtensionUiRequest { op, args })
-                .map_err(luaur_rt::Error::external)?;
+            let answer =
+                callback(ExtensionUiRequest { op, args }).map_err(luaur_rt::Error::external)?;
             if answer.is_null() {
                 return Ok(Value::Nil);
             }
@@ -1086,18 +1086,10 @@ impl ExtensionRuntime {
         });
         let custom = self.lua.create_table();
         let setup_error = |error: luaur_rt::Error| ExtensionLoadError::Setup(error.to_string());
-        custom
-            .set("open", custom_open)
-            .map_err(setup_error)?;
-        custom
-            .set("next", custom_next)
-            .map_err(setup_error)?;
-        custom
-            .set("paint", custom_paint)
-            .map_err(setup_error)?;
-        custom
-            .set("close", custom_close)
-            .map_err(setup_error)?;
+        custom.set("open", custom_open).map_err(setup_error)?;
+        custom.set("next", custom_next).map_err(setup_error)?;
+        custom.set("paint", custom_paint).map_err(setup_error)?;
+        custom.set("close", custom_close).map_err(setup_error)?;
 
         let idle_reader = Arc::clone(&self.host_api);
         let is_idle = Function::wrap(move || {
@@ -2652,10 +2644,10 @@ mod api_tests {
                     panic!("the render loop did not answer");
                 };
                 surface.events.send(ExtensionCustomEvent::Resize(12));
-                wait_for(&|| {
-                    surface.lines.lock().unwrap().as_slice() == ["frame 12".to_string()]
-                });
-                surface.events.send(ExtensionCustomEvent::Input("x".to_string()));
+                wait_for(&|| surface.lines.lock().unwrap().as_slice() == ["frame 12".to_string()]);
+                surface
+                    .events
+                    .send(ExtensionCustomEvent::Input("x".to_string()));
                 wait_for(&|| surface.closed.load(std::sync::atomic::Ordering::SeqCst));
             }
         });

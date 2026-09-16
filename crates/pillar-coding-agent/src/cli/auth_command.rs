@@ -3,7 +3,7 @@
 
 use pillar_ai::auth_types::AuthResult;
 
-use crate::cli::args::{Args, APP_NAME};
+use crate::cli::args::{APP_NAME, Args};
 
 /// Which `auth` subcommand ran (upstream `AuthCommandKind`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -152,7 +152,8 @@ pub fn parse_auth_command(args: &[String]) -> Result<Option<AuthCommand>, AuthCo
 
 /// Upstream the `--min-expiry` duration (`30m`, `1h`, `500ms`, `10s`).
 fn parse_duration(value: &str) -> Result<u64, AuthCommandError> {
-    let error = || AuthCommandError("--min-expiry must use a duration such as 30m or 1h".to_string());
+    let error =
+        || AuthCommandError("--min-expiry must use a duration such as 30m or 1h".to_string());
     let (amount, multiplier) = if let Some(amount) = value.strip_suffix("ms") {
         (amount, 1)
     } else if let Some(amount) = value.strip_suffix('s') {
@@ -202,7 +203,9 @@ pub fn validate_auth_command_args(
             AuthCommandKind::Check => {
                 "Auth checks require --provider <provider> or --model <model>".to_string()
             }
-            _ => "Credential printing requires --provider <provider> or --model <model>".to_string(),
+            _ => {
+                "Credential printing requires --provider <provider> or --model <model>".to_string()
+            }
         }));
     }
     Ok((provider, model))
@@ -215,11 +218,16 @@ pub fn get_auth_credential(auth: Option<&AuthResult>) -> Option<String> {
     if let Some(key) = &auth.auth.api_key {
         return Some(key.clone());
     }
-    let authorization = auth.auth.headers.as_ref()?.iter().find_map(|(name, value)| {
-        name.eq_ignore_ascii_case("authorization")
-            .then_some(value.clone())
-            .flatten()
-    });
+    let authorization = auth
+        .auth
+        .headers
+        .as_ref()?
+        .iter()
+        .find_map(|(name, value)| {
+            name.eq_ignore_ascii_case("authorization")
+                .then_some(value.clone())
+                .flatten()
+        });
     let bearer = authorization?;
     let (scheme, token) = bearer.split_once(' ')?;
     scheme

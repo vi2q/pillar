@@ -87,12 +87,14 @@ impl ExtensionInputComponent {
                 // The editor owns submit / newline / cursor keys: Enter submits
                 // (the same binding the prompt editor uses).
                 editor.handle_input(data);
-                let submitted = editor.take_input_events().into_iter().find_map(|event| {
-                    match event {
-                        EditorInputEvent::Submitted(text) => Some(text),
-                        EditorInputEvent::Changed => None,
-                    }
-                });
+                let submitted =
+                    editor
+                        .take_input_events()
+                        .into_iter()
+                        .find_map(|event| match event {
+                            EditorInputEvent::Submitted(text) => Some(text),
+                            EditorInputEvent::Changed => None,
+                        });
                 if let Some(text) = submitted {
                     return ExtensionInputOutcome::Submit(text);
                 }

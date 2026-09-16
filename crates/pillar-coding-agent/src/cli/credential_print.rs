@@ -6,11 +6,11 @@ use std::collections::BTreeMap;
 use pillar_ai::auth_types::CredentialInfo;
 use pillar_ai::models::AuthTarget;
 
+use crate::cli::args::Args;
 use crate::cli::auth_check::print_auth_overrides;
 use crate::cli::auth_command::{
     AuthCommandError, AuthCommandKind, get_auth_credential, validate_auth_command_args,
 };
-use crate::cli::args::Args;
 use crate::core::model_resolver::{AuthProviders, ResolveCliModelOptions, resolve_cli_model};
 use crate::core::model_runtime::ModelRuntime;
 
@@ -46,7 +46,8 @@ pub async fn resolve_credential_for_print(
             };
             match model {
                 Some(_) => {
-                    let model = resolve_model(Some(provider.id.clone()), cli_model.clone(), model_runtime)?;
+                    let model =
+                        resolve_model(Some(provider.id.clone()), cli_model.clone(), model_runtime)?;
                     providers.push((provider.id.clone(), Some(model)));
                 }
                 None => providers.push((provider.id.clone(), None)),
@@ -113,7 +114,9 @@ pub async fn resolve_credential_for_print(
     if credentials.is_empty() {
         let provider_id = providers.first().map(|(id, _)| id.clone());
         let configured = provider_id.as_ref().and_then(|id| credential_types.get(id));
-        if cli_provider.is_some() && kind == AuthCommandKind::ApiKey && configured == Some(&"oauth".to_string())
+        if cli_provider.is_some()
+            && kind == AuthCommandKind::ApiKey
+            && configured == Some(&"oauth".to_string())
         {
             return Err(AuthCommandError(format!(
                 "Provider \"{}\" is configured with OAuth, not an API key",
@@ -158,9 +161,9 @@ fn resolve_model(
     if let Some(error) = resolved.error {
         return Err(AuthCommandError(error));
     }
-    resolved
-        .model
-        .ok_or_else(|| AuthCommandError("Unable to resolve the requested provider/model".to_string()))
+    resolved.model.ok_or_else(|| {
+        AuthCommandError("Unable to resolve the requested provider/model".to_string())
+    })
 }
 
 /// The model-only scan skips providers that fail to resolve and the

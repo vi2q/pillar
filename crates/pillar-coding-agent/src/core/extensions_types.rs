@@ -489,8 +489,14 @@ pub struct ExtensionCustomSurface {
 impl std::fmt::Debug for ExtensionCustomSurface {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ExtensionCustomSurface")
-            .field("revision", &self.revision.load(std::sync::atomic::Ordering::SeqCst))
-            .field("closed", &self.closed.load(std::sync::atomic::Ordering::SeqCst))
+            .field(
+                "revision",
+                &self.revision.load(std::sync::atomic::Ordering::SeqCst),
+            )
+            .field(
+                "closed",
+                &self.closed.load(std::sync::atomic::Ordering::SeqCst),
+            )
             .finish()
     }
 }
@@ -516,7 +522,7 @@ impl ExtensionCustomEvents {
 
     /// Send one event; `false` when the render loop is gone.
     pub fn send(&self, event: ExtensionCustomEvent) -> bool {
-        self.0 .0.send(event).is_ok()
+        self.0.0.send(event).is_ok()
     }
 }
 

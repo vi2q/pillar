@@ -370,10 +370,7 @@ pub async fn run_interactive(
         let custom: crate::core::extensions_types::ExtensionCustomFn = {
             let sender = custom_sender.clone();
             Arc::new(move |surface| {
-                if surface
-                    .closed
-                    .load(std::sync::atomic::Ordering::SeqCst)
-                {
+                if surface.closed.load(std::sync::atomic::Ordering::SeqCst) {
                     return Ok(());
                 }
                 sender
@@ -1003,9 +1000,7 @@ fn pump_loop(
                     Vec::new()
                 }
                 UiCommand::ExtensionUiAskCancel { id } => mode.cancel_extension_ask(id),
-                UiCommand::ExtensionCustom { surface } => {
-                    mode.begin_extension_custom(surface)
-                }
+                UiCommand::ExtensionCustom { surface } => mode.begin_extension_custom(surface),
                 UiCommand::ExtensionUi { op, args } => {
                     if let Err(error) = mode.handle_extension_ui(
                         &crate::core::extensions_types::ExtensionUiRequest { op, args },

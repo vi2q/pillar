@@ -710,9 +710,7 @@ async fn run_interactive(
     migrations: &pillar_coding_agent::migrations::MigrationResult,
 ) -> ExitCode {
     // Upstream shows the deprecation warnings before the TUI takes the screen.
-    pillar_coding_agent::migrations::show_deprecation_warnings(
-        &migrations.deprecation_warnings,
-    );
+    pillar_coding_agent::migrations::show_deprecation_warnings(&migrations.deprecation_warnings);
     let (session, wiring) = match build_session(parsed, true).await {
         Ok(built) => built,
         Err(error) => {
