@@ -114,25 +114,46 @@ Handler semantics preserved exactly:
 - Handlers run in registration order; a handler's returned modifications feed the next handler.
 - An error thrown from a handler is caught by the runtime, reported like pi's extension error path, and does not prevent other handlers from running.
 
+### `ctx`
+
+Every handler receives `(event, ctx)`; a tool's `execute` receives it as its
+fifth argument. `ctx` carries the host facts and the UI bridge:
+
+| pi (`ctx.*`) | pillar (`ctx.*`) |
+| --- | --- |
+| `cwd` | `ctx.cwd` |
+| `mode` (`"tui" \| "rpc" \| "json" \| "print"`) | `ctx.mode` |
+| `hasUI` | `ctx.hasUI` |
+| `ui` | `ctx.ui` (table, see below) |
+| `isIdle()` / `hasPendingMessages()` / `abort()` / `shutdown()` / `getContextUsage()` / `compact()` / `getSystemPrompt()` / `model` / `scopedModels` / `thinkingLevel` / `sessionManager` / `signal` / `isProjectTrusted()` | not ported yet (TASKS 2d-b/2d-c) |
+
 ### `ctx.ui`
+
+Without a UI context (print / json modes) every method is a no-op answering
+pi's `noOpUIContext` defaults. Requests are queued, not applied inline: an
+extension handler runs with the Luau runtime locked, so the port hands the
+request to the interactive mode's pump thread. Requests made before the run
+loop starts (the usual `session_start` setup) are replayed when it does.
 
 | pi (`ctx.ui.*`) | pillar (`ctx.ui.*`) |
 | --- | --- |
-| `select(title, options, opts?)` | `ctx.ui.select(title, options, opts?)` → `string?` |
-| `confirm(title, message, opts?)` | `ctx.ui.confirm(title, message, opts?)` → `boolean` |
-| `input(title, placeholder?, opts?)` | `ctx.ui.input(title, placeholder?, opts?)` → `string?` |
-| `editor(title, prefill?)` | `ctx.ui.editor(title, prefill?)` → `string?` |
 | `notify(message, type?)` | `ctx.ui.notify(message, type?)` (`"info" \| "warning" \| "error"`) |
-| `custom(...)` | `ctx.ui.custom(...)` (component factory receives the TUI bridge) |
 | `setStatus(key, text?)` | `ctx.ui.set_status(key, text?)` |
-| `setWidget(key, lines?, opts?)` | `ctx.ui.set_widget(key, lines?, opts?)` |
-| `setFooter(...)` / `setHeader(...)` | `ctx.ui.set_footer(...)` / `ctx.ui.set_header(...)` |
 | `setTitle(t)` | `ctx.ui.set_title(t)` |
-| `setTheme`/`getTheme`/`getAllThemes` | `ctx.ui.set_theme` / `ctx.ui.get_theme` / `ctx.ui.get_all_themes` |
-| `setEditorText`/`getEditorText`/`pasteToEditor` | `ctx.ui.set_editor_text` / `ctx.ui.get_editor_text` / `ctx.ui.paste_to_editor` |
-| `setWorkingIndicator`/`setWorkingMessage`/`setWorkingVisible` | same names snake_cased |
-| `onTerminalInput(handler)` | `ctx.ui.on_terminal_input(handler)` |
-| `theme` (property) | `ctx.ui.theme` (table) |
+| `setWorkingMessage(m?)` / `setWorkingVisible(v)` / `setWorkingIndicator(o?)` | same names snake_cased |
+| `setHiddenThinkingLabel(l?)` | `ctx.ui.set_hidden_thinking_label(l?)` |
+| `setEditorText(t)` / `pasteToEditor(t)` | `ctx.ui.set_editor_text(t)` / `ctx.ui.paste_to_editor(t)` |
+| `getToolsExpanded()` / `setToolsExpanded(v)` | `ctx.ui.set_tools_expanded(v)` (`get_` not ported yet) |
+| `getAllThemes()` | `ctx.ui.get_all_themes()` → `{ { name = string, path = string? } }` |
+| `theme` (property) | `ctx.ui.theme` (table: `name`, `mode`, `fg`, `bg`, `bold`, `italic`, `underline`, `strikethrough`, `inverse`) |
+| `select` / `confirm` / `input` / `editor` / `custom` | not ported yet (TASKS 2e: needs a blocking bridge) |
+| `setWidget` / `setFooter` / `setHeader` / `setEditorComponent` | not ported yet (TASKS 2f) |
+| `getEditorText()` / `getTheme(name)` / `setTheme(name)` / `onTerminalInput` / `addAutocompleteProvider` | not ported yet (TASKS 2d-b/2d-c) |
+
+`ctx.ui.theme` mirrors pi's `Theme`: `theme.fg(name, text)` / `theme.bg(name,
+text)` colour with a theme colour name (an unknown name renders plain), and
+the attribute helpers wrap text in the corresponding ANSI codes. `theme.name`
+/ `theme.mode` are `nil` / empty before a theme is loaded.
 
 ## Schema system (`pillar.schema`)
 
