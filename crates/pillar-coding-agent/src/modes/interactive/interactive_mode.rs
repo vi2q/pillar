@@ -310,6 +310,14 @@ pub struct InteractiveModeOptions {
     pub terminal_rows: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
 }
 
+/// A pending `ctx.ui` dialog (upstream the awaited `ExtensionUIContext`
+/// promise). The id ties it to the extension's request, so a timeout can
+/// cancel exactly this dialog.
+struct PendingExtensionAsk {
+    id: u64,
+    reply: std::sync::mpsc::SyncSender<Result<serde_json::Value, String>>,
+}
+
 /// The assembled interactive mode (upstream `InteractiveMode`).
 pub struct InteractiveMode {
     session: std::sync::Arc<AgentSession>,
@@ -339,9 +347,10 @@ pub struct InteractiveMode {
     pending_bash_components: std::sync::Mutex<Vec<Shared<BashExecutionComponent>>>,
     /// Upstream `activeSelectorToken` + the selector in the editor slot.
     active_selector: std::sync::Mutex<Option<ActiveSelector>>,
-    /// The waiting `ctx.ui.confirm` reply.
-    pending_confirm:
-        std::sync::Mutex<Option<std::sync::mpsc::SyncSender<Result<serde_json::Value, String>>>>,
+    /// The waiting `ctx.ui` dialog, keyed by the request id so the extension's
+    /// timeout can cancel it instead of leaving a stale dialog in the editor
+    /// slot.
+    pending_confirm: std::sync::Mutex<Option<PendingExtensionAsk>>,
     /// Monotonic token so a stale `done` cannot close a newer selector.
     next_selector_token: AtomicU64,
     /// The 2-column picker's recent-model history (the user's
@@ -2092,11 +2101,13 @@ impl InteractiveMode {
     /// cancelled confirm).
     pub fn show_extension_confirm(
         &self,
+        id: u64,
         title: &str,
         message: &str,
         reply: std::sync::mpsc::SyncSender<Result<serde_json::Value, String>>,
     ) -> Vec<ModeAction> {
-        *self.pending_confirm.lock().expect("pending confirm") = Some(reply);
+        *self.pending_confirm.lock().expect("pending confirm") =
+            Some(PendingExtensionAsk { id, reply });
         let title = if message.trim().is_empty() {
             title.to_string()
         } else {
@@ -2108,6 +2119,7 @@ impl InteractiveMode {
     /// Route one `ctx.ui` dialog request (the pump's `ExtensionUiAsk`).
     pub fn begin_extension_ask(
         &self,
+        id: u64,
         request: crate::core::extensions_types::ExtensionUiRequest,
         reply: std::sync::mpsc::SyncSender<Result<serde_json::Value, String>>,
     ) {
@@ -2123,7 +2135,7 @@ impl InteractiveMode {
             .unwrap_or_default();
         match request.op.as_str() {
             "confirm" => {
-                self.show_extension_confirm(title, message, reply);
+                self.show_extension_confirm(id, title, message, reply);
             }
             other => {
                 let _ = reply.send(Err(format!("ctx.ui.{other}: not supported")));
@@ -2131,12 +2143,26 @@ impl InteractiveMode {
         }
     }
 
-    /// Answer a pending `ctx.ui.confirm` (upstream the selector callbacks).
+    /// Drop a pending `ctx.ui` dialog whose extension gave up (the request
+    /// timed out or the session went away): the dialog closes and the answer
+    /// is discarded, so a stale question cannot block the editor slot.
+    pub fn cancel_extension_ask(&self, id: u64) -> Vec<ModeAction> {
+        {
+            let mut pending = self.pending_confirm.lock().expect("pending confirm");
+            if pending.as_ref().map(|ask| ask.id) != Some(id) {
+                return Vec::new();
+            }
+            *pending = None;
+        }
+        self.close_selector(None)
+    }
+
+    /// Answer a pending `ctx.ui` dialog (upstream the selector callbacks).
     fn answer_pending_confirm(&self, yes: bool) -> bool {
-        let Some(reply) = self.pending_confirm.lock().expect("pending confirm").take() else {
+        let Some(ask) = self.pending_confirm.lock().expect("pending confirm").take() else {
             return false;
         };
-        let _ = reply.send(Ok(serde_json::Value::Bool(yes)));
+        let _ = ask.reply.send(Ok(serde_json::Value::Bool(yes)));
         self.mark_dirty();
         true
     }

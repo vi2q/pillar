@@ -20,7 +20,7 @@
 use std::collections::VecDeque;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -107,11 +107,16 @@ enum UiCommand {
     Reloaded,
     /// An extension asked a `ctx.ui` dialog (upstream the awaited
     /// `ExtensionUIContext` methods): the pump shows the dialog and answers
-    /// through `reply`.
+    /// through `reply`. `id` identifies the request so a timeout can cancel
+    /// the dialog.
     ExtensionUiAsk {
+        id: u64,
         request: crate::core::extensions_types::ExtensionUiRequest,
         reply: std::sync::mpsc::SyncSender<Result<serde_json::Value, String>>,
     },
+    /// The extension stopped waiting for `id` (its timeout expired): close the
+    /// dialog if it is still the one showing.
+    ExtensionUiAskCancel { id: u64 },
     /// An extension called `ctx.ui.*` (upstream the mode's
     /// `ExtensionUIContext` mutating the UI directly; the port queues the
     /// request because the extension holds the Luau runtime lock).
@@ -296,6 +301,7 @@ pub async fn run_interactive(
     // flooding extension gets an error instead of growing the queue without
     // bound (the executor must never wait on the pump: abort stays live).
     let ui_pending = Arc::new(AtomicUsize::new(0));
+    let ask_ids = Arc::new(AtomicU64::new(1));
     // The `ctx.ui` bridge (upstream `createExtensionUIContext` lives on the
     // mode): an extension only queues a request on this channel, so it never
     // blocks on — or locks — the mode while holding the Luau runtime.
@@ -319,21 +325,31 @@ pub async fn run_interactive(
         );
         // Dialogs block the extension's thread until the pump answers (the
         // mode's dialog components are native, so the pump never needs the
-        // runner lock while one is open).
+        // runner lock while one is open). A timeout cancels the dialog instead
+        // of leaving a stale question in the editor slot.
+        // A generation id is unnecessary here: each run owns its own bridge and
+        // channel, so a stale generation's request cannot reach this pump — its
+        // reply sender is dropped with the previous run's queue.
         let ask_sender = ui_tx.clone();
         let ask_pending = Arc::clone(&ui_pending);
+        let ask_cancel_sender = ui_tx.clone();
+        let ask_ids = Arc::clone(&ask_ids);
         let ask: crate::core::extensions_types::ExtensionUiAskFn = Arc::new(move |request| {
             if ask_pending.load(Ordering::SeqCst) >= UI_REQUEST_LIMIT {
                 return Err("ctx.ui: the interactive mode is behind on UI requests".to_string());
             }
+            let id = ask_ids.fetch_add(1, Ordering::SeqCst);
             let (reply, answer) = std::sync::mpsc::sync_channel(1);
             ask_sender
-                .send(UiCommand::ExtensionUiAsk { request, reply })
+                .send(UiCommand::ExtensionUiAsk { id, request, reply })
                 .map_err(|_| "ctx.ui: the interactive mode has stopped".to_string())?;
             ask_pending.fetch_add(1, Ordering::SeqCst);
             match answer.recv_timeout(std::time::Duration::from_secs(600)) {
                 Ok(result) => result,
-                Err(_) => Err("ctx.ui: the dialog was not answered".to_string()),
+                Err(_) => {
+                    let _ = ask_cancel_sender.send(UiCommand::ExtensionUiAskCancel { id });
+                    Err("ctx.ui: the dialog was not answered".to_string())
+                }
             }
         });
         // `session_start` runs before this loop, so an extension's UI setup is
@@ -885,9 +901,20 @@ fn pump_loop(
             }
         }
 
-        // Executor reports (bash completion, model switches).
+        // Executor reports (bash completion, model switches) and the `ctx.ui`
+        // requests the bridge admitted. Only those two counted commands release
+        // a slot; the executor's own reports were never counted.
         while let Ok(command) = ui_commands.try_recv() {
-            ui_pending.fetch_sub(1, Ordering::SeqCst);
+            if matches!(
+                command,
+                UiCommand::ExtensionUi { .. } | UiCommand::ExtensionUiAsk { .. }
+            ) {
+                let _ = ui_pending.fetch_update(
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                    |pending| Some(pending.saturating_sub(1)),
+                );
+            }
             let reported: Vec<ModeAction> = match command {
                 UiCommand::BashComplete {
                     exit_code,
@@ -938,10 +965,11 @@ fn pump_loop(
                     mode.mark_dirty();
                     Vec::new()
                 }
-                UiCommand::ExtensionUiAsk { request, reply } => {
-                    mode.begin_extension_ask(request, reply);
+                UiCommand::ExtensionUiAsk { id, request, reply } => {
+                    mode.begin_extension_ask(id, request, reply);
                     Vec::new()
                 }
+                UiCommand::ExtensionUiAskCancel { id } => mode.cancel_extension_ask(id),
                 UiCommand::ExtensionUi { op, args } => {
                     if let Err(error) = mode.handle_extension_ui(
                         &crate::core::extensions_types::ExtensionUiRequest { op, args },

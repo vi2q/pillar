@@ -2505,3 +2505,80 @@ fn settings_model_thinking_level_applies_to_the_current_model() {
     let settings = session.settings_manager().lock().expect("settings");
     assert!(settings.all_model_thinking_levels().is_empty());
 }
+
+// ============================================================================
+// Extension ask dialogs (request id / timeout cancel)
+// ============================================================================
+
+fn confirm_request(title: &str) -> pillar_coding_agent::core::extensions_types::ExtensionUiRequest {
+    pillar_coding_agent::core::extensions_types::ExtensionUiRequest {
+        op: "confirm".to_string(),
+        args: serde_json::json!({ "title": title, "message": "proceed?" }),
+    }
+}
+
+/// The dialog answers through the request's reply sender, and the id ties the
+/// answer to that request.
+#[test]
+fn an_extension_ask_answers_through_its_reply() {
+    let session = session();
+    let mode = make_mode(&session);
+    let (reply, answer) = std::sync::mpsc::sync_channel(1);
+    mode.begin_extension_ask(7, confirm_request("Extension"), reply);
+    assert!(
+        mode.handle_selector_key("\r").is_some(),
+        "the confirm dialog is in the editor slot"
+    );
+    assert_eq!(answer.try_recv(), Ok(Ok(serde_json::json!(true))));
+}
+
+/// A timed-out request cancels exactly its own dialog: the selector closes and
+/// no answer is delivered, so a stale question cannot block the editor.
+#[test]
+fn cancelling_an_extension_ask_closes_its_dialog() {
+    let session = session();
+    let mode = make_mode(&session);
+    let (reply, answer) = std::sync::mpsc::sync_channel(1);
+    mode.begin_extension_ask(7, confirm_request("Extension"), reply);
+
+    // Another request's id must not touch this dialog.
+    assert!(mode.cancel_extension_ask(8).is_empty());
+    assert!(mode.handle_selector_key("\r").is_some());
+    let _answered = answer;
+
+    // Refill the dialog (the Enter above answered it) and cancel for real.
+    let (reply, answer) = std::sync::mpsc::sync_channel(1);
+    mode.begin_extension_ask(9, confirm_request("Extension"), reply);
+    let actions = mode.cancel_extension_ask(9);
+    assert!(
+        actions.contains(&pillar_coding_agent::modes::interactive::interactive_mode::ModeAction::EditorSlotChanged),
+        "{actions:?}"
+    );
+    assert!(
+        mode.handle_selector_key("\r").is_none(),
+        "the cancelled dialog is gone"
+    );
+    assert!(
+        answer.try_recv().is_err(),
+        "a cancelled ask must not answer the extension"
+    );
+}
+
+/// An operation the mode does not implement answers an error instead of
+/// leaving the extension waiting.
+#[test]
+fn an_unsupported_extension_ask_answers_an_error() {
+    let session = session();
+    let mode = make_mode(&session);
+    let (reply, answer) = std::sync::mpsc::sync_channel(1);
+    mode.begin_extension_ask(
+        3,
+        pillar_coding_agent::core::extensions_types::ExtensionUiRequest {
+            op: "input".to_string(),
+            args: serde_json::json!({}),
+        },
+        reply,
+    );
+    let answered = answer.try_recv().expect("answered immediately");
+    assert!(answered.is_err(), "{answered:?}");
+}
