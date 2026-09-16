@@ -127,6 +127,10 @@ declare pillar: {
     send_user_message: (message: any) -> (),
     set_session_name: (name: string) -> (),
     exec: (command: string, args: { number }?, opts: any?) -> any,
+    events: {
+        on: (channel: string, handler: (data: any) -> ()) -> (() -> ()),
+        emit: (channel: string, data: any?) -> (),
+    },
     schema: {
         string: (opts: any?) -> any,
         number: (opts: any?) -> any,
@@ -666,11 +670,70 @@ fn install_pillar_api(
         .expect("set pillar.get_flag");
 
     install_schema_module(lua, &module);
+    install_events_bus(lua, &module);
 
     // Registration cannot fail for a fresh VM; surface for clarity.
     if let Err(error) = lua.register_module("@pillar", module) {
         panic!("register @pillar failed: {error}");
     }
+}
+
+/// Install `pillar.events` (upstream the `EventBus`): a per-extension
+/// pub/sub with ordered delivery and an unsubscribe handle. Handler
+/// errors are caught and reported to stderr, matching the upstream
+/// `safeHandler` (they never break the emitter).
+fn install_events_bus(lua: &Lua, module: &luaur_rt::Table) {
+    let events: Value = lua
+        .load(
+            r#"
+            local handlers = {}
+            local next_key = 0
+
+            local function remove(channel, key)
+                local list = handlers[channel]
+                if not list then return end
+                for index = #list, 1, -1 do
+                    if list[index].key == key then
+                        table.remove(list, index)
+                        return
+                    end
+                end
+            end
+
+            local function on(channel, handler)
+                next_key = next_key + 1
+                local key = next_key
+                handlers[channel] = handlers[channel] or {}
+                table.insert(handlers[channel], { key = key, handler = handler })
+                return function()
+                    remove(channel, key)
+                end
+            end
+
+            local function emit(channel, data)
+                local list = handlers[channel]
+                if not list then return end
+                -- Snapshot so handlers may unsubscribe during delivery;
+                -- registration order is preserved.
+                local snapshot = {}
+                for index = 1, #list do
+                    snapshot[index] = list[index].handler
+                end
+                for index = 1, #snapshot do
+                    local ok, err = pcall(snapshot[index], data)
+                    if not ok then
+                        __pillar_bus_reported = __pillar_bus_reported or {}
+                        table.insert(__pillar_bus_reported, channel .. ": " .. tostring(err))
+                    end
+                end
+            end
+
+            return { on = on, emit = emit }
+        "#,
+        )
+        .eval::<Value>()
+        .expect("install pillar.events");
+    module.set("events", events).expect("set pillar.events");
 }
 
 /// Convert an optional Lua options table to a JSON object (mirrors the
@@ -716,7 +779,9 @@ fn install_schema_module(lua: &Lua, module: &luaur_rt::Table) {
                             serde_json::Value::String(type_name.to_string()),
                         );
                     }
-                    lua_builder.to_value(&json).map_err(luaur_rt::Error::external)
+                    lua_builder
+                        .to_value(&json)
+                        .map_err(luaur_rt::Error::external)
                 }),
             )
             .expect("set pillar.schema scalar");
@@ -764,14 +829,14 @@ fn install_schema_module(lua: &Lua, module: &luaur_rt::Table) {
                     );
                     object.insert("properties".to_string(), properties);
                 }
-                lua_object.to_value(&json).map_err(luaur_rt::Error::external)
+                lua_object
+                    .to_value(&json)
+                    .map_err(luaur_rt::Error::external)
             }),
         )
         .expect("set pillar.schema.object");
 
-    module
-        .set("schema", schema)
-        .expect("set pillar.schema");
+    module.set("schema", schema).expect("set pillar.schema");
 }
 
 #[cfg(test)]
@@ -784,7 +849,10 @@ mod api_tests {
     fn run(body: &str) -> HostRegistry {
         let mut runtime = ExtensionRuntime::new();
         runtime
-            .load_extension("api.luau", &format!("local pillar = require(\"@pillar\")\n{body}\nreturn nil"))
+            .load_extension(
+                "api.luau",
+                &format!("local pillar = require(\"@pillar\")\n{body}\nreturn nil"),
+            )
             .unwrap();
         runtime.registry()
     }
@@ -828,21 +896,84 @@ mod api_tests {
     /// default).
     #[test]
     fn get_flag_without_a_host_answers_nil() {
-        let registry = run(
-            r#"pillar.append_entry("flag", { present = pillar.get_flag("level") ~= nil })"#,
-        );
+        let registry =
+            run(r#"pillar.append_entry("flag", { present = pillar.get_flag("level") ~= nil })"#);
         assert_eq!(
             registry.appended_entries[0].1,
             Some(serde_json::json!({ "present": false }))
         );
     }
 
+    /// `pillar.events` delivers in registration order and the returned
+    /// handle unsubscribes (upstream `EventBus`).
+    #[test]
+    fn events_deliver_in_order_and_unsubscribe() {
+        let registry = run(
+            r#"
+            local seen = {}
+            local unsubscribe = pillar.events.on("chan", function(data)
+                table.insert(seen, data)
+            end)
+            pillar.events.emit("chan", "a")
+            pillar.events.emit("chan", "b")
+            unsubscribe()
+            pillar.events.emit("chan", "c")
+            pillar.append_entry("seen", { values = seen })
+            "#,
+        );
+        assert_eq!(
+            registry.appended_entries[0].1,
+            Some(serde_json::json!({ "values": ["a", "b"] }))
+        );
+    }
+
+    /// A throwing handler does not stop the other handlers (upstream
+    /// `safeHandler`).
+    #[test]
+    fn events_handler_errors_are_caught() {
+        let registry = run(
+            r#"
+            pillar.events.on("chan", function()
+                error("boom")
+            end)
+            pillar.events.on("chan", function(data)
+                pillar.append_entry("ok", { value = data })
+            end)
+            pillar.events.emit("chan", 7)
+            "#,
+        );
+        assert_eq!(
+            registry.appended_entries[0].1,
+            Some(serde_json::json!({ "value": 7 }))
+        );
+    }
+
+    /// `pillar.events` type-checks with the shipped definitions.
+    #[test]
+    fn events_type_checks() {
+        let runtime = ExtensionRuntime::new();
+        runtime
+            .type_check(
+                "events.luau",
+                r#"
+                --!strict
+                local pillar = require("@pillar")
+                local unsubscribe = pillar.events.on("chan", function(data)
+                    return nil
+                end)
+                pillar.events.emit("chan", { n = 1 })
+                unsubscribe()
+                return nil
+                "#,
+            )
+            .unwrap_or_else(|diagnostics| panic!("type check failed: {diagnostics:?}"));
+    }
+
     /// The `pillar.schema` builders emit JSON-Schema-shaped tables that
     /// the tool boundary converts verbatim.
     #[test]
     fn schema_builders_emit_json_schema() {
-        let registry = run(
-            r#"
+        let registry = run(r#"
             pillar.register_tool({
                 name = "greet",
                 label = "Greet",
@@ -855,8 +986,7 @@ mod api_tests {
                     tags = pillar.schema.array(pillar.schema.string()),
                 }, { required = { "name" } }),
             })
-            "#,
-        );
+            "#);
         let tool = &registry.tools[0];
         assert_eq!(tool["name"], serde_json::json!("greet"));
         let parameters = &tool["parameters"];

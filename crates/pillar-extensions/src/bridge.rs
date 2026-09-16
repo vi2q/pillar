@@ -13,7 +13,8 @@
 use std::sync::{Arc, Mutex};
 
 use pillar_coding_agent::core::extensions_runner::{
-    ExtensionEventPayload, ExtensionHandler, HostExtension, RegisteredCommand,
+    ExtensionEventPayload, ExtensionFlag, ExtensionHandler, ExtensionShortcut, HostExtension,
+    RegisteredCommand,
 };
 
 use crate::runtime::{ExtensionLoadError, ExtensionRuntime};
@@ -94,6 +95,41 @@ pub fn bridge_to_runner(
             source_path: path.to_string(),
         });
     }
+    // Flag registrations (upstream `registerFlag(name, { type, description })`):
+    // the kind is the static "boolean" / "string" pair the host types.
+    let mut flags = std::collections::BTreeMap::new();
+    for (name, opts) in &registry.flags {
+        let kind = match opts.get("type").and_then(serde_json::Value::as_str) {
+            Some("string") => "string",
+            _ => "boolean",
+        };
+        let description = opts
+            .get("description")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        flags
+            .entry(name.clone())
+            .or_insert_with(|| ExtensionFlag { kind, description });
+    }
+
+    // Shortcut registrations (upstream `registerShortcut(key, { description })`):
+    // keys are normalized the way the runner's conflict check expects.
+    let mut shortcuts = std::collections::BTreeMap::new();
+    for (key, opts) in &registry.shortcuts {
+        let description = opts
+            .get("description")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        shortcuts
+            .entry(key.to_lowercase())
+            .or_insert_with(|| ExtensionShortcut {
+                extension_path: path.to_string(),
+                description,
+            });
+    }
+
     Ok(HostExtension {
         path: path.to_string(),
         handlers,
@@ -108,8 +144,8 @@ pub fn bridge_to_runner(
                     .map(|name| (name.to_string(), ()))
             })
             .collect(),
-        flags: Default::default(),
-        shortcuts: Default::default(),
+        flags,
+        shortcuts,
     })
 }
 
@@ -244,6 +280,44 @@ mod tests {
         }
         let extension = bridge_to_runner("tool.luau", &runtime).unwrap();
         assert!(extension.tools.contains_key("greet"));
+    }
+
+    /// Flag and shortcut registrations surface in the runner's tables.
+    #[test]
+    fn flags_and_shortcuts_surface_in_the_runner() {
+        let runtime = shared_runtime();
+        {
+            let mut runtime = runtime.lock().unwrap();
+            runtime
+                .load_extension(
+                    "reg.luau",
+                    r#"
+                    local pillar = require("@pillar")
+                    pillar.register_flag("verbose", { type = "boolean", description = "Verbose output" })
+                    pillar.register_flag("name", { type = "string" })
+                    pillar.register_shortcut("Ctrl+Alt+K", { description = "Do a thing" })
+                    return nil
+                "#,
+                )
+                .unwrap();
+        }
+        let extension = bridge_to_runner("reg.luau", &runtime).unwrap();
+        assert_eq!(extension.flags["verbose"].kind, "boolean");
+        assert_eq!(extension.flags["verbose"].description, "Verbose output");
+        assert_eq!(extension.flags["name"].kind, "string");
+        assert_eq!(extension.flags["name"].description, "");
+        // Shortcut keys are normalized to lowercase.
+        assert!(extension.shortcuts.contains_key("ctrl+alt+k"));
+        assert_eq!(
+            extension.shortcuts["ctrl+alt+k"].description,
+            "Do a thing"
+        );
+        assert_eq!(extension.shortcuts["ctrl+alt+k"].extension_path, "reg.luau");
+
+        let mut runner = ExtensionRunner::new(vec![extension]);
+        assert_eq!(runner.flags().len(), 2);
+        let resolved = runner.shortcuts(&std::collections::BTreeMap::new());
+        assert!(resolved.contains_key("ctrl+alt+k"));
     }
 
     /// A Luau handler error becomes the runner's error-string path.
