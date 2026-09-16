@@ -326,6 +326,11 @@ pub struct ResourceLoader {
     /// Injected extension paths (host-provided; upstream loads real
     /// extensions through a JS runtime).
     extension_paths: Vec<String>,
+    /// Package sources that are not installed and were left out of this load.
+    /// Resolving never installs (an install is an explicit, authorized
+    /// action), so a missing package is skipped and reported instead of being
+    /// fetched at startup (docs/ARCHITECTURE-REVIEW-s05c0.md 0/6).
+    skipped_package_sources: Vec<String>,
 }
 
 impl ResourceLoader {
@@ -357,6 +362,7 @@ impl ResourceLoader {
             loaded: false,
             snapshot: ResourceSnapshot::default(),
             extension_paths: Vec::new(),
+            skipped_package_sources: Vec::new(),
         }
     }
 
@@ -423,16 +429,38 @@ impl ResourceLoader {
     /// Reload all resources (upstream `reload`). `resolve_project_trust`
     /// mirrors the trust-resolution hook: when set, a pre-trust pass runs
     /// with project settings disabled and the callback decides trust.
+    /// Resolve the configured packages without installing anything: a missing
+    /// source is recorded and skipped. Installs are an explicit, authorized
+    /// action (a startup that fetches packages is a side effect the user never
+    /// approved).
+    fn resolve_packages(
+        &self,
+        skipped: &mut Vec<String>,
+    ) -> Result<crate::core::package_manager::ResolvedPaths, String> {
+        let mut on_missing = |source: &str| {
+            skipped.push(source.to_string());
+            crate::core::package_manager::MissingSourceAction::Skip
+        };
+        self.package_manager.resolve(Some(&mut on_missing))
+    }
+
+    /// Package sources left out of the last load because they are not installed
+    /// (the host reports them; the CLI prints one warning per source).
+    pub fn skipped_package_sources(&self) -> &[String] {
+        &self.skipped_package_sources
+    }
+
     pub fn reload(
         &mut self,
         resolve_project_trust: Option<&mut dyn FnMut() -> bool>,
     ) -> Result<(), String> {
         let mut pre_trust_metadata: Option<BTreeMap<PathBuf, PathMetadata>> = None;
+        let mut skipped: Vec<String> = Vec::new();
         if let Some(callback) = resolve_project_trust {
             // Bootstrap pass: untrusted project settings.
             self.settings.lock().unwrap().set_project_trusted(false);
             self.settings.lock().unwrap().reload();
-            let resolved = self.package_manager.resolve(None)?;
+            let resolved = self.resolve_packages(&mut skipped)?;
             pre_trust_metadata = Some(resolved_metadata(&resolved));
             let project_trusted = callback();
             self.settings
@@ -443,7 +471,7 @@ impl ResourceLoader {
 
         // reload() preserves projectTrusted and reloads settings for it.
         self.settings.lock().unwrap().reload();
-        let resolved_paths = self.package_manager.resolve(None)?;
+        let resolved_paths = self.resolve_packages(&mut skipped)?;
         let cli_extension_paths = self.package_manager.resolve_extension_sources(
             &self.options.additional_extension_paths.clone(),
             false,
@@ -695,6 +723,13 @@ impl ResourceLoader {
             .collect();
 
         let _ = pre_trust_metadata;
+        self.skipped_package_sources = skipped;
+        for source in &self.skipped_package_sources {
+            eprintln!(
+                "Warning: package source is not installed and startup does not install it; \
+                 skipped: {source}"
+            );
+        }
         self.loaded = true;
         Ok(())
     }

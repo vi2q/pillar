@@ -2896,11 +2896,14 @@ impl DefaultPackageManager {
             let ParsedSource::Local(local_path) = &parsed else {
                 // npm / git: install or skip when missing.
                 let mut install_missing = |this: &Self| -> Result<bool, String> {
-                    if Self::is_offline_mode() {
-                        return Ok(false);
-                    }
+                    // The callback sees every missing source, so the host can
+                    // report it; offline mode only downgrades an install
+                    // request (a resolve must never fetch on its own).
                     match on_missing.as_deref_mut() {
                         None => {
+                            if Self::is_offline_mode() {
+                                return Ok(false);
+                            }
                             this.install_parsed_source(&parsed, resolved_scope)?;
                             Ok(true)
                         }
@@ -2910,6 +2913,9 @@ impl DefaultPackageManager {
                                 Err(format!("Missing source: {resolved_source}"))
                             }
                             MissingSourceAction::Install => {
+                                if Self::is_offline_mode() {
+                                    return Ok(false);
+                                }
                                 this.install_parsed_source(&parsed, resolved_scope)?;
                                 Ok(true)
                             }

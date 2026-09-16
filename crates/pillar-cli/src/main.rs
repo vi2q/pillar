@@ -46,12 +46,12 @@ use pillar_coding_agent::modes::rpc::rpc_mode::{
 };
 
 use pillar_cli::effects::EffectBroker;
-use pillar_coding_agent::core::agent_session_class::ExtensionGeneration;
 use pillar_cli::runner::{
     ExtensionHostSlots, ExtensionWiring, build_extension_runner_with_slots,
     extension_command_handler, refresh_extension_data_for,
 };
 use pillar_cli::trust::{project_extension_dir, resolve_project_trust, stored_project_trust};
+use pillar_coding_agent::core::agent_session_class::ExtensionGeneration;
 use pillar_coding_agent::core::extensions_types::{ExtensionContextFacts, ExtensionMode};
 
 #[tokio::main(flavor = "current_thread")]

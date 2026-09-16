@@ -2178,8 +2178,11 @@ impl AgentSession {
         // belong to it, and the previous runner is still installed here, which
         // is what identifies the tools being replaced.
         if generation.command_handler.is_some() {
-            *self.inner.command_handler.lock().expect("command handler lock") =
-                generation.command_handler;
+            *self
+                .inner
+                .command_handler
+                .lock()
+                .expect("command handler lock") = generation.command_handler;
         }
         self.replace_extension_tools(generation.tools);
         {

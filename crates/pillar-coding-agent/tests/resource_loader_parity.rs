@@ -501,3 +501,42 @@ fn extension_conflict_detection() {
     )]);
     assert!(conflicts.is_empty(), "{conflicts:?}");
 }
+
+/// Startup resolution never installs: a configured package that is not
+/// installed is skipped and reported, so loading a session cannot fetch code
+/// the user never approved (docs/ARCHITECTURE-REVIEW-s05c0.md 0/6).
+#[test]
+fn a_missing_package_source_is_skipped_not_installed() {
+    let cwd = temp_dir("pkg-skip-cwd");
+    let agent_dir = temp_dir("pkg-skip-agent");
+    // The loader reloads settings from storage, so the package goes into the
+    // settings store itself.
+    let settings = Arc::new(Mutex::new(SettingsManager::in_memory(
+        serde_json::json!({ "packages": ["npm:pillar-not-installed-anywhere@9.9.9"] }),
+        SettingsManagerCreateOptions {
+            project_trusted: Some(true),
+        },
+    )));
+    let mut loader = ResourceLoader::new(
+        &cwd.to_string_lossy(),
+        ResourceLoaderOptions {
+            agent_dir: agent_dir.to_string_lossy().to_string(),
+            no_skills: true,
+            no_prompt_templates: true,
+            no_themes: true,
+            no_context_files: true,
+            ..Default::default()
+        },
+        Arc::clone(&settings),
+    );
+
+    loader.reload(None).expect("a missing package does not fail the load");
+    assert_eq!(
+        loader.skipped_package_sources(),
+        ["npm:pillar-not-installed-anywhere@9.9.9"],
+        "the source is reported as skipped"
+    );
+    // Nothing was installed: the user-scope npm root (where an install would
+    // land, `agent_dir/npm`) is still absent.
+    assert!(!agent_dir.join("npm").exists(), "an install ran at startup");
+}
