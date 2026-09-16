@@ -13,8 +13,8 @@ use pillar_agent::{Agent, AgentOptions, AgentState, StreamFn};
 use pillar_ai::types::{AssistantMessage, StopReason, Usage};
 use pillar_cli::effects::EffectBroker;
 use pillar_cli::runner::{
-    ExtensionCommandSlot, ExtensionHostSlots, SessionSlot, build_extension_runner,
-    build_extension_runner_with_slots,
+    ExtensionCommandSlot, ExtensionHostSlots, SessionSlot, bind_session, build_extension_runner,
+    build_extension_runner_with_slots, resolve_session,
 };
 use pillar_cli::trust::{project_extension_dir, resolve_project_trust, stored_project_trust};
 use pillar_coding_agent::core::agent_session_class::{
@@ -233,11 +233,7 @@ async fn reload_replaces_extension_tools_and_publishes() {
         Arc::new(move |_flags| {
             let mut rebuilt = build_extension_runner("", None, None, &configured2);
             assert!(rebuilt.errors.is_empty(), "{:?}", rebuilt.errors);
-            if let Some(session) = session_slot
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .clone()
-            {
+            if let Some(session) = resolve_session(&session_slot) {
                 session.replace_extension_tools(rebuilt.custom_tools());
             }
             rebuilt.take_runner()
@@ -245,7 +241,7 @@ async fn reload_replaces_extension_tools_and_publishes() {
     };
 
     let session = session_for_reload(runner1, tools1, factory);
-    *session_slot.lock().unwrap() = Some(Arc::clone(&session));
+    *session_slot.lock().unwrap() = Some(Arc::downgrade(&session));
     let published_for_session = Arc::clone(&published);
     session.set_extension_reload_publish(Arc::new(move || {
         published_for_session.store(true, Ordering::SeqCst);
@@ -281,13 +277,13 @@ fn session_for_reload(
     tools: Vec<pillar_agent::AgentTool>,
     factory: ExtensionRunnerFactory,
 ) -> Arc<AgentSession> {
-    let mut config = base_session_config(runner, tools);
+    let mut config = base_session_config(Arc::new(Mutex::new(runner)), tools);
     config.extension_runner_rebuild = Some(factory);
     Arc::new(AgentSession::new(config))
 }
 
 fn base_session_config(
-    runner: ExtensionRunner,
+    runner: Arc<Mutex<ExtensionRunner>>,
     tools: Vec<pillar_agent::AgentTool>,
 ) -> AgentSessionConfig {
     let mut options = AgentOptions::new(StreamFn::new(|_, _| async { panic!("unused stream") }));
@@ -327,7 +323,7 @@ fn base_session_config(
         String::new(),
         resource_loader,
         model_runtime,
-        Arc::new(Mutex::new(runner)),
+        runner,
     )
 }
 
@@ -420,7 +416,10 @@ fn a_denied_exec_never_spawns_the_process() {
 #[tokio::test]
 async fn tool_calls_pass_the_same_effect_gate() {
     let broker = deny_all("policy");
-    let mut config = base_session_config(ExtensionRunner::new(Vec::new()), Vec::new());
+    let mut config = base_session_config(
+        Arc::new(Mutex::new(ExtensionRunner::new(Vec::new()))),
+        Vec::new(),
+    );
     config.effect_authorizer = Some(broker.authorizer());
     let session = Arc::new(AgentSession::new(config));
     session.install_tool_hooks();
@@ -479,5 +478,53 @@ fn host_callbacks_do_not_bypass_the_effect_broker() {
     assert!(
         !runner.contains("std::fs::"),
         "runner.rs must go through the effect broker to touch the filesystem"
+    );
+}
+
+// ============================================================================
+// Lifetime: the host slots must not keep the session alive
+// ============================================================================
+
+/// The extension host callbacks resolve the session through the slot, and the
+/// session owns the runner that reaches it: a strong reference there would
+/// keep every replaced session alive for the process lifetime.
+#[test]
+fn the_session_slot_does_not_keep_the_session_alive() {
+    let slots = ExtensionHostSlots::new("/tmp");
+    let session = session_for_reload(
+        ExtensionRunner::new(Vec::new()),
+        Vec::new(),
+        Arc::new(|_| ExtensionRunner::new(Vec::new())),
+    );
+    bind_session(&slots.session_slot, &session);
+    assert!(resolve_session(&slots.session_slot).is_some());
+
+    let weak = Arc::downgrade(&session);
+    drop(session);
+    assert!(
+        weak.upgrade().is_none(),
+        "the host slot must not keep the session alive"
+    );
+    assert!(resolve_session(&slots.session_slot).is_none());
+}
+
+/// The agent event subscription and the tool / next-turn hooks live inside the
+/// agent, which the session owns: holding the session internally would leak
+/// the whole session, and with it the runner and the Luau runtime.
+#[test]
+fn the_agent_hooks_do_not_keep_the_session_alive() {
+    let runner = Arc::new(Mutex::new(ExtensionRunner::new(Vec::new())));
+    let weak_runner = Arc::downgrade(&runner);
+    let config = base_session_config(Arc::clone(&runner), Vec::new());
+    let session = Arc::new(AgentSession::new(config));
+    session.install_tool_hooks();
+
+    drop(session);
+    drop(runner);
+    // The hooks' session state holds the runner: if the hooks kept the session
+    // alive, this weak handle would still upgrade.
+    assert!(
+        weak_runner.upgrade().is_none(),
+        "an installed hook must not keep the session's runner alive"
     );
 }

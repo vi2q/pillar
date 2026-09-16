@@ -593,11 +593,17 @@ impl AgentSession {
         };
         // Always subscribe to agent events for internal handling (session
         // persistence, extensions, retry logic).
+        // Weak: the subscription lives inside the agent, which the session
+        // owns, so a strong handle here would keep the session alive forever
+        // (docs/ARCHITECTURE-REVIEW-s05c0.md D).
         let unsubscribe = inner.agent.subscribe({
-            let inner = Arc::clone(&inner);
+            let inner = Arc::downgrade(&inner);
             move |event, _signal| {
-                let inner = Arc::clone(&inner);
+                let inner = inner.clone();
                 Box::pin(async move {
+                    let Some(inner) = inner.upgrade() else {
+                        return;
+                    };
                     if let Err(message) = AgentSession::handle_agent_event(&inner, event) {
                         inner.emit_extension_error("agent_event", message);
                     }
@@ -1567,13 +1573,17 @@ impl AgentSession {
     }
 
     pub fn install_tool_hooks(&self) {
-        let inner = Arc::clone(&self.inner);
+        // The hooks live inside the agent, which the session owns: hold the
+        // session weakly or the cycle keeps it (and the runner) alive forever
+        // (docs/ARCHITECTURE-REVIEW-s05c0.md D).
+        let inner = Arc::downgrade(&self.inner);
         let before = Arc::new(
             move |context: pillar_agent::types::BeforeToolCallContext,
                   _signal|
                   -> BeforeToolFuture {
-                let inner = Arc::clone(&inner);
+                let inner = inner.clone();
                 Box::pin(async move {
+                    let inner = inner.upgrade()?;
                     // The effect gate comes first, so a tool call is authorized
                     // exactly like the host's `exec` / `fs` callbacks.
                     if let Some(authorizer) = inner.effect_authorizer.clone() {
@@ -1640,11 +1650,12 @@ impl AgentSession {
         );
         self.inner.agent.set_before_tool_call(before);
 
-        let inner = Arc::clone(&self.inner);
+        let inner = Arc::downgrade(&self.inner);
         let after = Arc::new(
             move |context: pillar_agent::types::AfterToolCallContext, _signal| -> AfterToolFuture {
-                let inner = Arc::clone(&inner);
+                let inner = inner.clone();
                 Box::pin(async move {
+                    let inner = inner.upgrade()?;
                     let runner = inner.extension_runner.lock().expect("runner lock");
                     let hook_result = if runner.has_handlers("tool_result") {
                         runner.emit_tool_result(&serde_json::json!({
@@ -1687,16 +1698,17 @@ impl AgentSession {
     /// the agent's prepare-next-turn hook. The previously installed hook (if
     /// any) runs after compaction and its context replacement is preserved.
     pub fn install_next_turn_refresh(&self) {
-        let inner = Arc::clone(&self.inner);
-        let previous = inner.agent.prepare_next_turn_hook();
+        let weak = Arc::downgrade(&self.inner);
+        let previous = self.inner.agent.prepare_next_turn_hook();
         let hook = Arc::new(
             move |turn: &pillar_agent::types::ShouldStopAfterTurnContext,
                   signal: Option<pillar_agent::AbortSignal>|
                   -> pillar_agent::types::PrepareNextFuture {
-                let inner = Arc::clone(&inner);
+                let weak = weak.clone();
                 let previous = previous.clone();
                 let turn = turn.clone();
                 Box::pin(async move {
+                    let inner = weak.upgrade()?;
                     let session = AgentSession {
                         inner: Arc::clone(&inner),
                     };

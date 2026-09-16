@@ -8,9 +8,7 @@
 //! `_buildRuntime`).
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, Weak};
 
 use pillar_agent::types::AgentTool;
 use pillar_coding_agent::core::agent_session::CustomDelivery;
@@ -31,9 +29,31 @@ use crate::effects::EffectBroker;
 ///
 /// divergence: the runtime is built before the session exists (the runner
 /// must be ready for `createAgentSession`), so the callbacks read the session
-/// through this slot instead of capturing it directly. `bind_session` fills it
-/// once the caller has the `Arc`.
-pub type SessionSlot = Arc<Mutex<Option<Arc<AgentSession>>>>;
+/// through this slot instead of capturing it directly. [`bind_session`] fills
+/// it once the caller has the `Arc`.
+///
+/// The slot holds a [`Weak`] reference: the session owns the runner whose
+/// callbacks reach this slot, so a strong handle would be a cycle that keeps
+/// the session alive for the process lifetime
+/// (docs/ARCHITECTURE-REVIEW-s05c0.md D).
+pub type SessionSlot = Arc<Mutex<Option<Weak<AgentSession>>>>;
+
+/// Point the slot at the live session (upstream the runtime constructing the
+/// ExtensionAPI with the session).
+pub fn bind_session(slot: &SessionSlot, session: &Arc<AgentSession>) {
+    *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) =
+        Some(Arc::downgrade(session));
+}
+
+/// The session the slot points at: `None` before binding, and also after the
+/// last strong handle was dropped (the host then reports "not ready" instead
+/// of resurrecting it).
+pub fn resolve_session(slot: &SessionSlot) -> Option<Arc<AgentSession>> {
+    slot.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+        .and_then(Weak::upgrade)
+}
 
 /// The command / tool data `get_commands` and the tool getters answer.
 ///
@@ -311,10 +331,7 @@ fn install_host_api(
     use pillar_extensions::runtime::HostApi;
 
     let session = |slot: &SessionSlot| -> Result<Arc<AgentSession>, String> {
-        slot.lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
-            .ok_or_else(|| "extension API: the session is not ready yet".to_string())
+        resolve_session(slot).ok_or_else(|| "extension API: the session is not ready yet".to_string())
     };
     let tokio_handle = tokio::runtime::Handle::try_current().ok();
 
@@ -507,22 +524,16 @@ fn install_host_api(
         is_idle: {
             let slot = Arc::clone(slot);
             Some(Arc::new(move || {
-                let session = slot
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .clone();
-                session.map(|session| session.is_idle()).unwrap_or(true)
+                resolve_session(&slot)
+                    .map(|session| session.is_idle())
+                    .unwrap_or(true)
             }))
         },
         // `ctx.sessionManager.getSessionId()` (upstream the session id).
         session_id: {
             let slot = Arc::clone(slot);
             Some(Arc::new(move || {
-                let session = slot
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .clone();
-                session.map(|session| {
+                resolve_session(&slot).map(|session| {
                     session
                         .session_manager()
                         .lock()
@@ -537,11 +548,7 @@ fn install_host_api(
         session_entries: {
             let slot = Arc::clone(slot);
             Some(Arc::new(move || {
-                let session = slot
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .clone();
-                match session {
+                match resolve_session(&slot) {
                     Some(session) => {
                         let entries = session
                             .session_manager()
@@ -749,10 +756,7 @@ impl ExtensionWiring {
     /// Bind the live session the `@pillar` host callbacks resolve (upstream
     /// the runtime constructing the ExtensionAPI with the session).
     pub fn bind_session(&self, session: &Arc<AgentSession>) {
-        *self
-            .session_slot
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::clone(session));
+        bind_session(&self.session_slot, session);
     }
 
     /// Refresh the command / tool snapshot the `@pillar` getters answer.
@@ -771,11 +775,7 @@ pub fn refresh_extension_data_for(
     session_slot: &SessionSlot,
     data: &Arc<Mutex<ExtensionDataSnapshot>>,
 ) {
-    let Some(session) = session_slot
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .clone()
-    else {
+    let Some(session) = resolve_session(session_slot) else {
         return;
     };
     let tools = session.state().tools;

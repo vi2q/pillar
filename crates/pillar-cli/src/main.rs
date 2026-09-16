@@ -48,7 +48,7 @@ use pillar_coding_agent::modes::rpc::rpc_mode::{
 use pillar_cli::effects::EffectBroker;
 use pillar_cli::runner::{
     ExtensionCommandSlot, ExtensionHostSlots, ExtensionWiring, build_extension_runner_with_slots,
-    refresh_extension_data_for,
+    refresh_extension_data_for, resolve_session,
 };
 use pillar_cli::trust::{project_extension_dir, resolve_project_trust, stored_project_trust};
 use pillar_coding_agent::core::extensions_types::{ExtensionContextFacts, ExtensionMode};
@@ -364,13 +364,7 @@ async fn build_session_with(
                 command_slot.set_runtime(&rebuilt.runtime);
                 // The previous runner is still installed here, which is what
                 // tells the session which tools the new generation replaces.
-                if let Some(session) = inputs
-                    .slots
-                    .session_slot
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .clone()
-                {
+                if let Some(session) = resolve_session(&inputs.slots.session_slot) {
                     session.replace_extension_tools(rebuilt.custom_tools());
                 }
                 rebuilt.runner

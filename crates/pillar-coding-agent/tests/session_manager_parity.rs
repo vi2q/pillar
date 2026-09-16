@@ -12,8 +12,9 @@ use pillar_coding_agent::core::session_entries::SessionEntry as Entry;
 use pillar_coding_agent::core::session_manager::{
     CURRENT_SESSION_VERSION, FileEntry, SessionManager, assert_valid_session_id,
     build_context_entries, build_session_path, default_session_dir_path, generate_id_with,
-    get_latest_compaction_entry, load_entries_from_file, load_session_file, migrate_session_entries,
-    parse_iso_timestamp, parse_session_entry_line, session_entry_to_context_messages,
+    get_latest_compaction_entry, load_entries_from_file, load_session_file,
+    migrate_session_entries, parse_iso_timestamp, parse_session_entry_line,
+    session_entry_to_context_messages,
 };
 
 fn user_msg(text: &str) -> CodingAgentMessage {
@@ -779,6 +780,10 @@ fn a_damaged_middle_line_is_reported_instead_of_dropped() {
         Err(error) => error,
     };
     assert!(error.contains("corrupt at line(s) 2"), "{error}");
-    assert!(std::fs::read_to_string(&file).unwrap().contains("{\"type\":\"message\"}"));
+    assert!(
+        std::fs::read_to_string(&file)
+            .unwrap()
+            .contains("{\"type\":\"message\"}")
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
