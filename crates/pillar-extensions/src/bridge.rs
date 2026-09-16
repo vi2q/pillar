@@ -66,7 +66,16 @@ pub fn bridge_to_runner(
     // registration order; one runner handler per Luau handler, and each
     // runner handler invokes exactly that Luau handler — the runner owns the
     // chain, so dispatching the whole event here would run N handlers N times.
-    for (event, identity) in &registry.event_handlers {
+    // Only this extension's registrations: the runtime's registry is shared by
+    // every extension, so an unfiltered bridge would re-claim the earlier
+    // ones (duplicating commands and handlers)
+    // (docs/ARCHITECTURE-REVIEW-s05c0.md B).
+    for (event, identity) in registry
+        .event_handlers
+        .iter()
+        .filter(|registration| registration.owner == path)
+        .map(|registration| &registration.value)
+    {
         let runtime = Arc::clone(runtime);
         let dispatch_event = event.clone();
         let handler_id = identity.clone();
@@ -98,7 +107,12 @@ pub fn bridge_to_runner(
     // Command registrations flow through as runner commands (the
     // handler dispatches the command event into the VM).
     let mut commands = Vec::new();
-    for (name, opts) in &registry.commands {
+    for (name, opts) in registry
+        .commands
+        .iter()
+        .filter(|registration| registration.owner == path)
+        .map(|registration| &registration.value)
+    {
         let description = opts
             .get("description")
             .and_then(serde_json::Value::as_str)
@@ -112,7 +126,12 @@ pub fn bridge_to_runner(
     // Flag registrations (upstream `registerFlag(name, { type, description })`):
     // the kind is the static "boolean" / "string" pair the host types.
     let mut flags = std::collections::BTreeMap::new();
-    for (name, opts) in &registry.flags {
+    for (name, opts) in registry
+        .flags
+        .iter()
+        .filter(|registration| registration.owner == path)
+        .map(|registration| &registration.value)
+    {
         let kind = match opts.get("type").and_then(serde_json::Value::as_str) {
             Some("string") => "string",
             _ => "boolean",
@@ -130,7 +149,12 @@ pub fn bridge_to_runner(
     // Shortcut registrations (upstream `registerShortcut(key, { description })`):
     // keys are normalized the way the runner's conflict check expects.
     let mut shortcuts = std::collections::BTreeMap::new();
-    for (key, opts) in &registry.shortcuts {
+    for (key, opts) in registry
+        .shortcuts
+        .iter()
+        .filter(|registration| registration.owner == path)
+        .map(|registration| &registration.value)
+    {
         let description = opts
             .get("description")
             .and_then(serde_json::Value::as_str)
@@ -151,7 +175,12 @@ pub fn bridge_to_runner(
     // theme. A renderer error is reported to stderr and answers the upstream
     // failure notice so the transcript still shows something.
     let mut message_renderers = std::collections::BTreeMap::new();
-    for custom_type in &registry.message_renderers {
+    for custom_type in registry
+        .message_renderers
+        .iter()
+        .filter(|registration| registration.owner == path)
+        .map(|registration| &registration.value)
+    {
         if message_renderers.contains_key(custom_type) {
             continue;
         }
@@ -178,7 +207,12 @@ pub fn bridge_to_runner(
     }
 
     let mut entry_renderers = std::collections::BTreeMap::new();
-    for custom_type in &registry.entry_renderers {
+    for custom_type in registry
+        .entry_renderers
+        .iter()
+        .filter(|registration| registration.owner == path)
+        .map(|registration| &registration.value)
+    {
         if entry_renderers.contains_key(custom_type) {
             continue;
         }
@@ -202,7 +236,13 @@ pub fn bridge_to_runner(
         entry_renderers.insert(custom_type.clone(), renderer);
     }
 
-    let markdown_transformer = registry.markdown_transformers.last().map(|identity| {
+    let markdown_transformer = registry
+        .markdown_transformers
+        .iter()
+        .filter(|registration| registration.owner == path)
+        .map(|registration| &registration.value)
+        .last()
+        .map(|identity| {
         let runtime = Arc::clone(runtime);
         let identity = identity.clone();
         let transformer: MarkdownTransformer =
@@ -234,8 +274,10 @@ pub fn bridge_to_runner(
         tools: registry
             .tools
             .iter()
-            .filter_map(|definition| {
-                definition
+            .filter(|registration| registration.owner == path)
+            .filter_map(|registration| {
+                registration
+                    .value
                     .get("name")
                     .and_then(serde_json::Value::as_str)
                     .map(|name| (name.to_string(), ()))
@@ -385,6 +427,7 @@ pub fn bridge_to_agent_tools(runtime: &Arc<Mutex<ExtensionRuntime>>) -> Vec<Agen
         .tools;
     definitions
         .into_iter()
+        .map(|registration| registration.value)
         .filter_map(|definition| {
             let name = definition
                 .get("name")

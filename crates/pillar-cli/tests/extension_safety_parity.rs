@@ -595,3 +595,99 @@ fn dispose_clears_the_agent_hooks_and_unbinds_the_host() {
     session.dispose();
     assert!(session.is_disposed());
 }
+
+/// Two extensions may register the same command name: the runner disambiguates
+/// them as `/<name>` and `/<name>:2`, and each invocation must reach the
+/// extension that registered it (the shared VM used to keep only the last
+/// registration, so `/hello` ran the wrong one and `/hello:2` did nothing).
+#[tokio::test]
+async fn same_named_commands_reach_their_own_extension() {
+    let speaker = |text: &str| {
+        format!(
+            r#"
+            local pillar = require("@pillar")
+            pillar.register_command("hello", {{
+                description = "hello",
+                handler = function(args, ctx)
+                    pillar.fs.write("hello.txt", "{text}")
+                end,
+            }})
+            return nil
+            "#
+        )
+    };
+    let cwd = temp_dir("commands");
+    let cwd_str = cwd.to_string_lossy().to_string();
+    let first = extension_dir("commands-first", "ext.luau", &speaker("first"));
+    let second = extension_dir("commands-second", "ext.luau", &speaker("second"));
+    let out = cwd.join("hello.txt");
+
+    let mut wiring = build_extension_runner(
+        &cwd_str,
+        None,
+        None,
+        &[
+            first.to_string_lossy().to_string(),
+            second.to_string_lossy().to_string(),
+        ],
+    );
+    assert!(wiring.errors.is_empty(), "{:?}", wiring.errors);
+    // One command per extension (the shared registry used to hand every later
+    // bridge the earlier registrations too), and duplicates get an occurrence
+    // suffix.
+    let names: Vec<String> = wiring
+        .runner
+        .registered_commands()
+        .iter()
+        .map(|command| command.invocation_name.clone())
+        .collect();
+    assert_eq!(names, vec!["hello:1".to_string(), "hello:2".to_string()]);
+    assert_eq!(wiring.runtime.lock().unwrap().registry().commands.len(), 2);
+
+    let mut config = base_session_config(
+        Arc::new(Mutex::new(wiring.take_runner())),
+        Vec::new(),
+    );
+    config.command_handler = Some(extension_command_handler(&wiring.runtime));
+    let session = Arc::new(AgentSession::new(config));
+
+    session.prompt("/hello:1", None).await.expect("first command");
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "first");
+    session.prompt("/hello:2", None).await.expect("second command");
+    assert_eq!(
+        std::fs::read_to_string(&out).unwrap(),
+        "second",
+        "the suffixed invocation must reach the second extension"
+    );
+}
+
+/// A setup that fails must not leave registrations behind: they are staged per
+/// owner and dropped with the failed extension.
+#[test]
+fn a_failed_setup_leaves_no_registrations() {
+    let runtime = Arc::new(Mutex::new(ExtensionRuntime::new()));
+    let error = runtime
+        .lock()
+        .unwrap()
+        .load_extension(
+            "broken.luau",
+            r#"
+            local pillar = require("@pillar")
+            pillar.register_command("ghost", {
+                description = "ghost",
+                handler = function(args, ctx) end,
+            })
+            pillar.register_tool({ name = "ghosttool", description = "ghost" })
+            pillar.on("session_start", function(event) return nil end)
+            error("the setup explodes")
+            return nil
+            "#,
+        )
+        .expect_err("the failing chunk is reported");
+    assert!(format!("{error}").contains("explodes"), "{error}");
+
+    let registry = runtime.lock().unwrap().registry();
+    assert!(registry.commands.is_empty(), "{:?}", registry.commands);
+    assert!(registry.tools.is_empty(), "{:?}", registry.tools);
+    assert!(registry.event_handlers.is_empty(), "{:?}", registry.event_handlers);
+}

@@ -13,9 +13,7 @@ use pillar_coding_agent::cli::args::{Subcommand, SubcommandArgs};
 use pillar_coding_agent::core::package_manager::{
     DefaultPackageManager, ParsedSource, parse_source,
 };
-use pillar_coding_agent::core::settings_manager::{
-    SettingsManager, SettingsManagerCreateOptions,
-};
+use pillar_coding_agent::core::settings_manager::{SettingsManager, SettingsManagerCreateOptions};
 
 use crate::effects::EffectBroker;
 use crate::trust::stored_project_trust;
@@ -33,7 +31,10 @@ pub fn run_subcommand(
     }
     match args.command {
         Subcommand::Config | Subcommand::Auth => {
-            return Err(format!("`pillar {}` is not ported yet", args.command.name()));
+            return Err(format!(
+                "`pillar {}` is not ported yet",
+                args.command.name()
+            ));
         }
         _ => {}
     }
@@ -48,8 +49,7 @@ pub fn run_subcommand(
             project_trusted: Some(project_trusted),
         },
     )));
-    let mut manager =
-        DefaultPackageManager::new(cwd, Path::new(agent_dir), Arc::clone(&settings));
+    let mut manager = DefaultPackageManager::new(cwd, Path::new(agent_dir), Arc::clone(&settings));
     // The command line is the approval: the broker records the intent and lets
     // it through (there is no interactive policy engine yet).
     manager.set_effect_authorizer(EffectBroker::permissive().authorizer());
@@ -65,11 +65,13 @@ pub fn run_subcommand(
             let source = args.source.as_deref().expect("the parser requires it");
             let removed = manager.remove_and_persist(source, args.local)?;
             if removed {
-                writeln!(out, "Removed {source}{scope_note}")
-                    .map_err(|error| error.to_string())?;
+                writeln!(out, "Removed {source}{scope_note}").map_err(|error| error.to_string())?;
             } else {
-                writeln!(out, "Removed the installation; {source} was not in settings")
-                    .map_err(|error| error.to_string())?;
+                writeln!(
+                    out,
+                    "Removed the installation; {source} was not in settings"
+                )
+                .map_err(|error| error.to_string())?;
             }
         }
         Subcommand::Update => {
@@ -93,7 +95,11 @@ pub fn run_subcommand(
                     out,
                     "{source}\t{}\t{}",
                     if project { "project" } else { "user" },
-                    if installed { "installed" } else { "not installed" }
+                    if installed {
+                        "installed"
+                    } else {
+                        "not installed"
+                    }
                 )
                 .map_err(|error| error.to_string())?;
             }

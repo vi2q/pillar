@@ -461,9 +461,10 @@ fn parse_subcommand(command: Subcommand, rest: &[String], result: &mut Args) {
                 .diagnostics
                 .push(error(format!("{}: unknown option {other}", command.name()))),
             other if parsed.source.is_none() => parsed.source = Some(other.to_string()),
-            other => result
-                .diagnostics
-                .push(error(format!("{}: unexpected argument {other}", command.name()))),
+            other => result.diagnostics.push(error(format!(
+                "{}: unexpected argument {other}",
+                command.name()
+            ))),
         }
     }
     let needs_source = matches!(command, Subcommand::Install | Subcommand::Remove);
@@ -475,7 +476,8 @@ fn parse_subcommand(command: Subcommand, rest: &[String], result: &mut Args) {
     result.subcommand = Some(parsed);
 }
 
-fn split_names(value: &str) -> Vec<String> {    value
+fn split_names(value: &str) -> Vec<String> {
+    value
         .split(',')
         .map(|s| s.trim().to_string())
         .filter(|name| !name.is_empty())

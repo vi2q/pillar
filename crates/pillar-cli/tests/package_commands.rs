@@ -4,8 +4,8 @@
 
 use std::path::{Path, PathBuf};
 
-use pillar_coding_agent::cli::args::{Subcommand, SubcommandArgs, parse_args};
 use pillar_cli::commands::run_subcommand;
+use pillar_coding_agent::cli::args::{Subcommand, SubcommandArgs, parse_args};
 
 fn temp_dir(name: &str) -> PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -156,7 +156,10 @@ fn a_command_is_only_recognized_as_the_first_argument() {
         "foo".to_string(),
     ]);
     assert!(parsed.subcommand.is_none());
-    assert_eq!(parsed.messages, vec!["install".to_string(), "foo".to_string()]);
+    assert_eq!(
+        parsed.messages,
+        vec!["install".to_string(), "foo".to_string()]
+    );
 
     let parsed = parse_args(&["install".to_string()]);
     assert_eq!(

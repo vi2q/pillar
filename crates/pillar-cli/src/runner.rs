@@ -257,9 +257,24 @@ pub fn extension_command_handler(runtime: &SharedRuntime) -> ExtensionCommandHan
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         // `Ok(false)` for an unknown command: the session treats the text as a
-        // normal prompt then.
+        // normal prompt then. The runner disambiguates same-named commands as
+        // `/name:1`, `/name:2`, ... — the suffix picks the extension that
+        // registered it instead of the last one winning (a command whose own
+        // name ends in `:<digits>` is shadowed by that convention, as upstream).
+        if let Some((base, occurrence)) = split_command_occurrence(name) {
+            return runtime.call_command_at(base, occurrence, args);
+        }
         runtime.call_command(name, args)
     })
+}
+
+/// `"hello:2"` → `Some(("hello", 1))`: the occurrence reference the runner
+/// builds for a duplicated command name. A name without a numeric suffix is
+/// not one.
+fn split_command_occurrence(name: &str) -> Option<(&str, usize)> {
+    let (base, suffix) = name.rsplit_once(':')?;
+    let occurrence: usize = suffix.parse().ok()?;
+    (!base.is_empty() && occurrence >= 1).then(|| (base, occurrence - 1))
 }
 
 /// Install the `pi.exec` host (upstream the process layer behind `exec`):

@@ -15,21 +15,35 @@ use pillar_coding_agent::core::extensions_types::{
     ExtensionContextFn, ExtensionUiAskFn, ExtensionUiFn, ExtensionUiRequest,
 };
 
+/// One registration and the extension that made it. The shared VM records
+/// every extension's registrations in the same registry, so the owner is what
+/// keeps a later bridge from claiming an earlier extension's entries (and what
+/// lets a failed setup be rolled back)
+/// (docs/ARCHITECTURE-REVIEW-s05c0.md B/1).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Registration<T> {
+    pub owner: String,
+    pub value: T,
+}
+
+/// Owner of registrations made outside an extension's setup (the host itself).
+pub const HOST_OWNER: &str = "<host>";
+
 /// Registration records captured from `pillar.*` API calls (upstream
 /// the ExtensionAPI's internal registries).
 #[derive(Debug, Clone, PartialEq)]
 pub struct HostRegistry {
     /// `pillar.on(event, handler)` — the handler identity the runtime's
     /// `dispatch_handler` resolves (`"@N"`, in registration order).
-    pub event_handlers: Vec<(String, String)>,
+    pub event_handlers: Vec<Registration<(String, String)>>,
     /// `pillar.register_tool(def)` — JSON-normalized definition.
-    pub tools: Vec<serde_json::Value>,
+    pub tools: Vec<Registration<serde_json::Value>>,
     /// `pillar.register_command(name, opts)`.
-    pub commands: Vec<(String, serde_json::Value)>,
+    pub commands: Vec<Registration<(String, serde_json::Value)>>,
     /// `pillar.register_shortcut(key, opts)`.
-    pub shortcuts: Vec<(String, serde_json::Value)>,
+    pub shortcuts: Vec<Registration<(String, serde_json::Value)>>,
     /// `pillar.register_flag(name, opts)`.
-    pub flags: Vec<(String, serde_json::Value)>,
+    pub flags: Vec<Registration<(String, serde_json::Value)>>,
     /// `pillar.append_entry(type, data)`.
     pub appended_entries: Vec<(String, Option<serde_json::Value>)>,
     /// `pillar.send_message(msg)` / `send_user_message`.
@@ -39,12 +53,14 @@ pub struct HostRegistry {
     /// `pillar.register_message_renderer(custom_type, renderer)` — the
     /// custom types, in registration order (the renderer function itself
     /// stays in the VM, keyed by custom type).
-    pub message_renderers: Vec<String>,
+    pub message_renderers: Vec<Registration<String>>,
     /// `pillar.register_entry_renderer(custom_type, renderer)`.
-    pub entry_renderers: Vec<String>,
+    pub entry_renderers: Vec<Registration<String>>,
     /// `pillar.register_markdown_transformer(transformer)` — the VM-side
     /// identities (`@0`, `@1`, …) in registration order.
-    pub markdown_transformers: Vec<String>,
+    pub markdown_transformers: Vec<Registration<String>>,
+    /// The extension whose setup is running: stamped onto every registration.
+    pub current_owner: Option<String>,
 }
 
 impl Default for HostRegistry {
@@ -71,6 +87,7 @@ impl HostRegistry {
             message_renderers: Vec::new(),
             entry_renderers: Vec::new(),
             markdown_transformers: Vec::new(),
+            current_owner: None,
         }
     }
 
@@ -79,10 +96,41 @@ impl HostRegistry {
     pub fn handlers_for(&self, event: &str) -> Vec<&str> {
         self.event_handlers
             .iter()
-            .filter(|(name, _)| name == event)
-            .map(|(_, handler)| handler.as_str())
+            .filter(|registration| registration.value.0 == event)
+            .map(|registration| registration.value.1.as_str())
             .collect()
     }
+
+    /// The owner stamped onto registrations made right now (the extension
+    /// whose setup is running, or the host outside one).
+    fn owner(&self) -> String {
+        self.current_owner
+            .clone()
+            .unwrap_or_else(|| HOST_OWNER.to_string())
+    }
+
+    /// Drop everything one extension registered: a setup that failed must not
+    /// leave handlers or commands behind.
+    pub fn discard_owner(&mut self, owner: &str) {
+        self.event_handlers.retain(|r| r.owner != owner);
+        self.tools.retain(|r| r.owner != owner);
+        self.commands.retain(|r| r.owner != owner);
+        self.shortcuts.retain(|r| r.owner != owner);
+        self.flags.retain(|r| r.owner != owner);
+        self.message_renderers.retain(|r| r.owner != owner);
+        self.entry_renderers.retain(|r| r.owner != owner);
+        self.markdown_transformers.retain(|r| r.owner != owner);
+    }
+}
+
+/// The registered values without their owners (test helper: the tests care
+/// about the registration, not which file made it).
+#[cfg(test)]
+fn owners<T: Clone>(registrations: &[Registration<T>]) -> Vec<T> {
+    registrations
+        .iter()
+        .map(|registration| registration.value.clone())
+        .collect()
 }
 
 /// A loaded extension: its source path and the setup function handle.
@@ -675,6 +723,17 @@ impl ExtensionRuntime {
     /// divergence: upstream awaits the handler (`Promise<void>`); the port's
     /// Lua call is synchronous and a handler that sends a message spawns it.
     pub fn call_command(&mut self, name: &str, args: &str) -> Result<bool, String> {
+        self.call_command_at(name, 0, args)
+    }
+
+    /// Call the `occurrence`-th handler registered for `name` (0-based): the
+    /// host resolves `/name:2` to the second extension that registered it.
+    pub fn call_command_at(
+        &mut self,
+        name: &str,
+        occurrence: usize,
+        args: &str,
+    ) -> Result<bool, String> {
         let context = self
             .context_value()
             .map_err(|error| format!("/{name}: {error}"))?;
@@ -682,14 +741,15 @@ impl ExtensionRuntime {
             .lua
             .load(
                 r#"
-                local name = ...
+                local name, occurrence = ...
                 local registered = __pillar_command_handlers
-                local handler = registered and registered[name]
-                if handler == nil then return nil end
-                return handler
+                local handlers = registered and registered[name]
+                if handlers == nil then return nil end
+                if occurrence < 0 or occurrence >= #handlers then return nil end
+                return handlers[occurrence + 1]
             "#,
             )
-            .call((name,))
+            .call((name, occurrence as i64))
             .map_err(|error| format!("/{name}: {error}"))?;
         let Value::Function(handler) = handler else {
             return Ok(false);
@@ -898,6 +958,27 @@ impl ExtensionRuntime {
         path: &str,
         source: &str,
     ) -> Result<LoadedExtension, ExtensionLoadError> {
+        // The module chunk runs the extension's top-level code (the port
+        // executes both it and the returned setup factory), so everything it
+        // registers belongs to this file — and a chunk that fails is rolled
+        // back like a failed setup.
+        self.set_current_owner(Some(path.to_string()));
+        let result = self.load_extension_inner(path, source);
+        self.set_current_owner(None);
+        if result.is_err() {
+            self.registry
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .discard_owner(path);
+        }
+        result
+    }
+
+    fn load_extension_inner(
+        &mut self,
+        path: &str,
+        source: &str,
+    ) -> Result<LoadedExtension, ExtensionLoadError> {
         // Compile + call the module chunk; both surface as Compile
         // (upstream one per-file load failure).
         let export: luaur_rt::Value = match self.lua.load(source).call(()) {
@@ -933,6 +1014,30 @@ impl ExtensionRuntime {
         if !extension.has_setup {
             return Ok(());
         }
+        // Everything the setup registers belongs to this extension: the shared
+        // VM records the owner so a later bridge cannot claim it, and a failed
+        // setup is rolled back instead of leaving half an extension behind
+        // (docs/ARCHITECTURE-REVIEW-s05c0.md B/1).
+        self.set_current_owner(Some(extension.path.clone()));
+        let result = self.run_setup_inner(extension);
+        self.set_current_owner(None);
+        if result.is_err() {
+            self.registry
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .discard_owner(&extension.path);
+        }
+        result
+    }
+
+    fn set_current_owner(&self, owner: Option<String>) {
+        self.registry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .current_owner = owner;
+    }
+
+    fn run_setup_inner(&mut self, extension: &LoadedExtension) -> Result<(), ExtensionLoadError> {
         // Re-run the module chunk so its setup factory is re-created
         // and invoke it with the @pillar table (upstream retains the
         // export; the port's per-file VM re-evaluation is equivalent
@@ -1087,11 +1192,16 @@ fn install_pillar_api(
                     )
                     .call::<String>((event.as_str(), handler))
                     .map_err(luaur_rt::Error::external)?;
-                registry_sink
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .event_handlers
-                    .push((event, id));
+                {
+                    let mut registry = registry_sink
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let owner = registry.owner();
+                    registry.event_handlers.push(Registration {
+                        owner,
+                        value: (event, id),
+                    });
+                }
                 Ok::<(), luaur_rt::Error>(())
             }),
         )
@@ -1132,11 +1242,13 @@ fn install_pillar_api(
                     )
                     .call((definition,))?;
                 let json = lua_tools.from_value::<serde_json::Value>(stripped)?;
-                tools
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .tools
-                    .push(json);
+                {
+                    let mut registry = tools
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let owner = registry.owner();
+                    registry.tools.push(Registration { owner, value: json });
+                }
                 Ok::<(), luaur_rt::Error>(())
             }),
         )
@@ -1159,7 +1271,16 @@ fn install_pillar_api(
                         local name, opts = ...
                         if type(opts) == "table" and type(opts.handler) == "function" then
                             __pillar_command_handlers = __pillar_command_handlers or {}
-                            __pillar_command_handlers[name] = opts.handler
+                            -- One entry per registration, in registration order:
+                            -- two extensions may register the same command name,
+                            -- and the host resolves them by occurrence (`/name`,
+                            -- `/name:2`, ...).
+                            local handlers = __pillar_command_handlers[name]
+                            if handlers == nil then
+                                handlers = {}
+                                __pillar_command_handlers[name] = handlers
+                            end
+                            table.insert(handlers, opts.handler)
                         end
                         local meta = {}
                         if type(opts) == "table" then
@@ -1174,11 +1295,15 @@ fn install_pillar_api(
                     )
                     .call((name.as_str(), opts))?;
                 let json = lua_commands.from_value::<serde_json::Value>(meta)?;
-                commands
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .commands
-                    .push((name, json));
+                {
+                    let mut registry = commands
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let owner = registry.owner();
+                    registry
+                        .commands
+                        .push(Registration { owner, value: (name, json) });
+                }
                 Ok::<(), luaur_rt::Error>(())
             }),
         )
@@ -1192,11 +1317,15 @@ fn install_pillar_api(
             "register_shortcut",
             Function::wrap(move |key: String, opts: Value| {
                 let json = lua_shortcuts.from_value::<serde_json::Value>(opts)?;
-                shortcuts
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .shortcuts
-                    .push((key, json));
+                {
+                    let mut registry = shortcuts
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let owner = registry.owner();
+                    registry
+                        .shortcuts
+                        .push(Registration { owner, value: (key, json) });
+                }
                 Ok::<(), luaur_rt::Error>(())
             }),
         )
@@ -1210,11 +1339,15 @@ fn install_pillar_api(
             "register_flag",
             Function::wrap(move |name: String, opts: Value| {
                 let json = lua_flags.from_value::<serde_json::Value>(opts)?;
-                flags
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .flags
-                    .push((name, json));
+                {
+                    let mut registry = flags
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let owner = registry.owner();
+                    registry
+                        .flags
+                        .push(Registration { owner, value: (name, json) });
+                }
                 Ok::<(), luaur_rt::Error>(())
             }),
         )
@@ -1516,11 +1649,13 @@ fn install_pillar_api(
                     .call::<bool>((custom_type.as_str(), renderer))
                     .is_ok();
                 if store {
-                    messages_sink
+                    let mut registry = messages_sink
                         .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let owner = registry.owner();
+                    registry
                         .message_renderers
-                        .push(custom_type);
+                        .push(Registration { owner, value: custom_type });
                 }
                 Ok::<(), luaur_rt::Error>(())
             }),
@@ -1545,11 +1680,13 @@ fn install_pillar_api(
                     .call::<bool>((custom_type.as_str(), renderer))
                     .is_ok();
                 if store {
-                    entries_sink
+                    let mut registry = entries_sink
                         .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let owner = registry.owner();
+                    registry
                         .entry_renderers
-                        .push(custom_type);
+                        .push(Registration { owner, value: custom_type });
                 }
                 Ok::<(), luaur_rt::Error>(())
             }),
@@ -1576,11 +1713,16 @@ fn install_pillar_api(
                     )
                     .call::<String>((transformer,))
                     .map_err(luaur_rt::Error::external)?;
-                transformers_sink
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .markdown_transformers
-                    .push(identity);
+                {
+                    let mut registry = transformers_sink
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let owner = registry.owner();
+                    registry.markdown_transformers.push(Registration {
+                        owner,
+                        value: identity,
+                    });
+                }
                 Ok::<(), luaur_rt::Error>(())
             }),
         )
@@ -1995,8 +2137,8 @@ mod api_tests {
             })
             "#);
         let tool = &registry.tools[0];
-        assert_eq!(tool["name"], serde_json::json!("greet"));
-        let parameters = &tool["parameters"];
+        assert_eq!(tool.value["name"], serde_json::json!("greet"));
+        let parameters = &tool.value["parameters"];
         assert_eq!(parameters["type"], serde_json::json!("object"));
         assert_eq!(parameters["required"], serde_json::json!(["name"]));
         let properties = &parameters["properties"];
@@ -2249,8 +2391,14 @@ mod api_tests {
                 "#,
             )
             .unwrap();
-        assert_eq!(runtime.registry().message_renderers, vec!["my-card"]);
-        assert_eq!(runtime.registry().entry_renderers, vec!["my-entry"]);
+        assert_eq!(
+            owners(&runtime.registry().message_renderers),
+            vec!["my-card".to_string()]
+        );
+        assert_eq!(
+            owners(&runtime.registry().entry_renderers),
+            vec!["my-entry".to_string()]
+        );
 
         let rendered = runtime
             .render_custom_message(
@@ -2333,7 +2481,10 @@ mod api_tests {
                 "#,
             )
             .unwrap();
-        assert_eq!(runtime.registry().markdown_transformers, vec!["@0"]);
+        assert_eq!(
+            owners(&runtime.registry().markdown_transformers),
+            vec!["@0".to_string()]
+        );
 
         let user = serde_json::json!({
             "messageType": "user", "isStreaming": false, "availableWidth": 80,
@@ -2835,8 +2986,8 @@ mod registration_tests {
             .unwrap();
         let registry = runtime.registry();
         assert_eq!(registry.tools.len(), 1);
-        assert_eq!(registry.tools[0]["name"], "greet");
-        assert_eq!(registry.tools[0]["label"], "Greet");
+        assert_eq!(registry.tools[0].value["name"], "greet");
+        assert_eq!(registry.tools[0].value["label"], "Greet");
     }
 
     /// `pillar.register_command(name, opts)` keeps the name and opts.
@@ -2855,8 +3006,8 @@ mod registration_tests {
             .unwrap();
         let registry = runtime.registry();
         assert_eq!(registry.commands.len(), 1);
-        assert_eq!(registry.commands[0].0, "hello");
-        assert_eq!(registry.commands[0].1["description"], "Say hello");
+        assert_eq!(registry.commands[0].value.0, "hello");
+        assert_eq!(registry.commands[0].value.1["description"], "Say hello");
     }
 
     /// `pillar.append_entry(type, data?)` distinguishes nil data.
@@ -2947,9 +3098,9 @@ mod registration_tests {
             .unwrap();
         let registry = runtime.registry();
         assert_eq!(registry.shortcuts.len(), 1);
-        assert_eq!(registry.shortcuts[0].0, "ctrl+g");
+        assert_eq!(registry.shortcuts[0].value.0, "ctrl+g");
         assert_eq!(registry.flags.len(), 1);
-        assert_eq!(registry.flags[0].0, "verbose");
+        assert_eq!(registry.flags[0].value.0, "verbose");
     }
 }
 
