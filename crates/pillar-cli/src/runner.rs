@@ -41,8 +41,7 @@ pub type SessionSlot = Arc<Mutex<Option<Weak<AgentSession>>>>;
 /// Point the slot at the live session (upstream the runtime constructing the
 /// ExtensionAPI with the session).
 pub fn bind_session(slot: &SessionSlot, session: &Arc<AgentSession>) {
-    *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) =
-        Some(Arc::downgrade(session));
+    *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::downgrade(session));
 }
 
 /// The session the slot points at: `None` before binding, and also after the
@@ -331,7 +330,8 @@ fn install_host_api(
     use pillar_extensions::runtime::HostApi;
 
     let session = |slot: &SessionSlot| -> Result<Arc<AgentSession>, String> {
-        resolve_session(slot).ok_or_else(|| "extension API: the session is not ready yet".to_string())
+        resolve_session(slot)
+            .ok_or_else(|| "extension API: the session is not ready yet".to_string())
     };
     let tokio_handle = tokio::runtime::Handle::try_current().ok();
 
@@ -547,23 +547,21 @@ fn install_host_api(
         // manager): the JSONL shapes, which is what extensions scan.
         session_entries: {
             let slot = Arc::clone(slot);
-            Some(Arc::new(move || {
-                match resolve_session(&slot) {
-                    Some(session) => {
-                        let entries = session
-                            .session_manager()
-                            .lock()
-                            .expect("session")
-                            .get_entries_owned();
-                        serde_json::Value::Array(
-                            entries
-                                .iter()
-                                .map(pillar_coding_agent::core::session_manager::entry_to_json)
-                                .collect(),
-                        )
-                    }
-                    None => serde_json::Value::Array(Vec::new()),
+            Some(Arc::new(move || match resolve_session(&slot) {
+                Some(session) => {
+                    let entries = session
+                        .session_manager()
+                        .lock()
+                        .expect("session")
+                        .get_entries_owned();
+                    serde_json::Value::Array(
+                        entries
+                            .iter()
+                            .map(pillar_coding_agent::core::session_manager::entry_to_json)
+                            .collect(),
+                    )
                 }
+                None => serde_json::Value::Array(Vec::new()),
             }))
         },
         // The `ctx` facts (upstream the live ExtensionContext fields): the
