@@ -46,9 +46,10 @@ use pillar_coding_agent::modes::rpc::rpc_mode::{
 };
 
 use pillar_cli::effects::EffectBroker;
+use pillar_coding_agent::core::agent_session_class::ExtensionGeneration;
 use pillar_cli::runner::{
-    ExtensionCommandSlot, ExtensionHostSlots, ExtensionWiring, build_extension_runner_with_slots,
-    refresh_extension_data_for, resolve_session,
+    ExtensionHostSlots, ExtensionWiring, build_extension_runner_with_slots,
+    extension_command_handler, refresh_extension_data_for,
 };
 use pillar_cli::trust::{project_extension_dir, resolve_project_trust, stored_project_trust};
 use pillar_coding_agent::core::extensions_types::{ExtensionContextFacts, ExtensionMode};
@@ -309,9 +310,6 @@ async fn build_session_with(
     }
     let rebuild_inputs = wiring.rebuild.clone();
     let extension_runner: Arc<Mutex<ExtensionRunner>> = Arc::new(Mutex::new(wiring.take_runner()));
-    // The session keeps this stable handler; `/reload` repoints the slot, so
-    // the rebuilt VM takes over without rebinding the session.
-    let command_slot = ExtensionCommandSlot::new(&wiring.runtime);
 
     let selection = resolve_cli_model_selection(parsed, &model_runtime)?;
 
@@ -336,7 +334,7 @@ async fn build_session_with(
             reason: start_reason,
             previous_session_file,
         }),
-        command_handler: Some(command_slot.handler()),
+        command_handler: Some(extension_command_handler(&wiring.runtime)),
         system_prompt_rebuild: None,
         // `/reload`: re-run discovery into a fresh VM, keeping the host slots
         // (the session binding, the `ctx.ui` bridge, the facts and the
@@ -346,7 +344,6 @@ async fn build_session_with(
         // (docs/ARCHITECTURE-REVIEW-s05c0.md C).
         extension_runner_rebuild: {
             let inputs = rebuild_inputs;
-            let command_slot = command_slot.clone();
             Some(Arc::new(move |flag_values| {
                 let mut rebuilt = build_extension_runner_with_slots(
                     &inputs.cwd,
@@ -361,13 +358,13 @@ async fn build_session_with(
                 for (path, error) in &rebuilt.errors {
                     eprintln!("Warning: failed to load extension {path}: {error}");
                 }
-                command_slot.set_runtime(&rebuilt.runtime);
-                // The previous runner is still installed here, which is what
-                // tells the session which tools the new generation replaces.
-                if let Some(session) = resolve_session(&inputs.slots.session_slot) {
-                    session.replace_extension_tools(rebuilt.custom_tools());
-                }
-                rebuilt.runner
+                // The session applies the generation (command handler, tools,
+                // runner) only once the build reported no error.
+                Ok(ExtensionGeneration {
+                    command_handler: Some(extension_command_handler(&rebuilt.runtime)),
+                    tools: rebuilt.custom_tools(),
+                    runner: rebuilt.take_runner(),
+                })
             }))
         },
         stream_fn: None,

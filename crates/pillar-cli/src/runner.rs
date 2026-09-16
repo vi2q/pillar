@@ -262,44 +262,6 @@ pub fn extension_command_handler(runtime: &SharedRuntime) -> ExtensionCommandHan
     })
 }
 
-/// The command handler the session holds, resolved per call so `/reload`
-/// reaches the rebuilt VM without rebinding the session. A handler captured
-/// at session creation would keep running the previous generation
-/// (docs/ARCHITECTURE-REVIEW-s05c0.md C).
-#[derive(Clone)]
-pub struct ExtensionCommandSlot {
-    current: Arc<Mutex<ExtensionCommandHandler>>,
-}
-
-impl ExtensionCommandSlot {
-    pub fn new(runtime: &SharedRuntime) -> Self {
-        Self {
-            current: Arc::new(Mutex::new(extension_command_handler(runtime))),
-        }
-    }
-
-    /// Point the slot at a rebuilt runtime (called by the `/reload` factory).
-    pub fn set_runtime(&self, runtime: &SharedRuntime) {
-        *self
-            .current
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = extension_command_handler(runtime);
-    }
-
-    /// The stable handler to give the session; it resolves the slot at call
-    /// time.
-    pub fn handler(&self) -> ExtensionCommandHandler {
-        let current = Arc::clone(&self.current);
-        Arc::new(move |name: &str, args: &str| {
-            let handler = current
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .clone();
-            handler(name, args)
-        })
-    }
-}
-
 /// Install the `pi.exec` host (upstream the process layer behind `exec`):
 /// the command runs with the session's cwd, and the extension receives
 /// `{ stdout, stderr, code, killed }`. The broker authorizes and executes

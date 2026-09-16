@@ -19,7 +19,7 @@ use pillar_ai::types::{
 };
 use pillar_coding_agent::core::agent_session_class::{
     AgentSession, AgentSessionConfig, AgentSessionEvent, BeforeSessionStartFn, ExtensionBindings,
-    ExtensionRunnerFactory, SessionEventMeta, SystemPromptRebuildFn,
+    ExtensionGeneration, ExtensionRunnerFactory, SessionEventMeta, SystemPromptRebuildFn,
 };
 use pillar_coding_agent::core::auth_storage::InMemoryCodingAgentModelsStore;
 use pillar_coding_agent::core::extensions_runner::ExtensionRunner;
@@ -1939,7 +1939,9 @@ async fn reload_rebuilds_runner_and_reemits_session_start() {
                 entry_renderers: Default::default(),
                 markdown_transformer: None,
             };
-            ExtensionRunner::new(vec![extension])
+            Ok(ExtensionGeneration::from_runner(ExtensionRunner::new(vec![
+                extension,
+            ])))
         })
     };
 

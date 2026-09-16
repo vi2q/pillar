@@ -272,10 +272,36 @@ pub type ExtensionCommandHandler = Arc<dyn Fn(&str, &str) -> Result<bool, String
 /// host-owned in this port).
 pub type SystemPromptRebuildFn = Arc<dyn Fn(&[String]) -> String + Send + Sync>;
 
+/// The capabilities one extension generation provides (upstream
+/// `_buildRuntime` builds the whole runtime, not just the runner). The session
+/// applies them together, and only after the build reported no error.
+pub struct ExtensionGeneration {
+    pub runner: ExtensionRunner,
+    /// Replaces the session's command handler when present.
+    pub command_handler: Option<ExtensionCommandHandler>,
+    /// The generation's callable extension tools; builtin tools are kept.
+    pub tools: Vec<pillar_agent::types::AgentTool>,
+}
+
+impl ExtensionGeneration {
+    /// A generation that only carries a runner (hosts without extra
+    /// capabilities, and tests): the current tools and command handler stay.
+    pub fn from_runner(runner: ExtensionRunner) -> Self {
+        Self {
+            runner,
+            command_handler: None,
+            tools: Vec::new(),
+        }
+    }
+}
+
 /// Host hook rebuilding the extension runner on reload from the previous
-/// flag values (upstream `_buildRuntime` constructing a new runner).
+/// flag values (upstream `_buildRuntime` constructing a new runner). Returning
+/// `Err` keeps the previous generation running: the session builds the new
+/// generation *before* tearing the old one down, so a failed rebuild is not a
+/// broken session.
 pub type ExtensionRunnerFactory =
-    Arc<dyn Fn(BTreeMap<String, Value>) -> ExtensionRunner + Send + Sync>;
+    Arc<dyn Fn(BTreeMap<String, Value>) -> Result<ExtensionGeneration, String> + Send + Sync>;
 
 /// Host hook publishing the host-owned extension data after a rebuilt runner
 /// is installed (upstream the host re-reading the runtime's registries).
@@ -335,8 +361,9 @@ pub struct AgentSessionConfig {
     /// (upstream `_rebuildSystemPrompt`).
     pub system_prompt_rebuild: Option<SystemPromptRebuildFn>,
     /// Host hook rebuilding the extension runner on reload (upstream
-    /// `_buildRuntime`). Without it, `reload` stops after the old runner
-    /// shuts down.
+    /// `_buildRuntime`). Without it, `reload` only reloads settings and
+    /// resources and leaves the current generation in place — a generation
+    /// that cannot be replaced must not be torn down.
     pub extension_runner_rebuild: Option<ExtensionRunnerFactory>,
     /// Host hook run after the rebuilt runner is in place (upstream the host
     /// re-reading its own extension registries). The host must not run it
@@ -441,7 +468,7 @@ struct SessionInner {
     resource_loader: Arc<Mutex<ResourceLoader>>,
     model_runtime: Arc<ModelRuntime>,
     extension_runner: Arc<Mutex<ExtensionRunner>>,
-    command_handler: Option<ExtensionCommandHandler>,
+    command_handler: Mutex<Option<ExtensionCommandHandler>>,
     session_start_event: Option<SessionEventMeta>,
     system_prompt_rebuild: Option<SystemPromptRebuildFn>,
     extension_runner_rebuild: Option<ExtensionRunnerFactory>,
@@ -572,7 +599,7 @@ impl AgentSession {
             resource_loader: config.resource_loader,
             model_runtime: config.model_runtime,
             extension_runner: config.extension_runner,
-            command_handler: config.command_handler,
+            command_handler: Mutex::new(config.command_handler),
             session_start_event: config.session_start_event,
             system_prompt_rebuild: config.system_prompt_rebuild,
             extension_runner_rebuild: config.extension_runner_rebuild,
@@ -2125,11 +2152,6 @@ impl AgentSession {
             let runner = self.inner.extension_runner.lock().expect("runner lock");
             runner.flag_values()
         };
-        {
-            let mut runner = self.inner.extension_runner.lock().expect("runner lock");
-            emit_session_shutdown_event(&mut runner, "reload", None);
-            runner.invalidate("Extension runtime reloaded.");
-        }
         self.inner
             .settings_manager
             .lock()
@@ -2147,8 +2169,25 @@ impl AgentSession {
         let Some(factory) = self.inner.extension_runner_rebuild.clone() else {
             return Ok(());
         };
-        let new_runner = factory(previous_flag_values);
-        *self.inner.extension_runner.lock().expect("runner lock") = new_runner;
+        // Build the new generation first: the old runner is only shut down once
+        // a replacement exists, so a failed rebuild (or a factory that refuses)
+        // leaves the session on the generation it had
+        // (docs/ARCHITECTURE-REVIEW-s05c0.md 1).
+        let generation = factory(previous_flag_values)?;
+        // Apply the generation: the command handler and the extension tools
+        // belong to it, and the previous runner is still installed here, which
+        // is what identifies the tools being replaced.
+        if generation.command_handler.is_some() {
+            *self.inner.command_handler.lock().expect("command handler lock") =
+                generation.command_handler;
+        }
+        self.replace_extension_tools(generation.tools);
+        {
+            let mut runner = self.inner.extension_runner.lock().expect("runner lock");
+            emit_session_shutdown_event(&mut runner, "reload", None);
+            runner.invalidate("Extension runtime reloaded.");
+        }
+        *self.inner.extension_runner.lock().expect("runner lock") = generation.runner;
         self.apply_extension_bindings();
         // The generation is fully installed at this point: the host factory
         // also swapped the command handler and the extension tools, so publish
@@ -2409,7 +2448,13 @@ impl AgentSession {
             return Ok(false);
         };
         drop(runner);
-        let Some(handler) = self.inner.command_handler.as_ref() else {
+        let Some(handler) = self
+            .inner
+            .command_handler
+            .lock()
+            .expect("command handler lock")
+            .clone()
+        else {
             // No host handler: the command is registered but not executable
             // in this host.
             return Ok(false);

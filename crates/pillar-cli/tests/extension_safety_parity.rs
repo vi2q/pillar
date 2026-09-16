@@ -13,12 +13,12 @@ use pillar_agent::{Agent, AgentOptions, AgentState, StreamFn};
 use pillar_ai::types::{AssistantMessage, StopReason, Usage};
 use pillar_cli::effects::EffectBroker;
 use pillar_cli::runner::{
-    ExtensionCommandSlot, ExtensionHostSlots, SessionSlot, bind_session, build_extension_runner,
-    build_extension_runner_with_slots, resolve_session,
+    ExtensionHostSlots, bind_session, build_extension_runner, build_extension_runner_with_slots,
+    extension_command_handler, resolve_session,
 };
 use pillar_cli::trust::{project_extension_dir, resolve_project_trust, stored_project_trust};
 use pillar_coding_agent::core::agent_session_class::{
-    AgentSession, AgentSessionConfig, ExtensionRunnerFactory,
+    AgentSession, AgentSessionConfig, ExtensionGeneration, ExtensionRunnerFactory,
 };
 use pillar_coding_agent::core::effects::{EffectDecision, EffectIntent};
 use pillar_coding_agent::core::extensions_runner::ExtensionRunner;
@@ -159,11 +159,12 @@ fn one_registration_dispatches_once() {
     assert_eq!(names, vec!["h1".to_string(), "h2".to_string()]);
 }
 
-/// The session holds a stable command handler; after a rebuild it must reach
-/// the new VM (a captured handler kept running the previous generation).
-#[test]
-fn reload_swaps_the_command_handler_generation() {
-    let commands = |generation: &str| {
+/// A `/reload` replaces the whole generation: the rebuilt VM's command handler
+/// and tools take over, and the host snapshot is published after the new runner
+/// is installed.
+#[tokio::test]
+async fn reload_swaps_the_extension_generation() {
+    let source = |generation: &str| {
         format!(
             r#"
             local pillar = require("@pillar")
@@ -173,91 +174,118 @@ fn reload_swaps_the_command_handler_generation() {
                     pillar.fs.write("gen.txt", "{generation}")
                 end,
             }})
+            pillar.register_tool({{ name = "{generation}tool", description = "{generation}tool" }})
             return nil
             "#
         )
     };
-    let cwd = temp_dir("cmdgen");
+    let cwd = temp_dir("generation");
     let cwd_str = cwd.to_string_lossy().to_string();
-    let dir1 = extension_dir("cmdgen1", "gen.luau", &commands("v1"));
-    let dir2 = extension_dir("cmdgen2", "gen.luau", &commands("v2"));
-    let out = cwd.join("gen.txt");
-
-    let wiring1 =
-        build_extension_runner(&cwd_str, None, None, &[dir1.to_string_lossy().to_string()]);
-    let slot = ExtensionCommandSlot::new(&wiring1.runtime);
-    let handler = slot.handler();
-    assert!(handler("gen", "").unwrap());
-    assert_eq!(std::fs::read_to_string(&out).unwrap(), "v1");
-
-    // A rebuild repoints the slot; the handler object the session kept must
-    // reach the new generation.
-    let wiring2 =
-        build_extension_runner(&cwd_str, None, None, &[dir2.to_string_lossy().to_string()]);
-    slot.set_runtime(&wiring2.runtime);
-    assert!(handler("gen", "").unwrap());
-    assert_eq!(std::fs::read_to_string(&out).unwrap(), "v2");
-}
-
-/// A `/reload` is a generation swap: the rebuilt runtime's tools replace the
-/// previous generation's, and the host snapshot is published after the new
-/// runner is installed.
-#[tokio::test]
-async fn reload_replaces_extension_tools_and_publishes() {
-    let tools = |name: &str| {
-        format!(
-            r#"
-            local pillar = require("@pillar")
-            pillar.register_tool({{ name = "{name}", description = "{name}" }})
-            return nil
-            "#
-        )
-    };
-    let dir1 = extension_dir("tools1", "tools.luau", &tools("v1tool"));
-    let dir2 = extension_dir("tools2", "tools.luau", &tools("v2tool"));
+    let dir1 = extension_dir("gen1", "ext.luau", &source("v1"));
+    let dir2 = extension_dir("gen2", "ext.luau", &source("v2"));
     let configured1 = vec![dir1.to_string_lossy().to_string()];
     let configured2 = vec![dir2.to_string_lossy().to_string()];
+    let out = cwd.join("gen.txt");
 
-    let mut wiring1 = build_extension_runner("", None, None, &configured1);
-    assert!(wiring1.errors.is_empty(), "{:?}", wiring1.errors);
+    let mut wiring1 = build_extension_runner(&cwd_str, None, None, &configured1);
     let tools1 = wiring1.custom_tools();
     let runner1 = wiring1.take_runner();
-    let session_slot: SessionSlot = Arc::new(Mutex::new(None));
     let published = Arc::new(AtomicBool::new(false));
-
-    // The host factory of a rebuild: load into a fresh VM and hand the
-    // session the new generation's tools while the previous runner is still
-    // installed (that is what identifies the tools being replaced).
     let factory: ExtensionRunnerFactory = {
-        let session_slot = Arc::clone(&session_slot);
+        let cwd_str = cwd_str.clone();
         Arc::new(move |_flags| {
-            let mut rebuilt = build_extension_runner("", None, None, &configured2);
+            let mut rebuilt = build_extension_runner(&cwd_str, None, None, &configured2);
             assert!(rebuilt.errors.is_empty(), "{:?}", rebuilt.errors);
-            if let Some(session) = resolve_session(&session_slot) {
-                session.replace_extension_tools(rebuilt.custom_tools());
-            }
-            rebuilt.take_runner()
+            Ok(ExtensionGeneration {
+                command_handler: Some(extension_command_handler(&rebuilt.runtime)),
+                tools: rebuilt.custom_tools(),
+                runner: rebuilt.take_runner(),
+            })
         })
     };
 
-    let session = session_for_reload(runner1, tools1, factory);
-    *session_slot.lock().unwrap() = Some(Arc::downgrade(&session));
+    let mut config = base_session_config(Arc::new(Mutex::new(runner1)), tools1);
+    config.command_handler = Some(extension_command_handler(&wiring1.runtime));
+    config.extension_runner_rebuild = Some(factory);
+    let session = Arc::new(AgentSession::new(config));
     let published_for_session = Arc::clone(&published);
     session.set_extension_reload_publish(Arc::new(move || {
         published_for_session.store(true, Ordering::SeqCst);
     }));
+
     assert_eq!(tool_names(&session), vec!["v1tool".to_string()]);
+    session.prompt("/gen", None).await.expect("v1 command runs");
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "v1");
 
     session.reload(None).await.expect("reload succeeds");
 
     assert_eq!(
         tool_names(&session),
         vec!["v2tool".to_string()],
-        "the rebuilt generation's tools must replace the old ones"
+        "the rebuilt generation's tools replace the old ones"
+    );
+    session.prompt("/gen", None).await.expect("v2 command runs");
+    assert_eq!(
+        std::fs::read_to_string(&out).unwrap(),
+        "v2",
+        "the retained command path reaches the rebuilt VM"
     );
     assert!(
         published.load(Ordering::SeqCst),
         "the host snapshot is published after the new runner is installed"
+    );
+}
+
+/// A rebuild that fails leaves the previous generation running: the session
+/// must not tear down a generation it cannot replace.
+#[tokio::test]
+async fn a_failed_rebuild_keeps_the_previous_generation() {
+    let source = r#"
+        local pillar = require("@pillar")
+        pillar.register_command("gen", {
+            description = "gen",
+            handler = function(args, ctx)
+                pillar.fs.write("gen.txt", "v1")
+            end,
+        })
+        pillar.register_tool({ name = "v1tool", description = "v1tool" })
+        return nil
+    "#;
+    let cwd = temp_dir("generation-fail");
+    let cwd_str = cwd.to_string_lossy().to_string();
+    let dir = extension_dir("gen-fail", "ext.luau", source);
+    let out = cwd.join("gen.txt");
+
+    let mut wiring = build_extension_runner(&cwd_str, None, None, &[dir.to_string_lossy().to_string()]);
+    let tools = wiring.custom_tools();
+    let runner = wiring.take_runner();
+    let factory: ExtensionRunnerFactory =
+        Arc::new(|_flags| Err("the new generation is broken".to_string()));
+
+    let mut config = base_session_config(Arc::new(Mutex::new(runner)), tools);
+    config.command_handler = Some(extension_command_handler(&wiring.runtime));
+    config.extension_runner_rebuild = Some(factory);
+    let session = Arc::new(AgentSession::new(config));
+
+    let error = session
+        .reload(None)
+        .await
+        .expect_err("a failed rebuild is reported");
+    assert!(error.contains("broken"), "{error}");
+    assert_eq!(tool_names(&session), vec!["v1tool".to_string()]);
+    session
+        .prompt("/gen", None)
+        .await
+        .expect("the old generation still runs");
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "v1");
+    assert!(
+        session
+            .extension_runner_arc()
+            .lock()
+            .expect("runner lock")
+            .assert_active()
+            .is_ok(),
+        "the old runner must not be invalidated by a failed rebuild"
     );
 }
 
@@ -494,7 +522,7 @@ fn the_session_slot_does_not_keep_the_session_alive() {
     let session = session_for_reload(
         ExtensionRunner::new(Vec::new()),
         Vec::new(),
-        Arc::new(|_| ExtensionRunner::new(Vec::new())),
+        Arc::new(|_| Ok(ExtensionGeneration::from_runner(ExtensionRunner::new(Vec::new())))),
     );
     bind_session(&slots.session_slot, &session);
     assert!(resolve_session(&slots.session_slot).is_some());
@@ -538,7 +566,7 @@ fn dispose_clears_the_agent_hooks_and_unbinds_the_host() {
     let session = session_for_reload(
         ExtensionRunner::new(Vec::new()),
         Vec::new(),
-        Arc::new(|_| ExtensionRunner::new(Vec::new())),
+        Arc::new(|_| Ok(ExtensionGeneration::from_runner(ExtensionRunner::new(Vec::new())))),
     );
     bind_session(&slots.session_slot, &session);
     session.install_tool_hooks();
