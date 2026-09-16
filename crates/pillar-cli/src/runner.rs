@@ -198,7 +198,15 @@ pub fn build_extension_runner_with_slots(
     // The host callbacks must exist before the extension factories run: a
     // factory may already call `pillar.fs` / `pillar.get_flag` / `ctx.ui`.
     install_exec_host(&runtime, &slots.broker, cwd);
-    install_host_api(&runtime, &session_slot, &data, &ui_slot, &context, &slots.broker, cwd);
+    install_host_api(
+        &runtime,
+        &session_slot,
+        &data,
+        &ui_slot,
+        &context,
+        &slots.broker,
+        cwd,
+    );
     let (runner, errors) = build_luau_runner(&paths, cwd, &loader, true);
     ExtensionWiring {
         runtime,
@@ -279,9 +287,8 @@ impl ExtensionCommandSlot {
 fn install_exec_host(runtime: &SharedRuntime, broker: &Arc<EffectBroker>, cwd: &str) {
     let cwd = cwd.to_string();
     let broker = Arc::clone(broker);
-    let exec: pillar_extensions::runtime::ExecHost = Arc::new(move |command, args| {
-        broker.exec(&cwd, &command, &args)
-    });
+    let exec: pillar_extensions::runtime::ExecHost =
+        Arc::new(move |command, args| broker.exec(&cwd, command, args));
     runtime
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -568,9 +575,11 @@ fn install_host_api(
             let broker = Arc::clone(broker);
             // The broker resolves the path, authorizes it and only then
             // touches the filesystem (never call the fs API from here).
-            Some(Arc::new(move |op: &str, path: &str, content: Option<&str>| {
-                broker.fs(&cwd, op, path, content)
-            }))
+            Some(Arc::new(
+                move |op: &str, path: &str, content: Option<&str>| {
+                    broker.fs(&cwd, op, path, content)
+                },
+            ))
         },
         set_active_tools: {
             let slot = Arc::clone(slot);

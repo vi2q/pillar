@@ -12,7 +12,7 @@ use pillar_coding_agent::core::session_entries::SessionEntry as Entry;
 use pillar_coding_agent::core::session_manager::{
     CURRENT_SESSION_VERSION, FileEntry, SessionManager, assert_valid_session_id,
     build_context_entries, build_session_path, default_session_dir_path, generate_id_with,
-    get_latest_compaction_entry, load_entries_from_file, migrate_session_entries,
+    get_latest_compaction_entry, load_entries_from_file, load_session_file, migrate_session_entries,
     parse_iso_timestamp, parse_session_entry_line, session_entry_to_context_messages,
 };
 
@@ -672,4 +672,113 @@ fn list_all_scans_the_given_directory_and_reports_progress() {
     // A missing directory lists nothing (upstream the same).
     let missing = std::env::temp_dir().join(format!("pillar-session-list-all-{unique}-missing"));
     assert!(SessionManager::list_all(Some(&missing), None).is_empty());
+}
+
+// --- durability (docs/ARCHITECTURE-REVIEW-s05c0.md E) ------------------------------------
+
+/// A failed append must not leave the live state ahead of the file: the
+/// entry, its index and the leaf all roll back.
+#[test]
+fn a_failed_append_rolls_the_session_state_back() {
+    let dir = std::env::temp_dir().join(format!(
+        "pillar-session-rollback-{}-{}",
+        std::process::id(),
+        chrono_unique()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = write_session_file(&dir, "/tmp", None, "hello");
+    let mut manager = SessionManager::open(&file, None, None).expect("open");
+    let entries_before = manager.get_entries().len();
+    let branch_before: Vec<String> = manager
+        .get_branch(None)
+        .iter()
+        .map(|entry| entry.id().to_string())
+        .collect();
+
+    // Replace the session file with a directory: every write path fails.
+    std::fs::remove_file(&file).unwrap();
+    std::fs::create_dir(&file).unwrap();
+    assert!(manager.append_message(stamp_msg("later", true)).is_err());
+    assert_eq!(manager.get_entries().len(), entries_before);
+    assert_eq!(
+        manager
+            .get_branch(None)
+            .iter()
+            .map(|entry| entry.id().to_string())
+            .collect::<Vec<_>>(),
+        branch_before
+    );
+
+    // Once the file is writable again the next append continues from the
+    // rolled-back leaf, leaving no gap.
+    std::fs::remove_dir(&file).unwrap();
+    let id = manager
+        .append_message(stamp_msg("later", true))
+        .expect("append after the failed one");
+    let ids: Vec<String> = manager
+        .get_branch(None)
+        .iter()
+        .map(|entry| entry.id().to_string())
+        .collect();
+    assert_eq!(ids.last(), Some(&id));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A truncated last line (the writer died mid-append) is dropped and the file
+/// repaired, so the next append does not splice onto the fragment.
+#[test]
+fn a_truncated_last_line_is_dropped_and_repaired() {
+    let dir = std::env::temp_dir().join(format!(
+        "pillar-session-torn-{}-{}",
+        std::process::id(),
+        chrono_unique()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = write_session_file(&dir, "/tmp", None, "hello");
+    let mut content = std::fs::read_to_string(&file).unwrap();
+    content.push_str("{\"type\":\"message\",\"id\":\"torn\",\"parentId\":");
+    std::fs::write(&file, content).unwrap();
+
+    let load = load_session_file(&file);
+    assert!(load.torn_tail, "the last line is reported as truncated");
+    assert!(load.corrupt.is_empty(), "{:?}", load.corrupt);
+
+    let manager = SessionManager::open(&file, None, None).expect("open repairs the tail");
+    assert_eq!(manager.get_entries().len(), load.entries.len() - 1);
+    let repaired = std::fs::read_to_string(&file).unwrap();
+    assert!(!repaired.contains("torn"));
+    assert!(repaired.ends_with('\n'));
+    assert!(!load_session_file(&file).torn_tail);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A damaged line in the middle is reported instead of being dropped: the
+/// session refuses to open and the file stays untouched for manual repair.
+#[test]
+fn a_damaged_middle_line_is_reported_instead_of_dropped() {
+    let dir = std::env::temp_dir().join(format!(
+        "pillar-session-corrupt-{}-{}",
+        std::process::id(),
+        chrono_unique()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = write_session_file(&dir, "/tmp", None, "hello");
+    let content = std::fs::read_to_string(&file).unwrap();
+    let mut lines: Vec<&str> = content.lines().collect();
+    lines.insert(1, "{\"type\":\"message\"}");
+    std::fs::write(&file, format!("{}\n", lines.join("\n"))).unwrap();
+
+    let load = load_session_file(&file);
+    assert_eq!(load.corrupt.len(), 1, "{:?}", load.corrupt);
+    assert_eq!(load.corrupt[0].0, 2);
+    assert!(!load.torn_tail);
+    assert_eq!(load.entries.len(), 3, "the readable entries survive");
+
+    let error = match SessionManager::open(&file, None, None) {
+        Ok(_) => panic!("corruption must be reported"),
+        Err(error) => error,
+    };
+    assert!(error.contains("corrupt at line(s) 2"), "{error}");
+    assert!(std::fs::read_to_string(&file).unwrap().contains("{\"type\":\"message\"}"));
+    std::fs::remove_dir_all(&dir).ok();
 }

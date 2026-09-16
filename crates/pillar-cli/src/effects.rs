@@ -121,7 +121,7 @@ impl EffectBroker {
         }
         let resolved = Path::new(&path);
         match op {
-            "read" => match std::fs::read_to_string(&resolved) {
+            "read" => match std::fs::read_to_string(resolved) {
                 Ok(text) => Ok(serde_json::Value::String(text)),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                     Ok(serde_json::Value::Null)
@@ -135,12 +135,12 @@ impl EffectBroker {
                 if let Some(parent) = resolved.parent() {
                     let _ = std::fs::create_dir_all(parent);
                 }
-                std::fs::write(&resolved, content)
+                std::fs::write(resolved, content)
                     .map(|_| serde_json::Value::Bool(true))
                     .map_err(|error| format!("pillar.fs.write: {error}"))
             }
             "list" => {
-                let entries = std::fs::read_dir(&resolved)
+                let entries = std::fs::read_dir(resolved)
                     .map_err(|error| format!("pillar.fs.list: {error}"))?;
                 let mut names: Vec<String> = entries
                     .filter_map(|entry| entry.ok())
@@ -151,7 +151,7 @@ impl EffectBroker {
                     names.into_iter().map(serde_json::Value::String).collect(),
                 ))
             }
-            "stat" => match std::fs::metadata(&resolved) {
+            "stat" => match std::fs::metadata(resolved) {
                 Ok(metadata) => {
                     let modified_ms = metadata
                         .modified()

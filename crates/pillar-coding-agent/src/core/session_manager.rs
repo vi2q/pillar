@@ -632,10 +632,36 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
+/// Publish a session file atomically: the content goes to a sibling temp file
+/// that is renamed over the target, so an interrupted write leaves the
+/// previous file intact instead of a truncated session (the review's E).
+fn write_session_file_atomically(path: &Path, content: &str) -> Result<(), String> {
+    use std::io::Write;
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| "session".to_string());
+    let temp = path.with_file_name(format!("{file_name}.tmp"));
+    let write = || -> std::io::Result<()> {
+        let mut file = fs::File::create(&temp)?;
+        file.write_all(content.as_bytes())?;
+        // The rename must not publish bytes the disk has not seen: a crash
+        // after the rename would otherwise leave a short file.
+        file.sync_all()
+    };
+    if let Err(error) = write() {
+        let _ = fs::remove_file(&temp);
+        return Err(format!("Failed to write session: {error}"));
+    }
+    fs::rename(&temp, path).map_err(|error| {
+        let _ = fs::remove_file(&temp);
+        format!("Failed to replace session: {error}")
+    })
+}
+
 // ============================================================================
 // Migrations
 // ============================================================================
-
 /// Run all necessary migrations to bring entries to the current version
 /// (upstream `migrateToCurrentVersion`): v1 -> v2 adds id/parentId and
 /// converts firstKeptEntryIndex to firstKeptEntryId; v2 -> v3 renames the
@@ -927,24 +953,54 @@ pub struct SessionManager {
     now_ms: fn() -> u64,
 }
 
-/// Result of loading a session file (upstream `loadEntriesFromFile`).
-pub fn load_entries_from_file(file_path: &Path) -> Vec<FileEntry> {
+/// Result of loading a session file (upstream `loadEntriesFromFile` plus the
+/// damage report the port needs): the entries that parsed, the lines that did
+/// not, and whether the last line was cut mid-write.
+#[derive(Debug, Clone, Default)]
+pub struct SessionFileLoad {
+    pub entries: Vec<FileEntry>,
+    /// `(1-based line number, line)` for unparsable lines before the last one.
+    pub corrupt: Vec<(usize, String)>,
+    /// The final line did not parse: the writer died mid-append. Unlike a
+    /// damaged middle line this is recoverable and is dropped.
+    pub torn_tail: bool,
+}
+
+/// Load a session file, reporting damage instead of hiding it.
+pub fn load_session_file(file_path: &Path) -> SessionFileLoad {
+    let mut load = SessionFileLoad::default();
     if !file_path.exists() {
-        return Vec::new();
+        return load;
     }
     let Ok(content) = fs::read_to_string(file_path) else {
-        return Vec::new();
+        return load;
     };
-    let entries: Vec<FileEntry> = content
-        .lines()
-        .filter_map(parse_session_entry_line)
-        .collect();
+    let lines: Vec<&str> = content.lines().collect();
+    let last = lines.len().saturating_sub(1);
+    for (index, line) in lines.iter().enumerate() {
+        match parse_session_entry_line(line) {
+            Some(entry) => load.entries.push(entry),
+            // A blank line is a trailing newline, not damage.
+            None if line.trim().is_empty() => {}
+            None if index == last => load.torn_tail = true,
+            None => load.corrupt.push((index + 1, (*line).to_string())),
+        }
+    }
 
     // Validate the session header before repairing the file.
-    match entries.first() {
-        Some(FileEntry::Header(header)) if !header.id.is_empty() => entries,
-        _ => Vec::new(),
+    match load.entries.first() {
+        Some(FileEntry::Header(header)) if !header.id.is_empty() => load,
+        _ => SessionFileLoad {
+            entries: Vec::new(),
+            corrupt: load.corrupt,
+            torn_tail: load.torn_tail,
+        },
     }
+}
+
+/// [`load_session_file`] without the damage report (the lenient listing path).
+pub fn load_entries_from_file(file_path: &Path) -> Vec<FileEntry> {
+    load_session_file(file_path).entries
 }
 
 impl SessionManager {
@@ -992,18 +1048,41 @@ impl SessionManager {
         session_file: &Path,
         preloaded: Option<Vec<FileEntry>>,
     ) -> Result<(), String> {
+        let previous_file = self.session_file.clone();
         self.session_file = Some(session_file.to_path_buf());
         if session_file.exists() {
-            self.file_entries = match preloaded {
-                Some(entries) => entries,
-                None => load_entries_from_file(session_file),
+            let load = match preloaded {
+                Some(entries) => SessionFileLoad {
+                    entries,
+                    ..Default::default()
+                },
+                None => load_session_file(session_file),
             };
+            self.file_entries = load.entries;
+
+            if !load.corrupt.is_empty() {
+                // A damaged line in the middle is not a recoverable tail: fail
+                // instead of continuing with a transcript that silently lost
+                // entries.
+                let lines = load
+                    .corrupt
+                    .iter()
+                    .map(|(line, _)| line.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                self.session_file = previous_file;
+                return Err(format!(
+                    "Session file is corrupt at line(s) {lines}: {}",
+                    session_file.display()
+                ));
+            }
 
             if self.file_entries.is_empty() {
                 // Empty file: initialize with a valid session header. Non-empty
                 // files that did not parse fail without modification.
                 let size = fs::metadata(session_file).map(|m| m.len()).unwrap_or(0);
                 if size > 0 {
+                    self.session_file = previous_file;
                     return Err(format!(
                         "Session file is not a valid pi session: {}",
                         session_file.display()
@@ -1026,7 +1105,22 @@ impl SessionManager {
                 .unwrap_or_else(pillar_ai::uuid::uuidv7);
 
             if migrate_session_entries(&mut self.file_entries) {
-                self.rewrite_file()?;
+                if let Err(error) = self.rewrite_file() {
+                    self.session_file = previous_file;
+                    return Err(error);
+                }
+            } else if load.torn_tail {
+                // The last line was cut mid-write (the process died while
+                // appending). Drop it and repair the file now, so the next
+                // append does not splice onto the fragment.
+                eprintln!(
+                    "Warning: dropped a truncated last line from {}",
+                    session_file.display()
+                );
+                if let Err(error) = self.rewrite_file() {
+                    self.session_file = previous_file;
+                    return Err(error);
+                }
             }
 
             self.build_index();
@@ -1113,7 +1207,7 @@ impl SessionManager {
             content.push_str(&serde_json::to_string(&entry.to_json()).unwrap_or_default());
             content.push('\n');
         }
-        fs::write(session_file, content).map_err(|e| format!("Failed to write session: {e}"))
+        write_session_file_atomically(session_file, &content)
     }
 
     fn persist_entry(&mut self, entry: &Entry) -> Result<(), String> {
@@ -1185,12 +1279,20 @@ impl SessionManager {
 
     fn append_entry(&mut self, entry: Entry) -> Result<String, String> {
         let id = entry.id().to_string();
+        let previous_leaf = self.leaf_id.clone();
         self.file_entries.push(FileEntry::Entry(entry));
         let index = self.file_entries.len() - 1;
         self.by_id.insert(id.clone(), index);
         self.leaf_id = Some(id.clone());
         let entry_clone = self.file_entries[index].entry_clone().clone();
-        self.persist_entry(&entry_clone)?;
+        if let Err(error) = self.persist_entry(&entry_clone) {
+            // The live state must not claim an entry the file does not have:
+            // roll it back and let the caller decide.
+            self.file_entries.truncate(index);
+            self.by_id.remove(&id);
+            self.leaf_id = previous_leaf;
+            return Err(error);
+        }
         Ok(id)
     }
 
@@ -1556,14 +1658,7 @@ impl SessionManager {
             usage,
             from_hook,
         });
-        let id = entry.id().to_string();
-        self.file_entries.push(FileEntry::Entry(entry));
-        let index = self.file_entries.len() - 1;
-        self.by_id.insert(id.clone(), index);
-        self.leaf_id = Some(id.clone());
-        let entry_clone = self.file_entries[index].entry_clone().clone();
-        self.persist_entry(&entry_clone)?;
-        Ok(id)
+        self.append_entry(entry)
     }
 
     // --- constructors ------------------------------------------------------------
@@ -1822,20 +1917,18 @@ impl SessionManager {
             parent_id = label_entries.last().map(|e| e.id().to_string());
         }
 
-        self.file_entries = vec![FileEntry::Header(header)];
+        let mut entries = vec![FileEntry::Header(header)];
         for entry in path_without_labels {
-            self.file_entries.push(FileEntry::Entry(entry));
+            entries.push(FileEntry::Entry(entry));
         }
         for entry in label_entries {
-            self.file_entries.push(FileEntry::Entry(entry));
+            entries.push(FileEntry::Entry(entry));
         }
-        self.session_id = new_session_id.clone();
-        self.session_file = Some(new_session_file.clone());
-        self.build_index();
-
         // Only write the file now if it contains an assistant message;
-        // otherwise defer to persist_entry.
-        let has_assistant = self.file_entries.iter().any(|e| {
+        // otherwise defer to persist_entry. The write happens before the
+        // manager claims the branched state, so a failed write leaves it on
+        // the session it had.
+        let has_assistant = entries.iter().any(|e| {
             matches!(
                 e,
                 FileEntry::Entry(Entry::Message(message_entry))
@@ -1846,11 +1939,19 @@ impl SessionManager {
             )
         });
         if has_assistant {
-            self.rewrite_file()?;
-            self.flushed = true;
-        } else {
-            self.flushed = false;
+            let mut content = String::new();
+            for entry in &entries {
+                content.push_str(&serde_json::to_string(&entry.to_json()).unwrap_or_default());
+                content.push('\n');
+            }
+            write_session_file_atomically(&new_session_file, &content)?;
         }
+
+        self.file_entries = entries;
+        self.session_id = new_session_id.clone();
+        self.session_file = Some(new_session_file.clone());
+        self.build_index();
+        self.flushed = has_assistant;
 
         Ok(Some(new_session_file))
     }

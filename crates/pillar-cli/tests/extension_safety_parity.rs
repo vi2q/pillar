@@ -297,9 +297,8 @@ fn base_session_config(
         ..AgentState::default()
     });
     let agent = Arc::new(Agent::new(options));
-    let model_runtime = Arc::new(
-        ModelRuntime::new(CreateModelRuntimeOptions::default()).expect("model runtime"),
-    );
+    let model_runtime =
+        Arc::new(ModelRuntime::new(CreateModelRuntimeOptions::default()).expect("model runtime"));
     let session_manager = Arc::new(Mutex::new(
         SessionManager::in_memory("", None).expect("in-memory session"),
     ));

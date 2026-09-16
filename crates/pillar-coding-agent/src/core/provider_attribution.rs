@@ -6,9 +6,7 @@
 //! (the caller applies `isInstallTelemetryEnabled`, which also reads
 //! `PILLAR_TELEMETRY`).
 
-use pillar_ai::api::{
-    DEFAULT_CLIENT_NAME, DEFAULT_REFERER_URL, client_name, referer_url,
-};
+use pillar_ai::api::{DEFAULT_CLIENT_NAME, DEFAULT_REFERER_URL, client_name, referer_url};
 use pillar_ai::types::{Model, ProviderHeaders};
 
 /// The client identity sent to providers. The defaults are what the upstream
@@ -140,7 +138,10 @@ fn session_headers(
     }
     Some(vec![
         ("x-opencode-session".to_string(), session_id.to_string()),
-        ("x-opencode-client".to_string(), identity.client_name.clone()),
+        (
+            "x-opencode-client".to_string(),
+            identity.client_name.clone(),
+        ),
     ])
 }
 
