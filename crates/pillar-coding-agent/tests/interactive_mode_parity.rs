@@ -801,6 +801,33 @@ fn submit_routes_the_non_selector_commands() {
     mode.handle_selector_key("\u{1b}").expect("settings");
 }
 
+/// `/reload` schedules the session reload (upstream `handleReloadCommand`),
+/// with the streaming / compaction guards.
+#[test]
+fn submit_routes_reload() {
+    let _guard = THEME_LOCK.lock().expect("lock");
+    install_dark();
+    let session = session();
+    // `make_mode` takes THEME_LOCK itself (std mutexes are not reentrant).
+    let mode = InteractiveMode::new(
+        Arc::clone(&session),
+        TranscriptSettings::default(),
+        Vec::new(),
+        InteractiveModeOptions {
+            tui_mode: Some(TuiMode::Regular),
+            clear_on_shrink: Some(false),
+            show_terminal_progress: Some(false),
+            version: Some("0.84.3".to_string()),
+            on_terminal_title: Some(Arc::new(|_| {})),
+            on_terminal_progress: None,
+            cwd_git_paths: None,
+            ..Default::default()
+        },
+    );
+    assert_eq!(mode.handle_submit("/reload"), vec![ModeAction::Reload]);
+    assert_eq!(mode.editor_text(), "");
+}
+
 #[test]
 fn submit_routes_bash_and_steering() {
     let session = session();

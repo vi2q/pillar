@@ -7,7 +7,7 @@
 //! the session binds to (upstream the extension construction inside
 //! `_buildRuntime`).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use std::sync::Mutex;
@@ -45,6 +45,38 @@ pub struct ExtensionDataSnapshot {
     pub active_tools: serde_json::Value,
 }
 
+/// The host-side slots a wiring's callbacks resolve through. A `/reload`
+/// builds a fresh VM and runner but keeps these, so the session binding, the
+/// `ctx.ui` bridge, the facts and the command snapshot survive the rebuild.
+#[derive(Clone)]
+pub struct ExtensionHostSlots {
+    /// The live session the host callbacks resolve (see [`SessionSlot`]).
+    pub session_slot: SessionSlot,
+    /// Command / tool data for the `@pillar` getters.
+    pub data: Arc<Mutex<ExtensionDataSnapshot>>,
+    /// The `ctx.ui` bridge: the interactive run installs its pump-backed
+    /// sender (upstream the mode owns the extension UI context).
+    pub ui_slot: ExtensionUiSlot,
+    /// The `ctx` facts the extensions see. The host keeps its own cell
+    /// instead of asking the session's runner: a handler runs while the
+    /// runner mutex is held, so re-locking it there would deadlock.
+    pub context: Arc<Mutex<ExtensionContextFacts>>,
+}
+
+impl ExtensionHostSlots {
+    pub fn new(cwd: &str) -> Self {
+        Self {
+            session_slot: Arc::new(Mutex::new(None)),
+            data: Arc::new(Mutex::new(ExtensionDataSnapshot::default())),
+            ui_slot: Arc::new(Mutex::new(Default::default())),
+            context: Arc::new(Mutex::new(ExtensionContextFacts {
+                cwd: cwd.to_string(),
+                ..Default::default()
+            })),
+        }
+    }
+}
+
 /// The Luau runtime plus the runner built from the discovered extension
 /// files. The runtime must outlive the runner's extension bridges.
 pub struct ExtensionWiring {
@@ -64,9 +96,40 @@ pub struct ExtensionWiring {
     /// instead of asking the session's runner: a handler runs while the
     /// runner mutex is held, so re-locking it there would deadlock.
     pub context: Arc<Mutex<ExtensionContextFacts>>,
+    /// The discovery inputs a rebuild repeats (upstream `_buildRuntime`
+    /// re-runs discovery).
+    pub rebuild: ExtensionRebuildInputs,
+}
+
+/// Everything a rebuild needs to re-discover and re-load the extensions.
+#[derive(Clone)]
+pub struct ExtensionRebuildInputs {
+    pub cwd: String,
+    pub global_dir: Option<PathBuf>,
+    pub project_dir: Option<PathBuf>,
+    pub configured: Vec<String>,
+    pub slots: ExtensionHostSlots,
 }
 
 impl ExtensionWiring {
+    /// Re-run discovery and loading into a fresh VM, sharing the host slots.
+    /// This is the `/reload` path (upstream `_buildRuntime`): the new runner
+    /// replaces the session's in place.
+    pub fn rebuild(&self, flag_values: &std::collections::BTreeMap<String, serde_json::Value>) -> ExtensionWiring {
+        let inputs = self.rebuild.clone();
+        let mut wiring = build_extension_runner_with_slots(
+            &inputs.cwd,
+            inputs.global_dir.as_deref(),
+            inputs.project_dir.as_deref(),
+            &inputs.configured,
+            &inputs.slots,
+        );
+        for (name, value) in flag_values {
+            wiring.runner.set_flag_value(name, value.clone());
+        }
+        wiring
+    }
+
     /// Publish the `ctx` facts (upstream `bindCore` setting cwd / mode and
     /// `setUIContext` tracking the UI). Called next to
     /// `AgentSession::bind_extensions`.
@@ -89,15 +152,30 @@ pub fn build_extension_runner(
     project_dir: Option<&Path>,
     configured: &[String],
 ) -> ExtensionWiring {
+    build_extension_runner_with_slots(
+        cwd,
+        global_dir,
+        project_dir,
+        configured,
+        &ExtensionHostSlots::new(cwd),
+    )
+}
+
+/// [`build_extension_runner`] with caller-owned host slots (a rebuild reuses
+/// the running session's slots).
+pub fn build_extension_runner_with_slots(
+    cwd: &str,
+    global_dir: Option<&Path>,
+    project_dir: Option<&Path>,
+    configured: &[String],
+    slots: &ExtensionHostSlots,
+) -> ExtensionWiring {
     let paths = discover_luau_paths(global_dir, project_dir, configured, cwd);
     let (runtime, loader) = create_luau_loader(None);
-    let session_slot: SessionSlot = Arc::new(Mutex::new(None));
-    let data = Arc::new(Mutex::new(ExtensionDataSnapshot::default()));
-    let ui_slot: ExtensionUiSlot = Arc::new(Mutex::new(Default::default()));
-    let context = Arc::new(Mutex::new(ExtensionContextFacts {
-        cwd: cwd.to_string(),
-        ..Default::default()
-    }));
+    let session_slot = Arc::clone(&slots.session_slot);
+    let data = Arc::clone(&slots.data);
+    let ui_slot = Arc::clone(&slots.ui_slot);
+    let context = Arc::clone(&slots.context);
     // The host callbacks must exist before the extension factories run: a
     // factory may already call `pillar.fs` / `pillar.get_flag` / `ctx.ui`.
     install_exec_host(&runtime, cwd);
@@ -112,6 +190,13 @@ pub fn build_extension_runner(
         data,
         ui_slot,
         context,
+        rebuild: ExtensionRebuildInputs {
+            cwd: cwd.to_string(),
+            global_dir: global_dir.map(Path::to_path_buf),
+            project_dir: project_dir.map(Path::to_path_buf),
+            configured: configured.to_vec(),
+            slots: slots.clone(),
+        },
     }
 }
 

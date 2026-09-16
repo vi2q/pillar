@@ -301,3 +301,65 @@ fn configured_extensions_receive_ctx_and_forward_ui_requests() {
     assert_eq!(calls[1].args, serde_json::json!({ "key": "probe", "text": "1" }));
     assert_eq!(calls[2].args, serde_json::json!({ "text": "draft" }));
 }
+
+/// A rebuild (`/reload`) re-discovers the extensions into a fresh VM while
+/// keeping the host slots: the session binding, the `ctx.ui` bridge, the
+/// `ctx` facts and the flag values survive.
+#[test]
+fn rebuild_re_discovers_extensions_into_a_fresh_vm() {
+    use pillar_cli::runner::{
+        ExtensionHostSlots, build_extension_runner_with_slots,
+    };
+
+    let dir = temp_dir("rebuild");
+    std::fs::write(
+        dir.join("one.luau"),
+        r#"
+        local pillar = require("@pillar")
+        pillar.register_command("alpha", { description = "first" })
+        pillar.register_flag("probe", { type = "string" })
+        return nil
+        "#,
+    )
+    .unwrap();
+
+    let configured = vec![dir.to_string_lossy().to_string()];
+    let slots = ExtensionHostSlots::new("/tmp/pillar-rebuild-cwd");
+    let mut wiring =
+        build_extension_runner_with_slots("/tmp/pillar-rebuild-cwd", None, None, &configured, &slots);
+    assert!(wiring.errors.is_empty(), "{:?}", wiring.errors);
+    let names = |runner: &mut pillar_coding_agent::core::extensions_runner::ExtensionRunner| {
+        runner
+            .registered_commands()
+            .iter()
+            .map(|command| command.name.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(names(&mut wiring.runner), vec!["alpha".to_string()]);
+
+    // Edit the extension, then rebuild like `/reload` does.
+    std::fs::write(
+        dir.join("one.luau"),
+        r#"
+        local pillar = require("@pillar")
+        pillar.register_command("beta", { description = "second" })
+        return nil
+        "#,
+    )
+    .unwrap();
+    let mut flags = std::collections::BTreeMap::new();
+    flags.insert("probe".to_string(), serde_json::json!("on"));
+    let mut rebuilt = wiring.rebuild(&flags);
+
+    assert_eq!(names(&mut rebuilt.runner), vec!["beta".to_string()]);
+    assert_eq!(
+        rebuilt.runner.flag_values().get("probe"),
+        Some(&serde_json::json!("on"))
+    );
+    // The host slots are the same cells, so an installed `ctx.ui` bridge and
+    // the bound session keep working after the rebuild.
+    assert!(std::sync::Arc::ptr_eq(&wiring.ui_slot, &rebuilt.ui_slot));
+    assert!(std::sync::Arc::ptr_eq(&wiring.session_slot, &rebuilt.session_slot));
+    assert!(std::sync::Arc::ptr_eq(&wiring.context, &rebuilt.context));
+    assert!(std::sync::Arc::ptr_eq(&wiring.data, &rebuilt.data));
+}

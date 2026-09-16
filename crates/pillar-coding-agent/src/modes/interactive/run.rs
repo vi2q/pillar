@@ -101,6 +101,9 @@ enum UiCommand {
         aborted: bool,
         error: Option<String>,
     },
+    /// A `/reload` settled (upstream the code after `await
+    /// session.reload(...)` in `handleReloadCommand`).
+    Reloaded,
     /// An extension called `ctx.ui.*` (upstream the mode's
     /// `ExtensionUIContext` mutating the UI directly; the port queues the
     /// request because the extension holds the Luau runtime lock).
@@ -448,6 +451,14 @@ async fn execute_action(
             let _ = ui.send(completion);
             result.map(|_| ())
         }
+        ModeAction::Reload => {
+            session
+                .reload(None)
+                .await
+                .map_err(|error| format!("Reload failed: {error}"))?;
+            let _ = ui.send(UiCommand::Reloaded);
+            Ok(())
+        }
         ModeAction::Compact { instructions } => {
             session.compact(instructions.as_deref()).await.map(|_| ())
         }
@@ -771,6 +782,17 @@ fn pump_loop(
                     error,
                 } => mode.complete_session_delete(&path, ok, moved_to_trash, error),
                 UiCommand::SessionRenamed { error } => mode.complete_session_rename(error),
+                // Upstream `handleReloadCommand`'s status line. The port
+                // re-runs settings / resource / runner loading; re-applying
+                // keybindings, the theme and the autocomplete provider stays
+                // host-side (recorded divergence).
+                UiCommand::Reloaded => {
+                    mode.transcript()
+                        .lock()
+                        .show_status("Reloaded extensions, skills, prompts, themes, and context files");
+                    mode.mark_dirty();
+                    Vec::new()
+                }
                 UiCommand::ExtensionUi { op, args } => {
                     if let Err(error) = mode.handle_extension_ui(
                         &crate::core::extensions_types::ExtensionUiRequest { op, args },

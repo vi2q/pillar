@@ -45,7 +45,9 @@ use pillar_coding_agent::modes::rpc::rpc_mode::{
     RpcRuntimeHost, SessionReplacement, run_rpc_mode_with_host,
 };
 
-use pillar_cli::runner::{ExtensionWiring, build_extension_runner};
+use pillar_cli::runner::{
+    ExtensionWiring, build_extension_runner, build_extension_runner_with_slots,
+};
 use pillar_coding_agent::core::extensions_types::{
     ExtensionContextFacts, ExtensionMode,
 };
@@ -278,6 +280,7 @@ async fn build_session_with(
     for (path, error) in &wiring.errors {
         eprintln!("Warning: failed to load extension {path}: {error}");
     }
+    let rebuild_inputs = wiring.rebuild.clone();
     let extension_runner: Arc<Mutex<ExtensionRunner>> = Arc::new(Mutex::new(wiring.take_runner()));
 
     let selection = resolve_cli_model_selection(parsed, &model_runtime)?;
@@ -302,7 +305,29 @@ async fn build_session_with(
             previous_session_file,
         }),
         system_prompt_rebuild: None,
-        extension_runner_rebuild: None,
+        // `/reload`: re-run discovery into a fresh VM, keeping the host slots
+        // (the session binding, the `ctx.ui` bridge, the facts and the
+        // command snapshot) so the new runner behaves like the old one.
+        extension_runner_rebuild: {
+            let inputs = rebuild_inputs;
+            Some(Arc::new(move |flag_values| {
+                let mut rebuilt = build_extension_runner_with_slots(
+                    &inputs.cwd,
+                    inputs.global_dir.as_deref(),
+                    inputs.project_dir.as_deref(),
+                    &inputs.configured,
+                    &inputs.slots,
+                );
+                for (name, value) in &flag_values {
+                    rebuilt.runner.set_flag_value(name, value.clone());
+                }
+                for (path, error) in &rebuilt.errors {
+                    eprintln!("Warning: failed to load extension {path}: {error}");
+                }
+                rebuilt.refresh_extension_data();
+                rebuilt.runner
+            }))
+        },
         stream_fn: None,
     })
     .await?;

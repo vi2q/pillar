@@ -282,6 +282,9 @@ pub enum ModeAction {
     SetShowHardwareCursor(bool),
     /// Upstream `ui.setClearOnShrink(enabled)`.
     SetClearOnShrink(bool),
+    /// Upstream `/reload` → `session.reload()`: rebuild the extension runner
+    /// and re-load resources.
+    Reload,
 }
 
 /// Mode-level options (upstream the settings-derived fields of
@@ -895,7 +898,7 @@ impl InteractiveMode {
 
         // Selector-backed commands answer a warning until the selectors
         // land (upstream opens the corresponding selector).
-        const SELECTOR_COMMANDS: [&str; 12] = [
+        const SELECTOR_COMMANDS: [&str; 11] = [
             "/export",
             "/import",
             "/share",
@@ -906,7 +909,6 @@ impl InteractiveMode {
             "/login",
             "/logout",
             "/new",
-            "/reload",
             "/debug",
         ];
         for command in SELECTOR_COMMANDS {
@@ -919,6 +921,24 @@ impl InteractiveMode {
             }
         }
 
+        if text == "/reload" {
+            self.set_editor_text("");
+            // Upstream `handleReloadCommand`'s guards: reloading mid-run would
+            // swap the runner under the streaming turn.
+            if self.session.is_streaming() {
+                self.transcript
+                    .lock()
+                    .show_warning("Wait for the current response to finish before reloading.");
+                return Vec::new();
+            }
+            if self.session.is_compacting() {
+                self.transcript
+                    .lock()
+                    .show_warning("Wait for compaction to finish before reloading.");
+                return Vec::new();
+            }
+            return vec![ModeAction::Reload];
+        }
         if text == "/resume" {
             self.set_editor_text("");
             return self.show_session_selector();
