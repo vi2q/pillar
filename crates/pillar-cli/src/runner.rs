@@ -15,7 +15,8 @@ use std::sync::Mutex;
 use pillar_agent::types::AgentTool;
 use pillar_coding_agent::core::agent_session::CustomDelivery;
 use pillar_coding_agent::core::agent_session_class::{
-    AgentSession, SendCustomMessageOptions, SendUserMessageOptions, StreamingBehavior,
+    AgentSession, ExtensionCommandHandler, SendCustomMessageOptions, SendUserMessageOptions,
+    StreamingBehavior,
 };
 use pillar_coding_agent::core::extensions_luau::{build_luau_runner, discover_luau_paths};
 use pillar_coding_agent::core::extensions_runner::ExtensionRunner;
@@ -198,6 +199,21 @@ pub fn build_extension_runner_with_slots(
             slots: slots.clone(),
         },
     }
+}
+
+/// The host command handler (upstream the runner invoking a registered
+/// command's handler): the session resolves the command and calls this with
+/// the name and the argument text. `Ok(true)` means "handled, don't prompt".
+pub fn extension_command_handler(runtime: &SharedRuntime) -> ExtensionCommandHandler {
+    let runtime = Arc::clone(runtime);
+    Arc::new(move |name: &str, args: &str| {
+        let mut runtime = runtime
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // `Ok(false)` for an unknown command: the session treats the text as a
+        // normal prompt then.
+        runtime.call_command(name, args)
+    })
 }
 
 /// Install the `pi.exec` host (upstream the process layer behind `exec`):
@@ -424,6 +440,17 @@ fn install_host_api(
                 // queued and replayed when it is installed.
                 state.dispatch(request);
                 Ok(())
+            }))
+        },
+        // `ctx.isIdle()` (upstream the session's `isIdle`).
+        is_idle: {
+            let slot = Arc::clone(slot);
+            Some(Arc::new(move || {
+                let session = slot
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .clone();
+                session.map(|session| session.is_idle()).unwrap_or(true)
             }))
         },
         // `ctx.sessionManager.getSessionId()` (upstream the session id).

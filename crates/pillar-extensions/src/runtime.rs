@@ -131,7 +131,7 @@ pub type SharedRegistry = Arc<Mutex<HostRegistry>>;
 /// `false` when the host has no UI context, which is when the wrappers are
 /// no-ops (upstream `noOpUIContext`).
 const CONTEXT_LUA: &str = r#"
-local facts, ui_call, theme, themes, session_id, session_entries = ...
+local facts, ui_call, theme, themes, session_id, session_entries, is_idle = ...
 
 local ui = {}
 local function call(op, args)
@@ -163,6 +163,12 @@ theme.underline = function(text) return "\27[4m" .. text .. "\27[24m" end
 theme.strikethrough = function(text) return "\27[9m" .. text .. "\27[29m" end
 theme.inverse = function(text) return "\27[7m" .. text .. "\27[27m" end
 
+-- Upstream `ctx.isIdle()`: without a host callback the port assumes idle
+-- (the no-op default upstream uses when there is no session binding).
+local function idle()
+    return is_idle()
+end
+
 local sessionManager = {
     getSessionId = function() return session_id() end,
     getEntries = function() return session_entries() end,
@@ -175,6 +181,7 @@ return {
     ui = ui,
     theme = theme,
     sessionManager = sessionManager,
+    isIdle = idle,
 }
 "#;
 
@@ -307,6 +314,8 @@ pub struct HostApi {
     /// The `ctx` facts (`cwd` / `mode` / `hasUI`; upstream the live
     /// `ExtensionContext` fields).
     pub context: Option<ExtensionContextFn>,
+    /// `ctx.isIdle()` — whether no agent run is active.
+    pub is_idle: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
     /// `ctx.sessionManager.getSessionId()` (upstream the session id).
     pub session_id: Option<GetStringFn>,
     /// `ctx.sessionManager.getEntries()` — the session entries as JSON
@@ -599,6 +608,37 @@ impl ExtensionRuntime {
         }
     }
 
+    /// Call a registered command's handler (upstream `RegisteredCommand.handler`):
+    /// `handler(args, ctx)`. `Ok(false)` when no such command is registered.
+    ///
+    /// divergence: upstream awaits the handler (`Promise<void>`); the port's
+    /// Lua call is synchronous and a handler that sends a message spawns it.
+    pub fn call_command(&mut self, name: &str, args: &str) -> Result<bool, String> {
+        let context = self
+            .context_value()
+            .map_err(|error| format!("/{name}: {error}"))?;
+        let handler: Value = self
+            .lua
+            .load(
+                r#"
+                local name = ...
+                local registered = __pillar_command_handlers
+                local handler = registered and registered[name]
+                if handler == nil then return nil end
+                return handler
+            "#,
+            )
+            .call((name,))
+            .map_err(|error| format!("/{name}: {error}"))?;
+        let Value::Function(handler) = handler else {
+            return Ok(false);
+        };
+        handler
+            .call::<Value>((args, context))
+            .map_err(|error| format!("/{name}: {error}"))?;
+        Ok(true)
+    }
+
     /// The `ctx` table handed to every handler and tool `execute` (upstream
     /// `ExtensionContext`): the host facts (`cwd` / `mode` / `hasUI`), the
     /// `ui` bridge (a no-op without a host UI context) and the active theme.
@@ -672,10 +712,28 @@ impl ExtensionRuntime {
                 .to_value(&value)
                 .map_err(luaur_rt::Error::external)
         });
+        let idle_reader = Arc::clone(&self.host_api);
+        let is_idle = Function::wrap(move || {
+            let callback = {
+                let guard = idle_reader
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                guard.is_idle.clone()
+            };
+            Ok::<bool, luaur_rt::Error>(callback.map(|callback| callback()).unwrap_or(true))
+        });
         let (theme, themes) = self.theme_table()?;
         self.lua
             .load(CONTEXT_LUA)
-            .call::<Value>((facts_lua, ui_call, theme, themes, session_id, session_entries))
+            .call::<Value>((
+                facts_lua,
+                ui_call,
+                theme,
+                themes,
+                session_id,
+                session_entries,
+                is_idle,
+            ))
             .map_err(|error| ExtensionLoadError::Setup(error.to_string()))
     }
 
@@ -1007,7 +1065,31 @@ fn install_pillar_api(
         .set(
             "register_command",
             Function::wrap(move |name: String, opts: Value| {
-                let json = lua_commands.from_value::<serde_json::Value>(opts)?;
+                // Upstream `registerCommand(name, { handler, ... })`: the
+                // handler stays in the VM (keyed by command name) and the
+                // rest of the options cross the boundary as the registered
+                // metadata.
+                let meta: Value = lua_commands
+                    .load(
+                        r#"
+                        local name, opts = ...
+                        if type(opts) == "table" and type(opts.handler) == "function" then
+                            __pillar_command_handlers = __pillar_command_handlers or {}
+                            __pillar_command_handlers[name] = opts.handler
+                        end
+                        local meta = {}
+                        if type(opts) == "table" then
+                            for key, value in pairs(opts) do
+                                if key ~= "handler" then
+                                    meta[key] = value
+                                end
+                            end
+                        end
+                        return meta
+                    "#,
+                    )
+                    .call((name.as_str(), opts))?;
+                let json = lua_commands.from_value::<serde_json::Value>(meta)?;
                 commands
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())

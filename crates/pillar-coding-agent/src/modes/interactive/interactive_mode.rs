@@ -1099,6 +1099,11 @@ impl InteractiveMode {
         // chat first (upstream `flushPendingBashComponents`).
         self.flush_pending_bash_components();
         self.editor.lock().add_to_history(text);
+        // Upstream clears the editor in the generic path too. Without this an
+        // extension command (which the mode cannot recognize) stays in the
+        // editor, so the next submit appends to it — found by the pty probe
+        // for `/tasks-info` followed by `/tasks-init`.
+        self.set_editor_text("");
         vec![ModeAction::SubmitToLoop(text.to_string())]
     }
 

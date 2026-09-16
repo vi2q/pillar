@@ -66,6 +66,14 @@ local RULES_STALE = "Auto-message: "
 -- in the session file.
 local TAG_DISPLAY = false
 
+local VERIFY_MESSAGE = "Auto-message: Walk through every item in "
+	.. TASKS_PATH
+	.. ' that needs user confirmation (sub-items marked "Confirm (user)", unfinished items whose completion condition is a user check such as behavior or visual verification, and any explicitly unfinished work). '
+	.. "For each item, use the ask_user_question tool to ask the user in their language — one question per item, with the required check described concretely (e.g. what to run and what to look for) and options such as OK / problem / later. "
+	.. "If the ask_user_question tool is unavailable, fall back to asking in plain text and waiting for the reply. "
+	.. 'Reflect each answer in the file immediately: mark confirmed items "[x]" with a "— user-confirmed (date)" note, record problem reports as "— needs-fix: <summary>", and keep deferred items unchecked with "— pending confirmation". '
+	.. "Do not mark anything confirmed without an explicit user answer. When the repository is git-tracked, suggest committing the file afterwards."
+
 local INIT_CUSTOM_TYPE = "instructions:init"
 local TAG_CUSTOM_TYPE = "instructions:auto-tag"
 local COMPACT_CUSTOM_TYPE = "instructions:post-compact"
@@ -510,6 +518,80 @@ pillar.register_tool({
 	end,
 })
 
+-- --- Commands -----------------------------------------------------------------
+
+-- /tasks-init — generate the templates if missing (never overwrites).
+pillar.register_command("tasks-init", {
+	description = "Generate " .. TASKS_PATH .. " and " .. RULES_PATH .. " if missing (never overwrites)",
+	handler = function(args, ctx)
+		if not ctx.isIdle() then
+			ctx.ui.notify("Agent is running. Try again after it settles.", "warning")
+			return
+		end
+		local createdTasks, createdRules = ensureTaskFiles()
+		if not createdTasks and not createdRules then
+			ctx.ui.notify(
+				TASKS_PATH .. " and " .. RULES_PATH .. " already exist — nothing to generate.",
+				"info"
+			)
+			return
+		end
+		if createdTasks then
+			ctx.ui.notify("Created " .. TASKS_PATH .. " (skeleton).", "info")
+		end
+		if createdRules then
+			ctx.ui.notify("Created " .. RULES_PATH .. " (recording rules).", "info")
+		end
+	end,
+})
+
+-- /tasks-info — the command cheat sheet.
+pillar.register_command("tasks-info", {
+	description = "Show /tasks-* commands for " .. TASKS_PATH,
+	handler = function(args, ctx)
+		ctx.ui.notify(
+			"Usage: /tasks-init — generate "
+				.. TASKS_PATH
+				.. "/"
+				.. RULES_PATH
+				.. " if missing · /tasks-verify — walk pending confirmations with the user · /tasks-tidy — normalize format (order-preserving) · /tasks-archive — move completed items to "
+				.. ARCHIVE_DIR
+				.. "/ · /tasks-blocked — pick an unfinished item into the editor · /tasks-completed — pick a completed item into the editor · /tasks-clear — clear "
+				.. TASKS_PATH
+				.. " and regenerate the skeleton with a tombstone note.",
+			"info"
+		)
+	end,
+})
+
+-- /tasks-verify — inject a user message that starts the verification
+-- walkthrough. The model asks the user per-item questions and reflects the
+-- answers in the checklist file.
+pillar.register_command("tasks-verify", {
+	description = "Verify pending items in "
+		.. TASKS_PATH
+		.. " with the user (asks per-item questions, then updates the file)",
+	handler = function(args, ctx)
+		if not pillar.fs.exists(TASKS_PATH) then
+			ctx.ui.notify(
+				TASKS_PATH
+					.. " does not exist — nothing to verify. It is created when the first instruction is recorded.",
+				"warning"
+			)
+			return
+		end
+		if not ctx.isIdle() then
+			ctx.ui.notify("Agent is running. Try again after it settles.", "warning")
+			return
+		end
+		pillar.send_user_message(VERIFY_MESSAGE)
+		ctx.ui.notify(
+			"Verification request sent — the agent will ask about each item needing user confirmation.",
+			"info"
+		)
+	end,
+})
+
 -- --- Event hooks --------------------------------------------------------------
 
 -- One-time injection of the session pointer. `session_start` re-fires on
@@ -597,8 +679,10 @@ pillar.on("session_compact", function(event, ctx)
 	return nil
 end)
 
--- The archive directory is only created by /tasks-archive (stage 2); keeping
--- the constant here documents the layout the port targets.
+-- `/tasks-tidy`, `/tasks-archive` and `/tasks-clear` need `ctx.ui.confirm`
+-- (a blocking dialog the host does not provide yet), and `/tasks-blocked` /
+-- `/tasks-completed` need `ctx.ui.custom` plus `ctx.ui.get_editor_text`;
+-- they land with those slices. ARCHIVE_DIR documents the layout they target.
 local _ARCHIVE_DIR = ARCHIVE_DIR
 
 return nil

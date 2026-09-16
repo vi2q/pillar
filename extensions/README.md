@@ -24,11 +24,15 @@ What it does:
   are missing (never overwrites).
 - `tasks_tidy` tool — deterministic formatting: checkbox syntax, 2-space
   nesting, `Confirm (user):` prefixes. Order-preserving, non-destructive.
+- `/tasks-init` — generate the templates (never overwrites).
+- `/tasks-info` — the `/tasks-*` cheat sheet.
+- `/tasks-verify` — send the user message that starts the per-item
+  confirmation walkthrough.
 
 Not ported yet (needs host API that is still missing, see `docs/TASKS.md`):
-the `/tasks-*` commands (the host cannot invoke an extension command handler
-yet), `/tasks-blocked` / `/tasks-completed` (need `ctx.ui.custom` and
-`ctx.ui.get_editor_text`), `/tasks-archive` / `/tasks-clear`.
+`/tasks-tidy` / `/tasks-archive` / `/tasks-clear` (need `ctx.ui.confirm`),
+`/tasks-blocked` / `/tasks-completed` (need `ctx.ui.custom` and
+`ctx.ui.get_editor_text`).
 
 ### Loading it
 

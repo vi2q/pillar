@@ -363,3 +363,44 @@ fn rebuild_re_discovers_extensions_into_a_fresh_vm() {
     assert!(std::sync::Arc::ptr_eq(&wiring.context, &rebuilt.context));
     assert!(std::sync::Arc::ptr_eq(&wiring.data, &rebuilt.data));
 }
+
+/// An extension command reaches its Luau handler with the argument text and
+/// `ctx` (the host handler the session installs).
+#[test]
+fn extension_commands_run_through_the_host_handler() {
+    use pillar_cli::runner::extension_command_handler;
+
+    let dir = temp_dir("command");
+    std::fs::write(
+        dir.join("cmd.luau"),
+        r#"
+        local pillar = require("@pillar")
+        pillar.register_command("probe", {
+            description = "Probe command",
+            handler = function(args, ctx)
+                local text = "args=" .. args .. "|idle=" .. tostring(ctx.isIdle()) .. "|mode=" .. ctx.mode
+                pillar.fs.write("command-ran.txt", text)
+                ctx.ui.notify("probe ran", "info")
+            end,
+        })
+        return nil
+        "#,
+    )
+    .unwrap();
+
+    let work = temp_dir("command-work");
+    let configured = vec![dir.to_string_lossy().to_string()];
+    let wiring = build_extension_runner(&work.to_string_lossy(), None, None, &configured);
+    assert!(wiring.errors.is_empty(), "{:?}", wiring.errors);
+
+    let handler = extension_command_handler(&wiring.runtime);
+    // Unknown commands answer false so the session prompts instead.
+    assert!(!handler("nope", "").unwrap());
+    assert!(handler("probe", "one two").unwrap());
+    // The handler saw the argument text and `ctx` (no session bound in this
+    // test, so the facts are the defaults: idle, print mode).
+    assert_eq!(
+        std::fs::read_to_string(work.join("command-ran.txt")).unwrap(),
+        "args=one two|idle=true|mode=print"
+    );
+}

@@ -47,6 +47,7 @@ use pillar_coding_agent::modes::rpc::rpc_mode::{
 
 use pillar_cli::runner::{
     ExtensionWiring, build_extension_runner, build_extension_runner_with_slots,
+    extension_command_handler,
 };
 use pillar_coding_agent::core::extensions_types::{
     ExtensionContextFacts, ExtensionMode,
@@ -304,6 +305,7 @@ async fn build_session_with(
             reason: start_reason,
             previous_session_file,
         }),
+        command_handler: Some(extension_command_handler(&wiring.runtime)),
         system_prompt_rebuild: None,
         // `/reload`: re-run discovery into a fresh VM, keeping the host slots
         // (the session binding, the `ctx.ui` bridge, the facts and the

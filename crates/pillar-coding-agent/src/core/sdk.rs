@@ -17,8 +17,8 @@ use pillar_ai::models::clamp_thinking_level;
 use pillar_ai::types::{Message, Model};
 
 use crate::core::agent_session_class::{
-    AgentSession, AgentSessionConfig, ExtensionRunnerFactory, SessionEventMeta,
-    SystemPromptRebuildFn, coding_message_to_agent,
+    AgentSession, AgentSessionConfig, ExtensionCommandHandler, ExtensionRunnerFactory,
+    SessionEventMeta, SystemPromptRebuildFn, coding_message_to_agent,
 };
 use crate::core::auth_guidance::format_no_models_available_message;
 use crate::core::extensions_runner::ExtensionRunner;
@@ -397,6 +397,9 @@ pub struct CreateAgentSessionOptions {
     pub exclude_tools: Vec<String>,
     pub custom_tools: Vec<AgentTool>,
     pub extension_runner: Arc<Mutex<ExtensionRunner>>,
+    /// Host handler executing a registered extension command (upstream the
+    /// runner invoking `RegisteredCommand.handler`).
+    pub command_handler: Option<ExtensionCommandHandler>,
     pub session_start_event: Option<SessionEventMeta>,
     pub system_prompt_rebuild: Option<SystemPromptRebuildFn>,
     pub extension_runner_rebuild: Option<ExtensionRunnerFactory>,
@@ -661,7 +664,7 @@ pub async fn create_agent_session(
         initial_active_tool_names: Some(initial_active_tool_names),
         allowed_tool_names: None,
         excluded_tool_names,
-        command_handler: None,
+        command_handler: options.command_handler,
         session_start_event: options.session_start_event,
         scoped_models: options.scoped_models,
         system_prompt_rebuild: options.system_prompt_rebuild,

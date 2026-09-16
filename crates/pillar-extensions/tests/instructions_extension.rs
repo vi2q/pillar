@@ -142,6 +142,18 @@ impl Fixture {
         self.runtime.registry().messages.clone()
     }
 
+    /// Whether the verify walkthrough prompt was sent (`send_user_message`
+    /// records the raw string; `send_message` records the table).
+    fn sent_walkthrough(&self) -> bool {
+        self.messages().iter().any(|message| {
+            let text = match message {
+                serde_json::Value::String(text) => Some(text.as_str()),
+                other => other.get("content").and_then(serde_json::Value::as_str),
+            };
+            text.unwrap_or_default().contains("Walk through every item")
+        })
+    }
+
     /// The messages with a custom type, oldest first.
     fn messages_of(&self, custom_type: &str) -> Vec<serde_json::Value> {
         self.messages()
@@ -333,4 +345,29 @@ fn session_compact_reinjects_the_pointer() {
             .contains("re-read docs/TASKS.md")
     );
     assert_eq!(messages[0]["display"], serde_json::json!(false));
+}
+
+/// The ported commands run with `(args, ctx)` and see the host facts.
+#[test]
+fn commands_execute_with_ctx() {
+    let mut fixture = Fixture::new();
+    assert!(fixture.runtime.call_command("tasks-info", "").unwrap());
+    assert!(fixture.runtime.call_command("tasks-init", "").unwrap());
+
+    // `tasks-init` created the templates (nothing existed yet) and notified.
+    assert!(fixture.path("docs/TASKS.md").exists());
+    assert!(fixture.path("docs/RULES.md").exists());
+
+    // An unknown command answers false (the session then prompts instead).
+    assert!(!fixture.runtime.call_command("nope", "").unwrap());
+
+    // `tasks-verify` refuses when the tasks file is missing…
+    std::fs::remove_file(fixture.path("docs/TASKS.md")).unwrap();
+    assert!(fixture.runtime.call_command("tasks-verify", "").unwrap());
+    assert!(!fixture.sent_walkthrough());
+
+    // …and sends the walkthrough message (a user message) when it exists.
+    fixture.write("docs/TASKS.md", "# TASKS\n");
+    assert!(fixture.runtime.call_command("tasks-verify", "").unwrap());
+    assert!(fixture.sent_walkthrough());
 }
