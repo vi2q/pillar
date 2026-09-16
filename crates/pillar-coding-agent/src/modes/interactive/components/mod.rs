@@ -21,6 +21,7 @@ pub mod dynamic_border;
 pub mod extension_input;
 pub mod extension_selector;
 pub mod footer;
+pub mod settings_submenu;
 pub mod keybinding_hints;
 pub mod markdown_transform;
 pub mod model_picker;
