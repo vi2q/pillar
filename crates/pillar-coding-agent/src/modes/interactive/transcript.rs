@@ -931,6 +931,38 @@ impl InteractiveTranscript {
     }
 
     /// Upstream `renderSessionEntries`: flatten entries to items and render.
+    /// Upstream `handleHotkeysCommand`'s container block: a bordered Markdown
+    /// panel appended to the chat (`Spacer` / `DynamicBorder` / title /
+    /// `Markdown` / `DynamicBorder`).
+    pub fn add_markdown_panel(&mut self, title: &str, markdown: &str) {
+        use crate::modes::interactive::components::dynamic_border::DynamicBorder;
+        let theme_handle = theme();
+        self.chat.add_child(Box::new(Spacer::new(1)));
+        self.chat.add_child(Box::new(DynamicBorder::new()));
+        self.chat.add_child(Box::new(Text::new(
+            &theme_handle.bold(&theme_handle.fg("accent", title)),
+            1,
+            0,
+        )));
+        self.chat.add_child(Box::new(Spacer::new(1)));
+        self.chat.add_child(Box::new(Spacer::new(1)));
+        let markdown_theme = self
+            .markdown_theme
+            .clone()
+            .unwrap_or_else(
+                crate::modes::interactive::components::markdown_transform::default_markdown_theme_factory,
+            );
+        self.chat.add_child(Box::new(pillar_tui::markdown::Markdown::new(
+            markdown.trim(),
+            1,
+            1,
+            (markdown_theme)(),
+            None,
+            pillar_tui::markdown::MarkdownOptions::default(),
+        )));
+        self.chat.add_child(Box::new(DynamicBorder::new()));
+    }
+
     pub fn render_session_entries(
         &mut self,
         entries: &[SessionEntry],

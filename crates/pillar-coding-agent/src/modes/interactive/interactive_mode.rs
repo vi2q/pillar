@@ -833,7 +833,7 @@ impl InteractiveMode {
 
         // Selector-backed commands answer a warning until the selectors
         // land (upstream opens the corresponding selector).
-        const SELECTOR_COMMANDS: [&str; 14] = [
+        const SELECTOR_COMMANDS: [&str; 13] = [
             "/settings",
             "/export",
             "/import",
@@ -841,7 +841,6 @@ impl InteractiveMode {
             "/copy",
             "/session",
             "/changelog",
-            "/hotkeys",
             "/trust",
             "/login",
             "/logout",
@@ -874,6 +873,10 @@ impl InteractiveMode {
         if text == "/clone" {
             self.set_editor_text("");
             return self.clone_session();
+        }
+        if text == "/hotkeys" {
+            self.set_editor_text("");
+            return self.handle_hotkeys_command();
         }
         if text == "/quit" {
             self.set_editor_text("");
@@ -1262,6 +1265,108 @@ impl InteractiveMode {
                 }
             }
         }
+        Vec::new()
+    }
+
+    /// Upstream `handleHotkeysCommand`: append a bordered Markdown table of
+    /// the resolved keybindings to the transcript.
+    ///
+    /// divergence: upstream also lists extension-registered shortcuts
+    /// (`extensionRunner.getShortcuts`); the port needs the resolved
+    /// keybinding map for the conflict check, which the mode does not hold yet.
+    pub fn handle_hotkeys_command(&self) -> Vec<ModeAction> {
+        let key = |keybinding: &str| crate::modes::interactive::components::keybinding_hints::key_display_text(keybinding);
+        let windows_newline_hint = if cfg!(windows) {
+            " (Ctrl+Enter on Windows Terminal)"
+        } else {
+            ""
+        };
+        let hotkeys = format!(
+            "**Navigation**\n\
+             | Key | Action |\n\
+             |-----|--------|\n\
+             | `{up}` / `{down}` / `{left}` / `{right}` | Move cursor / browse history |\n\
+             | `{word_left}` / `{word_right}` | Move by word |\n\
+             | `{line_start}` | Start of line |\n\
+             | `{line_end}` | End of line |\n\
+             | `{jump_forward}` | Jump forward to character |\n\
+             | `{jump_backward}` | Jump backward to character |\n\
+             | `{page_up}` / `{page_down}` | Scroll by page |\n\n\
+             **Editing**\n\
+             | Key | Action |\n\
+             |-----|--------|\n\
+             | `{submit}` | Send message |\n\
+             | `{new_line}` | New line{windows_newline_hint} |\n\
+             | `{delete_word_backward}` | Delete word backwards |\n\
+             | `{delete_word_forward}` | Delete word forwards |\n\
+             | `{delete_to_line_start}` | Delete to start of line |\n\
+             | `{delete_to_line_end}` | Delete to end of line |\n\
+             | `{yank}` | Paste the most-recently-deleted text |\n\
+             | `{yank_pop}` | Cycle through the deleted text after pasting |\n\
+             | `{undo}` | Undo |\n\n\
+             **Other**\n\
+             | Key | Action |\n\
+             |-----|--------|\n\
+             | `{tab}` | Path completion / accept autocomplete |\n\
+             | `{interrupt}` | Cancel autocomplete / abort streaming |\n\
+             | `{clear}` | Clear editor (first) / exit (second) |\n\
+             | `{exit}` | Exit (when editor is empty) |\n\
+             | `{suspend}` | Suspend to background |\n\
+             | `{cycle_thinking_level}` | Cycle thinking level |\n\
+             | `{cycle_model_forward}` / `{cycle_model_backward}` | Cycle models |\n\
+             | `{select_model}` | Open model selector |\n\
+             | `{expand_tools}` | Toggle tool output expansion |\n\
+             | `{toggle_thinking}` | Toggle thinking block visibility |\n\
+             | `{external_editor}` | Edit message in external editor |\n\
+             | `{copy_message}` | Copy last assistant message |\n\
+             | `{follow_up}` | Queue follow-up message |\n\
+             | `{dequeue}` | Restore queued messages |\n\
+             | `{paste_image}` | Paste image or text from clipboard |\n\
+             | `/` | Slash commands |\n\
+             | `!` | Run bash command |\n\
+             | `!!` | Run bash command (excluded from context) |\n",
+            up = key("tui.editor.cursorUp"),
+            down = key("tui.editor.cursorDown"),
+            left = key("tui.editor.cursorLeft"),
+            right = key("tui.editor.cursorRight"),
+            word_left = key("tui.editor.cursorWordLeft"),
+            word_right = key("tui.editor.cursorWordRight"),
+            line_start = key("tui.editor.cursorLineStart"),
+            line_end = key("tui.editor.cursorLineEnd"),
+            jump_forward = key("tui.editor.jumpForward"),
+            jump_backward = key("tui.editor.jumpBackward"),
+            page_up = key("tui.editor.pageUp"),
+            page_down = key("tui.editor.pageDown"),
+            submit = key("tui.input.submit"),
+            new_line = key("tui.input.newLine"),
+            delete_word_backward = key("tui.editor.deleteWordBackward"),
+            delete_word_forward = key("tui.editor.deleteWordForward"),
+            delete_to_line_start = key("tui.editor.deleteToLineStart"),
+            delete_to_line_end = key("tui.editor.deleteToLineEnd"),
+            yank = key("tui.editor.yank"),
+            yank_pop = key("tui.editor.yankPop"),
+            undo = key("tui.editor.undo"),
+            tab = key("tui.input.tab"),
+            interrupt = key("app.interrupt"),
+            clear = key("app.clear"),
+            exit = key("app.exit"),
+            suspend = key("app.suspend"),
+            cycle_thinking_level = key("app.thinking.cycle"),
+            cycle_model_forward = key("app.model.cycleForward"),
+            cycle_model_backward = key("app.model.cycleBackward"),
+            select_model = key("app.model.select"),
+            expand_tools = key("app.tools.expand"),
+            toggle_thinking = key("app.thinking.toggle"),
+            external_editor = key("app.editor.external"),
+            copy_message = key("app.message.copy"),
+            follow_up = key("app.message.followUp"),
+            dequeue = key("app.message.dequeue"),
+            paste_image = key("app.clipboard.pasteImage"),
+        );
+        self.transcript
+            .lock()
+            .add_markdown_panel("Keyboard Shortcuts", &hotkeys);
+        self.mark_dirty();
         Vec::new()
     }
 

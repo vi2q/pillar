@@ -2024,3 +2024,29 @@ fn fork_app_action_opens_the_selector() {
     let body = editor_slot_body(&mode, 100);
     assert!(body.contains("Fork from Message"), "{body:?}");
 }
+
+// --- /hotkeys -----------------------------------------------------------------------------
+
+#[test]
+fn hotkeys_command_renders_the_keybinding_table() {
+    install_app_keybindings();
+    let session = session();
+    let mode = make_mode(&session);
+
+    assert_eq!(mode.handle_submit("/hotkeys"), Vec::new());
+    let body = plain(&mut mode.transcript().lock().chat, 100);
+    assert!(body.contains("Keyboard Shortcuts"), "{body:?}");
+    for expected in [
+        "Navigation",
+        "Editing",
+        "Other",
+        "Send message",
+        "Open model selector",
+        "Run bash command (excluded from context)",
+    ] {
+        assert!(body.contains(expected), "{expected:?} not in {body:?}");
+    }
+    // The resolved keys are rendered (capitalized display form).
+    assert!(body.contains("Ctrl+L"), "{body:?}");
+    assert!(body.contains("Enter"), "{body:?}");
+}
