@@ -369,6 +369,18 @@ fn custom_content_from_json(value: &Value) -> Vec<CustomContent> {
     }
 }
 
+/// Whether an entry is an assistant message (the deferred-flush trigger).
+fn entry_has_assistant(entry: &Entry) -> bool {
+    matches!(
+        entry,
+        Entry::Message(message_entry)
+            if matches!(
+                &message_entry.message,
+                CodingAgentMessage::Base(Message::Assistant(_))
+            )
+    )
+}
+
 fn usage_from_json(value: Option<&Value>) -> Option<Usage> {
     let value = value?;
     serde_json::from_value(value.clone()).ok()
@@ -991,6 +1003,10 @@ pub struct SessionManager {
     label_timestamps_by_id: BTreeMap<String, u64>,
     leaf_id: Option<String>,
     now_ms: fn() -> u64,
+    /// Whether the session already holds an assistant message. Cached: the
+    /// deferred-flush rule reads it on every append, and scanning the whole
+    /// entry list there made appending O(n^2) per session.
+    has_assistant: bool,
     /// The file length this manager last wrote (None before its first write).
     /// A different length means another writer touched the file
     /// (docs/rules/01-architecture.md, "Session store contract").
@@ -1077,6 +1093,7 @@ impl SessionManager {
             label_timestamps_by_id: BTreeMap::new(),
             leaf_id: None,
             now_ms: pillar_ai::models::now_ms,
+            has_assistant: false,
             expected_len: None,
         };
         if persist && !session_dir.exists() {
@@ -1189,6 +1206,10 @@ impl SessionManager {
                 }
             }
 
+            self.has_assistant = self.file_entries.iter().any(|entry| match entry {
+                FileEntry::Entry(entry) => entry_has_assistant(entry),
+                FileEntry::Header(_) => false,
+            });
             self.build_index();
             self.flushed = true;
             // Adopt the file as it is now: from here on a length we did not
@@ -1225,6 +1246,7 @@ impl SessionManager {
         self.labels_by_id.clear();
         self.label_timestamps_by_id.clear();
         self.leaf_id = None;
+        self.has_assistant = false;
         self.flushed = false;
 
         if self.persist {
@@ -1290,16 +1312,7 @@ impl SessionManager {
             return Ok(());
         };
         self.refuse_foreign_writer(&session_file)?;
-        let has_assistant = self.file_entries.iter().any(|e| {
-            matches!(
-                e,
-                FileEntry::Entry(Entry::Message(message_entry))
-                    if matches!(
-                        &message_entry.message,
-                        CodingAgentMessage::Base(Message::Assistant(_))
-                    )
-            )
-        });
+        let has_assistant = self.has_assistant;
         let serialized = format!(
             "{}\n",
             serde_json::to_string(&FileEntry::Entry(entry.clone()).to_json()).unwrap_or_default()
@@ -1385,6 +1398,9 @@ impl SessionManager {
         self.by_id.insert(id.clone(), index);
         self.leaf_id = Some(id.clone());
         let entry_clone = self.file_entries[index].entry_clone().clone();
+        if entry_has_assistant(&entry_clone) {
+            self.has_assistant = true;
+        }
         if let Err(error) = self.persist_entry(&entry_clone) {
             // The live state must not claim an entry the file does not have:
             // roll it back and let the caller decide.
@@ -1397,8 +1413,15 @@ impl SessionManager {
     }
 
     fn next_id(&self) -> String {
-        let existing: std::collections::BTreeSet<String> = self.by_id.keys().cloned().collect();
-        generate_id_with(&existing)
+        // Short ids are the uuid's timestamp prefix, so a second id in the same
+        // millisecond collides. Answer the full uuid in that case (the same
+        // fallback `generate_id_with` used) instead of retrying, and check the
+        // index directly: copying every key into a set made each append O(n).
+        let short = &pillar_ai::uuid::uuidv7()[..8];
+        if !self.by_id.contains_key(short) {
+            return short.to_string();
+        }
+        pillar_ai::uuid::uuidv7()
     }
 
     /// Append a message as a child of the current leaf and advance the leaf
@@ -2028,15 +2051,9 @@ impl SessionManager {
         // otherwise defer to persist_entry. The write happens before the
         // manager claims the branched state, so a failed write leaves it on
         // the session it had.
-        let has_assistant = entries.iter().any(|e| {
-            matches!(
-                e,
-                FileEntry::Entry(Entry::Message(message_entry))
-                    if matches!(
-                        &message_entry.message,
-                        CodingAgentMessage::Base(Message::Assistant(_))
-                    )
-            )
+        let has_assistant = entries.iter().any(|entry| match entry {
+            FileEntry::Entry(entry) => entry_has_assistant(entry),
+            FileEntry::Header(_) => false,
         });
         if has_assistant {
             let mut content = String::new();
@@ -2051,6 +2068,7 @@ impl SessionManager {
         self.session_id = new_session_id.clone();
         self.session_file = Some(new_session_file.clone());
         self.build_index();
+        self.has_assistant = has_assistant;
         self.flushed = has_assistant;
         self.expected_len = None;
         if has_assistant {

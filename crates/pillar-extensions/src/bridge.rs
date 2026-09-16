@@ -241,7 +241,7 @@ pub fn bridge_to_runner(
         .iter()
         .filter(|registration| registration.owner == path)
         .map(|registration| &registration.value)
-        .last()
+        .next_back()
         .map(|identity| {
         let runtime = Arc::clone(runtime);
         let identity = identity.clone();

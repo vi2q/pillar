@@ -109,12 +109,21 @@ CLI.
   or a deleted file) instead of interleaving or recreating. There is no OS
   lock: `create` already uses an exclusive create, and a lock per entry costs
   more than the interleaving it would prevent.
-- **Other backends**: `pillar-agent`'s harness session (`harness/session`) is
-  the eval harness's own storage, not the CLI session contract, and
-  `pillar-session-store`'s SQLite backend is a standalone implementation of
-  this contract that no crate wires in yet. The formats stay separate; a
-  backend that replaces the JSONL one has to satisfy the same invariants
-  (reload == live state, torn tail repaired, foreign write reported).
+- **Other backends**: the v3 JSONL codec above is the only session store the CLI
+  uses. `pillar-agent`'s harness session (`harness/session`) is the eval
+  harness's own storage, not a session backend, and `pillar-session-store`'s
+  SQLite backend is a standalone implementation that no crate wires in yet
+  (`tests/dependency_direction.rs` fails if that changes).
+- **Decision (2026-09-16)**: keep one store and keep SQLite unwired. The corpus
+  in `pillar-coding-agent/tests/session_manager_parity.rs`
+  (`measure_session_scale`) measured, in a debug build: 1000 sessions listed in
+  18 ms, session info for 1000 files in 58 ms, 10k entries appended in 0.65 s
+  and reloaded in 0.35 s — an index buys nothing at that scale, while a second
+  store would split the truth the contract is meant to keep single. Revisit when
+  the *measured* cost of listing / loading stops being negligible (e.g. listing
+  over ~100 ms at a user's real session count), and then wire the SQLite backend
+  behind this contract with the same invariants (reload == live state, torn tail
+  repaired, foreign write reported, one writer).
 
 ## Upstream checkouts
 

@@ -1300,9 +1300,10 @@ fn install_pillar_api(
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
                     let owner = registry.owner();
-                    registry
-                        .commands
-                        .push(Registration { owner, value: (name, json) });
+                    registry.commands.push(Registration {
+                        owner,
+                        value: (name, json),
+                    });
                 }
                 Ok::<(), luaur_rt::Error>(())
             }),
@@ -1322,9 +1323,10 @@ fn install_pillar_api(
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
                     let owner = registry.owner();
-                    registry
-                        .shortcuts
-                        .push(Registration { owner, value: (key, json) });
+                    registry.shortcuts.push(Registration {
+                        owner,
+                        value: (key, json),
+                    });
                 }
                 Ok::<(), luaur_rt::Error>(())
             }),
@@ -1344,9 +1346,10 @@ fn install_pillar_api(
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
                     let owner = registry.owner();
-                    registry
-                        .flags
-                        .push(Registration { owner, value: (name, json) });
+                    registry.flags.push(Registration {
+                        owner,
+                        value: (name, json),
+                    });
                 }
                 Ok::<(), luaur_rt::Error>(())
             }),
@@ -1653,9 +1656,10 @@ fn install_pillar_api(
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
                     let owner = registry.owner();
-                    registry
-                        .message_renderers
-                        .push(Registration { owner, value: custom_type });
+                    registry.message_renderers.push(Registration {
+                        owner,
+                        value: custom_type,
+                    });
                 }
                 Ok::<(), luaur_rt::Error>(())
             }),
@@ -1684,9 +1688,10 @@ fn install_pillar_api(
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
                     let owner = registry.owner();
-                    registry
-                        .entry_renderers
-                        .push(Registration { owner, value: custom_type });
+                    registry.entry_renderers.push(Registration {
+                        owner,
+                        value: custom_type,
+                    });
                 }
                 Ok::<(), luaur_rt::Error>(())
             }),

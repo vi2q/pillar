@@ -256,7 +256,8 @@ async fn a_failed_rebuild_keeps_the_previous_generation() {
     let dir = extension_dir("gen-fail", "ext.luau", source);
     let out = cwd.join("gen.txt");
 
-    let mut wiring = build_extension_runner(&cwd_str, None, None, &[dir.to_string_lossy().to_string()]);
+    let mut wiring =
+        build_extension_runner(&cwd_str, None, None, &[dir.to_string_lossy().to_string()]);
     let tools = wiring.custom_tools();
     let runner = wiring.take_runner();
     let factory: ExtensionRunnerFactory =
@@ -522,7 +523,11 @@ fn the_session_slot_does_not_keep_the_session_alive() {
     let session = session_for_reload(
         ExtensionRunner::new(Vec::new()),
         Vec::new(),
-        Arc::new(|_| Ok(ExtensionGeneration::from_runner(ExtensionRunner::new(Vec::new())))),
+        Arc::new(|_| {
+            Ok(ExtensionGeneration::from_runner(ExtensionRunner::new(
+                Vec::new(),
+            )))
+        }),
     );
     bind_session(&slots.session_slot, &session);
     assert!(resolve_session(&slots.session_slot).is_some());
@@ -566,7 +571,11 @@ fn dispose_clears_the_agent_hooks_and_unbinds_the_host() {
     let session = session_for_reload(
         ExtensionRunner::new(Vec::new()),
         Vec::new(),
-        Arc::new(|_| Ok(ExtensionGeneration::from_runner(ExtensionRunner::new(Vec::new())))),
+        Arc::new(|_| {
+            Ok(ExtensionGeneration::from_runner(ExtensionRunner::new(
+                Vec::new(),
+            )))
+        }),
     );
     bind_session(&slots.session_slot, &session);
     session.install_tool_hooks();
@@ -644,16 +653,19 @@ async fn same_named_commands_reach_their_own_extension() {
     assert_eq!(names, vec!["hello:1".to_string(), "hello:2".to_string()]);
     assert_eq!(wiring.runtime.lock().unwrap().registry().commands.len(), 2);
 
-    let mut config = base_session_config(
-        Arc::new(Mutex::new(wiring.take_runner())),
-        Vec::new(),
-    );
+    let mut config = base_session_config(Arc::new(Mutex::new(wiring.take_runner())), Vec::new());
     config.command_handler = Some(extension_command_handler(&wiring.runtime));
     let session = Arc::new(AgentSession::new(config));
 
-    session.prompt("/hello:1", None).await.expect("first command");
+    session
+        .prompt("/hello:1", None)
+        .await
+        .expect("first command");
     assert_eq!(std::fs::read_to_string(&out).unwrap(), "first");
-    session.prompt("/hello:2", None).await.expect("second command");
+    session
+        .prompt("/hello:2", None)
+        .await
+        .expect("second command");
     assert_eq!(
         std::fs::read_to_string(&out).unwrap(),
         "second",
@@ -689,5 +701,9 @@ fn a_failed_setup_leaves_no_registrations() {
     let registry = runtime.lock().unwrap().registry();
     assert!(registry.commands.is_empty(), "{:?}", registry.commands);
     assert!(registry.tools.is_empty(), "{:?}", registry.tools);
-    assert!(registry.event_handlers.is_empty(), "{:?}", registry.event_handlers);
+    assert!(
+        registry.event_handlers.is_empty(),
+        "{:?}",
+        registry.event_handlers
+    );
 }

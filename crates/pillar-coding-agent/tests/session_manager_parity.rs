@@ -10,7 +10,7 @@ use pillar_ai::types::{Message, StopReason, Usage, UsageCost, UserContent};
 use pillar_coding_agent::core::messages::{CodingAgentMessage, CustomContent};
 use pillar_coding_agent::core::session_entries::SessionEntry as Entry;
 use pillar_coding_agent::core::session_manager::{
-    CURRENT_SESSION_VERSION, FileEntry, SessionManager, assert_valid_session_id,
+    CURRENT_SESSION_VERSION, FileEntry, SessionManager, assert_valid_session_id, build_session_info,
     build_context_entries, build_session_path, default_session_dir_path, generate_id_with,
     get_latest_compaction_entry, load_entries_from_file, load_session_file,
     migrate_session_entries, parse_iso_timestamp, parse_session_entry_line,
@@ -926,4 +926,69 @@ fn a_foreign_append_is_reported_not_interleaved() {
         "nothing of ours is written into the other writer's file"
     );
     std::fs::remove_dir_all(&dir).ok();
+}
+
+// --- scale measurement (the corpus the storage decision is based on) ---------
+
+/// Not part of the suite: builds a corpus and prints timings, so a change to
+/// listing / loading can be compared against the recorded numbers (TASKS).
+/// Run with `cargo test -p pillar-coding-agent --test session_manager_parity
+/// measure_session_scale -- --ignored --nocapture`.
+#[test]
+#[ignore = "measurement: run explicitly, prints timings"]
+fn measure_session_scale() {
+    use std::time::Instant;
+
+    let dir = std::env::temp_dir().join(format!("pillar-session-scale-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    // 1000 sessions with a handful of entries each (the /resume listing case).
+    const SESSIONS: usize = 1000;
+    let started = Instant::now();
+    let mut names = Vec::new();
+    for index in 0..SESSIONS {
+        let mut manager =
+            SessionManager::create("/tmp/scale", Some(&dir), None).expect("create session");
+        manager.append_message(user_msg("question")).unwrap();
+        manager.append_message(assistant_msg("answer")).unwrap();
+        names.push(manager.session_file().map(Path::to_path_buf).unwrap());
+    }
+    let created = started.elapsed();
+
+    let started = Instant::now();
+    let listed = SessionManager::list_all(Some(&dir), None);
+    let listed_ms = started.elapsed();
+    assert_eq!(listed.len(), SESSIONS);
+
+    let started = Instant::now();
+    let infos: Vec<_> = names.iter().filter_map(|path| build_session_info(path)).collect();
+    let info_ms = started.elapsed();
+    assert_eq!(infos.len(), SESSIONS);
+
+    // One long session (the reload case): 10k entries.
+    let long_dir = std::env::temp_dir().join(format!("pillar-session-long-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&long_dir);
+    std::fs::create_dir_all(&long_dir).unwrap();
+    let mut long = SessionManager::create("/tmp/long", Some(&long_dir), None).expect("create");
+    let started = Instant::now();
+    for index in 0..5_000 {
+        long.append_message(user_msg(&format!("question {index}"))).unwrap();
+        long.append_message(assistant_msg(&format!("answer {index}"))).unwrap();
+    }
+    let appended = started.elapsed();
+    let file = long.session_file().map(Path::to_path_buf).unwrap();
+    drop(long);
+
+    let started = Instant::now();
+    let reopened = SessionManager::open(&file, None, None).expect("reopen");
+    let loaded = started.elapsed();
+    assert_eq!(reopened.get_entries().len(), 10_000);
+
+    println!(
+        "scale: {SESSIONS} sessions created {created:?}, listed {listed_ms:?}, info {info_ms:?}; \
+         10k entries appended {appended:?}, loaded {loaded:?}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::remove_dir_all(&long_dir).ok();
 }
