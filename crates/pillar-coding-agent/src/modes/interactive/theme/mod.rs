@@ -318,6 +318,17 @@ impl Theme {
         self.mode
     }
 
+    /// The foreground colour map (the host side of `ctx.ui.theme`): theme
+    /// colour name → raw ANSI sequence.
+    pub fn fg_colors(&self) -> &std::collections::BTreeMap<String, String> {
+        &self.fg_colors
+    }
+
+    /// The background colour map.
+    pub fn bg_colors(&self) -> &std::collections::BTreeMap<String, String> {
+        &self.bg_colors
+    }
+
     /// Colour `text` with a foreground colour (upstream `Theme.fg`).
     pub fn fg(&self, color: &str, text: &str) -> String {
         let ansi = self
@@ -908,6 +919,24 @@ pub fn theme() -> std::sync::Arc<Theme> {
         .current
         .clone()
         .expect("Theme not initialized. Call init_theme() first.")
+}
+
+/// The active theme, or `None` when it was never initialized (extensions
+/// may query `ctx.ui.theme` before the UI starts).
+pub fn try_theme() -> Option<std::sync::Arc<Theme>> {
+    REGISTRY.read().expect("theme registry").current.clone()
+}
+
+/// Every theme the process knows about (upstream `getAllThemes`): the
+/// built-ins plus the registered user/project themes, with the registered
+/// theme's source path when it has one.
+pub fn all_themes() -> Vec<(String, Option<String>)> {
+    let mut themes: std::collections::BTreeMap<String, Option<String>> =
+        builtin_themes().keys().map(|name| (name.clone(), None)).collect();
+    for (name, theme) in &REGISTRY.read().expect("theme registry").registered {
+        themes.insert(name.clone(), theme.source_path().map(str::to_string));
+    }
+    themes.into_iter().collect()
 }
 
 /// The active theme name, if any.

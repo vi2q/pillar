@@ -1952,15 +1952,21 @@ impl AgentSession {
     /// error listener onto the runner. The UI/command contexts themselves are
     /// host-owned (divergence).
     fn apply_extension_bindings(&self) {
-        let (has_ui, listener) = {
+        let (has_ui, mode, listener) = {
             let state = self.inner.state.lock().expect("session state");
             (
                 state.extension_has_ui,
+                state.extension_mode.clone(),
                 state.extension_error_listener.clone(),
             )
         };
         let mut runner = self.inner.extension_runner.lock().expect("runner lock");
         runner.set_has_ui(has_ui);
+        runner.set_context_facts(crate::core::extensions_types::ExtensionContextFacts {
+            cwd: self.inner.cwd.clone(),
+            mode: extension_mode(&mode),
+            has_ui,
+        });
         runner.set_error_listener(listener.map(
             |listener| -> Box<dyn Fn(&ExtensionError) + Send> {
                 Box::new(move |error| listener(error))
@@ -4388,5 +4394,17 @@ impl SummarizeFn for SummarizeStreamFn {
             let event_stream = stream.call(context, Some(call_options)).await;
             Ok(event_stream.result().await)
         })
+    }
+}
+
+/// Map the session's extension mode string onto the extension-facing mode
+/// (upstream `ExtensionMode`).
+fn extension_mode(mode: &str) -> crate::core::extensions_types::ExtensionMode {
+    use crate::core::extensions_types::ExtensionMode;
+    match mode {
+        "tui" | "interactive" => ExtensionMode::Tui,
+        "rpc" => ExtensionMode::Rpc,
+        "json" => ExtensionMode::Json,
+        _ => ExtensionMode::Print,
     }
 }

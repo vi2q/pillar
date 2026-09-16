@@ -259,6 +259,144 @@ fn session_with_models_impl(
     Arc::new(AgentSession::new(config))
 }
 
+/// `handle_extension_ui` applies the non-blocking `ctx.ui` operations
+/// (upstream `createExtensionUIContext`'s methods).
+#[test]
+fn extension_ui_requests_are_applied_by_the_mode() {
+    use pillar_coding_agent::core::extensions_types::ExtensionUiRequest;
+
+    let _guard = THEME_LOCK.lock().expect("lock");
+    install_dark();
+    let session = session();
+    let titles: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let title_sink = Arc::clone(&titles);
+    let mode = InteractiveMode::new(
+        Arc::clone(&session),
+        TranscriptSettings::default(),
+        Vec::new(),
+        InteractiveModeOptions {
+            tui_mode: Some(TuiMode::Regular),
+            clear_on_shrink: Some(false),
+            show_terminal_progress: Some(false),
+            version: Some("0.84.3".to_string()),
+            on_terminal_title: Some(Arc::new(move |title: &str| {
+                title_sink.lock().unwrap().push(title.to_string());
+            })),
+            on_terminal_progress: None,
+            cwd_git_paths: None,
+            ..Default::default()
+        },
+    );
+
+    let request = |op: &str, args: serde_json::Value| ExtensionUiRequest {
+        op: op.to_string(),
+        args,
+    };
+
+    // notify (info / warning / error) lands as a chat notice.
+    mode.handle_extension_ui(&request("notify", serde_json::json!({ "message": "note" })))
+        .unwrap();
+    mode.handle_extension_ui(&request(
+        "notify",
+        serde_json::json!({ "message": "careful", "type": "warning" }),
+    ))
+    .unwrap();
+    mode.handle_extension_ui(&request(
+        "notify",
+        serde_json::json!({ "message": "broken", "type": "error" }),
+    ))
+    .unwrap();
+    {
+        let mut transcript = mode.transcript().lock();
+        let rendered = plain(&mut transcript.chat, 60);
+        assert!(rendered.contains("note"), "{rendered}");
+        assert!(rendered.contains("Warning: careful"), "{rendered}");
+        assert!(rendered.contains("Error: broken"), "{rendered}");
+    }
+
+    // set_status feeds the footer's extension status line; nil clears it.
+    mode.handle_extension_ui(&request(
+        "set_status",
+        serde_json::json!({ "key": "demo", "text": "42" }),
+    ))
+    .unwrap();
+    assert_eq!(
+        mode.footer().lock().footer_data().extension_statuses().get("demo"),
+        Some(&"42".to_string())
+    );
+    mode.handle_extension_ui(&request("set_status", serde_json::json!({ "key": "demo" })))
+        .unwrap();
+    assert!(
+        mode.footer()
+            .lock()
+            .footer_data()
+            .extension_statuses()
+            .get("demo")
+            .is_none()
+    );
+
+    // set_title reaches the terminal callback.
+    mode.handle_extension_ui(&request(
+        "set_title",
+        serde_json::json!({ "title": "ctx title" }),
+    ))
+    .unwrap();
+    assert_eq!(titles.lock().unwrap().as_slice(), &["ctx title".to_string()]);
+
+    // Working-indicator knobs.
+    mode.handle_extension_ui(&request(
+        "set_working_message",
+        serde_json::json!({ "message": "Crunching..." }),
+    ))
+    .unwrap();
+    mode.handle_extension_ui(&request(
+        "set_working_indicator",
+        serde_json::json!({ "options": { "frames": ["*"], "intervalMs": 50 } }),
+    ))
+    .unwrap();
+    mode.handle_extension_ui(&request(
+        "set_working_visible",
+        serde_json::json!({ "visible": false }),
+    ))
+    .unwrap();
+    assert!(!mode.status().lock().working_visible);
+
+    // Editor text + paste.
+    mode.handle_extension_ui(&request(
+        "set_editor_text",
+        serde_json::json!({ "text": "draft" }),
+    ))
+    .unwrap();
+    assert_eq!(mode.editor_text(), "draft");
+    mode.handle_extension_ui(&request("paste_to_editor", serde_json::json!({ "text": " tail" })))
+        .unwrap();
+    assert_eq!(mode.editor_text(), "draft tail");
+
+    // Tool expansion flips the transcript setting.
+    mode.handle_extension_ui(&request(
+        "set_tools_expanded",
+        serde_json::json!({ "expanded": true }),
+    ))
+    .unwrap();
+    assert!(mode.transcript().lock().tool_output_expanded());
+
+    // Unknown ops and bad arguments are reported, never applied.
+    let error = mode
+        .handle_extension_ui(&request("select", serde_json::json!({ "title": "x" })))
+        .unwrap_err();
+    assert!(error.contains("not supported"), "{error}");
+    let error = mode
+        .handle_extension_ui(&request("set_editor_text", serde_json::json!({ "text": 4 })))
+        .unwrap_err();
+    assert!(error.contains("must be a string"), "{error}");
+    // `nil` frames restore the default indicator (upstream omit = default).
+    mode.handle_extension_ui(&request(
+        "set_working_indicator",
+        serde_json::json!({ "options": null }),
+    ))
+    .unwrap();
+}
+
 /// `InteractiveMode::new` installs the session's extension renderers and
 /// markdown transformers into the transcript (upstream reads
 /// `session.extensionRunner` while building each component).

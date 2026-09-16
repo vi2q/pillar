@@ -11,6 +11,9 @@
 use std::sync::{Arc, Mutex};
 
 use luaur_rt::{Function, Lua, LuaSerdeExt, TypeDiagnostic, Value, check_with_definitions};
+use pillar_coding_agent::core::extensions_types::{
+    ExtensionContextFn, ExtensionUiFn, ExtensionUiRequest,
+};
 
 /// Registration records captured from `pillar.*` API calls (upstream
 /// the ExtensionAPI's internal registries).
@@ -123,12 +126,58 @@ impl std::error::Error for ExtensionLoadError {}
 /// Shared registry handle (native closures capture `'static` data).
 pub type SharedRegistry = Arc<Mutex<HostRegistry>>;
 
+/// The `ctx` table every handler receives (upstream `ExtensionContext`):
+/// the host facts, the `ui` bridge and the active theme. `ui_call` answers
+/// `false` when the host has no UI context, which is when the wrappers are
+/// no-ops (upstream `noOpUIContext`).
+const CONTEXT_LUA: &str = r#"
+local facts, ui_call, theme, themes = ...
+
+local ui = {}
+local function call(op, args)
+    ui_call(op, args or {})
+end
+
+ui.notify = function(message, kind) call("notify", { message = message, type = kind }) end
+ui.set_status = function(key, text) call("set_status", { key = key, text = text }) end
+ui.set_title = function(title) call("set_title", { title = title }) end
+ui.set_working_message = function(message) call("set_working_message", { message = message }) end
+ui.set_working_indicator = function(options) call("set_working_indicator", { options = options }) end
+ui.set_working_visible = function(visible) call("set_working_visible", { visible = visible }) end
+ui.set_hidden_thinking_label = function(label) call("set_hidden_thinking_label", { label = label }) end
+ui.set_editor_text = function(text) call("set_editor_text", { text = text }) end
+ui.paste_to_editor = function(text) call("paste_to_editor", { text = text }) end
+ui.set_tools_expanded = function(expanded) call("set_tools_expanded", { expanded = expanded }) end
+ui.get_all_themes = function() return themes end
+
+local function styled(map, reset, color, text)
+    local ansi = map[color]
+    if ansi == nil then return text end
+    return ansi .. text .. reset
+end
+theme.fg = function(color, text) return styled(theme.fgColors, "\27[39m", color, text) end
+theme.bg = function(color, text) return styled(theme.bgColors, "\27[49m", color, text) end
+theme.bold = function(text) return "\27[1m" .. text .. "\27[22m" end
+theme.italic = function(text) return "\27[3m" .. text .. "\27[23m" end
+theme.underline = function(text) return "\27[4m" .. text .. "\27[24m" end
+theme.strikethrough = function(text) return "\27[9m" .. text .. "\27[29m" end
+theme.inverse = function(text) return "\27[7m" .. text .. "\27[27m" end
+
+return {
+    cwd = facts.cwd,
+    mode = facts.mode,
+    hasUI = facts.hasUI,
+    ui = ui,
+    theme = theme,
+}
+"#;
+
 /// Host `declare` definitions for the type-checker: the `@pillar`
 /// module surface (grows with the API; currently the registration
 /// methods installed by [`install_pillar_api`]).
 pub const PILLAR_DEFINITIONS: &str = r#"
 declare pillar: {
-    on: (event: string, handler: (event: any) -> any) -> (),
+    on: (event: string, handler: (event: any, ctx: any) -> any) -> (),
     register_tool: (definition: any) -> (),
     register_command: (name: string, opts: any) -> (),
     register_shortcut: (key: string, opts: any) -> (),
@@ -245,6 +294,13 @@ pub struct HostApi {
     /// `pillar.fs.*` → the bounded file API (the host resolves paths and
     /// applies the same trust model as tool calls).
     pub fs: Option<FsFn>,
+    /// `ctx.ui.*` → the interactive mode's UI (upstream
+    /// `ExtensionUIContext`). Without it every method is a no-op, matching
+    /// upstream's `noOpUIContext`.
+    pub ui: Option<ExtensionUiFn>,
+    /// The `ctx` facts (`cwd` / `mode` / `hasUI`; upstream the live
+    /// `ExtensionContext` fields).
+    pub context: Option<ExtensionContextFn>,
 }
 
 /// The process-wide extension runtime.
@@ -341,6 +397,8 @@ impl ExtensionRuntime {
             .call((event,))
             .unwrap_or_default();
         let mut last_table: Option<HandlerOutcome> = None;
+        // Upstream `handler(event, ctx)`: one context per dispatch.
+        let context = self.context_value()?;
         for handler in handlers {
             let arg = self
                 .lua
@@ -351,7 +409,7 @@ impl ExtensionRuntime {
                 _ => continue,
             };
             let result: Value = function
-                .call(arg)
+                .call((arg, context.clone()))
                 .map_err(|error| ExtensionLoadError::Setup(error.to_string()))?;
             let outcome = match &result {
                 Value::Nil => {
@@ -392,8 +450,8 @@ impl ExtensionRuntime {
     /// closure): `execute(tool_call_id, params, signal, on_update, ctx)`
     /// returns `{ content, details?, usage?, addedToolNames?, terminate? }`.
     ///
-    /// divergences: `signal` / `on_update` / `ctx` are passed as nil until
-    /// the async and context slices land.
+    /// divergences: `signal` / `on_update` are passed as nil until the async
+    /// slice lands.
     pub fn call_tool(
         &mut self,
         name: &str,
@@ -404,18 +462,24 @@ impl ExtensionRuntime {
             .lua
             .to_value(&params)
             .map_err(|error| format!("{name}: {error}"))?;
+        // The `signal` / `on_update` slots stay nil until the async slice;
+        // `ctx` is the same table handlers receive (upstream the tool's
+        // `ctx` argument).
+        let context = self
+            .context_value()
+            .map_err(|error| format!("{name}: {error}"))?;
         let result: Value = self
             .lua
             .load(
                 r#"
-                local name, tool_call_id, params = ...
+                local name, tool_call_id, params, ctx = ...
                 local registered = __pillar_tool_execute
                 local execute = registered and registered[name]
                 if execute == nil then return nil end
-                return execute(tool_call_id, params, nil, nil, nil)
+                return execute(tool_call_id, params, nil, nil, ctx)
             "#,
             )
-            .call((name, tool_call_id, params_lua))
+            .call((name, tool_call_id, params_lua, context))
             .map_err(|error| format!("{name}: {error}"))?;
         match result {
             Value::Nil => Err(format!("tool {name} returned no result")),
@@ -522,6 +586,100 @@ impl ExtensionRuntime {
                 other.type_name()
             )),
         }
+    }
+
+    /// The `ctx` table handed to every handler and tool `execute` (upstream
+    /// `ExtensionContext`): the host facts (`cwd` / `mode` / `hasUI`), the
+    /// `ui` bridge (a no-op without a host UI context) and the active theme.
+    pub fn context_value(&self) -> Result<Value, ExtensionLoadError> {
+        let facts = {
+            let guard = self
+                .host_api
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.context.as_ref().map(|context| context())
+        };
+        let facts = facts.unwrap_or_default();
+        let facts_lua = self
+            .lua
+            .to_value(&serde_json::json!({
+                "cwd": facts.cwd,
+                "mode": facts.mode.as_str(),
+                "hasUI": facts.has_ui,
+            }))
+            .map_err(|error| ExtensionLoadError::Setup(error.to_string()))?;
+
+        // `ctx.ui.<op>(args)` → the host bridge; without one the Lua wrappers
+        // answer the upstream `noOpUIContext` defaults.
+        let ui_slot = Arc::clone(&self.host_api);
+        let ui_lua = self.lua.clone();
+        let ui_call = Function::wrap(move |op: String, args: Option<Value>| {
+            let callback = {
+                let guard = ui_slot
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                guard.ui.clone()
+            };
+            let Some(callback) = callback else {
+                return Ok::<bool, luaur_rt::Error>(false);
+            };
+            let args = match args {
+                Some(args) => ui_lua
+                    .from_value::<serde_json::Value>(args)
+                    .map_err(luaur_rt::Error::external)?,
+                None => serde_json::Value::Null,
+            };
+            callback(ExtensionUiRequest { op, args }).map_err(luaur_rt::Error::external)?;
+            Ok(true)
+        });
+        let (theme, themes) = self.theme_table()?;
+        self.lua
+            .load(CONTEXT_LUA)
+            .call::<Value>((facts_lua, ui_call, theme, themes))
+            .map_err(|error| ExtensionLoadError::Setup(error.to_string()))
+    }
+
+    /// The `ctx.ui.theme` table (upstream the live `Theme` object, plus
+    /// `getAllThemes`): the colour maps and the theme list. Without an
+    /// initialized theme the styling helpers answer plain text.
+    fn theme_table(&self) -> Result<(Value, Value), ExtensionLoadError> {
+        use pillar_coding_agent::modes::interactive::theme;
+        let active = theme::try_theme();
+        let (name, mode, fg, bg) = match &active {
+            Some(theme) => (
+                theme.name().map(str::to_string),
+                theme.color_mode().as_str().to_string(),
+                theme.fg_colors().clone(),
+                theme.bg_colors().clone(),
+            ),
+            None => (
+                None,
+                String::new(),
+                std::collections::BTreeMap::new(),
+                std::collections::BTreeMap::new(),
+            ),
+        };
+        let value = serde_json::json!({
+            "name": name,
+            "mode": mode,
+            "fgColors": fg,
+            "bgColors": bg,
+        });
+        let value = self
+            .lua
+            .to_value(&value)
+            .map_err(|error| ExtensionLoadError::Setup(error.to_string()))?;
+        let themes = serde_json::Value::Array(
+            theme::all_themes()
+                .into_iter()
+                .map(|(name, path)| serde_json::json!({ "name": name, "path": path }))
+                .collect(),
+        );
+        let themes = self
+            .lua
+            .to_value(&themes)
+            .map_err(|error| ExtensionLoadError::Setup(error.to_string()))?;
+        Ok((value, themes))
     }
 
     /// VM access for the host API installation and tests.
@@ -1653,6 +1811,211 @@ mod api_tests {
             properties["tags"]["items"]["type"],
             serde_json::json!("string")
         );
+    }
+
+    /// Handlers receive `ctx` (upstream `handler(event, ctx)`) with the host
+    /// facts and a working `ui` bridge; without a UI host every `ui` call is
+    /// the upstream no-op.
+    #[test]
+    fn context_is_passed_to_handlers() {
+        use pillar_coding_agent::core::extensions_types::{
+            ExtensionContextFacts, ExtensionMode, ExtensionUiRequest,
+        };
+        let seen: Arc<Mutex<Vec<ExtensionUiRequest>>> = Arc::new(Mutex::new(Vec::new()));
+        let mut runtime = ExtensionRuntime::new();
+        let sink = Arc::clone(&seen);
+        runtime.set_host_api(HostApi {
+            context: Some(Arc::new(|| ExtensionContextFacts {
+                cwd: "/tmp/project".to_string(),
+                mode: ExtensionMode::Tui,
+                has_ui: true,
+            })),
+            ui: Some(Arc::new(move |request| {
+                sink.lock().unwrap().push(request);
+                Ok(())
+            })),
+            ..Default::default()
+        });
+        runtime
+            .load_extension(
+                "ctx.luau",
+                r#"
+                local pillar = require("@pillar")
+                pillar.on("session_start", function(event, ctx)
+                    ctx.ui.notify("hello", "warning")
+                    ctx.ui.set_status("demo", "42")
+                    ctx.ui.set_tools_expanded(true)
+                    return {
+                        cwd = ctx.cwd,
+                        mode = ctx.mode,
+                        hasUI = ctx.hasUI,
+                        themeName = ctx.theme.name,
+                    }
+                end)
+                return nil
+                "#,
+            )
+            .unwrap();
+        let outcome = runtime
+            .dispatch("session_start", serde_json::json!({}))
+            .unwrap();
+        match outcome {
+            HandlerOutcome::Table(table) => {
+                assert_eq!(table["cwd"], serde_json::json!("/tmp/project"));
+                assert_eq!(table["mode"], serde_json::json!("tui"));
+                assert_eq!(table["hasUI"], serde_json::json!(true));
+                // The theme table always exists; its name is either the
+                // active theme (a sibling test may have initialized one) or
+                // nil when no theme was ever loaded.
+                assert!(
+                    table["themeName"].is_null() || table["themeName"].is_string(),
+                    "{:?}",
+                    table["themeName"]
+                );
+            }
+            other => panic!("unexpected outcome: {other:?}"),
+        }
+        let calls = seen.lock().unwrap();
+        assert_eq!(calls.len(), 3);
+        assert_eq!(calls[0].op, "notify");
+        assert_eq!(
+            calls[0].args,
+            serde_json::json!({ "message": "hello", "type": "warning" })
+        );
+        assert_eq!(calls[1].op, "set_status");
+        assert_eq!(
+            calls[1].args,
+            serde_json::json!({ "key": "demo", "text": "42" })
+        );
+        assert_eq!(calls[2].op, "set_tools_expanded");
+        assert_eq!(calls[2].args, serde_json::json!({ "expanded": true }));
+    }
+
+    /// Without a host UI context (print / json modes) the `ui` methods are
+    /// no-ops and answer the upstream defaults.
+    #[test]
+    fn context_ui_without_a_host_is_a_noop() {
+        let mut runtime = ExtensionRuntime::new();
+        runtime
+            .load_extension(
+                "nohost.luau",
+                r#"
+                local pillar = require("@pillar")
+                pillar.on("session_start", function(event, ctx)
+                    ctx.ui.notify("nobody listens")
+                    ctx.ui.set_editor_text("draft")
+                    return { themes = #ctx.ui.get_all_themes(), cwd = ctx.cwd }
+                end)
+                return nil
+                "#,
+            )
+            .unwrap();
+        let outcome = runtime
+            .dispatch("session_start", serde_json::json!({}))
+            .unwrap();
+        match outcome {
+            HandlerOutcome::Table(table) => {
+                assert_eq!(table["cwd"], serde_json::json!(""));
+                assert!(table["themes"].as_u64().unwrap_or_default() > 0);
+            }
+            other => panic!("unexpected outcome: {other:?}"),
+        }
+    }
+
+    /// `ctx.ui.theme` styles with the active theme's colours and leaves
+    /// unknown colour names plain; `ctx` also reaches tool `execute`.
+    #[test]
+    fn context_theme_and_tool_context() {
+        pillar_coding_agent::modes::interactive::theme::init_theme(Some("dark"));
+        let mut runtime = ExtensionRuntime::new();
+        runtime
+            .load_extension(
+                "theme.luau",
+                r#"
+                local pillar = require("@pillar")
+                pillar.register_tool({
+                    name = "ctx-tool",
+                    description = "Probe",
+                    execute = function(tool_call_id, params, signal, on_update, ctx)
+                        return {
+                            content = { { type = "text", text = ctx.mode } },
+                            details = { styled = ctx.theme.fg("accent", "X"), plain = ctx.theme.fg("nope", "Y") },
+                        }
+                    end,
+                })
+                pillar.on("session_start", function(event, ctx)
+                    return {
+                        styled = ctx.theme.fg("dim", "D"),
+                        plain = ctx.theme.fg("nope", "P"),
+                        bold = ctx.theme.bold("B"),
+                        name = ctx.theme.name,
+                        themes = #ctx.ui.get_all_themes(),
+                    }
+                end)
+                return nil
+                "#,
+            )
+            .unwrap();
+        let outcome = runtime
+            .dispatch("session_start", serde_json::json!({}))
+            .unwrap();
+        let table = match outcome {
+            HandlerOutcome::Table(table) => table,
+            other => panic!("unexpected outcome: {other:?}"),
+        };
+        let active = pillar_coding_agent::modes::interactive::theme::theme();
+        assert_eq!(table["styled"], serde_json::json!(active.fg("dim", "D")));
+        assert_eq!(table["plain"], serde_json::json!("P"));
+        assert_eq!(table["bold"], serde_json::json!(active.bold("B")));
+        assert_eq!(table["name"], serde_json::json!("dark"));
+        assert!(table["themes"].as_u64().unwrap_or_default() >= 2);
+
+        let result = runtime
+            .call_tool("ctx-tool", "call-1", serde_json::json!({}))
+            .unwrap();
+        assert_eq!(result["content"][0]["text"], serde_json::json!("print"));
+        assert_eq!(
+            result["details"]["styled"],
+            serde_json::json!(active.fg("accent", "X"))
+        );
+        assert_eq!(result["details"]["plain"], serde_json::json!("Y"));
+    }
+
+    /// A `ui` host error surfaces to the caller as a catchable error.
+    #[test]
+    fn context_ui_errors_surface() {
+        let mut runtime = ExtensionRuntime::new();
+        runtime.set_host_api(HostApi {
+            ui: Some(Arc::new(|_request| Err("no ui".to_string()))),
+            ..Default::default()
+        });
+        runtime
+            .load_extension(
+                "failing.luau",
+                r#"
+                local pillar = require("@pillar")
+                pillar.on("session_start", function(event, ctx)
+                    local ok, err = pcall(function() ctx.ui.notify("x") end)
+                    return { ok = ok, err = tostring(err) }
+                end)
+                return nil
+                "#,
+            )
+            .unwrap();
+        let outcome = runtime
+            .dispatch("session_start", serde_json::json!({}))
+            .unwrap();
+        match outcome {
+            HandlerOutcome::Table(table) => {
+                assert_eq!(table["ok"], serde_json::json!(false));
+                assert!(
+                    table["err"].as_str().unwrap_or_default().contains("no ui"),
+                    "{:?}",
+                    table["err"]
+                );
+            }
+            other => panic!("unexpected outcome: {other:?}"),
+        }
     }
 
     /// `register_message_renderer` keeps the renderer in the VM and records

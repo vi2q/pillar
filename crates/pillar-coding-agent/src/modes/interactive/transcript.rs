@@ -231,7 +231,12 @@ pub(crate) fn take_shared_child<C: Component + 'static>(
     container.remove_child(index)
 }
 
-/// Transcript-level knobs (upstream the settings-derived fields).
+/// The label hidden thinking blocks show by default (upstream
+/// `defaultHiddenThinkingLabel`).
+pub const DEFAULT_HIDDEN_THINKING_LABEL: &str = "Thinking...";
+
+/// Settings the transcript renders with (upstream the mode's rendering
+/// state: the settings-derived fields).
 #[derive(Debug, Clone)]
 pub struct TranscriptSettings {
     pub hide_thinking_block: bool,
@@ -247,7 +252,7 @@ impl Default for TranscriptSettings {
     fn default() -> Self {
         Self {
             hide_thinking_block: false,
-            hidden_thinking_label: "Thinking...".to_string(),
+            hidden_thinking_label: DEFAULT_HIDDEN_THINKING_LABEL.to_string(),
             output_pad: 1,
             tool_output_expanded: false,
             show_images: true,

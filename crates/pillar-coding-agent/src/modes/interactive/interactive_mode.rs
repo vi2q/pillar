@@ -1185,6 +1185,125 @@ impl InteractiveMode {
         changed
     }
 
+    /// Apply one `ctx.ui.*` request (upstream `createExtensionUIContext`'s
+    /// methods). The pump calls this: an extension handler only queues the
+    /// request, because it runs with the Luau runtime locked and the
+    /// transcript's renderers lock that runtime while holding transcript
+    /// state.
+    pub fn handle_extension_ui(
+        &self,
+        request: &crate::core::extensions_types::ExtensionUiRequest,
+    ) -> Result<(), String> {
+        use crate::core::extensions_types::ExtensionUiRequest;
+        let ExtensionUiRequest { op, args } = request;
+        let text_arg = |name: &str| -> Result<String, String> {
+            args.get(name)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+                .ok_or_else(|| format!("ctx.ui.{op}: `{name}` must be a string"))
+        };
+        let bool_arg = |name: &str| -> Result<bool, String> {
+            args.get(name)
+                .and_then(serde_json::Value::as_bool)
+                .ok_or_else(|| format!("ctx.ui.{op}: `{name}` must be a boolean"))
+        };
+        match op.as_str() {
+            // Upstream `notify`: info / warning / error chat notices.
+            "notify" => {
+                let message = text_arg("message")?;
+                match args.get("type").and_then(serde_json::Value::as_str) {
+                    Some("error") => self.transcript.lock().show_error(&message),
+                    Some("warning") => self.transcript.lock().show_warning(&message),
+                    _ => self.transcript.lock().show_status(&message),
+                }
+                self.mark_dirty();
+            }
+            // Upstream `setExtensionStatus` (the footer's status line).
+            "set_status" => {
+                let key = text_arg("key")?;
+                let text = args
+                    .get("text")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string);
+                self.footer
+                    .lock()
+                    .footer_data()
+                    .set_extension_status(&key, text.as_deref());
+                self.mark_dirty();
+            }
+            // Upstream `setTitle`.
+            "set_title" => {
+                let title = text_arg("title")?;
+                if let Some(callback) = &self.on_terminal_title {
+                    callback(&title);
+                }
+            }
+            // Upstream `setWorkingMessage`.
+            "set_working_message" => {
+                let message = args
+                    .get("message")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string);
+                self.status.lock().set_working_message(message);
+                self.mark_dirty();
+            }
+            // Upstream `setWorkingVisible`.
+            "set_working_visible" => {
+                let visible = bool_arg("visible")?;
+                let streaming = self.session.is_streaming();
+                self.status.lock().set_working_visible(visible, streaming);
+                self.mark_dirty();
+            }
+            // Upstream `setWorkingIndicator`.
+            "set_working_indicator" => {
+                let options = match args.get("options") {
+                    None | Some(serde_json::Value::Null) => None,
+                    Some(options) => Some(working_indicator_options(options)?),
+                };
+                self.status.lock().set_working_indicator(options);
+                self.mark_dirty();
+            }
+            // Upstream `setHiddenThinkingLabel`.
+            "set_hidden_thinking_label" => {
+                let label = args
+                    .get("label")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or(
+                        crate::modes::interactive::transcript::DEFAULT_HIDDEN_THINKING_LABEL,
+                    )
+                    .to_string();
+                self.transcript.lock().set_hidden_thinking_label(&label);
+                self.mark_dirty();
+            }
+            // Upstream `setEditorText`.
+            "set_editor_text" => {
+                let text = text_arg("text")?;
+                self.set_editor_text(&text);
+            }
+            // Upstream `pasteToEditor`: the editor's paste handling (large
+            // content collapses into a paste marker).
+            "paste_to_editor" => {
+                let text = text_arg("text")?;
+                self.editor.lock().handle_paste(&text);
+                self.mark_dirty();
+            }
+            // Upstream `setToolsExpanded`: the setting plus every rendered
+            // tool component.
+            "set_tools_expanded" => {
+                let expanded = bool_arg("expanded")?;
+                let mut transcript = self.transcript.lock();
+                transcript.set_tool_output_expanded(expanded);
+                transcript.set_all_tools_expanded(expanded);
+                drop(transcript);
+                self.mark_dirty();
+            }
+            other => {
+                return Err(format!("ctx.ui.{other}: not supported"));
+            }
+        }
+        Ok(())
+    }
+
     /// The editor's current text (upstream `this.editor.getText()`).
     pub fn editor_text(&self) -> String {
         self.editor.lock().get_text()
@@ -3349,6 +3468,40 @@ impl InteractiveMode {
             }
         }
     }
+}
+
+/// Convert a `ctx.ui.setWorkingIndicator` argument into
+/// [`WorkingIndicatorOptions`] (upstream `WorkingIndicatorOptions`:
+/// `frames: []` hides the indicator, `nil` restores the default).
+fn working_indicator_options(
+    value: &serde_json::Value,
+) -> Result<crate::core::extensions_types::WorkingIndicatorOptions, String> {
+    let frames = match value.get("frames") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::Array(frames)) => Some(
+            frames
+                .iter()
+                .map(|frame| {
+                    frame.as_str().map(str::to_string).ok_or_else(|| {
+                        "ctx.ui.set_working_indicator: frames must be strings".to_string()
+                    })
+                })
+                .collect::<Result<Vec<String>, String>>()?,
+        ),
+        Some(_) => {
+            return Err("ctx.ui.set_working_indicator: `frames` must be an array".to_string());
+        }
+    };
+    let interval_ms = match value.get("intervalMs") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(interval) => Some(interval.as_u64().ok_or_else(|| {
+            "ctx.ui.set_working_indicator: `intervalMs` must be a number".to_string()
+        })?),
+    };
+    Ok(crate::core::extensions_types::WorkingIndicatorOptions {
+        frames,
+        interval_ms,
+    })
 }
 
 /// The queue delivery mode for the session (upstream the `"all" |

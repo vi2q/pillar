@@ -29,7 +29,7 @@ use pillar_tui::tui::TuiStopOptions;
 use pillar_tui::tui_main_screen::TuiMainScreen;
 
 use crate::core::agent_session_class::{AgentSession, AgentSessionEvent, PromptOptions};
-use crate::core::extensions_types::MarkdownTransformer;
+use crate::core::extensions_types::{ExtensionUiSlot, MarkdownTransformer};
 use crate::core::keybindings::KeybindingsManager;
 use crate::core::model_mutation::CycleDirection;
 use crate::core::session_manager::{SessionInfo, SessionListProgress, SessionManager};
@@ -101,6 +101,10 @@ enum UiCommand {
         aborted: bool,
         error: Option<String>,
     },
+    /// An extension called `ctx.ui.*` (upstream the mode's
+    /// `ExtensionUIContext` mutating the UI directly; the port queues the
+    /// request because the extension holds the Luau runtime lock).
+    ExtensionUi { op: String, args: serde_json::Value },
 }
 
 /// How [`run_interactive`] ends (upstream the interactive mode keeps running
@@ -128,6 +132,9 @@ pub struct InteractiveRunOptions {
     pub mode: InteractiveModeOptions,
     pub transcript: TranscriptSettings,
     pub markdown_transformers: Vec<MarkdownTransformer>,
+    /// The `ctx.ui` bridge the run fills with its pump-backed sender
+    /// (upstream the mode owns the extension UI context).
+    pub extension_ui: Option<ExtensionUiSlot>,
     /// Sent through `session.prompt` before the loop starts (upstream
     /// `options.initialMessage`).
     pub initial_message: Option<String>,
@@ -147,6 +154,7 @@ impl Default for InteractiveRunOptions {
             mode: InteractiveModeOptions::default(),
             transcript: TranscriptSettings::default(),
             markdown_transformers: Vec::new(),
+            extension_ui: None,
             initial_message: None,
             initial_editor_text: None,
             initial_status: None,
@@ -165,6 +173,7 @@ pub async fn run_interactive(
         mode: mut mode_options,
         transcript,
         markdown_transformers,
+        extension_ui,
         initial_message,
         initial_editor_text,
         initial_status,
@@ -266,6 +275,32 @@ pub async fn run_interactive(
 
     let (action_tx, mut action_rx) = tokio::sync::mpsc::unbounded_channel::<ModeAction>();
     let (ui_tx, ui_rx) = tokio::sync::mpsc::unbounded_channel::<UiCommand>();
+    // The `ctx.ui` bridge (upstream `createExtensionUIContext` lives on the
+    // mode): an extension only queues a request on this channel, so it never
+    // blocks on — or locks — the mode while holding the Luau runtime.
+    if let Some(slot) = &extension_ui {
+        let sender = ui_tx.clone();
+        let bridge: crate::core::extensions_types::ExtensionUiFn = Arc::new(
+            move |request: crate::core::extensions_types::ExtensionUiRequest| {
+                sender
+                    .send(UiCommand::ExtensionUi {
+                        op: request.op,
+                        args: request.args,
+                    })
+                    .map_err(|_| "ctx.ui: the interactive mode has stopped".to_string())
+            },
+        );
+        // `session_start` runs before this loop, so an extension's UI setup is
+        // queued in the slot: install the bridge and replay the queue.
+        let queued = {
+            let mut state = slot.lock().expect("extension ui slot");
+            state.bridge = Some(Arc::clone(&bridge));
+            std::mem::take(&mut state.pending)
+        };
+        for request in queued {
+            let _ = bridge(request);
+        }
+    }
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
     let pump_shutdown = Arc::new(AtomicBool::new(false));
 
@@ -342,6 +377,9 @@ pub async fn run_interactive(
     pump_shutdown.store(true, Ordering::SeqCst);
     let _ = shutdown_tx.send(true);
     let pump_result = pump.join();
+    if let Some(slot) = &extension_ui {
+        slot.lock().expect("extension ui slot").bridge = None;
+    }
     unsubscribe();
     session.dispose();
     match pump_result {
@@ -733,6 +771,14 @@ fn pump_loop(
                     error,
                 } => mode.complete_session_delete(&path, ok, moved_to_trash, error),
                 UiCommand::SessionRenamed { error } => mode.complete_session_rename(error),
+                UiCommand::ExtensionUi { op, args } => {
+                    if let Err(error) = mode.handle_extension_ui(
+                        &crate::core::extensions_types::ExtensionUiRequest { op, args },
+                    ) {
+                        eprintln!("Warning: {error}");
+                    }
+                    Vec::new()
+                }
                 UiCommand::TreeNavigated {
                     target_id,
                     editor_text,

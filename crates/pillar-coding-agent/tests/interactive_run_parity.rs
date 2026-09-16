@@ -368,6 +368,7 @@ fn run_options(agent_dir: PathBuf) -> InteractiveRunOptions {
         initial_editor_text: None,
         initial_status: None,
         agent_dir,
+            extension_ui: None,
     }
 }
 

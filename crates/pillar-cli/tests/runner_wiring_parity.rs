@@ -240,3 +240,64 @@ fn configured_extensions_register_renderers() {
     };
     assert_eq!(transformers[0]("hi", &user), Some("> hi".to_string()));
 }
+
+/// `ctx` reaches the handlers with the host facts, and `ctx.ui` forwards to
+/// whatever bridge the interactive run installs.
+#[test]
+fn configured_extensions_receive_ctx_and_forward_ui_requests() {
+    use std::sync::{Arc, Mutex};
+
+    use pillar_coding_agent::core::extensions_types::ExtensionUiRequest;
+
+    let dir = temp_dir("ctx");
+    std::fs::write(
+        dir.join("ctx.luau"),
+        r#"
+        local pillar = require("@pillar")
+        pillar.on("session_start", function(event, ctx)
+            print("CTX: " .. ctx.cwd .. " " .. ctx.mode .. " " .. tostring(ctx.hasUI))
+            ctx.ui.notify("hello from ctx", "warning")
+            ctx.ui.set_status("probe", "1")
+            ctx.ui.set_editor_text("draft")
+            return nil
+        end)
+        return nil
+        "#,
+    )
+    .unwrap();
+
+    let configured = vec![dir.to_string_lossy().to_string()];
+    let wiring = build_extension_runner("/tmp/pillar-ctx-cwd", None, None, &configured);
+    assert!(wiring.errors.is_empty(), "{:?}", wiring.errors);
+
+    // Before the run installs a bridge, ui requests are queued for replay
+    // (`session_start` fires before the run loop starts).
+    wiring
+        .runner
+        .emit(&serde_json::json!({ "type": "session_start" }));
+    assert_eq!(
+        wiring.ui_slot.lock().unwrap().pending.len(),
+        3,
+        "requests are queued until the mode installs its bridge"
+    );
+
+    let seen: Arc<Mutex<Vec<ExtensionUiRequest>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&seen);
+    wiring.ui_slot.lock().unwrap().bridge = Some(Arc::new(move |request| {
+        sink.lock().unwrap().push(request);
+        Ok(())
+    }));
+    wiring
+        .runner
+        .emit(&serde_json::json!({ "type": "session_start" }));
+
+    let calls = seen.lock().unwrap();
+    let ops: Vec<&str> = calls.iter().map(|call| call.op.as_str()).collect();
+    assert_eq!(ops, vec!["notify", "set_status", "set_editor_text"]);
+    assert_eq!(
+        calls[0].args,
+        serde_json::json!({ "message": "hello from ctx", "type": "warning" })
+    );
+    assert_eq!(calls[1].args, serde_json::json!({ "key": "probe", "text": "1" }));
+    assert_eq!(calls[2].args, serde_json::json!({ "text": "draft" }));
+}

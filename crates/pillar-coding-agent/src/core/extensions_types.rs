@@ -352,6 +352,102 @@ pub type EntryRenderer = std::sync::Arc<
         + Sync,
 >;
 
+/// Which run mode an extension context describes (upstream
+/// `ExtensionMode`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtensionMode {
+    Tui,
+    Rpc,
+    Json,
+    Print,
+}
+
+impl ExtensionMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Tui => "tui",
+            Self::Rpc => "rpc",
+            Self::Json => "json",
+            Self::Print => "print",
+        }
+    }
+}
+
+/// The host facts an extension context carries (upstream `ExtensionContext`'s
+/// `cwd` / `mode` / `hasUI`). The host updates them when the mode changes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtensionContextFacts {
+    pub cwd: String,
+    pub mode: ExtensionMode,
+    /// Whether dialog-capable UI is available (upstream `hasUI`).
+    pub has_ui: bool,
+}
+
+impl Default for ExtensionContextFacts {
+    fn default() -> Self {
+        Self {
+            cwd: String::new(),
+            mode: ExtensionMode::Print,
+            has_ui: false,
+        }
+    }
+}
+
+/// One `ctx.ui.*` request: the operation name (snake_case of the upstream
+/// method, e.g. `set_status`) plus its arguments.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExtensionUiRequest {
+    pub op: String,
+    pub args: serde_json::Value,
+}
+
+/// Host bridge for `ctx.ui` (upstream `ExtensionUIContext`). The port's UI
+/// state lives on the pump thread, so a request is only *queued*: the sender
+/// never blocks and never touches mode locks (an extension handler runs with
+/// the Luau runtime locked, and the transcript's extension renderers lock the
+/// same runtime while holding transcript state).
+pub type ExtensionUiFn =
+    std::sync::Arc<dyn Fn(ExtensionUiRequest) -> Result<(), String> + Send + Sync>;
+
+/// The `ctx.ui` bridge state: the pump-backed sender the interactive run
+/// installs plus the requests that arrived before it existed (extensions
+/// commonly touch the UI from `session_start`, which fires before the run
+/// loop starts).
+#[derive(Default)]
+pub struct ExtensionUiState {
+    /// The pump-backed sender.
+    pub bridge: Option<ExtensionUiFn>,
+    /// Requests queued before [`ExtensionUiState::bridge`] was installed.
+    pub pending: Vec<ExtensionUiRequest>,
+}
+
+impl ExtensionUiState {
+    /// Hand a request to the bridge, queueing it until one exists (the caller
+    /// holds the slot lock; the bridge itself only sends on a channel, so it
+    /// never re-enters the slot).
+    pub fn dispatch(&mut self, request: ExtensionUiRequest) -> bool {
+        match self.bridge.clone() {
+            Some(bridge) => bridge(request).is_ok(),
+            None => {
+                // A pathological extension cannot queue without bound.
+                if self.pending.len() < 256 {
+                    self.pending.push(request);
+                }
+                false
+            }
+        }
+    }
+}
+
+/// The slot the interactive run fills with its pump-backed UI bridge
+/// (upstream the mode owns `ctx.ui` directly).
+pub type ExtensionUiSlot = std::sync::Arc<std::sync::Mutex<ExtensionUiState>>;
+
+/// Host callback answering the extension context facts (upstream the live
+/// `ExtensionContext` fields).
+pub type ExtensionContextFn =
+    std::sync::Arc<dyn Fn() -> ExtensionContextFacts + Send + Sync>;
+
 /// Working-indicator animation options (upstream `WorkingIndicatorOptions`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WorkingIndicatorOptions {

@@ -19,6 +19,9 @@ use pillar_coding_agent::core::agent_session_class::{
 };
 use pillar_coding_agent::core::extensions_luau::{build_luau_runner, discover_luau_paths};
 use pillar_coding_agent::core::extensions_runner::ExtensionRunner;
+use pillar_coding_agent::core::extensions_types::{
+    ExtensionContextFacts, ExtensionUiRequest, ExtensionUiSlot,
+};
 use pillar_extensions::loader::{LuauLoader, SharedRuntime, create_luau_loader};
 
 /// The session handle the `@pillar` host callbacks resolve at call time.
@@ -54,6 +57,25 @@ pub struct ExtensionWiring {
     pub session_slot: SessionSlot,
     /// Command / tool data for the `@pillar` getters.
     pub data: Arc<Mutex<ExtensionDataSnapshot>>,
+    /// The `ctx.ui` bridge: the interactive run installs its pump-backed
+    /// sender (upstream the mode owns the extension UI context).
+    pub ui_slot: ExtensionUiSlot,
+    /// The `ctx` facts the extensions see. The host keeps its own cell
+    /// instead of asking the session's runner: a handler runs while the
+    /// runner mutex is held, so re-locking it there would deadlock.
+    pub context: Arc<Mutex<ExtensionContextFacts>>,
+}
+
+impl ExtensionWiring {
+    /// Publish the `ctx` facts (upstream `bindCore` setting cwd / mode and
+    /// `setUIContext` tracking the UI). Called next to
+    /// `AgentSession::bind_extensions`.
+    pub fn set_extension_context(&self, facts: ExtensionContextFacts) {
+        *self
+            .context
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = facts;
+    }
 }
 
 /// Discover and load Luau extensions for `cwd` and build the runner.
@@ -71,10 +93,15 @@ pub fn build_extension_runner(
     let (runtime, loader) = create_luau_loader(None);
     let session_slot: SessionSlot = Arc::new(Mutex::new(None));
     let data = Arc::new(Mutex::new(ExtensionDataSnapshot::default()));
+    let ui_slot: ExtensionUiSlot = Arc::new(Mutex::new(Default::default()));
+    let context = Arc::new(Mutex::new(ExtensionContextFacts {
+        cwd: cwd.to_string(),
+        ..Default::default()
+    }));
     // The host callbacks must exist before the extension factories run: a
-    // factory may already call `pillar.fs` / `pillar.get_flag`.
+    // factory may already call `pillar.fs` / `pillar.get_flag` / `ctx.ui`.
     install_exec_host(&runtime, cwd);
-    install_host_api(&runtime, &session_slot, &data, cwd);
+    install_host_api(&runtime, &session_slot, &data, &ui_slot, &context, cwd);
     let (runner, errors) = build_luau_runner(&paths, cwd, &loader, true);
     ExtensionWiring {
         runtime,
@@ -83,6 +110,8 @@ pub fn build_extension_runner(
         errors,
         session_slot,
         data,
+        ui_slot,
+        context,
     }
 }
 
@@ -125,6 +154,8 @@ fn install_host_api(
     runtime: &SharedRuntime,
     slot: &SessionSlot,
     data: &Arc<Mutex<ExtensionDataSnapshot>>,
+    ui_slot: &ExtensionUiSlot,
+    context: &Arc<Mutex<ExtensionContextFacts>>,
     cwd: &str,
 ) {
     use pillar_extensions::runtime::HostApi;
@@ -293,6 +324,32 @@ fn install_host_api(
                     }
                 });
                 Ok(())
+            }))
+        },
+        // `ctx.ui.*` (upstream the mode's ExtensionUIContext): the request
+        // goes to whatever bridge the interactive run installed; without one
+        // it is the upstream no-op.
+        ui: {
+            let slot = Arc::clone(ui_slot);
+            Some(Arc::new(move |request: ExtensionUiRequest| {
+                let mut state = slot
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                // No bridge yet (before the run loop starts): the request is
+                // queued and replayed when it is installed.
+                state.dispatch(request);
+                Ok(())
+            }))
+        },
+        // The `ctx` facts (upstream the live ExtensionContext fields): the
+        // host's own cell, published next to `bind_extensions`.
+        context: {
+            let facts = Arc::clone(context);
+            Some(Arc::new(move || {
+                facts
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .clone()
             }))
         },
         fs: {

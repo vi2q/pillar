@@ -13,7 +13,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::core::extensions_types::{EntryRenderer, MarkdownTransformer, MessageRenderer};
+use crate::core::extensions_types::{
+    EntryRenderer, ExtensionContextFacts, MarkdownTransformer, MessageRenderer,
+};
 use crate::core::skills::ResourceDiagnostic;
 
 /// Extension flag definition (upstream `ExtensionFlag` subset).
@@ -200,6 +202,8 @@ pub struct ExtensionRunner {
     stale_message: Option<String>,
     flag_values: BTreeMap<String, serde_json::Value>,
     has_ui: bool,
+    /// The `ctx` facts (upstream the live `ExtensionContext` fields).
+    context_facts: ExtensionContextFacts,
 }
 
 impl ExtensionRunner {
@@ -212,7 +216,20 @@ impl ExtensionRunner {
             stale_message: None,
             flag_values: BTreeMap::new(),
             has_ui: false,
+            context_facts: ExtensionContextFacts::default(),
         }
+    }
+
+    /// Update the `ctx` facts (upstream `bindCore` setting cwd / the mode and
+    /// `setUIContext` tracking the UI).
+    pub fn set_context_facts(&mut self, facts: ExtensionContextFacts) {
+        self.has_ui = facts.has_ui;
+        self.context_facts = facts;
+    }
+
+    /// The `ctx` facts extensions see.
+    pub fn context_facts(&self) -> ExtensionContextFacts {
+        self.context_facts.clone()
     }
 
     pub fn set_has_ui(&mut self, has_ui: bool) {

@@ -46,6 +46,9 @@ use pillar_coding_agent::modes::rpc::rpc_mode::{
 };
 
 use pillar_cli::runner::{ExtensionWiring, build_extension_runner};
+use pillar_coding_agent::core::extensions_types::{
+    ExtensionContextFacts, ExtensionMode,
+};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
@@ -584,12 +587,26 @@ async fn run_interactive(parsed: &Args) -> ExitCode {
     };
     let mut session = Arc::new(session);
     wiring.bind_session(&session);
+    // The `ctx` facts the extensions see (upstream `bindCore` + the UI
+    // context binding below).
+    wiring.set_extension_context(ExtensionContextFacts {
+        cwd: session
+            .session_manager()
+            .lock()
+            .expect("session")
+            .cwd()
+            .to_string(),
+        mode: ExtensionMode::Tui,
+        has_ui: true,
+    });
     // Refresh before `bind_extensions` fires `session_start`, so extensions
     // reading the tool / command lists during it see the real data.
     wiring.refresh_extension_data();
     session
         .bind_extensions(ExtensionBindings {
-            ui_context: Some(false),
+            // Upstream `bindings.uiContext = this.createExtensionUIContext()`:
+            // the interactive mode has a dialog-capable UI.
+            ui_context: Some(true),
             mode: Some("tui".to_string()),
             on_error: None,
         })
@@ -640,6 +657,9 @@ async fn run_interactive(parsed: &Args) -> ExitCode {
         },
         transcript,
         markdown_transformers: Vec::new(),
+        // The run installs its pump-backed `ctx.ui` bridge here (upstream the
+        // mode owns the extension UI context).
+        extension_ui: Some(Arc::clone(&wiring.ui_slot)),
         initial_message,
         initial_editor_text: None,
         initial_status: None,
@@ -717,15 +737,30 @@ async fn run_interactive(parsed: &Args) -> ExitCode {
         } = replacement;
 
         let next = Arc::new(next);
+        if let Some(wiring) = wiring.as_ref() {
+            wiring.set_extension_context(ExtensionContextFacts {
+                cwd: next
+                    .session_manager()
+                    .lock()
+                    .expect("session")
+                    .cwd()
+                    .to_string(),
+                mode: ExtensionMode::Tui,
+                has_ui: true,
+            });
+        }
         // Upstream `rebindCurrentSession` → `bindCurrentSessionExtensions`.
         next.bind_extensions(ExtensionBindings {
-            ui_context: Some(false),
+            ui_context: Some(true),
             mode: Some("tui".to_string()),
             on_error: None,
         })
         .await;
         if let Some(wiring) = wiring.as_ref() {
             wiring.refresh_extension_data();
+            // The replacement session carries its own wiring: point the run
+            // loop at its `ctx.ui` bridge.
+            options.extension_ui = Some(Arc::clone(&wiring.ui_slot));
         }
         session = next;
         wirings.extend(wiring);
