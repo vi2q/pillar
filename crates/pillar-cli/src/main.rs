@@ -292,7 +292,7 @@ async fn build_session_with(
         tools: parsed.tools.clone(),
         no_tools: no_tools(parsed),
         exclude_tools: parsed.exclude_tools.clone().unwrap_or_default(),
-        custom_tools: Vec::new(),
+        custom_tools: wiring.custom_tools(),
         extension_runner,
         session_start_event: Some(SessionEventMeta {
             reason: start_reason,

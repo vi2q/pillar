@@ -10,6 +10,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use pillar_agent::types::AgentTool;
 use pillar_coding_agent::core::extensions_luau::{build_luau_runner, discover_luau_paths};
 use pillar_coding_agent::core::extensions_runner::ExtensionRunner;
 use pillar_extensions::loader::{LuauLoader, SharedRuntime, create_luau_loader};
@@ -56,5 +57,12 @@ impl ExtensionWiring {
     /// the wiring value.
     pub fn take_runner(&mut self) -> ExtensionRunner {
         std::mem::replace(&mut self.runner, ExtensionRunner::new(Vec::new()))
+    }
+
+    /// The callable agent tools the loaded extensions registered (upstream
+    /// the runner adding the extension tools to the session's tool set).
+    /// Built from the runtime, so it must be called after the setup pass.
+    pub fn custom_tools(&self) -> Vec<AgentTool> {
+        pillar_extensions::bridge::bridge_to_agent_tools(&self.runtime)
     }
 }

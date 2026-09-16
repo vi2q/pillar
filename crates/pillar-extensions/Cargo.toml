@@ -6,9 +6,12 @@ license.workspace = true
 
 [dependencies]
 pillar-coding-agent = { path = "../pillar-coding-agent" }
+pillar-agent = { path = "../pillar-agent" }
+pillar-ai = { path = "../pillar-ai" }
 luaur-rt = { version = "0.1.8", features = ["serde", "typecheck", "send"] }
 serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
+tokio = { version = "1.47", features = ["rt", "macros", "time"] }

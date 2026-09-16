@@ -301,6 +301,44 @@ impl ExtensionRuntime {
         Ok(last_table.unwrap_or(HandlerOutcome::None))
     }
 
+    /// Call a registered Luau tool's `execute` (upstream the tool's execute
+    /// closure): `execute(tool_call_id, params, signal, on_update, ctx)`
+    /// returns `{ content, details?, usage?, addedToolNames?, terminate? }`.
+    ///
+    /// divergences: `signal` / `on_update` / `ctx` are passed as nil until
+    /// the async and context slices land.
+    pub fn call_tool(
+        &mut self,
+        name: &str,
+        tool_call_id: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let params_lua = self
+            .lua
+            .to_value(&params)
+            .map_err(|error| format!("{name}: {error}"))?;
+        let result: Value = self
+            .lua
+            .load(
+                r#"
+                local name, tool_call_id, params = ...
+                local registered = __pillar_tool_execute
+                local execute = registered and registered[name]
+                if execute == nil then return nil end
+                return execute(tool_call_id, params, nil, nil, nil)
+            "#,
+            )
+            .call((name, tool_call_id, params_lua))
+            .map_err(|error| format!("{name}: {error}"))?;
+        match result {
+            Value::Nil => Err(format!("tool {name} returned no result")),
+            other => self
+                .lua
+                .from_value::<serde_json::Value>(other)
+                .map_err(|error| format!("{name}: {error}")),
+        }
+    }
+
     /// VM access for the host API installation and tests.
     pub fn vm(&self) -> &Lua {
         &self.lua
@@ -516,15 +554,41 @@ fn install_pillar_api(
         )
         .expect("set pillar.on");
 
-    // pillar.register_tool(def): the definition table converts to
-    // JSON at the boundary (payload keys snake_cased mechanically).
+    // pillar.register_tool(def): the definition table converts to JSON at
+    // the boundary (payload keys snake_cased mechanically) and its `execute`
+    // function stays in the VM, keyed by tool name, so the host can invoke it
+    // (upstream the registered tool's execute closure).
     let tools = Arc::clone(registry);
     let lua_tools = lua.clone();
     module
         .set(
             "register_tool",
             Function::wrap(move |definition: Value| {
-                let json = lua_tools.from_value::<serde_json::Value>(definition)?;
+                // The VM-side `execute` function cannot cross the JSON
+                // boundary; keep it keyed by tool name and register the rest
+                // of the definition (upstream the registered tool's closure
+                // lives outside the wire definition).
+                let stripped: Value = lua_tools
+                    .load(
+                        r#"
+                        local definition = ...
+                        if type(definition) == "table" and definition.name ~= nil then
+                            __pillar_tool_execute = __pillar_tool_execute or {}
+                            __pillar_tool_execute[definition.name] = definition.execute
+                        end
+                        local meta = {}
+                        if type(definition) == "table" then
+                            for key, value in pairs(definition) do
+                                if key ~= "execute" then
+                                    meta[key] = value
+                                end
+                            end
+                        end
+                        return meta
+                    "#,
+                    )
+                    .call((definition,))?;
+                let json = lua_tools.from_value::<serde_json::Value>(stripped)?;
                 tools
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())

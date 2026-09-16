@@ -12,6 +12,8 @@
 
 use std::sync::{Arc, Mutex};
 
+use pillar_agent::types::{AgentTool, AgentToolResult, ToolExecuteError, ToolExecuteFn};
+use pillar_ai::types::{Content, Tool};
 use pillar_coding_agent::core::extensions_runner::{
     ExtensionEventPayload, ExtensionFlag, ExtensionHandler, ExtensionShortcut, HostExtension,
     RegisteredCommand,
@@ -149,6 +151,109 @@ pub fn bridge_to_runner(
     })
 }
 
+/// Build the callable agent tools for every tool an extension registered
+/// (upstream the runner adding the extension's tools to the session tool
+/// set). The returned tools dispatch into the shared Luau runtime.
+pub fn bridge_to_agent_tools(runtime: &Arc<Mutex<ExtensionRuntime>>) -> Vec<AgentTool> {
+    let definitions = runtime
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .registry()
+        .tools;
+    definitions
+        .into_iter()
+        .filter_map(|definition| {
+            let name = definition
+                .get("name")
+                .and_then(serde_json::Value::as_str)?
+                .to_string();
+            if name.is_empty() {
+                return None;
+            }
+            let description = definition
+                .get("description")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let label = definition
+                .get("label")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(&name)
+                .to_string();
+            let parameters = definition.get("parameters").cloned().unwrap_or_else(
+                || serde_json::json!({ "type": "object", "properties": {} }),
+            );
+
+            let runtime = Arc::clone(runtime);
+            let execute_name = name.clone();
+            let execute: Arc<ToolExecuteFn> = Arc::new(
+                move |tool_call_id: String, arguments: serde_json::Value, _signal, _on_update| {
+                    let runtime = Arc::clone(&runtime);
+                    let name = execute_name.clone();
+                    Box::pin(async move {
+                        let result = runtime
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .call_tool(&name, &tool_call_id, arguments);
+                        match result {
+                            Ok(json) => Ok(tool_result_from_json(json)),
+                            Err(message) => Err(ToolExecuteError(message)),
+                        }
+                    })
+                },
+            );
+
+            Some(AgentTool {
+                tool: Tool {
+                    name,
+                    description,
+                    parameters,
+                    constrained_sampling: None,
+                },
+                label,
+                prepare_arguments: None,
+                execute,
+                execution_mode: None,
+            })
+        })
+        .collect()
+}
+
+/// Convert an extension tool's Lua return value into the agent's result
+/// shape: `content` blocks deserialize verbatim (they cross the LLM
+/// boundary), everything else is passed through. A missing or malformed
+/// `content` becomes a single text block with the raw JSON, so a broken
+/// tool never drops its output silently.
+fn tool_result_from_json(json: serde_json::Value) -> AgentToolResult {
+    let content = json
+        .get("content")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<Vec<Content>>(value).ok())
+        .unwrap_or_else(|| {
+            vec![Content::text(match json.get("content") {
+                Some(value) => value.to_string(),
+                None => json.to_string(),
+            })]
+        });
+    AgentToolResult {
+        content,
+        details: json
+            .get("details")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+        usage: json
+            .get("usage")
+            .and_then(|value| serde_json::from_value(value.clone()).ok()),
+        added_tool_names: json.get("addedToolNames").and_then(|value| {
+            serde_json::from_value::<Vec<String>>(value.clone()).ok()
+        }),
+        terminate: json
+            .get("terminate")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -280,6 +385,95 @@ mod tests {
         }
         let extension = bridge_to_runner("tool.luau", &runtime).unwrap();
         assert!(extension.tools.contains_key("greet"));
+    }
+
+    /// A registered Luau tool becomes a callable agent tool: the execute
+    /// closure dispatches into the VM and returns the content / details.
+    #[tokio::test]
+    async fn registered_tools_become_callable_agent_tools() {
+        let runtime = shared_runtime();
+        {
+            let mut runtime = runtime.lock().unwrap();
+            runtime
+                .load_extension(
+                    "tool.luau",
+                    r#"
+                    local pillar = require("@pillar")
+                    pillar.register_tool({
+                        name = "greet",
+                        label = "Greet",
+                        description = "Greet someone",
+                        parameters = pillar.schema.object({
+                            name = pillar.schema.string(),
+                        }),
+                        execute = function(tool_call_id, params, signal, on_update, ctx)
+                            return {
+                                content = { { type = "text", text = "Hello, " .. params.name .. "!" } },
+                                details = { call = tool_call_id },
+                            }
+                        end,
+                    })
+                    return nil
+                "#,
+                )
+                .unwrap();
+        }
+        let tools = bridge_to_agent_tools(&runtime);
+        assert_eq!(tools.len(), 1);
+        let tool = &tools[0];
+        assert_eq!(tool.tool.name, "greet");
+        assert_eq!(tool.label, "Greet");
+        assert_eq!(tool.tool.description, "Greet someone");
+        assert_eq!(
+            tool.tool.parameters["properties"]["name"]["type"],
+            serde_json::json!("string")
+        );
+
+        let result = (tool.execute)(
+            "call-1".to_string(),
+            serde_json::json!({ "name": "World" }),
+            None,
+            None,
+        )
+        .await
+        .expect("tool executes");
+        assert_eq!(result.content.len(), 1);
+        assert_eq!(
+            result.content[0],
+            pillar_ai::types::Content::text("Hello, World!")
+        );
+        assert_eq!(result.details, serde_json::json!({ "call": "call-1" }));
+    }
+
+    /// A tool without a registered execute function cannot be called and
+    /// still yields a readable error.
+    #[tokio::test]
+    async fn tools_without_execute_report_an_error() {
+        let runtime = shared_runtime();
+        {
+            let mut runtime = runtime.lock().unwrap();
+            runtime
+                .load_extension(
+                    "noop.luau",
+                    r#"
+                    local pillar = require("@pillar")
+                    pillar.register_tool({ name = "noop", description = "no execute" })
+                    return nil
+                "#,
+                )
+                .unwrap();
+        }
+        let tools = bridge_to_agent_tools(&runtime);
+        assert_eq!(tools.len(), 1);
+        let error = (tools[0].execute)(
+            "call-2".to_string(),
+            serde_json::json!({}),
+            None,
+            None,
+        )
+        .await
+        .expect_err("no execute");
+        assert!(error.0.contains("noop"), "{error:?}");
     }
 
     /// Flag and shortcut registrations surface in the runner's tables.

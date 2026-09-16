@@ -59,3 +59,53 @@ fn build_extension_runner_without_paths_has_no_extensions() {
     assert!(wiring.errors.is_empty(), "{:?}", wiring.errors);
     assert!(!wiring.runner.has_handlers("session_start"));
 }
+
+/// A registered Luau tool becomes a callable agent tool through the CLI
+/// wiring (upstream the runner adding extension tools to the session).
+#[tokio::test]
+async fn configured_extensions_contribute_callable_tools() {
+    let dir = temp_dir("tools");
+    std::fs::write(
+        dir.join("tools.luau"),
+        r#"
+        local pillar = require("@pillar")
+        pillar.register_tool({
+            name = "shout",
+            label = "Shout",
+            description = "Uppercase text",
+            parameters = pillar.schema.object({ text = pillar.schema.string() }),
+            execute = function(tool_call_id, params)
+                return { content = { { type = "text", text = string.upper(params.text) } } }
+            end,
+        })
+        return nil
+        "#,
+    )
+    .unwrap();
+
+    let configured = vec![dir.to_string_lossy().to_string()];
+    let wiring = build_extension_runner("", None, None, &configured);
+    assert!(wiring.errors.is_empty(), "{:?}", wiring.errors);
+
+    let tools = wiring.custom_tools();
+    assert_eq!(tools.len(), 1, "{tools:?}");
+    assert_eq!(tools[0].tool.name, "shout");
+    assert_eq!(tools[0].label, "Shout");
+    assert_eq!(
+        tools[0].tool.parameters["properties"]["text"]["type"],
+        serde_json::json!("string")
+    );
+
+    let result = (tools[0].execute)(
+        "call-1".to_string(),
+        serde_json::json!({ "text": "hi" }),
+        None,
+        None,
+    )
+    .await
+    .expect("tool executes");
+    assert_eq!(
+        result.content[0],
+        pillar_ai::types::Content::text("HI")
+    );
+}
