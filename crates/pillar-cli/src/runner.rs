@@ -442,6 +442,23 @@ fn install_host_api(
                 Ok(())
             }))
         },
+        // `ctx.ui.confirm(...)` and friends: the interactive run's dialog
+        // bridge; without it the answer is the upstream no-op default.
+        ui_ask: {
+            let slot = Arc::clone(ui_slot);
+            Some(Arc::new(move |request: ExtensionUiRequest| {
+                let ask = {
+                    let guard = slot
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    guard.ask.clone()
+                };
+                match ask {
+                    Some(ask) => ask(request),
+                    None => Ok(serde_json::Value::Bool(false)),
+                }
+            }))
+        },
         // `ctx.isIdle()` (upstream the session's `isIdle`).
         is_idle: {
             let slot = Arc::clone(slot);

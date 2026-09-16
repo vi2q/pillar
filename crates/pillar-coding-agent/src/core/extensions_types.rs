@@ -417,6 +417,8 @@ pub type ExtensionUiFn =
 pub struct ExtensionUiState {
     /// The pump-backed sender.
     pub bridge: Option<ExtensionUiFn>,
+    /// The pump-backed request/answer bridge (dialogs).
+    pub ask: Option<ExtensionUiAskFn>,
     /// Requests queued before [`ExtensionUiState::bridge`] was installed.
     pub pending: Vec<ExtensionUiRequest>,
 }
@@ -439,14 +441,19 @@ impl ExtensionUiState {
     }
 }
 
+/// Host bridge for the `ctx.ui` methods that answer a value (upstream
+/// `confirm` / `select` / `input` / `editor`): the caller blocks until the
+/// user answers.
+pub type ExtensionUiAskFn =
+    std::sync::Arc<dyn Fn(ExtensionUiRequest) -> Result<serde_json::Value, String> + Send + Sync>;
+
 /// The slot the interactive run fills with its pump-backed UI bridge
 /// (upstream the mode owns `ctx.ui` directly).
 pub type ExtensionUiSlot = std::sync::Arc<std::sync::Mutex<ExtensionUiState>>;
 
 /// Host callback answering the extension context facts (upstream the live
 /// `ExtensionContext` fields).
-pub type ExtensionContextFn =
-    std::sync::Arc<dyn Fn() -> ExtensionContextFacts + Send + Sync>;
+pub type ExtensionContextFn = std::sync::Arc<dyn Fn() -> ExtensionContextFacts + Send + Sync>;
 
 /// Working-indicator animation options (upstream `WorkingIndicatorOptions`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

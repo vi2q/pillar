@@ -104,6 +104,13 @@ enum UiCommand {
     /// A `/reload` settled (upstream the code after `await
     /// session.reload(...)` in `handleReloadCommand`).
     Reloaded,
+    /// An extension asked a `ctx.ui` dialog (upstream the awaited
+    /// `ExtensionUIContext` methods): the pump shows the dialog and answers
+    /// through `reply`.
+    ExtensionUiAsk {
+        request: crate::core::extensions_types::ExtensionUiRequest,
+        reply: std::sync::mpsc::SyncSender<Result<serde_json::Value, String>>,
+    },
     /// An extension called `ctx.ui.*` (upstream the mode's
     /// `ExtensionUIContext` mutating the UI directly; the port queues the
     /// request because the extension holds the Luau runtime lock).
@@ -293,11 +300,26 @@ pub async fn run_interactive(
                     .map_err(|_| "ctx.ui: the interactive mode has stopped".to_string())
             },
         );
+        // Dialogs block the extension's thread until the pump answers (the
+        // mode's dialog components are native, so the pump never needs the
+        // runner lock while one is open).
+        let ask_sender = ui_tx.clone();
+        let ask: crate::core::extensions_types::ExtensionUiAskFn = Arc::new(move |request| {
+            let (reply, answer) = std::sync::mpsc::sync_channel(1);
+            ask_sender
+                .send(UiCommand::ExtensionUiAsk { request, reply })
+                .map_err(|_| "ctx.ui: the interactive mode has stopped".to_string())?;
+            match answer.recv_timeout(std::time::Duration::from_secs(600)) {
+                Ok(result) => result,
+                Err(_) => Err("ctx.ui: the dialog was not answered".to_string()),
+            }
+        });
         // `session_start` runs before this loop, so an extension's UI setup is
         // queued in the slot: install the bridge and replay the queue.
         let queued = {
             let mut state = slot.lock().expect("extension ui slot");
             state.bridge = Some(Arc::clone(&bridge));
+            state.ask = Some(ask);
             std::mem::take(&mut state.pending)
         };
         for request in queued {
@@ -381,7 +403,9 @@ pub async fn run_interactive(
     let _ = shutdown_tx.send(true);
     let pump_result = pump.join();
     if let Some(slot) = &extension_ui {
-        slot.lock().expect("extension ui slot").bridge = None;
+        let mut state = slot.lock().expect("extension ui slot");
+        state.bridge = None;
+        state.ask = None;
     }
     unsubscribe();
     session.dispose();
@@ -787,10 +811,14 @@ fn pump_loop(
                 // keybindings, the theme and the autocomplete provider stays
                 // host-side (recorded divergence).
                 UiCommand::Reloaded => {
-                    mode.transcript()
-                        .lock()
-                        .show_status("Reloaded extensions, skills, prompts, themes, and context files");
+                    mode.transcript().lock().show_status(
+                        "Reloaded extensions, skills, prompts, themes, and context files",
+                    );
                     mode.mark_dirty();
+                    Vec::new()
+                }
+                UiCommand::ExtensionUiAsk { request, reply } => {
+                    mode.begin_extension_ask(request, reply);
                     Vec::new()
                 }
                 UiCommand::ExtensionUi { op, args } => {

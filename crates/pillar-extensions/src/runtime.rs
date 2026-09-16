@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 
 use luaur_rt::{Function, Lua, LuaSerdeExt, TypeDiagnostic, Value, check_with_definitions};
 use pillar_coding_agent::core::extensions_types::{
-    ExtensionContextFn, ExtensionUiFn, ExtensionUiRequest,
+    ExtensionContextFn, ExtensionUiAskFn, ExtensionUiFn, ExtensionUiRequest,
 };
 
 /// Registration records captured from `pillar.*` API calls (upstream
@@ -131,7 +131,7 @@ pub type SharedRegistry = Arc<Mutex<HostRegistry>>;
 /// `false` when the host has no UI context, which is when the wrappers are
 /// no-ops (upstream `noOpUIContext`).
 const CONTEXT_LUA: &str = r#"
-local facts, ui_call, theme, themes, session_id, session_entries, is_idle = ...
+local facts, ui_call, theme, themes, session_id, session_entries, is_idle, ui_ask = ...
 
 local ui = {}
 local function call(op, args)
@@ -149,6 +149,8 @@ ui.set_editor_text = function(text) call("set_editor_text", { text = text }) end
 ui.paste_to_editor = function(text) call("paste_to_editor", { text = text }) end
 ui.set_tools_expanded = function(expanded) call("set_tools_expanded", { expanded = expanded }) end
 ui.get_all_themes = function() return themes end
+-- Blocking dialogs (upstream the awaited `ctx.ui` methods).
+ui.confirm = function(title, message) return ui_ask(title, message or "") end
 
 local function styled(map, reset, color, text)
     local ansi = map[color]
@@ -311,6 +313,9 @@ pub struct HostApi {
     /// `ExtensionUIContext`). Without it every method is a no-op, matching
     /// upstream's `noOpUIContext`.
     pub ui: Option<ExtensionUiFn>,
+    /// `ctx.ui.confirm(title, message)` and friends: the request/answer half
+    /// of the UI bridge (upstream the awaited `ExtensionUIContext` methods).
+    pub ui_ask: Option<ExtensionUiAskFn>,
     /// The `ctx` facts (`cwd` / `mode` / `hasUI`; upstream the live
     /// `ExtensionContext` fields).
     pub context: Option<ExtensionContextFn>,
@@ -712,6 +717,28 @@ impl ExtensionRuntime {
                 .to_value(&value)
                 .map_err(luaur_rt::Error::external)
         });
+        // `ctx.ui.confirm(title, message)` (upstream `await ctx.ui.confirm`):
+        // the host shows a dialog and answers a boolean. Without a dialog host
+        // the answer is `false`, matching upstream's `noOpUIContext`.
+        let ask_slot = Arc::clone(&self.host_api);
+        let ui_ask = Function::wrap(move |title: String, message: String| {
+            let callback = {
+                let guard = ask_slot
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                guard.ui_ask.clone()
+            };
+            let Some(callback) = callback else {
+                return Ok::<bool, luaur_rt::Error>(false);
+            };
+            let answer = callback(ExtensionUiRequest {
+                op: "confirm".to_string(),
+                args: serde_json::json!({ "title": title, "message": message }),
+            })
+            .map_err(luaur_rt::Error::external)?;
+            Ok(answer.as_bool().unwrap_or(false))
+        });
+
         let idle_reader = Arc::clone(&self.host_api);
         let is_idle = Function::wrap(move || {
             let callback = {
@@ -733,6 +760,7 @@ impl ExtensionRuntime {
                 session_id,
                 session_entries,
                 is_idle,
+                ui_ask,
             ))
             .map_err(|error| ExtensionLoadError::Setup(error.to_string()))
     }

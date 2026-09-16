@@ -339,6 +339,9 @@ pub struct InteractiveMode {
     pending_bash_components: std::sync::Mutex<Vec<Shared<BashExecutionComponent>>>,
     /// Upstream `activeSelectorToken` + the selector in the editor slot.
     active_selector: std::sync::Mutex<Option<ActiveSelector>>,
+    /// The waiting `ctx.ui.confirm` reply.
+    pending_confirm:
+        std::sync::Mutex<Option<std::sync::mpsc::SyncSender<Result<serde_json::Value, String>>>>,
     /// Monotonic token so a stale `done` cannot close a newer selector.
     next_selector_token: AtomicU64,
     /// The 2-column picker's recent-model history (the user's
@@ -496,19 +499,23 @@ impl InteractiveMode {
         {
             let runner = std::sync::Arc::clone(&extension_runner);
             transcript.set_entry_renderer_lookup(Some(Box::new(move |custom_type: &str| {
+                // `try_lock`: a `ctx.ui.confirm` dialog blocks the extension's
+                // thread while it holds the runner lock, so a render must
+                // never wait for it (a contended lookup falls back to the
+                // default rendering).
                 runner
-                    .lock()
-                    .expect("extension runner lock")
-                    .get_entry_renderer(custom_type)
+                    .try_lock()
+                    .ok()
+                    .and_then(|runner| runner.get_entry_renderer(custom_type))
             })));
         }
         {
             let runner = std::sync::Arc::clone(&extension_runner);
             transcript.set_message_renderer_lookup(Some(Box::new(move |custom_type: &str| {
                 runner
-                    .lock()
-                    .expect("extension runner lock")
-                    .get_message_renderer(custom_type)
+                    .try_lock()
+                    .ok()
+                    .and_then(|runner| runner.get_message_renderer(custom_type))
             })));
         }
 
@@ -542,6 +549,7 @@ impl InteractiveMode {
             bash_component: std::sync::Mutex::new(None),
             pending_bash_components: std::sync::Mutex::new(Vec::new()),
             active_selector: std::sync::Mutex::new(None),
+            pending_confirm: std::sync::Mutex::new(None),
             next_selector_token: AtomicU64::new(1),
             recent_models: std::sync::Mutex::new(match options.agent_dir.as_deref() {
                 Some(agent_dir) => RecentModels::load(agent_dir),
@@ -1092,11 +1100,10 @@ impl InteractiveMode {
         if self.session.is_streaming() {
             self.editor.lock().add_to_history(text);
             self.set_editor_text("");
-            if let Err(error) = self.session.queue_streaming_message(
-                text,
-                StreamingBehavior::Steer,
-                None,
-            ) {
+            if let Err(error) =
+                self.session
+                    .queue_streaming_message(text, StreamingBehavior::Steer, None)
+            {
                 self.transcript.lock().show_error(&error);
             }
             let (steering, follow_up) = self.session_queues();
@@ -1303,9 +1310,7 @@ impl InteractiveMode {
                 let label = args
                     .get("label")
                     .and_then(serde_json::Value::as_str)
-                    .unwrap_or(
-                        crate::modes::interactive::transcript::DEFAULT_HIDDEN_THINKING_LABEL,
-                    )
+                    .unwrap_or(crate::modes::interactive::transcript::DEFAULT_HIDDEN_THINKING_LABEL)
                     .to_string();
                 self.transcript.lock().set_hidden_thinking_label(&label);
                 self.mark_dirty();
@@ -2079,6 +2084,61 @@ impl InteractiveMode {
         let token = self.next_selector_token.fetch_add(1, Ordering::SeqCst);
         let component = Shared::new(ExtensionSelectorComponent::new(title, options));
         self.show_selector(ActiveSelector::ExtensionSelector { token, component })
+    }
+
+    /// Show an extension's `ctx.ui.confirm(title, message)` dialog (upstream
+    /// `showExtensionConfirm`): Yes/No in the editor slot, answered through
+    /// `reply` when the user picks (Escape answers "no", like upstream's
+    /// cancelled confirm).
+    pub fn show_extension_confirm(
+        &self,
+        title: &str,
+        message: &str,
+        reply: std::sync::mpsc::SyncSender<Result<serde_json::Value, String>>,
+    ) -> Vec<ModeAction> {
+        *self.pending_confirm.lock().expect("pending confirm") = Some(reply);
+        let title = if message.trim().is_empty() {
+            title.to_string()
+        } else {
+            format!("{title}\n\n{message}")
+        };
+        self.show_extension_selector(&title, &["Yes".to_string(), "No".to_string()])
+    }
+
+    /// Route one `ctx.ui` dialog request (the pump's `ExtensionUiAsk`).
+    pub fn begin_extension_ask(
+        &self,
+        request: crate::core::extensions_types::ExtensionUiRequest,
+        reply: std::sync::mpsc::SyncSender<Result<serde_json::Value, String>>,
+    ) {
+        let title = request
+            .args
+            .get("title")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("Extension");
+        let message = request
+            .args
+            .get("message")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        match request.op.as_str() {
+            "confirm" => {
+                self.show_extension_confirm(title, message, reply);
+            }
+            other => {
+                let _ = reply.send(Err(format!("ctx.ui.{other}: not supported")));
+            }
+        }
+    }
+
+    /// Answer a pending `ctx.ui.confirm` (upstream the selector callbacks).
+    fn answer_pending_confirm(&self, yes: bool) -> bool {
+        let Some(reply) = self.pending_confirm.lock().expect("pending confirm").take() else {
+            return false;
+        };
+        let _ = reply.send(Ok(serde_json::Value::Bool(yes)));
+        self.mark_dirty();
+        true
     }
 
     /// Upstream `showExtensionInput`: a single-line text dialog in the editor
@@ -3126,13 +3186,21 @@ impl InteractiveMode {
                 match component.lock().handle_key(data) {
                     ExtensionSelectorOutcome::Consumed => Vec::new(),
                     ExtensionSelectorOutcome::Select(option) => {
+                        if self.answer_pending_confirm(option == "Yes") {
+                            return Some(self.close_selector(Some(token)));
+                        }
                         self.complete_tree_summary_choice(token, &option)
                     }
                     ExtensionSelectorOutcome::ToggleToolsExpanded => {
                         self.toggle_tool_output_expansion();
                         Vec::new()
                     }
-                    ExtensionSelectorOutcome::Cancel => self.cancel_tree_summary_choice(token),
+                    ExtensionSelectorOutcome::Cancel => {
+                        if self.answer_pending_confirm(false) {
+                            return Some(self.close_selector(Some(token)));
+                        }
+                        self.cancel_tree_summary_choice(token)
+                    }
                 }
             }
             Handle::ExtensionInput(token, component) => match component.lock().handle_key(data) {
