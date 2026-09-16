@@ -341,6 +341,51 @@ fn install_host_api(
                 Ok(())
             }))
         },
+        // `ctx.sessionManager.getSessionId()` (upstream the session id).
+        session_id: {
+            let slot = Arc::clone(slot);
+            Some(Arc::new(move || {
+                let session = slot
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .clone();
+                session.map(|session| {
+                    session
+                        .session_manager()
+                        .lock()
+                        .expect("session")
+                        .session_id()
+                        .to_string()
+                })
+            }))
+        },
+        // `ctx.sessionManager.getEntries()` (upstream the read-only session
+        // manager): the JSONL shapes, which is what extensions scan.
+        session_entries: {
+            let slot = Arc::clone(slot);
+            Some(Arc::new(move || {
+                let session = slot
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .clone();
+                match session {
+                    Some(session) => {
+                        let entries = session
+                            .session_manager()
+                            .lock()
+                            .expect("session")
+                            .get_entries_owned();
+                        serde_json::Value::Array(
+                            entries
+                                .iter()
+                                .map(pillar_coding_agent::core::session_manager::entry_to_json)
+                                .collect(),
+                        )
+                    }
+                    None => serde_json::Value::Array(Vec::new()),
+                }
+            }))
+        },
         // The `ctx` facts (upstream the live ExtensionContext fields): the
         // host's own cell, published next to `bind_extensions`.
         context: {

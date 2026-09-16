@@ -131,7 +131,7 @@ pub type SharedRegistry = Arc<Mutex<HostRegistry>>;
 /// `false` when the host has no UI context, which is when the wrappers are
 /// no-ops (upstream `noOpUIContext`).
 const CONTEXT_LUA: &str = r#"
-local facts, ui_call, theme, themes = ...
+local facts, ui_call, theme, themes, session_id, session_entries = ...
 
 local ui = {}
 local function call(op, args)
@@ -163,12 +163,18 @@ theme.underline = function(text) return "\27[4m" .. text .. "\27[24m" end
 theme.strikethrough = function(text) return "\27[9m" .. text .. "\27[29m" end
 theme.inverse = function(text) return "\27[7m" .. text .. "\27[27m" end
 
+local sessionManager = {
+    getSessionId = function() return session_id() end,
+    getEntries = function() return session_entries() end,
+}
+
 return {
     cwd = facts.cwd,
     mode = facts.mode,
     hasUI = facts.hasUI,
     ui = ui,
     theme = theme,
+    sessionManager = sessionManager,
 }
 "#;
 
@@ -301,6 +307,11 @@ pub struct HostApi {
     /// The `ctx` facts (`cwd` / `mode` / `hasUI`; upstream the live
     /// `ExtensionContext` fields).
     pub context: Option<ExtensionContextFn>,
+    /// `ctx.sessionManager.getSessionId()` (upstream the session id).
+    pub session_id: Option<GetStringFn>,
+    /// `ctx.sessionManager.getEntries()` — the session entries as JSON
+    /// (upstream the read-only session manager).
+    pub session_entries: Option<GetJsonFn>,
 }
 
 /// The process-wide extension runtime.
@@ -632,10 +643,39 @@ impl ExtensionRuntime {
             callback(ExtensionUiRequest { op, args }).map_err(luaur_rt::Error::external)?;
             Ok(true)
         });
+        // `ctx.sessionManager` (upstream the read-only session manager): only
+        // the readers extensions use so far.
+        let session_readers = Arc::clone(&self.host_api);
+        let session_id = Function::wrap(move || {
+            let callback = {
+                let guard = session_readers
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                guard.session_id.clone()
+            };
+            Ok::<Option<String>, luaur_rt::Error>(callback.and_then(|callback| callback()))
+        });
+        let entries_readers = Arc::clone(&self.host_api);
+        let entries_lua = self.lua.clone();
+        let session_entries = Function::wrap(move || {
+            let callback = {
+                let guard = entries_readers
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                guard.session_entries.clone()
+            };
+            let value = match callback {
+                Some(callback) => callback(),
+                None => serde_json::Value::Array(Vec::new()),
+            };
+            entries_lua
+                .to_value(&value)
+                .map_err(luaur_rt::Error::external)
+        });
         let (theme, themes) = self.theme_table()?;
         self.lua
             .load(CONTEXT_LUA)
-            .call::<Value>((facts_lua, ui_call, theme, themes))
+            .call::<Value>((facts_lua, ui_call, theme, themes, session_id, session_entries))
             .map_err(|error| ExtensionLoadError::Setup(error.to_string()))
     }
 
