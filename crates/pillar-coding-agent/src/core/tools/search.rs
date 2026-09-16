@@ -17,6 +17,7 @@
 //! both running in-process. Output shapes (relativized paths, notices,
 //! details) match the upstream tools so callers see identical results.
 
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -40,6 +41,10 @@ pub const GREP_DEFAULT_LIMIT: usize = 100;
 /// Directories never searched (upstream's hard ignore list for custom glob
 /// backends).
 pub const HARD_IGNORE: [&str; 2] = ["**/node_modules/**", "**/.git/**"];
+
+/// How many scanned lines pass between two abort checks inside one file
+/// (the entry check alone would keep a huge file uninterruptible).
+pub const ABORT_CHECK_LINES: usize = 256;
 
 // ============================================================================
 // find
@@ -65,6 +70,9 @@ pub struct FindOptions {
     pub limit: usize,
     /// Include hidden files (upstream fd `--hidden`).
     pub hidden: bool,
+    /// The tool call's abort signal: the walk checks it per entry and the
+    /// call answers upstream's "Operation aborted" instead of a partial list.
+    pub signal: Option<pillar_agent::abort::AbortSignal>,
 }
 
 impl Default for FindOptions {
@@ -72,6 +80,7 @@ impl Default for FindOptions {
         Self {
             limit: FIND_DEFAULT_LIMIT,
             hidden: true,
+            signal: None,
         }
     }
 }
@@ -145,6 +154,7 @@ pub fn find_files(
     let limit = options.limit;
     let collected: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let reached_limit = Arc::new(AtomicUsize::new(0));
+    let aborted = Arc::new(AtomicUsize::new(0));
 
     let mut builder = WalkBuilder::new(&search_path);
     builder.hidden(!options.hidden);
@@ -163,11 +173,19 @@ pub fn find_files(
         collected: collected.clone(),
         limit,
         reached_limit: reached_limit.clone(),
+        aborted: aborted.clone(),
+        signal: options.signal.clone(),
         search_path: search_path.clone(),
     };
     builder
         .build_parallel()
         .visit(&mut FindVisitorBuilder { walker });
+
+    // Upstream rejects the whole call on abort instead of answering a
+    // partial list.
+    if aborted.load(Ordering::SeqCst) == 1 {
+        return Err("Operation aborted".to_string());
+    }
 
     let mut results = Arc::try_unwrap(collected)
         .map(|m| m.into_inner().unwrap())
@@ -252,6 +270,10 @@ pub struct GrepOptions {
     pub context: usize,
     /// Match limit (minimum 1).
     pub limit: usize,
+    /// The tool call's abort signal: the walk checks it per entry and per
+    /// [`ABORT_CHECK_LINES`] scanned lines, and the call answers upstream's
+    /// "Operation aborted" instead of a partial result.
+    pub signal: Option<pillar_agent::abort::AbortSignal>,
 }
 
 impl Default for GrepOptions {
@@ -262,6 +284,7 @@ impl Default for GrepOptions {
             literal: false,
             context: 0,
             limit: GREP_DEFAULT_LIMIT,
+            signal: None,
         }
     }
 }
@@ -317,6 +340,9 @@ pub fn grep_files(
 
     let matches: Arc<Mutex<Vec<ContentMatch>>> = Arc::new(Mutex::new(Vec::new()));
     let limit_hit = Arc::new(AtomicUsize::new(0));
+    let aborted = Arc::new(AtomicUsize::new(0));
+    let line_cache: Arc<Mutex<std::collections::BTreeMap<PathBuf, Vec<String>>>> =
+        Arc::new(Mutex::new(std::collections::BTreeMap::new()));
 
     let mut builder = WalkBuilder::new(&search_path);
     builder.hidden(true);
@@ -334,12 +360,22 @@ pub fn grep_files(
         matches: matches.clone(),
         limit: effective_limit,
         limit_hit: limit_hit.clone(),
+        aborted: aborted.clone(),
+        line_cache: line_cache.clone(),
+        context: context_value,
+        signal: options.signal.clone(),
         search_path: search_path.clone(),
         single_file,
     };
     builder
         .build_parallel()
         .visit(&mut GrepVisitorBuilder { walker });
+
+    // Upstream rejects the whole call on abort instead of answering a
+    // partial match list.
+    if aborted.load(Ordering::SeqCst) == 1 {
+        return Err("Operation aborted".to_string());
+    }
 
     let mut matches = Arc::try_unwrap(matches)
         .map(|m| m.into_inner().unwrap())
@@ -350,8 +386,12 @@ pub fn grep_files(
             .cmp(&b.file_path)
             .then(a.line_number.cmp(&b.line_number))
     });
+    let line_cache = Arc::try_unwrap(line_cache)
+        .map(|cache| cache.into_inner().unwrap())
+        .unwrap_or_else(|arc| arc.lock().unwrap().clone());
     finish_grep_output(
         matches,
+        line_cache,
         limit_hit.load(Ordering::SeqCst) == 1,
         effective_limit,
         context_value,
@@ -377,6 +417,7 @@ fn format_grep_path(file_path: &Path, is_directory: bool, search_path: &Path) ->
 
 fn finish_grep_output(
     matches: Vec<ContentMatch>,
+    line_cache: std::collections::BTreeMap<PathBuf, Vec<String>>,
     match_limit_reached: bool,
     effective_limit: usize,
     context_value: usize,
@@ -390,9 +431,8 @@ fn finish_grep_output(
         });
     }
 
-    // Per-file line cache for context blocks (upstream fileCache).
-    let mut file_cache: std::collections::BTreeMap<PathBuf, Vec<String>> =
-        std::collections::BTreeMap::new();
+    // The per-file line snapshots the scan captured (upstream `fileCache`,
+    // filled by re-reading the file there).
     let mut output_lines: Vec<String> = Vec::new();
     let mut lines_truncated = false;
 
@@ -411,15 +451,10 @@ fn finish_grep_output(
             }
             output_lines.push(format!("{relative_path}:{line_number}: {truncated_text}"));
         } else {
-            let lines = file_cache.entry(file_path.clone()).or_insert_with(|| {
-                std::fs::read_to_string(file_path)
-                    .unwrap_or_default()
-                    .replace("\r\n", "\n")
-                    .replace('\r', "\n")
-                    .lines()
-                    .map(str::to_string)
-                    .collect()
-            });
+            let lines = line_cache
+                .get(file_path)
+                .cloned()
+                .unwrap_or_default();
             if lines.is_empty() {
                 output_lines.push(format!(
                     "{relative_path}:{line_number}: (unable to read file)"
@@ -494,6 +529,8 @@ struct FindWalker {
     collected: Arc<Mutex<Vec<String>>>,
     limit: usize,
     reached_limit: Arc<AtomicUsize>,
+    aborted: Arc<AtomicUsize>,
+    signal: Option<pillar_agent::abort::AbortSignal>,
     search_path: PathBuf,
 }
 
@@ -508,6 +545,8 @@ impl<'s> ignore::ParallelVisitorBuilder<'s> for FindVisitorBuilder {
             collected: self.walker.collected.clone(),
             limit: self.walker.limit,
             reached_limit: self.walker.reached_limit.clone(),
+            aborted: self.walker.aborted.clone(),
+            signal: self.walker.signal.clone(),
             search_path: self.walker.search_path.clone(),
         })
     }
@@ -518,11 +557,34 @@ struct FindVisitor {
     collected: Arc<Mutex<Vec<String>>>,
     limit: usize,
     reached_limit: Arc<AtomicUsize>,
+    aborted: Arc<AtomicUsize>,
+    signal: Option<pillar_agent::abort::AbortSignal>,
     search_path: PathBuf,
+}
+
+impl FindVisitor {
+    /// Whether the tool call was aborted (a cheap atomic check after the
+    /// signal's first observation).
+    fn aborted(&mut self) -> bool {
+        if self.aborted.load(Ordering::SeqCst) == 1 {
+            return true;
+        }
+        let aborted = self
+            .signal
+            .as_ref()
+            .is_some_and(|signal| signal.is_aborted());
+        if aborted {
+            self.aborted.store(1, Ordering::SeqCst);
+        }
+        aborted
+    }
 }
 
 impl ignore::ParallelVisitor for FindVisitor {
     fn visit(&mut self, entry: Result<ignore::DirEntry, ignore::Error>) -> WalkState {
+        if self.aborted() {
+            return WalkState::Quit;
+        }
         if self.collected.lock().unwrap().len() >= self.limit {
             self.reached_limit.store(1, Ordering::SeqCst);
             return WalkState::Quit;
@@ -577,6 +639,13 @@ struct GrepWalker {
     matches: Arc<Mutex<Vec<ContentMatch>>>,
     limit: usize,
     limit_hit: Arc<AtomicUsize>,
+    aborted: Arc<AtomicUsize>,
+    /// Per-file line snapshots for the context blocks, captured during the
+    /// scan so the output stage never re-reads a file (upstream re-reads
+    /// through `GrepOperations.readFile`).
+    line_cache: Arc<Mutex<std::collections::BTreeMap<PathBuf, Vec<String>>>>,
+    context: usize,
+    signal: Option<pillar_agent::abort::AbortSignal>,
     search_path: PathBuf,
     single_file: bool,
 }
@@ -593,6 +662,10 @@ impl<'s> ignore::ParallelVisitorBuilder<'s> for GrepVisitorBuilder {
             matches: self.walker.matches.clone(),
             limit: self.walker.limit,
             limit_hit: self.walker.limit_hit.clone(),
+            aborted: self.walker.aborted.clone(),
+            line_cache: self.walker.line_cache.clone(),
+            context: self.walker.context,
+            signal: self.walker.signal.clone(),
             search_path: self.walker.search_path.clone(),
             single_file: self.walker.single_file,
         })
@@ -605,12 +678,117 @@ struct GrepVisitor {
     matches: Arc<Mutex<Vec<ContentMatch>>>,
     limit: usize,
     limit_hit: Arc<AtomicUsize>,
+    aborted: Arc<AtomicUsize>,
+    line_cache: Arc<Mutex<std::collections::BTreeMap<PathBuf, Vec<String>>>>,
+    context: usize,
+    signal: Option<pillar_agent::abort::AbortSignal>,
     search_path: PathBuf,
     single_file: bool,
 }
 
+impl GrepVisitor {
+    /// Whether the tool call was aborted (a cheap atomic check after the
+    /// signal's first observation).
+    fn aborted(&mut self) -> bool {
+        if self.aborted.load(Ordering::SeqCst) == 1 {
+            return true;
+        }
+        let aborted = self
+            .signal
+            .as_ref()
+            .is_some_and(|signal| signal.is_aborted());
+        if aborted {
+            self.aborted.store(1, Ordering::SeqCst);
+        }
+        aborted
+    }
+
+    /// Scan one file line by line. The file is streamed (no whole-file
+    /// allocation, reusing one line buffer); when context is requested the
+    /// lines are kept for the output stage instead of re-reading the file.
+    fn scan_file(&mut self, path: &Path) -> WalkState {
+        let Ok(file) = std::fs::File::open(path) else {
+            return WalkState::Continue;
+        };
+        let mut reader = BufReader::new(file);
+        // Skip binary-looking files (NUL byte in the first 1KB).
+        let probe = match reader.fill_buf() {
+            Ok(probe) => probe,
+            Err(_) => return WalkState::Continue,
+        };
+        if probe[..probe.len().min(1024)].contains(&0u8) {
+            return WalkState::Continue;
+        }
+
+        let total = self.matches.lock().unwrap().len();
+        let mut local: Vec<ContentMatch> = Vec::new();
+        let mut lines: Vec<String> = Vec::new();
+        let mut raw: Vec<u8> = Vec::new();
+        let mut line_number = 0usize;
+        loop {
+            raw.clear();
+            match reader.read_until(b'\n', &mut raw) {
+                Ok(0) => break,
+                Ok(_) => {}
+                Err(_) => break,
+            }
+            line_number += 1;
+            if line_number % ABORT_CHECK_LINES == 0 && self.aborted() {
+                return WalkState::Quit;
+            }
+            // `str::lines` semantics: drop the terminator, then one `\r`.
+            let text = String::from_utf8_lossy(&raw);
+            let text = text.strip_suffix('\n').unwrap_or(&text);
+            let text = text.strip_suffix('\r').unwrap_or(text);
+            if self.context > 0 {
+                lines.push(text.to_string());
+            }
+            if self.regex.is_match(text) {
+                if total + local.len() >= self.limit {
+                    // Keep every match already found; the notice reports the
+                    // limit, not a truncated list.
+                    self.flush(path, &mut local, &mut lines);
+                    self.limit_hit.store(1, Ordering::SeqCst);
+                    return WalkState::Quit;
+                }
+                local.push(ContentMatch {
+                    file_path: path.to_path_buf(),
+                    line_number,
+                    line_text: text.to_string(),
+                });
+            }
+        }
+        let reached_limit = total + local.len() >= self.limit;
+        self.flush(path, &mut local, &mut lines);
+        if reached_limit {
+            self.limit_hit.store(1, Ordering::SeqCst);
+            return WalkState::Quit;
+        }
+        WalkState::Continue
+    }
+
+    /// Move one file's matches (and, when context is requested, its line
+    /// snapshot) into the shared state: one lock per file instead of one per
+    /// line.
+    fn flush(&self, path: &Path, local: &mut Vec<ContentMatch>, lines: &mut Vec<String>) {
+        if local.is_empty() {
+            return;
+        }
+        if self.context > 0 {
+            self.line_cache
+                .lock()
+                .unwrap()
+                .insert(path.to_path_buf(), std::mem::take(lines));
+        }
+        self.matches.lock().unwrap().append(local);
+    }
+}
+
 impl ignore::ParallelVisitor for GrepVisitor {
     fn visit(&mut self, entry: Result<ignore::DirEntry, ignore::Error>) -> WalkState {
+        if self.aborted() {
+            return WalkState::Quit;
+        }
         if self.matches.lock().unwrap().len() >= self.limit {
             self.limit_hit.store(1, Ordering::SeqCst);
             return WalkState::Quit;
@@ -647,34 +825,7 @@ impl ignore::ParallelVisitor for GrepVisitor {
                 return WalkState::Continue;
             }
         }
-        // Skip binary-looking files (NUL byte in the first 1KB).
-        let Ok(content) = std::fs::read(&path) else {
-            return WalkState::Continue;
-        };
-        if content[..content.len().min(1024)].contains(&0u8) {
-            return WalkState::Continue;
-        }
-        let text = String::from_utf8_lossy(&content);
-        let mut count = self.matches.lock().unwrap().len();
-        for (index, line) in text.lines().enumerate() {
-            if self.regex.is_match(line) {
-                if count >= self.limit {
-                    self.limit_hit.store(1, Ordering::SeqCst);
-                    return WalkState::Quit;
-                }
-                self.matches.lock().unwrap().push(ContentMatch {
-                    file_path: path.clone(),
-                    line_number: index + 1,
-                    line_text: line.to_string(),
-                });
-                count += 1;
-            }
-        }
-        if count >= self.limit {
-            self.limit_hit.store(1, Ordering::SeqCst);
-            return WalkState::Quit;
-        }
-        WalkState::Continue
+        self.scan_file(&path)
     }
 }
 
@@ -760,6 +911,7 @@ pub fn find_tool(cwd: &str) -> AgentTool {
                     FindOptions {
                         limit,
                         hidden: false,
+                        signal: signal.clone(),
                     },
                 )
                 .map_err(ToolExecuteError)?;
@@ -859,6 +1011,7 @@ pub fn grep_tool(cwd: &str) -> AgentTool {
                         .and_then(|value| value.as_u64())
                         .map(|value| value as usize)
                         .unwrap_or(GREP_DEFAULT_LIMIT),
+                    signal: signal.clone(),
                 };
                 let result =
                     grep_files(pattern, search_dir, &cwd, options).map_err(ToolExecuteError)?;

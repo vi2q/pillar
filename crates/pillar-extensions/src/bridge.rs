@@ -243,29 +243,29 @@ pub fn bridge_to_runner(
         .map(|registration| &registration.value)
         .next_back()
         .map(|identity| {
-        let runtime = Arc::clone(runtime);
-        let identity = identity.clone();
-        let transformer: MarkdownTransformer =
-            Arc::new(move |markdown: &str, context: &MarkdownTransformContext| {
-                let context = serde_json::json!({
-                    "messageType": context.message_type.as_str(),
-                    "isStreaming": context.is_streaming,
-                    "availableWidth": context.available_width,
-                });
-                let result = runtime
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .transform_markdown(&identity, markdown, &context);
-                match result {
-                    Ok(value) => value,
-                    Err(error) => {
-                        eprintln!("pillar-extensions: markdown transformer failed: {error}");
-                        None
+            let runtime = Arc::clone(runtime);
+            let identity = identity.clone();
+            let transformer: MarkdownTransformer =
+                Arc::new(move |markdown: &str, context: &MarkdownTransformContext| {
+                    let context = serde_json::json!({
+                        "messageType": context.message_type.as_str(),
+                        "isStreaming": context.is_streaming,
+                        "availableWidth": context.available_width,
+                    });
+                    let result = runtime
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .transform_markdown(&identity, markdown, &context);
+                    match result {
+                        Ok(value) => value,
+                        Err(error) => {
+                            eprintln!("pillar-extensions: markdown transformer failed: {error}");
+                            None
+                        }
                     }
-                }
-            });
-        transformer
-    });
+                });
+            transformer
+        });
 
     Ok(HostExtension {
         path: path.to_string(),

@@ -409,3 +409,55 @@ fn find_result_defaults() {
     let result = GrepResult::default();
     assert!(!result.lines_truncated);
 }
+
+// --- cancellation -------------------------------------------------------------
+
+/// An abort observed during a long scan rejects the whole call (upstream
+/// `signal.addEventListener("abort", ...)` → `Operation aborted`) instead of
+/// answering a partial match list. The file is large enough that the abort
+/// lands mid-scan on any machine where a debug scan takes longer than 10 ms.
+#[test]
+fn grep_aborts_during_a_long_scan() {
+    let mut content = String::with_capacity(800_000 * 4);
+    for index in 0..800_000 {
+        content.push_str(&format!("line {index}\n"));
+    }
+    let (dir, cwd) = setup_repo("grep-abort", &[("big.txt", &content)]);
+    let signal = pillar_agent::abort::AbortSignal::new();
+    let killer = signal.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        killer.abort();
+    });
+
+    let error = grep_files(
+        "no-such-needle",
+        &dir.to_string_lossy(),
+        &cwd,
+        GrepOptions {
+            signal: Some(signal),
+            ..Default::default()
+        },
+    )
+    .expect_err("the aborted call rejects");
+    assert_eq!(error, "Operation aborted");
+}
+
+/// An already-aborted signal stops the walk before it starts.
+#[test]
+fn find_aborts_before_walking() {
+    let (dir, cwd) = setup_repo("find-abort", &[("a.ts", "x")]);
+    let signal = pillar_agent::abort::AbortSignal::new();
+    signal.abort();
+    let error = find_files(
+        "*.ts",
+        &dir.to_string_lossy(),
+        &cwd,
+        FindOptions {
+            signal: Some(signal),
+            ..Default::default()
+        },
+    )
+    .expect_err("the aborted call rejects");
+    assert_eq!(error, "Operation aborted");
+}

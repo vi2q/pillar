@@ -60,7 +60,12 @@ impl ExecResult {
 
 /// Execute a command and return its output, honouring `signal` / `timeout`
 /// (upstream `execCommand`).
-pub fn exec_command(command: &str, args: &[String], cwd: &str, options: &ExecOptions) -> ExecResult {
+pub fn exec_command(
+    command: &str,
+    args: &[String],
+    cwd: &str,
+    options: &ExecOptions,
+) -> ExecResult {
     let mut process = Command::new(command);
     process
         .args(args)
@@ -128,7 +133,11 @@ pub fn exec_command(command: &str, args: &[String], cwd: &str, options: &ExecOpt
 
 /// The output that arrived by the time the child exited (upstream keeps the
 /// accumulated buffer; [`DRAIN_GRACE`] lets the last in-flight read land).
-fn collect_output(stdout: &Arc<Mutex<Vec<u8>>>, stderr: &Arc<Mutex<Vec<u8>>>, code: i32) -> ExecResult {
+fn collect_output(
+    stdout: &Arc<Mutex<Vec<u8>>>,
+    stderr: &Arc<Mutex<Vec<u8>>>,
+    code: i32,
+) -> ExecResult {
     std::thread::sleep(DRAIN_GRACE);
     let text = |buffer: &Arc<Mutex<Vec<u8>>>| {
         let bytes = buffer

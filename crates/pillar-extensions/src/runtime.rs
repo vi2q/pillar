@@ -374,8 +374,11 @@ declare pillar: {
 /// layer): the host injects the real executor; the extension receives
 /// `{ stdout, stderr, code, killed }`.
 pub type ExecHost = Arc<
-    dyn Fn(&str, &[String], &pillar_coding_agent::core::exec::ExecOptions)
-            -> pillar_coding_agent::core::exec::ExecResult
+    dyn Fn(
+            &str,
+            &[String],
+            &pillar_coding_agent::core::exec::ExecOptions,
+        ) -> pillar_coding_agent::core::exec::ExecResult
         + Send
         + Sync,
 >;
@@ -528,13 +531,7 @@ impl ExtensionRuntime {
         let host_api = Arc::new(Mutex::new(HostApi::default()));
         let live_signals = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
         let next_signal_id = Arc::new(std::sync::atomic::AtomicU64::new(1));
-        install_pillar_api(
-            &lua,
-            &registry,
-            &exec_host,
-            &host_api,
-            &live_signals,
-        );
+        install_pillar_api(&lua, &registry, &exec_host, &host_api, &live_signals);
         Self {
             lua,
             registry,
@@ -1492,9 +1489,7 @@ fn install_pillar_api(
                             let signal_id: Option<u64> = match table
                                 .get::<Option<Value>>("signal")?
                             {
-                                Some(Value::Table(signal)) => {
-                                    signal.get("__pillar_signal_id")?
-                                }
+                                Some(Value::Table(signal)) => signal.get("__pillar_signal_id")?,
                                 _ => None,
                             };
                             (signal_id, timeout, cwd)
