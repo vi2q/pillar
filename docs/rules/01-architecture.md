@@ -43,6 +43,15 @@ pillar-cli         → coding-agent, extensions, agent, ai
 added or removed edge fails the test, so a new dependency is a deliberate edit of
 this block.
 
+The *resolved* graph is gated as well (`crates/pillar-cli/tests/dependency_profiles.rs`,
+docs/DEVELOPMENT-STRATEGY.md §9): it reads `Cargo.lock` and rejects the runtime core
+(`pillar-agent` + `pillar-ai`) reaching the presentation, CLI, or VM layers at all,
+rejects the LMPC-minimal profile pulling the terminal layer (`crossterm`, `fd-lock`,
+`portable-pty`) in, and pins the Luau profile's presentation contamination to the set
+it still inherits through `pillar-coding-agent` (`pillar-tui`, `crossterm`, `fd-lock`)
+— a ratchet, so it cannot grow unnoticed. Both the manifest and the lock are
+cross-checked, so a stale `Cargo.lock` fails the gate instead of hiding an edge.
+
 Rules:
 
 - 実行核から具体的なUI・VM・CLI・OS adapterへ依存しない方向を目指す。現在許可するedgeは上表とテストで管理し、切断は機能を保ったまま段階的に行う。upstreamのpackage配置は参照であって制約ではない。
