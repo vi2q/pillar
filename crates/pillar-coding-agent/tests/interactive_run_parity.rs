@@ -1487,13 +1487,7 @@ async fn a_terminal_resize_paints_a_frame() {
     assert_eq!(result, InteractiveOutcome::Exit(0));
     assert_eq!(*harness.size.lock().unwrap(), (40, 24));
     assert!(
-        harness
-            .writes
-            .lock()
-            .unwrap()
-            .matches("\u{1b}[2J")
-            .count()
-            > 0,
+        harness.writes.lock().unwrap().matches("\u{1b}[2J").count() > 0,
         "the width change clears and redraws"
     );
 }

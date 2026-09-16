@@ -475,9 +475,8 @@ impl TuiMainScreen {
         self.cursor_row = new_lines.len().saturating_sub(1);
         self.hardware_cursor_row = final_cursor_row;
         self.max_lines_rendered = self.max_lines_rendered.max(new_lines.len());
-        self.previous_viewport_top = prev_viewport_top.max(
-            (final_cursor_row + 1).saturating_sub(height),
-        );
+        self.previous_viewport_top =
+            prev_viewport_top.max((final_cursor_row + 1).saturating_sub(height));
         self.position_hardware_cursor(cursor_pos, new_lines.len());
 
         self.previous_lines = new_lines;

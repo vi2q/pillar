@@ -10,9 +10,9 @@ use pillar_ai::types::{Message, StopReason, Usage, UsageCost, UserContent};
 use pillar_coding_agent::core::messages::{CodingAgentMessage, CustomContent};
 use pillar_coding_agent::core::session_entries::SessionEntry as Entry;
 use pillar_coding_agent::core::session_manager::{
-    CURRENT_SESSION_VERSION, FileEntry, SessionManager, assert_valid_session_id, build_session_info,
-    build_context_entries, build_session_path, default_session_dir_path, generate_id_with,
-    get_latest_compaction_entry, load_entries_from_file, load_session_file,
+    CURRENT_SESSION_VERSION, FileEntry, SessionManager, assert_valid_session_id,
+    build_context_entries, build_session_info, build_session_path, default_session_dir_path,
+    generate_id_with, get_latest_compaction_entry, load_entries_from_file, load_session_file,
     migrate_session_entries, parse_iso_timestamp, parse_session_entry_line,
     session_entry_to_context_messages,
 };
@@ -847,8 +847,16 @@ fn the_file_matches_the_live_state_after_appends() {
     let file = manager.session_file().map(Path::to_path_buf).unwrap();
 
     let reloaded = SessionManager::open(&file, None, None).expect("reopen");
-    let live: Vec<String> = manager.get_entries().iter().map(|e| e.id().to_string()).collect();
-    let stored: Vec<String> = reloaded.get_entries().iter().map(|e| e.id().to_string()).collect();
+    let live: Vec<String> = manager
+        .get_entries()
+        .iter()
+        .map(|e| e.id().to_string())
+        .collect();
+    let stored: Vec<String> = reloaded
+        .get_entries()
+        .iter()
+        .map(|e| e.id().to_string())
+        .collect();
     assert_eq!(stored, live);
     assert_eq!(reloaded.get_leaf_id(), manager.get_leaf_id());
     assert!(stored.contains(&custom));
@@ -962,7 +970,10 @@ fn measure_session_scale() {
     assert_eq!(listed.len(), SESSIONS);
 
     let started = Instant::now();
-    let infos: Vec<_> = names.iter().filter_map(|path| build_session_info(path)).collect();
+    let infos: Vec<_> = names
+        .iter()
+        .filter_map(|path| build_session_info(path))
+        .collect();
     let info_ms = started.elapsed();
     assert_eq!(infos.len(), SESSIONS);
 
@@ -973,8 +984,10 @@ fn measure_session_scale() {
     let mut long = SessionManager::create("/tmp/long", Some(&long_dir), None).expect("create");
     let started = Instant::now();
     for index in 0..5_000 {
-        long.append_message(user_msg(&format!("question {index}"))).unwrap();
-        long.append_message(assistant_msg(&format!("answer {index}"))).unwrap();
+        long.append_message(user_msg(&format!("question {index}")))
+            .unwrap();
+        long.append_message(assistant_msg(&format!("answer {index}")))
+            .unwrap();
     }
     let appended = started.elapsed();
     let file = long.session_file().map(Path::to_path_buf).unwrap();

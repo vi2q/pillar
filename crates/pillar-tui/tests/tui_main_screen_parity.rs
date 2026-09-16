@@ -329,7 +329,10 @@ fn hardware_cursor_follows_the_marker_when_enabled() {
 fn a_shrinking_differential_frame_keeps_the_viewport_top() {
     let terminal = terminal(40, 10);
     let initial: Vec<String> = (0..20).map(|index| format!("line {index}")).collect();
-    let mut screen = screen(&terminal, &initial.iter().map(String::as_str).collect::<Vec<_>>());
+    let mut screen = screen(
+        &terminal,
+        &initial.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
     // The differential path needs clearOnShrink off to see deletions.
     screen.base_mut().set_clear_on_shrink(false);
     screen.do_render().expect("first render");
@@ -339,7 +342,9 @@ fn a_shrinking_differential_frame_keeps_the_viewport_top() {
     let mut next: Vec<String> = (0..19).map(|index| format!("line {index}")).collect();
     next[12] = "CHANGED".to_string();
     screen.base_mut().clear();
-    screen.base_mut().add_child(Box::new(Lines { lines: next.clone() }));
+    screen.base_mut().add_child(Box::new(Lines {
+        lines: next.clone(),
+    }));
     screen.do_render().expect("shrinking differential render");
     assert!(
         !terminal.written().contains("\u{1b}[2J"),
