@@ -14,27 +14,12 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::core::extensions_loader::{ExtensionCache, LoadOutcome};
+use crate::core::extensions_loader::ExtensionCache;
 use crate::core::extensions_runner::ExtensionRunner;
 
-/// A loader for Luau extension files, injected by the host (the Luau
-/// runtime crate implements it). Mirrors the `ModuleLoader` contract
-/// with an object-safe surface so hosts can swap runtimes.
-pub trait LuauExtensionLoader: Send + Sync {
-    /// Load one extension file: type-check, run setup, and bridge to a
-    /// runner-shaped [`HostExtension`]. `Ok(None)` means "not an
-    /// extension"; errors are per-path.
-    fn load_extension(&self, path: &str) -> LoadOutcome;
-}
-
-impl<F> LuauExtensionLoader for F
-where
-    F: Fn(&str) -> LoadOutcome + Send + Sync,
-{
-    fn load_extension(&self, path: &str) -> LoadOutcome {
-        self(path)
-    }
-}
+// The loader contract lives in the extension contract crate (the VM crate
+// implements it; this crate discovers the paths and drives the runner).
+pub use pillar_extensions_contract::LuauExtensionLoader;
 
 /// Default global extensions directory (`~/.pillar/extensions`).
 pub fn default_global_extensions_dir() -> Option<PathBuf> {

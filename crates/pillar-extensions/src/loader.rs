@@ -7,8 +7,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use pillar_coding_agent::core::extensions_loader::LoadOutcome;
-use pillar_coding_agent::core::extensions_runner::HostExtension;
+use pillar_extensions_contract::{HostExtension, LoadOutcome, LuauExtensionLoader};
 
 use crate::bridge::bridge_to_runner;
 use crate::discovery::discover_extension_files;
@@ -222,11 +221,11 @@ impl LuauLoader {
     }
 }
 
-impl pillar_coding_agent::core::extensions_luau::LuauExtensionLoader for LuauLoader {
+impl LuauExtensionLoader for LuauLoader {
     fn load_extension(
         &self,
         path: &str,
-    ) -> pillar_coding_agent::core::extensions_loader::LoadOutcome {
+    ) -> LoadOutcome {
         luau_module_loader(&self.runtime)(path)
     }
 }
@@ -244,20 +243,22 @@ pub fn create_luau_loader(
 #[cfg(test)]
 mod integration_tests {
     use super::*;
-    use pillar_coding_agent::core::extensions_luau::{build_luau_runner, discover_luau_paths};
 
-    fn write_extension(dir: &std::path::Path, name: &str, body: &str) {
+    fn write_extension(dir: &std::path::Path, name: &str, body: &str) -> String {
         std::fs::create_dir_all(dir).unwrap();
-        std::fs::write(dir.join(name), body).unwrap();
+        let path = dir.join(name);
+        std::fs::write(&path, body).unwrap();
+        path.to_string_lossy().to_string()
     }
 
-    /// The coding-agent loading path runs a real Luau extension through
-    /// the trait loader: discovery -> type-check -> setup -> bridge, with
-    /// registrations surfacing in the runner.
+    /// The trait loader runs a real Luau extension: type-check -> setup ->
+    /// bridge, with registrations surfacing in the contract's extension
+    /// (path discovery and the runner build belong to the host; the
+    /// coding-agent parity test covers that wiring).
     #[test]
     fn luau_loader_trait_loads_and_bridges_real_extension() {
         let temp = tempfile::tempdir().unwrap();
-        write_extension(
+        let path = write_extension(
             temp.path(),
             "greet.luau",
             r#"
@@ -271,24 +272,21 @@ mod integration_tests {
             "#,
         );
 
-        let (runtime, loader) = create_luau_loader(None);
-        let paths = discover_luau_paths(Some(temp.path()), None, &[], "");
-        assert_eq!(paths.len(), 1, "{paths:?}");
-        let (mut runner, errors) = build_luau_runner(&paths, "", &loader, false);
-        assert!(errors.is_empty(), "{errors:?}");
-
+        let (_runtime, loader) = create_luau_loader(None);
+        let extension = loader
+            .load_extension(&path)
+            .expect("no load error")
+            .expect("an extension");
         assert!(
-            runner
-                .registered_commands()
-                .iter()
-                .any(|command| command.name == "hello"),
+            extension.commands.iter().any(|command| command.name == "hello"),
             "command registered"
         );
-        assert!(runner.has_handlers("session_start"));
 
-        // Dispatch through the runner reaches the VM handler.
+        // The extension drives the contract's runner without the host.
+        let runner = pillar_extensions_contract::ExtensionRunner::new(vec![extension]);
+        assert!(runner.has_handlers("session_start"));
         runner.emit(&serde_json::json!({ "type": "session_start", "reason": "startup" }));
-        let vm = runtime.lock().unwrap();
+        let vm = _runtime.lock().unwrap();
         use luaur_rt::LuaSerdeExt;
         let seen: serde_json::Value = vm
             .vm()
@@ -303,35 +301,49 @@ mod integration_tests {
     #[test]
     fn type_check_failure_is_collected_without_aborting() {
         let temp = tempfile::tempdir().unwrap();
-        write_extension(temp.path(), "bad.luau", "local n: number = \"text\"");
-        write_extension(temp.path(), "good.luau", "return nil");
+        let bad = write_extension(temp.path(), "bad.luau", "local n: number = \"text\"");
+        let good = write_extension(temp.path(), "good.luau", "return nil");
 
         let (_runtime, loader) = create_luau_loader(None);
-        let paths = discover_luau_paths(Some(temp.path()), None, &[], "");
-        assert_eq!(paths.len(), 2);
-        let (runner, errors) = build_luau_runner(&paths, "", &loader, false);
-
-        assert_eq!(errors.len(), 1, "{errors:?}");
-        assert!(errors[0].0.contains("bad.luau"));
-        assert!(errors[0].1.contains("type-check failed"), "{}", errors[0].1);
-        assert_eq!(runner.extension_paths().len(), 1, "good extension loaded");
+        let error = match loader.load_extension(&bad) {
+            Err(error) => error,
+            Ok(_) => panic!("expected a type-check error"),
+        };
+        assert!(error.contains("type-check failed"), "{error}");
+        assert!(loader
+            .load_extension(&good)
+            .expect("good loads")
+            .is_some());
     }
 
-    /// The same runtime Arc can back both the loader and a runner built
-    /// from pre-discovered paths (host wiring pattern).
+    /// One loader can load several extensions in turn and the shared runtime
+    /// stays usable (the host's discovery / cache wiring sits above this).
     #[test]
-    fn shared_runtime_backs_loader_and_runner() {
+    fn one_loader_loads_several_extensions() {
         let temp = tempfile::tempdir().unwrap();
-        write_extension(temp.path(), "x.luau", "return nil");
+        let first = write_extension(
+            temp.path(),
+            "one.luau",
+            r#"
+            local pillar = require("@pillar")
+            pillar.register_command("one", { description = "First" })
+            return nil
+            "#,
+        );
+        let second = write_extension(
+            temp.path(),
+            "two.luau",
+            r#"
+            local pillar = require("@pillar")
+            pillar.register_command("two", { description = "Second" })
+            return nil
+            "#,
+        );
 
-        let (runtime, loader) = create_luau_loader(None);
-        let paths = discover_luau_paths(Some(temp.path()), None, &[], "");
-        let (_runner, errors) = build_luau_runner(&paths, "", &loader, false);
-        assert!(errors.is_empty());
-        // The runtime is still usable for later loads.
-        let mut guard = runtime.lock().unwrap();
-        guard
-            .load_extension("y.luau", "return nil")
-            .expect("runtime alive");
+        let (_runtime, loader) = create_luau_loader(None);
+        let first = loader.load_extension(&first).expect("ok").expect("extension");
+        let second = loader.load_extension(&second).expect("ok").expect("extension");
+        assert!(first.commands.iter().any(|command| command.name == "one"));
+        assert!(second.commands.iter().any(|command| command.name == "two"));
     }
 }

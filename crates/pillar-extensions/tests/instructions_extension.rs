@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use pillar_coding_agent::core::extensions_types::{ExtensionContextFacts, ExtensionMode};
+use pillar_extensions_contract::{ExtensionContextFacts, ExtensionMode};
 use pillar_extensions::runtime::{ExtensionRuntime, HostApi};
 
 /// A temp working directory plus the scripted session the host callbacks

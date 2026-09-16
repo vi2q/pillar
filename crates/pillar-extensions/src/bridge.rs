@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use pillar_agent::types::{AgentTool, AgentToolResult, ToolExecuteError, ToolExecuteFn};
 use pillar_ai::types::{Content, Tool};
-use pillar_coding_agent::core::extensions_runner::{
+use pillar_extensions_contract::{
     ExtensionEventPayload, ExtensionFlag, ExtensionHandler, ExtensionShortcut, HostExtension,
     RegisteredCommand,
 };
@@ -478,11 +478,12 @@ pub fn tool_result_from_json(json: serde_json::Value) -> AgentToolResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pillar_coding_agent::core::messages::{CustomContent, CustomMessage};
-    use pillar_coding_agent::core::session_entries::CustomEntry;
+    use pillar_extensions_contract::{
+        CustomEntryPayload, CustomMessagePayload, ThemeStyleFn,
+    };
     use crate::runtime::ExtensionRuntime;
     use luaur_rt::LuaSerdeExt;
-    use pillar_coding_agent::core::extensions_runner::ExtensionRunner;
+    use pillar_extensions_contract::ExtensionRunner;
 
     fn shared_runtime() -> Arc<Mutex<ExtensionRuntime>> {
         Arc::new(Mutex::new(ExtensionRuntime::new()))
@@ -766,57 +767,41 @@ mod tests {
         );
     }
 
-    fn install_dark_theme() {
-        pillar_coding_agent::modes::interactive::theme::init_theme(Some("dark"));
-    }
-
-    /// The renderer contract's theme lookup over the active theme (the
-    /// presentation adapter does this in the app).
-    fn style() -> pillar_extensions_contract::ThemeStyleFn {
-        std::sync::Arc::new(|name: &str, text: &str| {
-            pillar_coding_agent::modes::interactive::theme::theme()
-                .try_fg(name, text)
-                .unwrap_or_else(|| text.to_string())
-        })
+    /// The renderer contract's theme lookup, faked deterministically: the
+    /// real adapter is the app's (`pillar-cli` wires the coding-agent theme;
+    /// `runner_wiring_parity` covers that path).
+    fn style() -> ThemeStyleFn {
+        std::sync::Arc::new(|name: &str, text: &str| format!("<{name}>{text}</{name}>"))
     }
 
     /// A custom-message payload as the transcript builds it.
     fn payload(
         custom_type: &str,
-        content: Vec<CustomContent>,
+        content: serde_json::Value,
         details: Option<serde_json::Value>,
     ) -> CustomMessagePayload {
-        let message = CustomMessage {
+        CustomMessagePayload {
             custom_type: custom_type.to_string(),
             content,
             display: true,
-            details,
+            details: details.unwrap_or(serde_json::Value::Null),
             timestamp: 0,
-        };
-        pillar_coding_agent::core::extensions_types::message_render_payload(&message)
+        }
     }
 
     /// A custom-entry payload as the transcript builds it.
-    fn entry_payload(
-        custom_type: &str,
-        data: Option<serde_json::Value>,
-    ) -> CustomEntryPayload {
-        let entry = CustomEntry {
-            base: pillar_coding_agent::core::session_entries::SessionEntryBase {
-                id: "e1".to_string(),
-                ..Default::default()
-            },
+    fn entry_payload(custom_type: &str, data: Option<serde_json::Value>) -> CustomEntryPayload {
+        CustomEntryPayload {
             custom_type: custom_type.to_string(),
-            data,
-        };
-        pillar_coding_agent::core::extensions_types::entry_render_payload(&entry)
+            id: "e1".to_string(),
+            data: data.unwrap_or(serde_json::Value::Null),
+        }
     }
 
     /// A Luau message renderer reaches the runner and its declarative
     /// description becomes a component through the active theme.
     #[test]
     fn message_renderer_bridges_into_the_runner() {
-        install_dark_theme();
         let runtime = shared_runtime();
         {
             let mut runtime = runtime.lock().unwrap();
@@ -842,10 +827,9 @@ mod tests {
         let renderer = runner.get_message_renderer("my-card").expect("registered");
         assert!(runner.get_message_renderer("other").is_none());
 
-        let theme = pillar_coding_agent::modes::interactive::theme::theme();
         let message = payload(
             "my-card",
-            vec![CustomContent::Text("body".to_string())],
+            serde_json::json!([{ "type": "text", "text": "body" }]),
             Some(serde_json::json!({ "title": "hello" })),
         );
         let options = MessageRenderOptions {
@@ -857,11 +841,8 @@ mod tests {
             .expect("rendered lines")
             .join("\n");
         // The accent colour wraps the styled segment and the unstyled one
-        // follows it.
-        assert!(
-            rendered.contains(&theme.fg("accent", "TITLE ")),
-            "{rendered:?}"
-        );
+        // follows it (the fake lookup marks each style name).
+        assert!(rendered.contains("<accent>TITLE </accent>"), "{rendered:?}");
         assert!(rendered.contains("hello"), "{rendered:?}");
         assert!(!rendered.contains("style"), "{rendered:?}");
     }
@@ -870,7 +851,6 @@ mod tests {
     /// line list skip the entry.
     #[test]
     fn entry_renderer_bridges_into_the_runner() {
-        install_dark_theme();
         let runtime = shared_runtime();
         {
             let mut runtime = runtime.lock().unwrap();
@@ -916,7 +896,6 @@ mod tests {
     /// has no error channel on a renderer, so the bridge answers a component).
     #[test]
     fn renderer_errors_become_the_failure_notice() {
-        install_dark_theme();
         let runtime = shared_runtime();
         {
             let mut runtime = runtime.lock().unwrap();
@@ -937,7 +916,7 @@ mod tests {
         let runner = ExtensionRunner::new(vec![extension]);
         let renderer = runner.get_message_renderer("broken").expect("registered");
         let style = style();
-        let message = payload("broken", Vec::new(), None);
+        let message = payload("broken", serde_json::json!([]), None);
         let rendered = renderer(
             &message,
             &MessageRenderOptions {
@@ -955,7 +934,6 @@ mod tests {
     /// The markdown transformer reaches the runner and runs inside the VM.
     #[test]
     fn markdown_transformer_bridges_into_the_runner() {
-        install_dark_theme();
         let runtime = shared_runtime();
         {
             let mut runtime = runtime.lock().unwrap();

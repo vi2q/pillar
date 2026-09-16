@@ -35,7 +35,7 @@ pillar-agent       → ai, telemetry
 pillar-session-store → agent, ai (standalone backend; no crate wires it in yet)
 pillar-client      → protocol
 pillar-extensions-contract → agent
-pillar-extensions  → coding-agent, extensions-contract, agent, ai (plus luaur-rt / luaur-analysis / luaur-config)
+pillar-extensions  → extensions-contract, agent, ai (plus luaur-rt / luaur-analysis / luaur-config)
 pillar-coding-agent → agent, ai, tui, protocol, extensions-contract
 pillar-server      → ai, protocol, client
 pillar-cli         → coding-agent, extensions, agent, ai
@@ -57,7 +57,7 @@ cross-checked, so a stale `Cargo.lock` fails the gate instead of hiding an edge.
 Rules:
 
 - 実行核から具体的なUI・VM・CLI・OS adapterへ依存しない方向を目指す。現在許可するedgeは上表とテストで管理し、切断は機能を保ったまま段階的に行う。upstreamのpackage配置は参照であって制約ではない。
-- `pillar-coding-agent` must not depend on `pillar-extensions`: the extension runtime needs the coding-agent runner types, so that edge would cycle. The inversion is the `LuauExtensionLoader` trait (defined in coding-agent, implemented in `pillar-extensions`); `pillar-cli` is the only crate that depends on both and wires them.
+- `pillar-coding-agent` must not depend on `pillar-extensions`: the extension runtime needs the runner types, so that edge would cycle. The types both sides share live in `pillar-extensions-contract` (`HostExtension`, `ExtensionRunner`, `LuauExtensionLoader`, the renderer contract, the `ctx.ui` bridge, the `exec.ts` shapes, the diagnostics), which depends only on `pillar-agent`. The VM therefore does not depend on the coding agent or the terminal layer at all, and `pillar-cli` is the only crate that depends on both and wires them (discovery, the runner build, the theme provider, the renderer payload adapters). `crates/pillar-cli/tests/dependency_profiles.rs` asserts the Luau profile reaches none of `pillar-coding-agent` / `pillar-tui` / `pillar-cli` / the terminal crates.
 - No crate may depend on a `*-cli` or test-support crate.
 
 ## Module ownership map
@@ -76,6 +76,7 @@ Rules:
 | `pillar-coding-agent/src/migrations.rs` | `packages/coding-agent/src/migrations.ts` |
 | `pillar-tui/src/*` | `packages/tui/src/*` |
 | `pillar-extensions/src/*` | no upstream module; semantics from `packages/coding-agent/src/core/extensions/*` |
+| `pillar-extensions-contract/src/*` | the extension contract (`core/extensions/*` shapes plus `core/exec.ts` options/results), shared by the VM and the coding agent |
 | `pillar-cli/src/*` | no upstream module; wires `packages/coding-agent/src/cli.ts` + `main.ts` to the Luau runtime |
 
 `pillar-extensions` は主要な意図的差分の一つ。TypeScript拡張runtimeをLuau VMに置き換え、採用したイベント・payload・API契約を [04-luau-extensions.md](04-luau-extensions.md) の対応に従って提供する。native検索等の独自強化も行う。Luauの必要機能上限と、UIを外せる共通契約の分離方針は [開発方針](../DEVELOPMENT-STRATEGY.md) に従う。

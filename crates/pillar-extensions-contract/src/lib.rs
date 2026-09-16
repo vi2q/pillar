@@ -462,3 +462,49 @@ pub trait ThemeProvider: Send + Sync {
     /// The installed themes (`getAllThemes`).
     fn list(&self) -> Vec<ThemeInfo>;
 }
+
+// ============================================================================
+// Diagnostics (skills / resources / extensions share the shape)
+// ============================================================================
+
+/// Diagnostic produced while loading resources (upstream `ResourceDiagnostic`
+/// subset; source metadata lives with the host).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ResourceDiagnostic {
+    Warning { message: String, path: String },
+    Collision { message: String, path: String },
+}
+
+mod runner;
+pub use runner::*;
+
+// ============================================================================
+// The Luau loader contract (the VM implements it, the host drives it)
+// ============================================================================
+
+/// The outcome of loading one extension file (upstream the module loader's
+/// return): the extension, `Ok(None)` for "not an extension", or the error.
+pub type LoadOutcome = Result<Option<crate::HostExtension>, String>;
+
+/// A host-provided module loader (upstream the JS module import + factory
+/// invocation).
+pub type ModuleLoader<'a> = &'a mut dyn FnMut(&str) -> LoadOutcome;
+
+/// A loader for Luau extension files, injected by the host (the Luau runtime
+/// crate implements it). Mirrors [`ModuleLoader`] with an object-safe surface
+/// so hosts can swap runtimes.
+pub trait LuauExtensionLoader: Send + Sync {
+    /// Load one extension file: type-check, run setup, and bridge to a
+    /// runner-shaped [`HostExtension`]. `Ok(None)` means "not an extension";
+    /// errors are per-path.
+    fn load_extension(&self, path: &str) -> LoadOutcome;
+}
+
+impl<F> LuauExtensionLoader for F
+where
+    F: Fn(&str) -> LoadOutcome + Send + Sync,
+{
+    fn load_extension(&self, path: &str) -> LoadOutcome {
+        self(path)
+    }
+}

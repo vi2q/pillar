@@ -272,11 +272,10 @@ pub fn discover_and_load_extension_paths(
 // ============================================================================
 
 /// Load-result pair for one path (upstream `{ extension, error }`).
-pub type LoadOutcome = Result<Option<HostExtension>, String>;
+// The loader contract's outcome shapes live in the extension contract crate
+// (the VM returns them; this crate's loader drives them).
+pub use pillar_extensions_contract::{LoadOutcome, ModuleLoader};
 
-/// A host-provided module loader (upstream the JS module import +
-/// factory invocation).
-pub type ModuleLoader<'a> = &'a mut dyn FnMut(&str) -> LoadOutcome;
 
 /// Cache entry: the loaded extension keyed by resolved path, invalidated
 /// by cwd change or generation bump (upstream `extensionCache`).

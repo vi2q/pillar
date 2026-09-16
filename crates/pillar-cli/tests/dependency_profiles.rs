@@ -34,12 +34,6 @@ const PRESENTATION_AND_SHELL: [&str; 4] = [
 ];
 /// External crates that pull in a terminal, a pty, or the CLI's process layer.
 const TERMINAL_LAYER: [&str; 3] = ["crossterm", "fd-lock", "portable-pty"];
-/// The presentation / terminal contamination the Luau profile still inherits
-/// from `pillar-coding-agent` (its runner and contract types are what the VM
-/// consumes). This is a ratchet: a new crate here fails the gate, and removing
-/// one means tightening the list by hand. The real cut — moving the extension
-/// contract out of coding-agent — is still pending (TASKS).
-const LUAU_KNOWN_PRESENTATION: [&str; 3] = ["crossterm", "fd-lock", "pillar-tui"];
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -249,27 +243,27 @@ fn core_crates_do_not_reach_the_presentation_or_shell() {
     }
 }
 
-/// The Luau profile's presentation contamination is exactly the known set: it
-/// may not grow, and shrinking it requires editing the constant (a ratchet, so
-/// the pending contract move cannot silently regress).
+/// The Luau profile is clean: with the contract crate in place the VM no
+/// longer reaches the coding agent, the TUI, or the terminal layer. This is
+/// what makes "Luau present or absent" an independent build axis
+/// (docs/DEVELOPMENT-STRATEGY.md §5-3): a regression here (for example the VM
+/// re-acquiring a dependency on `pillar-coding-agent`) fails the gate.
 #[test]
-fn luau_profile_presentation_contamination_is_a_known_ratchet() {
+fn lmpc_luau_excludes_the_presentation_shell_and_terminal() {
     let graph = lock_graph();
     let reached = closure(&graph, &LMPC_LUAU);
-    let mut contamination: Vec<String> = reached
+    let leaked: Vec<&String> = reached
         .iter()
         .filter(|name| {
-            LUAU_KNOWN_PRESENTATION.contains(&name.as_str())
-                || TERMINAL_LAYER.contains(&name.as_str())
+            // The profile's own roots are its members, not contamination.
+            !LMPC_LUAU.contains(&name.as_str())
+                && (PRESENTATION_AND_SHELL.contains(&name.as_str())
+                    || TERMINAL_LAYER.contains(&name.as_str()))
         })
-        .cloned()
         .collect();
-    contamination.sort();
-    contamination.dedup();
-    assert_eq!(
-        contamination,
-        LUAU_KNOWN_PRESENTATION.to_vec(),
-        "the Luau profile's presentation contamination changed; update the ratchet only \
-         when the extension contract no longer lives in pillar-coding-agent"
+    assert!(
+        leaked.is_empty(),
+        "the Luau profile reaches {leaked:?}; taking the VM must not pull the coding agent, \
+         the TUI, or the terminal layer in"
     );
 }

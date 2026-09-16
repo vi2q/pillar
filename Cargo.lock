@@ -1152,7 +1152,6 @@ dependencies = [
  "luaur-rt",
  "pillar-agent",
  "pillar-ai",
- "pillar-coding-agent",
  "pillar-extensions-contract",
  "serde",
  "serde_json",

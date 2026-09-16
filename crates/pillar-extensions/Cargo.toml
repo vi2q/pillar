@@ -5,7 +5,9 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-pillar-coding-agent = { path = "../pillar-coding-agent" }
+# No dependency on pillar-coding-agent: the shared shapes live in the contract
+# crate, and the host joins the two (docs/DEVELOPMENT-STRATEGY.md §4). The
+# profile gate asserts this edge stays gone.
 pillar-agent = { path = "../pillar-agent" }
 pillar-extensions-contract = { path = "../pillar-extensions-contract" }
 pillar-ai = { path = "../pillar-ai" }

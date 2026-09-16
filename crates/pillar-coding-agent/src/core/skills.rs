@@ -25,13 +25,9 @@ const MAX_DESCRIPTION_LENGTH: usize = 1024;
 
 const IGNORE_FILE_NAMES: [&str; 3] = [".gitignore", ".ignore", ".fdignore"];
 
-/// Diagnostic produced while loading resources (upstream `ResourceDiagnostic`
-/// subset; source metadata lives with the host).
-#[derive(Debug, Clone, PartialEq)]
-pub enum ResourceDiagnostic {
-    Warning { message: String, path: String },
-    Collision { message: String, path: String },
-}
+/// The loader's diagnostics shape lives in the extension contract (the runner
+/// reports them; skills / resources / extensions all produce them).
+pub use pillar_extensions_contract::ResourceDiagnostic;
 
 /// Result of loading skills from one location.
 #[derive(Debug, Clone, Default)]

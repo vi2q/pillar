@@ -30,19 +30,12 @@ const ALLOWED: &[(&str, &[&str])] = &[
             "pillar-tui",
         ],
     ),
-    // The VM crate must not name the presentation layer: custom renderers
-    // answer themed lines and `keybindings.matches` goes through the host
-    // callback (docs/DEVELOPMENT-STRATEGY.md §4/§5). The shared shapes live in
-    // the contract crate; what still ties the VM to coding-agent is the runner
-    // and renderer glue (TASKS: the remaining stages).
+    // The VM crate names neither the presentation layer nor the coding agent:
+    // every shared shape is in the contract crate, so a minimal profile can
+    // take the Luau runtime on its own (docs/DEVELOPMENT-STRATEGY.md §4/§5).
     (
         "pillar-extensions",
-        &[
-            "pillar-agent",
-            "pillar-ai",
-            "pillar-coding-agent",
-            "pillar-extensions-contract",
-        ],
+        &["pillar-agent", "pillar-ai", "pillar-extensions-contract"],
     ),
     // The contract is a leaf: the VM and the coding agent both take it, and
     // it takes neither.

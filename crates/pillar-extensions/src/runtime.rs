@@ -2391,13 +2391,47 @@ fn install_schema_module(lua: &Lua, module: &luaur_rt::Table) {
 
 #[cfg(test)]
 mod api_tests {
-    /// The host API with the coding agent's theme provider installed (the app
-    /// does this in `pillar-cli`; the VM itself never reads the theme global).
+    /// A host theme provider, faked deterministically (the app installs the
+    /// coding-agent theme through `pillar-cli`; the VM never reads a theme
+    /// global of its own).
+    use pillar_extensions_contract::{ThemeInfo, ThemeSnapshot};
+
+    struct FakeTheme;
+
+    impl ThemeProvider for FakeTheme {
+        fn snapshot(&self) -> Option<ThemeSnapshot> {
+            Some(ThemeSnapshot {
+                name: Some("dark".to_string()),
+                mode: "dark".to_string(),
+                fg_colors: [
+                    ("accent".to_string(), "\x1b[36m".to_string()),
+                    ("dim".to_string(), "\x1b[2m".to_string()),
+                ]
+                .into_iter()
+                .collect(),
+                bg_colors: [("panel".to_string(), "\x1b[48;5;236m".to_string())]
+                    .into_iter()
+                    .collect(),
+            })
+        }
+
+        fn list(&self) -> Vec<ThemeInfo> {
+            vec![
+                ThemeInfo {
+                    name: "dark".to_string(),
+                    path: String::new(),
+                },
+                ThemeInfo {
+                    name: "light".to_string(),
+                    path: String::new(),
+                },
+            ]
+        }
+    }
+
     fn theme_host_api() -> HostApi {
         HostApi {
-            theme: Some(
-                pillar_coding_agent::modes::interactive::theme::contract_provider(),
-            ),
+            theme: Some(std::sync::Arc::new(FakeTheme)),
             ..Default::default()
         }
     }
@@ -2686,7 +2720,6 @@ mod api_tests {
     /// unknown colour names plain; `ctx` also reaches tool `execute`.
     #[test]
     fn context_theme_and_tool_context() {
-        pillar_coding_agent::modes::interactive::theme::init_theme(Some("dark"));
         let mut runtime = ExtensionRuntime::new();
         runtime.set_host_api(theme_host_api());
         runtime
@@ -2724,12 +2757,11 @@ mod api_tests {
             HandlerOutcome::Table(table) => table,
             other => panic!("unexpected outcome: {other:?}"),
         };
-        let active = pillar_coding_agent::modes::interactive::theme::theme();
-        assert_eq!(table["styled"], serde_json::json!(active.fg("dim", "D")));
+        assert_eq!(table["styled"], serde_json::json!("\x1b[2mD\x1b[39m"));
         assert_eq!(table["plain"], serde_json::json!("P"));
-        assert_eq!(table["bold"], serde_json::json!(active.bold("B")));
+        assert_eq!(table["bold"], serde_json::json!("\x1b[1mB\x1b[22m"));
         assert_eq!(table["name"], serde_json::json!("dark"));
-        assert!(table["themes"].as_u64().unwrap_or_default() >= 2);
+        assert_eq!(table["themes"], serde_json::json!(2));
 
         let result = runtime
             .call_tool("ctx-tool", "call-1", serde_json::json!({}), None, None)
@@ -2737,7 +2769,7 @@ mod api_tests {
         assert_eq!(result["content"][0]["text"], serde_json::json!("print"));
         assert_eq!(
             result["details"]["styled"],
-            serde_json::json!(active.fg("accent", "X"))
+            serde_json::json!("\x1b[36mX\x1b[39m")
         );
         assert_eq!(result["details"]["plain"], serde_json::json!("Y"));
     }
