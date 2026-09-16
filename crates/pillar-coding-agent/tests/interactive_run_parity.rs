@@ -607,6 +607,146 @@ async fn escape_cancels_the_selector() {
 /// the categories, ↑/↓ the models, the release events are ignored (a leaked
 /// release would move the highlight twice), the navigation repaints, and Enter
 /// switches the session model through the same path as `/model`.
+/// A stream that starts a turn, emits one delta and never finishes on its
+/// own: the turn stays streaming until something aborts or steers it.
+fn open_stream(reply: &'static str) -> pillar_agent::StreamFn {
+    pillar_agent::StreamFn::new(move |_context, _options| async move {
+        let stream = assistant_message_event_stream();
+        let message = assistant_message(reply);
+        stream.push(AssistantMessageEvent::Start {
+            partial: message.clone(),
+        });
+        stream.push(AssistantMessageEvent::TextDelta {
+            content_index: 0,
+            partial: message.clone(),
+            delta: reply.to_string(),
+        });
+        stream
+    })
+}
+
+fn wait_until(label: &str, condition: impl Fn() -> bool) {
+    for _ in 0..600 {
+        if condition() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!("timed out waiting for {label}");
+}
+
+/// A bare Escape during a streaming turn aborts it (upstream the
+/// `app.interrupt` binding → `handleEscape` → `agent.abort()`).
+#[tokio::test]
+async fn escape_aborts_a_streaming_turn() {
+    install_dark();
+    let session = session(open_stream("partial"), "escape-abort");
+    let mut harness = harness(
+        vec![
+            "\u{1b}[?7u".to_string(), // kitty flags reply
+            "hello\r".to_string(),     // submit a prompt
+        ],
+        None,
+    );
+    let chunks = Arc::clone(&harness.chunks);
+    let state = Arc::clone(&session);
+    std::thread::spawn(move || {
+        wait_until("the turn to stream", || state.is_streaming());
+        std::thread::sleep(Duration::from_millis(100));
+        chunks.lock().unwrap().push("\u{1b}".to_string());
+        // The stream never finishes on its own, so the observable effect is
+        // the abort signal (upstream `agent.abort()`); the run loop is shut
+        // down explicitly afterwards.
+        wait_until("the abort signal", || {
+            state
+                .abort_signal()
+                .map(|signal| signal.is_aborted())
+                .unwrap_or(false)
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        chunks.lock().unwrap().push("/quit\r".to_string());
+    });
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(15),
+        run_interactive(
+            Arc::clone(&session),
+            Box::new(std::mem::replace(
+                &mut harness.terminal,
+                ProcessTerminal::with_io(Box::new(pillar_tui::process_terminal::NullTerminalIo)),
+            )),
+            run_options(temp_dir("escape-abort")),
+        ),
+    )
+    .await
+    .expect("run loop finished")
+    .expect("run loop ok");
+
+    assert_eq!(result, InteractiveOutcome::Exit(0));
+    assert!(
+        session
+            .abort_signal()
+            .map(|signal| signal.is_aborted())
+            .unwrap_or(false),
+        "escape must abort the streaming turn"
+    );
+}
+
+/// Submitting text during a streaming turn steers it (upstream the
+/// `streamingBehavior: "steer"` path of `session.prompt`).
+#[tokio::test]
+async fn submitting_during_a_turn_steers_it() {
+    install_dark();
+    let session = session(open_stream("partial"), "steer");
+    let mut harness = harness(
+        vec![
+            "\u{1b}[?7u".to_string(),
+            "hello\r".to_string(),
+        ],
+        None,
+    );
+    let chunks = Arc::clone(&harness.chunks);
+    let writes = Arc::clone(&harness.writes);
+    let state = Arc::clone(&session);
+    std::thread::spawn(move || {
+        wait_until("the turn to stream", || state.is_streaming());
+        std::thread::sleep(Duration::from_millis(100));
+        chunks.lock().unwrap().push("steer me\r".to_string());
+        wait_until("the steering queue", || {
+            !state.get_steering_messages().is_empty()
+        });
+        // The pending-messages display shows the queued text (upstream
+        // `updatePendingMessagesDisplay`).
+        wait_until("the queued display", || {
+            strip_terminal_sequences(&writes.lock().unwrap()).contains("steer me")
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        chunks.lock().unwrap().push("/quit\r".to_string());
+    });
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(15),
+        run_interactive(
+            Arc::clone(&session),
+            Box::new(std::mem::replace(
+                &mut harness.terminal,
+                ProcessTerminal::with_io(Box::new(pillar_tui::process_terminal::NullTerminalIo)),
+            )),
+            run_options(temp_dir("steer")),
+        ),
+    )
+    .await
+    .expect("run loop finished")
+    .expect("run loop ok");
+
+    assert_eq!(result, InteractiveOutcome::Exit(0));
+    assert_eq!(
+        session.get_steering_messages(),
+        vec!["steer me".to_string()],
+        "the streaming submission must be queued as a steering message"
+    );
+}
+
 #[tokio::test]
 async fn kitty_protocol_arrows_drive_the_model_picker() {
     install_dark();

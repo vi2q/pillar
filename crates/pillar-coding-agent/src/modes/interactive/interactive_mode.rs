@@ -228,7 +228,9 @@ pub enum ModeAction {
     /// The normal message submission (upstream
     /// `pendingUserInputs.push(text)` / `onInputCallback`).
     SubmitToLoop(String),
-    /// Upstream `agent.abort()` (Escape while streaming).
+    /// Upstream `agent.abort()` (Escape while streaming). The mode aborts
+    /// inline now (`AgentSession::signal_abort`) because the executor is
+    /// awaiting the running turn; the variant stays for host-side callers.
     Abort,
     /// Upstream `session.cycleModel(direction)`.
     CycleModel { forward: bool },
@@ -1083,16 +1085,24 @@ impl InteractiveMode {
             return Vec::new();
         }
 
-        // Streaming submissions steer the running turn.
+        // Streaming submissions steer the running turn. Upstream awaits
+        // `session.prompt(text, { streamingBehavior: "steer" })` from the key
+        // handler; the port must queue it synchronously (see
+        // `queue_streaming_message`).
         if self.session.is_streaming() {
             self.editor.lock().add_to_history(text);
             self.set_editor_text("");
+            if let Err(error) = self.session.queue_streaming_message(
+                text,
+                StreamingBehavior::Steer,
+                None,
+            ) {
+                self.transcript.lock().show_error(&error);
+            }
             let (steering, follow_up) = self.session_queues();
             self.pending.lock().update_display(&steering, &follow_up);
-            return vec![ModeAction::Prompt {
-                text: text.to_string(),
-                streaming_behavior: Some(StreamingBehavior::Steer),
-            }];
+            self.mark_dirty();
+            return Vec::new();
         }
 
         // Normal message submission: move any pending bash blocks into the
@@ -1430,8 +1440,14 @@ impl InteractiveMode {
     /// double-escape action.
     pub fn handle_escape(&self) -> Vec<ModeAction> {
         if self.session.is_streaming() {
+            // Upstream calls `agent.abort()` right here; routing it through
+            // the action executor would only deliver it after the running
+            // turn ended (the executor is awaiting that turn), so Escape
+            // could never interrupt a response.
             self.restore_queued_messages_to_editor();
-            return vec![ModeAction::Abort];
+            self.session.signal_abort();
+            self.mark_dirty();
+            return Vec::new();
         }
         if self.session.is_bash_running() {
             self.session.abort_bash();
@@ -2233,10 +2249,10 @@ impl InteractiveMode {
     /// streaming response, restore its queued messages, and show the branch
     /// summary spinner.
     pub fn begin_tree_navigation(&self, summarize: bool) -> Vec<ModeAction> {
-        let mut actions = Vec::new();
+        let actions = Vec::new();
         if self.session.is_streaming() {
             self.restore_queued_messages_to_editor();
-            actions.push(ModeAction::Abort);
+            self.session.signal_abort();
         }
         if summarize {
             self.status

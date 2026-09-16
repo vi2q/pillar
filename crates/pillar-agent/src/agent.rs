@@ -545,6 +545,16 @@ impl Agent {
         }
     }
 
+    /// The active run's abort signal, if a run is in flight (upstream the
+    /// context's `signal` / `run.abort`).
+    pub fn abort_signal(&self) -> Option<crate::abort::AbortSignal> {
+        self.active_run
+            .lock()
+            .expect("active run lock")
+            .as_ref()
+            .map(|run| run.abort.clone())
+    }
+
     /// Resolves when the current run and all awaited event listeners have
     /// finished (after `agent_end` listeners settle).
     pub async fn wait_for_idle(&self) {

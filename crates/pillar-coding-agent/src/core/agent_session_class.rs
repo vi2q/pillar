@@ -2185,9 +2185,9 @@ impl AgentSession {
                 })?;
             match behavior {
                 StreamingBehavior::FollowUp => {
-                    self.queue_follow_up(&expanded_text, current_images).await
+                    self.queue_follow_up_now(&expanded_text, current_images)
                 }
-                StreamingBehavior::Steer => self.queue_steer(&expanded_text, current_images).await,
+                StreamingBehavior::Steer => self.queue_steer_now(&expanded_text, current_images),
             }
             return Ok(());
         }
@@ -2387,6 +2387,15 @@ impl AgentSession {
     }
 
     async fn queue_steer(&self, text: &str, images: Option<Vec<Content>>) {
+        self.queue_steer_now(text, images);
+    }
+
+    async fn queue_follow_up(&self, text: &str, images: Option<Vec<Content>>) {
+        self.queue_follow_up_now(text, images);
+    }
+
+    /// Queue a steering message (sync; upstream `session.steer`).
+    pub fn queue_steer_now(&self, text: &str, images: Option<Vec<Content>>) {
         self.inner
             .state
             .lock()
@@ -2397,7 +2406,8 @@ impl AgentSession {
         self.inner.agent.steer(agent_user_message(text, images));
     }
 
-    async fn queue_follow_up(&self, text: &str, images: Option<Vec<Content>>) {
+    /// Queue a follow-up message (sync; upstream `session.followUp`).
+    pub fn queue_follow_up_now(&self, text: &str, images: Option<Vec<Content>>) {
         self.inner
             .state
             .lock()
@@ -2406,6 +2416,72 @@ impl AgentSession {
             .push(text.to_string());
         self.inner.emit_queue_update();
         self.inner.agent.follow_up(agent_user_message(text, images));
+    }
+
+    /// Submit text into the running turn (upstream the interactive mode's key
+    /// handler calling `session.prompt(text, { streamingBehavior })`).
+    ///
+    /// divergence: the port's `ModeAction` executor awaits the running turn,
+    /// so routing this through it would only queue the message *after* the
+    /// turn ended — the message would never steer it. The interactive pump
+    /// calls this synchronously instead (the input hook and prompt-template
+    /// expansion are sync in the port).
+    pub fn queue_streaming_message(
+        &self,
+        text: &str,
+        behavior: StreamingBehavior,
+        images: Option<Vec<Content>>,
+    ) -> Result<(), String> {
+        // Emit input event for extension interception (upstream the
+        // `prompt` prologue).
+        let mut current_text = text.to_string();
+        {
+            let runner = self.inner.extension_runner.lock().expect("runner lock");
+            if runner.has_handlers("input") {
+                let input_result = runner.emit_input(&current_text, "interactive", None);
+                match input_result
+                    .get("action")
+                    .and_then(Value::as_str)
+                    .unwrap_or("continue")
+                {
+                    "handled" => return Ok(()),
+                    "transform" => {
+                        if let Some(new_text) = input_result.get("text").and_then(Value::as_str) {
+                            current_text = new_text.to_string();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Expand skill commands and prompt templates.
+        let (skills, templates) = self.loaded_skills_and_templates();
+        let mut expanded = self.expand_skill_command(&current_text, &skills);
+        expanded = expand_prompt_template(&expanded, &templates);
+
+        match behavior {
+            StreamingBehavior::Steer => self.queue_steer_now(&expanded, images),
+            StreamingBehavior::FollowUp => self.queue_follow_up_now(&expanded, images),
+        }
+        Ok(())
+    }
+
+    /// The active run's abort signal, if a run is in flight (upstream the
+    /// extension context's `signal`).
+    pub fn abort_signal(&self) -> Option<pillar_agent::abort::AbortSignal> {
+        self.inner.agent.abort_signal()
+    }
+
+    /// Signal an abort without waiting for idle (upstream the interactive
+    /// mode's Escape handler calling `agent.abort()`).
+    ///
+    /// divergence: the port's pump calls this while the executor is awaiting
+    /// the turn; `abort()` (which waits for idle) stays for callers that need
+    /// the turn to be over.
+    pub fn signal_abort(&self) {
+        self.abort_retry();
+        self.inner.agent.abort();
     }
 
     /// Throw an error if the text is an extension command (upstream
@@ -2773,8 +2849,7 @@ impl AgentSession {
     /// Abort the current operation and wait for the agent to become idle
     /// (upstream `abort`).
     pub async fn abort(&self) {
-        self.abort_retry();
-        self.inner.agent.abort();
+        self.signal_abort();
         self.wait_for_idle().await;
     }
 
