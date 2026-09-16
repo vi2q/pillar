@@ -69,11 +69,13 @@ pub fn build_extension_runner(
 ) -> ExtensionWiring {
     let paths = discover_luau_paths(global_dir, project_dir, configured, cwd);
     let (runtime, loader) = create_luau_loader(None);
-    let (runner, errors) = build_luau_runner(&paths, cwd, &loader, true);
     let session_slot: SessionSlot = Arc::new(Mutex::new(None));
     let data = Arc::new(Mutex::new(ExtensionDataSnapshot::default()));
+    // The host callbacks must exist before the extension factories run: a
+    // factory may already call `pillar.fs` / `pillar.get_flag`.
     install_exec_host(&runtime, cwd);
     install_host_api(&runtime, &session_slot, &data, cwd);
+    let (runner, errors) = build_luau_runner(&paths, cwd, &loader, true);
     ExtensionWiring {
         runtime,
         loader,
@@ -292,6 +294,74 @@ fn install_host_api(
                 });
                 Ok(())
             }))
+        },
+        fs: {
+            let cwd = cwd.to_string();
+            Some(Arc::new(
+                move |op: &str, path: &str, content: Option<&str>| {
+                    // Paths resolve against the session cwd, like tool calls.
+                    let resolved = if std::path::Path::new(path).is_absolute() {
+                        std::path::PathBuf::from(path)
+                    } else {
+                        std::path::Path::new(&cwd).join(path)
+                    };
+                    match op {
+                        "read" => match std::fs::read_to_string(&resolved) {
+                            Ok(text) => Ok(serde_json::Value::String(text)),
+                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                                Ok(serde_json::Value::Null)
+                            }
+                            Err(error) => Err(format!("pillar.fs.read: {error}")),
+                        },
+                        "write" => {
+                            let Some(content) = content else {
+                                return Err("pillar.fs.write: missing content".to_string());
+                            };
+                            if let Some(parent) = resolved.parent() {
+                                let _ = std::fs::create_dir_all(parent);
+                            }
+                            std::fs::write(&resolved, content)
+                                .map(|_| serde_json::Value::Bool(true))
+                                .map_err(|error| format!("pillar.fs.write: {error}"))
+                        }
+                        "list" => {
+                            let entries = std::fs::read_dir(&resolved)
+                                .map_err(|error| format!("pillar.fs.list: {error}"))?;
+                            let mut names: Vec<String> = entries
+                                .filter_map(|entry| entry.ok())
+                                .map(|entry| entry.file_name().to_string_lossy().to_string())
+                                .collect();
+                            names.sort();
+                            Ok(serde_json::Value::Array(
+                                names.into_iter().map(serde_json::Value::String).collect(),
+                            ))
+                        }
+                        "stat" => match std::fs::metadata(&resolved) {
+                            Ok(metadata) => {
+                                let modified_ms = metadata
+                                    .modified()
+                                    .ok()
+                                    .and_then(|time| {
+                                        time.duration_since(std::time::UNIX_EPOCH).ok()
+                                    })
+                                    .map(|duration| duration.as_millis() as u64)
+                                    .unwrap_or(0);
+                                Ok(serde_json::json!({
+                                    "type": if metadata.is_dir() { "directory" } else { "file" },
+                                    "size": metadata.len(),
+                                    "modified_ms": modified_ms,
+                                }))
+                            }
+                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                                Ok(serde_json::Value::Null)
+                            }
+                            Err(error) => Err(format!("pillar.fs.stat: {error}")),
+                        },
+                        "exists" => Ok(serde_json::Value::Bool(resolved.exists())),
+                        other => Err(format!("pillar.fs: unknown operation {other}")),
+                    }
+                },
+            ))
         },
         set_active_tools: {
             let slot = Arc::clone(slot);

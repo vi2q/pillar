@@ -136,6 +136,13 @@ declare pillar: {
     set_model: (model: any) -> (),
     set_active_tools: (names: { string }) -> (),
     exec: (command: string, args: { number }?, opts: any?) -> any,
+    fs: {
+        read: (path: string) -> string?,
+        write: (path: string, content: string) -> boolean,
+        list: (path: string) -> { string },
+        stat: (path: string) -> any,
+        exists: (path: string) -> boolean,
+    },
     events: {
         on: (channel: string, handler: (data: any) -> ()) -> (() -> ()),
         emit: (channel: string, data: any?) -> (),
@@ -179,6 +186,11 @@ pub type SetThinkingLevelFn = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sy
 pub type SetModelFn = Arc<dyn Fn(serde_json::Value) -> Result<(), String> + Send + Sync>;
 /// Host callback for `pillar.set_active_tools(names)`.
 pub type SetActiveToolsFn = Arc<dyn Fn(serde_json::Value) -> Result<(), String> + Send + Sync>;
+/// Host callback for `pillar.fs.*` (upstream `pillar.fs`): the operation
+/// name (`read` / `write` / `list` / `stat` / `exists`), the path, and the
+/// content for `write`.
+pub type FsFn =
+    Arc<dyn Fn(&str, &str, Option<&str>) -> Result<serde_json::Value, String> + Send + Sync>;
 
 /// The host callbacks the `@pillar` API reads (upstream the pieces of
 /// the runtime the ExtensionAPI reaches). Each is optional: without a
@@ -215,6 +227,9 @@ pub struct HostApi {
     pub set_model: Option<SetModelFn>,
     /// `pillar.set_active_tools(names)` → the live session.
     pub set_active_tools: Option<SetActiveToolsFn>,
+    /// `pillar.fs.*` → the bounded file API (the host resolves paths and
+    /// applies the same trust model as tool calls).
+    pub fs: Option<FsFn>,
 }
 
 /// The process-wide extension runtime.
@@ -436,16 +451,20 @@ impl ExtensionRuntime {
             Ok(export) => export,
             Err(error) => return Err(ExtensionLoadError::Compile(format!("{path}: {error}"))),
         };
-        let has_setup = match &export {
-            luaur_rt::Value::Nil => false,
-            luaur_rt::Value::Function(_) => true,
-            other => {
-                return Err(ExtensionLoadError::InvalidExport(format!(
-                    "{path}: expected function or nil export, got {}",
-                    other.type_name()
-                )));
-            }
-        };
+        // Upstream `loadExtension`: a file whose default export is not a
+        // function is imported for its side effects and then skipped as an
+        // extension (that is also how shared helper modules work, see
+        // `require("@ext/<name>")` below).
+        let has_setup = matches!(&export, luaur_rt::Value::Function(_));
+        // Expose the module to the other extensions under `@ext/<name>`
+        // (docs/rules/04: `require("@ext/<name>")` replaces relative TS
+        // imports). A directory extension (`index.luau`) is named after its
+        // directory. A nil export has nothing to share.
+        if !matches!(export, luaur_rt::Value::Nil)
+            && let Some(name) = extension_module_name(path)
+        {
+            let _ = self.lua.register_module(&format!("@ext/{name}"), export);
+        }
         Ok(LoadedExtension {
             path: path.to_string(),
             has_setup,
@@ -533,6 +552,20 @@ impl ExtensionRuntime {
         }
         (loaded, errors)
     }
+}
+
+/// The `@ext/<name>` module name for an extension path: the file stem, or
+/// the directory name for `index.luau` packages.
+fn extension_module_name(path: &str) -> Option<String> {
+    let path = std::path::Path::new(path);
+    let stem = path.file_stem()?.to_string_lossy().to_string();
+    if stem == "index" {
+        return path
+            .parent()
+            .and_then(|parent| parent.file_name())
+            .map(|name| name.to_string_lossy().to_string());
+    }
+    Some(stem)
 }
 
 /// Install the `@pillar` module and its registration functions
@@ -985,6 +1018,7 @@ fn install_pillar_api(
 
     install_schema_module(lua, &module);
     install_events_bus(lua, &module);
+    install_fs_module(lua, &module, host_api);
 
     // Registration cannot fail for a fresh VM; surface for clarity.
     if let Err(error) = lua.register_module("@pillar", module) {
@@ -1067,6 +1101,99 @@ fn options_to_json(
             })
         }
     }
+}
+
+/// Install `pillar.fs` (upstream the bounded file API): every call goes to
+/// the host callback, so path resolution and the trust model stay host-side.
+/// Missing files answer `nil` / `false` instead of raising.
+fn install_fs_module(lua: &Lua, module: &luaur_rt::Table, host_api: &Arc<Mutex<HostApi>>) {
+    let fs = lua.create_table();
+
+    let call = |host_api: &Arc<Mutex<HostApi>>,
+                op: &str,
+                path: &str,
+                content: Option<&str>|
+     -> Result<Option<serde_json::Value>, String> {
+        let callback = {
+            let guard = host_api
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.fs.clone()
+        };
+        match callback {
+            Some(callback) => callback(op, path, content).map(Some),
+            None => Err(format!("pillar.fs.{op}: the fs host is not installed")),
+        }
+    };
+
+    // pillar.fs.read(path) -> string? (nil when the file is missing)
+    let read_api = Arc::clone(host_api);
+    let read_lua = lua.clone();
+    fs.set(
+        "read",
+        Function::wrap(move |path: String| {
+            let result = call(&read_api, "read", &path, None).map_err(luaur_rt::Error::external)?;
+            match result {
+                Some(serde_json::Value::Null) | None => Ok(Value::Nil),
+                Some(value) => read_lua.to_value(&value).map_err(luaur_rt::Error::external),
+            }
+        }),
+    )
+    .expect("set pillar.fs.read");
+
+    // pillar.fs.write(path, content) -> boolean
+    let write_api = Arc::clone(host_api);
+    fs.set(
+        "write",
+        Function::wrap(move |path: String, content: String| {
+            call(&write_api, "write", &path, Some(&content))
+                .map_err(luaur_rt::Error::external)?;
+            Ok::<bool, luaur_rt::Error>(true)
+        }),
+    )
+    .expect("set pillar.fs.write");
+
+    // pillar.fs.list(path) -> { string } (sorted names)
+    let list_api = Arc::clone(host_api);
+    let list_lua = lua.clone();
+    fs.set(
+        "list",
+        Function::wrap(move |path: String| {
+            let result = call(&list_api, "list", &path, None).map_err(luaur_rt::Error::external)?;
+            let value = result.unwrap_or_else(|| serde_json::json!([]));
+            list_lua.to_value(&value).map_err(luaur_rt::Error::external)
+        }),
+    )
+    .expect("set pillar.fs.list");
+
+    // pillar.fs.stat(path) -> { type, size, modified_ms }? (nil when missing)
+    let stat_api = Arc::clone(host_api);
+    let stat_lua = lua.clone();
+    fs.set(
+        "stat",
+        Function::wrap(move |path: String| {
+            let result = call(&stat_api, "stat", &path, None).map_err(luaur_rt::Error::external)?;
+            match result {
+                Some(serde_json::Value::Null) | None => Ok(Value::Nil),
+                Some(value) => stat_lua.to_value(&value).map_err(luaur_rt::Error::external),
+            }
+        }),
+    )
+    .expect("set pillar.fs.stat");
+
+    // pillar.fs.exists(path) -> boolean
+    let exists_api = Arc::clone(host_api);
+    fs.set(
+        "exists",
+        Function::wrap(move |path: String| {
+            let result =
+                call(&exists_api, "exists", &path, None).map_err(luaur_rt::Error::external)?;
+            Ok::<bool, luaur_rt::Error>(matches!(result, Some(serde_json::Value::Bool(true))))
+        }),
+    )
+    .expect("set pillar.fs.exists");
+
+    module.set("fs", fs).expect("set pillar.fs");
 }
 
 /// Install `pillar.schema` (upstream the typebox builders): each builder
@@ -1323,6 +1450,134 @@ mod api_tests {
         );
     }
 
+    /// `pillar.fs` forwards every operation to the host callback and
+    /// answers nil / false for missing paths.
+    #[test]
+    fn fs_module_uses_the_host_callbacks() {
+        let calls: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        let mut runtime = ExtensionRuntime::new();
+        let sink = Arc::clone(&calls);
+        runtime.set_host_api(HostApi {
+            fs: Some(Arc::new(move |op, path, _content| {
+                sink.lock().unwrap().push((op.to_string(), path.to_string()));
+                Ok(match op {
+                    "read" => serde_json::json!("content"),
+                    "write" => serde_json::json!(true),
+                    "list" => serde_json::json!(["a.luau", "b.luau"]),
+                    "stat" => serde_json::json!({ "type": "file", "size": 7 }),
+                    "exists" => serde_json::json!(true),
+                    _ => serde_json::Value::Null,
+                })
+            })),
+            ..Default::default()
+        });
+        runtime
+            .load_extension(
+                "fs.luau",
+                r#"
+                local pillar = require("@pillar")
+                local text = pillar.fs.read("notes.txt")
+                local written = pillar.fs.write("out.txt", "hello")
+                local names = pillar.fs.list(".")
+                local info = pillar.fs.stat("notes.txt")
+                local present = pillar.fs.exists("notes.txt")
+                __fs_seen = {
+                    text = text,
+                    written = written,
+                    first = names[1],
+                    count = #names,
+                    kind = info.type,
+                    present = present,
+                }
+                return nil
+                "#,
+            )
+            .unwrap();
+        let seen: serde_json::Value = runtime
+            .vm()
+            .load("return __fs_seen")
+            .call(())
+            .and_then(|value| runtime.vm().from_value(value))
+            .unwrap();
+        assert_eq!(seen["text"], serde_json::json!("content"));
+        assert_eq!(seen["written"], serde_json::json!(true));
+        assert_eq!(seen["first"], serde_json::json!("a.luau"));
+        assert_eq!(seen["count"], serde_json::json!(2));
+        assert_eq!(seen["kind"], serde_json::json!("file"));
+        assert_eq!(seen["present"], serde_json::json!(true));
+        assert_eq!(
+            calls.lock().unwrap().as_slice(),
+            &[
+                ("read".to_string(), "notes.txt".to_string()),
+                ("write".to_string(), "out.txt".to_string()),
+                ("list".to_string(), ".".to_string()),
+                ("stat".to_string(), "notes.txt".to_string()),
+                ("exists".to_string(), "notes.txt".to_string()),
+            ]
+        );
+    }
+
+    /// Without an fs host the module raises (a catchable error) and a
+    /// missing host reports nothing silently.
+    #[test]
+    fn fs_module_without_a_host_raises() {
+        let mut runtime = ExtensionRuntime::new();
+        runtime
+            .load_extension(
+                "nofs.luau",
+                r#"
+                local pillar = require("@pillar")
+                local ok, err = pcall(function()
+                    pillar.fs.read("x")
+                end)
+                __fs_error = tostring(err)
+                return nil
+                "#,
+            )
+            .unwrap();
+        let error: serde_json::Value = runtime
+            .vm()
+            .load("return __fs_error")
+            .call(())
+            .and_then(|value| runtime.vm().from_value(value))
+            .unwrap();
+        assert!(
+            error.as_str().unwrap_or_default().contains("fs host"),
+            "{error:?}"
+        );
+    }
+
+    /// `require("@ext/<name>")` resolves another loaded extension's export.
+    #[test]
+    fn extensions_can_require_each_other() {
+        let mut runtime = ExtensionRuntime::new();
+        runtime
+            .load_extension(
+                "shared.luau",
+                r#"
+                return { greet = function(name) return "hi " .. name end }
+                "#,
+            )
+            .unwrap();
+        runtime
+            .load_extension(
+                "uses.luau",
+                r#"
+                local shared = require("@ext/shared")
+                __shared_greeting = shared.greet("there")
+                return nil
+                "#,
+            )
+            .unwrap();
+        let greeting: serde_json::Value = runtime
+            .vm()
+            .load("return __shared_greeting")
+            .call(())
+            .and_then(|value| runtime.vm().from_value(value))
+            .unwrap();
+        assert_eq!(greeting, serde_json::json!("hi there"));
+    }
+
     /// The session-facing methods call their host callbacks with the
     /// upstream argument shapes (upstream the ExtensionAPI actions).
     #[test]
@@ -1541,16 +1796,27 @@ mod tests {
     /// A module returning a non-function export is rejected (upstream
     /// the loader's export validation).
     #[test]
-    fn rejects_non_function_export() {
+    fn non_function_exports_are_skipped_as_extensions() {
+        // Upstream imports the module (side effects run) and skips it when the
+        // default export is not a function; the port keeps it requireable as
+        // `@ext/<name>`.
         let mut runtime = ExtensionRuntime::new();
-        let error = runtime
-            .load_extension("bad.luau", "return { [1] = 42 }")
-            .unwrap_err();
-        assert!(
-            matches!(error, ExtensionLoadError::InvalidExport(_)),
-            "unexpected error: {error:?}"
-        );
-        assert!(error.to_string().contains("bad.luau"));
+        let loaded = runtime
+            .load_extension("helper.luau", "return { helper = function() end }")
+            .unwrap();
+        assert!(!loaded.has_setup);
+        let value: serde_json::Value = runtime
+            .vm()
+            .load(
+                r#"
+                local helper = require("@ext/helper")
+                return type(helper.helper)
+                "#,
+            )
+            .call(())
+            .and_then(|value| runtime.vm().from_value(value))
+            .unwrap();
+        assert_eq!(value, serde_json::json!("function"));
     }
 
     /// A compile error surfaces as ExtensionLoadError::Compile with
