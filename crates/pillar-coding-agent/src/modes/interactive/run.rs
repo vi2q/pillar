@@ -1143,6 +1143,16 @@ fn pump_loop(
             screen.base_mut().invalidate();
             screen.base_mut().request_render(false);
         }
+        if requested_shutdown {
+            // Upstream `shutdown()` awaits `drainInput(1000)`, which lets the
+            // queued `requestRender()` from `editor.setText("")` paint before
+            // the terminal stops. The port breaks out of the loop in this same
+            // iteration, so the frame has to be forced: `request_render(false)`
+            // above defers by `MIN_RENDER_INTERVAL_MS`, and without this frame
+            // the autocomplete popup and the typed text stay on screen after
+            // exit (pi repaints them away).
+            screen.base_mut().request_render(true);
+        }
         if screen.base_mut().terminal_mut().resize_if_changed() {
             screen.base_mut().invalidate();
             // The 2-column picker lays out against the terminal height
@@ -1165,6 +1175,12 @@ fn pump_loop(
         }
     };
 
+    if matches!(result, Ok(InteractiveOutcome::Exit(_))) {
+        // Upstream `shutdown()` drains stdin before stopping (`drainInput(1000)`,
+        // stopping after 50 ms idle) so late key releases or the tail of a paste
+        // cannot reach the shell after the terminal is restored.
+        screen.base_mut().terminal_mut().drain_input(1000, 50);
+    }
     screen.stop(TuiStopOptions {
         preserve_screen: false,
     });

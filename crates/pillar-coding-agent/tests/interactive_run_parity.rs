@@ -457,6 +457,69 @@ async fn typing_a_prompt_runs_it_and_quit_shuts_down() {
     );
 }
 
+/// Quitting right after a keystroke still paints the cleared frame. Upstream's
+/// `shutdown()` awaits `drainInput(1000)`, which lets the queued
+/// `requestRender()` from `editor.setText("")` run before the terminal stops;
+/// the port breaks out of the loop in that iteration, so the frame has to be
+/// forced past the render throttle. Without it the autocomplete popup and the
+/// typed text stay on screen after exit (pi repaints them away).
+#[tokio::test]
+async fn quitting_paints_the_cleared_frame() {
+    install_dark();
+    let session = session(echo_stream("pong"), "quit-frame");
+    let writes = Arc::new(Mutex::new(String::new()));
+    let mark = Arc::new(AtomicUsize::new(usize::MAX));
+    let gate_writes = Arc::clone(&writes);
+    let gate_mark = Arc::clone(&mark);
+    // Release the committing Enter only once the typed command's frame is on
+    // screen: the shutdown dirty then lands in the iteration right after a
+    // paint, where `request_render(false)` defers by the render interval and
+    // the loop breaks before the frame — exactly what a real quit hits.
+    let release: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || {
+        let output = gate_writes.lock().unwrap();
+        let painted = strip_terminal_sequences(&output);
+        if !painted.contains("/quit") {
+            return false;
+        }
+        gate_mark.store(output.len(), Ordering::SeqCst);
+        true
+    });
+    let mut harness = harness_with_writes(
+        writes,
+        vec!["/quit".to_string(), "\r".to_string()],
+        Some(release),
+    );
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        run_interactive(
+            Arc::clone(&session),
+            Box::new(std::mem::replace(
+                &mut harness.terminal,
+                ProcessTerminal::with_io(Box::new(pillar_tui::process_terminal::NullTerminalIo)),
+            )),
+            run_options(temp_dir("quit-frame")),
+        ),
+    )
+    .await
+    .expect("run loop finished")
+    .expect("run loop ok");
+
+    assert_eq!(result, InteractiveOutcome::Exit(0));
+    let output = harness.writes.lock().unwrap().clone();
+    let mark = mark.load(Ordering::SeqCst);
+    assert!(mark != usize::MAX, "the shutdown input was read");
+    let after = &output[mark..];
+    assert!(
+        after.contains("\u{1b}[?2026h") || after.contains("\u{1b}[2K"),
+        "the shutdown repaints the frame after the input was read: {after:?}"
+    );
+    assert!(
+        !strip_terminal_sequences(after).contains("/quit"),
+        "the cleared editor is repainted: {after:?}"
+    );
+}
+
 #[tokio::test]
 async fn ctrl_d_on_an_empty_editor_shuts_down_without_prompting() {
     install_dark();
