@@ -4,8 +4,9 @@
 //! divergence: this crate owns the runtime bootstrap that upstream keeps in
 //! `coding-agent/main.ts`, because it is the only layer that can join the
 //! coding agent with the Luau extension runtime (docs/rules/01-architecture.md).
-//! The package/auth/update subcommands, migrations, trust prompts, and the
-//! interactive mode are not ported yet.
+//! The package subcommands (`install` / `remove` / `update` / `list`) live in
+//! [`pillar_cli::commands`]; `config` / `auth` and the migrations are not ported
+//! yet.
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -86,6 +87,29 @@ async fn main() -> ExitCode {
     if parsed.mode == Some(Mode::Rpc) && !parsed.file_args.is_empty() {
         eprintln!("Error: @file arguments are not supported in RPC mode");
         return ExitCode::from(1);
+    }
+
+    // `pillar install` / `remove` / `update` / `list`: these do not build a
+    // session, so they run before the mode dispatch.
+    if let Some(subcommand) = parsed.subcommand.clone() {
+        let cwd = std::env::current_dir()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let mut stdout = std::io::stdout();
+        return match pillar_cli::commands::run_subcommand(
+            &subcommand,
+            &cwd,
+            &agent_dir(),
+            parsed.project_trust_override,
+            &mut stdout,
+        ) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("Error: {error}");
+                ExitCode::from(1)
+            }
+        };
     }
 
     let app_mode = resolve_app_mode(

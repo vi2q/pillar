@@ -1173,10 +1173,7 @@ impl DefaultPackageManager {
 
     /// Install the host's effect policy (the CLI passes the broker's
     /// authorizer; without one this manager cannot install or remove).
-    pub fn set_effect_authorizer(
-        &mut self,
-        authorizer: crate::core::effects::EffectAuthorizer,
-    ) {
+    pub fn set_effect_authorizer(&mut self, authorizer: crate::core::effects::EffectAuthorizer) {
         self.effect_authorizer = Some(authorizer);
     }
 

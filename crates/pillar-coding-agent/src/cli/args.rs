@@ -87,6 +87,54 @@ pub enum FlagValue {
     String(String),
 }
 
+/// A first-argument subcommand (upstream the `pillar <command>` forms).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Subcommand {
+    Install,
+    Remove,
+    Update,
+    List,
+    /// Ported later (the port reports it as unavailable instead of treating the
+    /// word as a message).
+    Config,
+    Auth,
+}
+
+impl Subcommand {
+    pub fn parse(name: &str) -> Option<Self> {
+        Some(match name {
+            "install" => Self::Install,
+            "remove" | "uninstall" => Self::Remove,
+            "update" => Self::Update,
+            "list" => Self::List,
+            "config" => Self::Config,
+            "auth" => Self::Auth,
+            _ => return None,
+        })
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Install => "install",
+            Self::Remove => "remove",
+            Self::Update => "update",
+            Self::List => "list",
+            Self::Config => "config",
+            Self::Auth => "auth",
+        }
+    }
+}
+
+/// A parsed `pillar <command> [source] [-l]` invocation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubcommandArgs {
+    pub command: Subcommand,
+    pub source: Option<String>,
+    /// `-l` / `--local`: the project scope instead of the user scope.
+    pub local: bool,
+    pub help: bool,
+}
+
 /// Parsed CLI arguments (upstream `Args`).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Args {
@@ -129,6 +177,8 @@ pub struct Args {
     pub tui_mode: Option<TuiMode>,
     pub verbose: Option<bool>,
     pub project_trust_override: Option<bool>,
+    /// The `pillar <command>` form, when the first argument named one.
+    pub subcommand: Option<SubcommandArgs>,
     pub messages: Vec<String>,
     pub file_args: Vec<String>,
     /// Unknown flags (potentially extension flags), name -> value.
@@ -182,6 +232,13 @@ fn value_at(args: &[String], index: &mut usize) -> Option<String> {
 /// Upstream `parseArgs`.
 pub fn parse_args(args: &[String]) -> Args {
     let mut result = Args::default();
+    // A command is only recognized as the first argument (upstream parses the
+    // command before any option): `pillar install foo` installs, while
+    // `pillar --model x install foo` treats `install` as a message.
+    if let Some(command) = args.first().and_then(|arg| Subcommand::parse(arg)) {
+        parse_subcommand(command, &args[1..], &mut result);
+        return result;
+    }
     let mut i = 0usize;
     while i < args.len() {
         let arg = args[i].as_str();
@@ -386,8 +443,39 @@ pub fn parse_args(args: &[String]) -> Args {
     result
 }
 
-fn split_names(value: &str) -> Vec<String> {
-    value
+/// Parse the arguments of one subcommand. `source` is positional; `-l` /
+/// `--local` selects the project scope; `-h` / `--help` asks for the command's
+/// help instead of running it.
+fn parse_subcommand(command: Subcommand, rest: &[String], result: &mut Args) {
+    let mut parsed = SubcommandArgs {
+        command,
+        source: None,
+        local: false,
+        help: false,
+    };
+    for arg in rest {
+        match arg.as_str() {
+            "-l" | "--local" => parsed.local = true,
+            "-h" | "--help" => parsed.help = true,
+            other if other.starts_with('-') => result
+                .diagnostics
+                .push(error(format!("{}: unknown option {other}", command.name()))),
+            other if parsed.source.is_none() => parsed.source = Some(other.to_string()),
+            other => result
+                .diagnostics
+                .push(error(format!("{}: unexpected argument {other}", command.name()))),
+        }
+    }
+    let needs_source = matches!(command, Subcommand::Install | Subcommand::Remove);
+    if needs_source && parsed.source.is_none() && !parsed.help {
+        result
+            .diagnostics
+            .push(error(format!("{} requires a <source>", command.name())));
+    }
+    result.subcommand = Some(parsed);
+}
+
+fn split_names(value: &str) -> Vec<String> {    value
         .split(',')
         .map(|s| s.trim().to_string())
         .filter(|name| !name.is_empty())
