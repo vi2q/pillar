@@ -333,14 +333,17 @@ pub struct AgentSessionConfig {
     /// Host hook rebuilding the base system prompt from active tool names
     /// (upstream `_rebuildSystemPrompt`).
     pub system_prompt_rebuild: Option<SystemPromptRebuildFn>,
-/// Host hook rebuilding the extension runner on reload (upstream
-/// `_buildRuntime`). Without it, `reload` stops after the old runner
-/// shuts down.
+    /// Host hook rebuilding the extension runner on reload (upstream
+    /// `_buildRuntime`). Without it, `reload` stops after the old runner
+    /// shuts down.
     pub extension_runner_rebuild: Option<ExtensionRunnerFactory>,
     /// Host hook run after the rebuilt runner is in place (upstream the host
     /// re-reading its own extension registries). The host must not run it
     /// while the old runner is still installed.
     pub extension_reload_publish: Option<ExtensionReloadPublishFn>,
+    /// The single authorizer every tool call passes before it runs (upstream
+    /// the host's permission layer). Denials block the call.
+    pub effect_authorizer: Option<crate::core::effects::EffectAuthorizer>,
 }
 
 impl AgentSessionConfig {
@@ -372,6 +375,7 @@ impl AgentSessionConfig {
             system_prompt_rebuild: None,
             extension_runner_rebuild: None,
             extension_reload_publish: None,
+            effect_authorizer: None,
         }
     }
 }
@@ -441,6 +445,7 @@ struct SessionInner {
     system_prompt_rebuild: Option<SystemPromptRebuildFn>,
     extension_runner_rebuild: Option<ExtensionRunnerFactory>,
     extension_reload_publish: Mutex<Option<ExtensionReloadPublishFn>>,
+    effect_authorizer: Option<crate::core::effects::EffectAuthorizer>,
     initial_active_tool_names: Option<Vec<String>>,
     allowed_tool_names: Option<BTreeSet<String>>,
     excluded_tool_names: Option<BTreeSet<String>>,
@@ -569,6 +574,7 @@ impl AgentSession {
             system_prompt_rebuild: config.system_prompt_rebuild,
             extension_runner_rebuild: config.extension_runner_rebuild,
             extension_reload_publish: Mutex::new(config.extension_reload_publish),
+            effect_authorizer: config.effect_authorizer,
             initial_active_tool_names: config.initial_active_tool_names,
             allowed_tool_names: config.allowed_tool_names,
             excluded_tool_names: config.excluded_tool_names,
@@ -1568,6 +1574,23 @@ impl AgentSession {
                   -> BeforeToolFuture {
                 let inner = Arc::clone(&inner);
                 Box::pin(async move {
+                    // The effect gate comes first, so a tool call is authorized
+                    // exactly like the host's `exec` / `fs` callbacks.
+                    if let Some(authorizer) = inner.effect_authorizer.clone() {
+                        let args = context.args.lock().expect("args lock").clone();
+                        if let crate::core::effects::EffectDecision::Deny { reason } =
+                            authorizer(&crate::core::effects::EffectIntent::ToolCall {
+                                name: context.tool_call.name.clone(),
+                                input: args,
+                            })
+                        {
+                            return Some(pillar_agent::types::BeforeToolCallResult {
+                                block: true,
+                                reason: Some(reason),
+                                terminate: false,
+                            });
+                        }
+                    }
                     let runner = inner.extension_runner.lock().expect("runner lock");
                     if !runner.has_handlers("tool_call") {
                         return None;

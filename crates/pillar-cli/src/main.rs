@@ -45,9 +45,10 @@ use pillar_coding_agent::modes::rpc::rpc_mode::{
     RpcRuntimeHost, SessionReplacement, run_rpc_mode_with_host,
 };
 
+use pillar_cli::effects::EffectBroker;
 use pillar_cli::runner::{
-    ExtensionCommandSlot, ExtensionWiring, build_extension_runner,
-    build_extension_runner_with_slots, refresh_extension_data_for,
+    ExtensionCommandSlot, ExtensionHostSlots, ExtensionWiring, build_extension_runner_with_slots,
+    refresh_extension_data_for,
 };
 use pillar_cli::trust::{project_extension_dir, resolve_project_trust, stored_project_trust};
 use pillar_coding_agent::core::extensions_types::{ExtensionContextFacts, ExtensionMode};
@@ -292,11 +293,16 @@ async fn build_session_with(
         );
     }
     let configured = parsed.extensions.clone().unwrap_or_default();
-    let mut wiring = build_extension_runner(
+    // One broker per session build: the extension host callbacks and the
+    // session's tool path share its policy and audit trail.
+    let broker = EffectBroker::permissive();
+    let slots = ExtensionHostSlots::with_broker(&cwd, Arc::clone(&broker));
+    let mut wiring = build_extension_runner_with_slots(
         &cwd,
         Some(&global_extensions),
         project_extensions.as_deref(),
         &configured,
+        &slots,
     );
     for (path, error) in &wiring.errors {
         eprintln!("Warning: failed to load extension {path}: {error}");
@@ -325,6 +331,7 @@ async fn build_session_with(
         custom_tools: wiring.custom_tools(),
         extension_runner,
         project_trusted: Some(project_trusted),
+        effect_authorizer: Some(broker.authorizer()),
         session_start_event: Some(SessionEventMeta {
             reason: start_reason,
             previous_session_file,

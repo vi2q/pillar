@@ -2,8 +2,9 @@
 //! extension runtime (`pillar-extensions`).
 //!
 //! The binary entry lives in `main.rs`; the host wiring lives in [`runner`]
-//! so it can be exercised by tests and reused by the runtime bootstrap, and
-//! the startup trust decision lives in [`trust`].
+//! so it can be exercised by tests and reused by the runtime bootstrap, the
+//! startup trust decision in [`trust`], and the effect gate in [`effects`].
 
+pub mod effects;
 pub mod runner;
 pub mod trust;

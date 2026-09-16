@@ -401,6 +401,9 @@ pub struct CreateAgentSessionOptions {
     /// project resource is read; the library default is `true` only for
     /// embedders that own their own trust policy.
     pub project_trusted: Option<bool>,
+    /// The single authorizer every tool call passes before it runs (upstream
+    /// the host's permission layer); `None` allows every call.
+    pub effect_authorizer: Option<crate::core::effects::EffectAuthorizer>,
     /// Host handler executing a registered extension command (upstream the
     /// runner invoking `RegisteredCommand.handler`).
     pub command_handler: Option<ExtensionCommandHandler>,
@@ -684,6 +687,7 @@ pub async fn create_agent_session(
         system_prompt_rebuild: options.system_prompt_rebuild,
         extension_runner_rebuild: options.extension_runner_rebuild,
         extension_reload_publish: None,
+        effect_authorizer: options.effect_authorizer,
     });
     session.install_tool_hooks();
 

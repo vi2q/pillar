@@ -189,6 +189,7 @@ async fn opencode_session_requests_carry_the_session_headers() {
         custom_tools: Vec::new(),
         extension_runner: Arc::new(Mutex::new(ExtensionRunner::new(Vec::new()))),
         project_trusted: Some(true),
+        effect_authorizer: None,
         session_start_event: None,
         system_prompt_rebuild: None,
         extension_runner_rebuild: None,

@@ -25,6 +25,8 @@ use pillar_coding_agent::core::extensions_types::{
 };
 use pillar_extensions::loader::{LuauLoader, SharedRuntime, create_luau_loader};
 
+use crate::effects::EffectBroker;
+
 /// The session handle the `@pillar` host callbacks resolve at call time.
 ///
 /// divergence: the runtime is built before the session exists (the runner
@@ -48,7 +50,8 @@ pub struct ExtensionDataSnapshot {
 
 /// The host-side slots a wiring's callbacks resolve through. A `/reload`
 /// builds a fresh VM and runner but keeps these, so the session binding, the
-/// `ctx.ui` bridge, the facts and the command snapshot survive the rebuild.
+/// `ctx.ui` bridge, the facts, the command snapshot and the effect broker
+/// survive the rebuild.
 #[derive(Clone)]
 pub struct ExtensionHostSlots {
     /// The live session the host callbacks resolve (see [`SessionSlot`]).
@@ -62,10 +65,16 @@ pub struct ExtensionHostSlots {
     /// instead of asking the session's runner: a handler runs while the
     /// runner mutex is held, so re-locking it there would deadlock.
     pub context: Arc<Mutex<ExtensionContextFacts>>,
+    /// The gate every extension effect passes (see [`crate::effects`]).
+    pub broker: Arc<EffectBroker>,
 }
 
 impl ExtensionHostSlots {
     pub fn new(cwd: &str) -> Self {
+        Self::with_broker(cwd, EffectBroker::permissive())
+    }
+
+    pub fn with_broker(cwd: &str, broker: Arc<EffectBroker>) -> Self {
         Self {
             session_slot: Arc::new(Mutex::new(None)),
             data: Arc::new(Mutex::new(ExtensionDataSnapshot::default())),
@@ -74,6 +83,7 @@ impl ExtensionHostSlots {
                 cwd: cwd.to_string(),
                 ..Default::default()
             })),
+            broker,
         }
     }
 }
@@ -187,8 +197,8 @@ pub fn build_extension_runner_with_slots(
     let context = Arc::clone(&slots.context);
     // The host callbacks must exist before the extension factories run: a
     // factory may already call `pillar.fs` / `pillar.get_flag` / `ctx.ui`.
-    install_exec_host(&runtime, cwd);
-    install_host_api(&runtime, &session_slot, &data, &ui_slot, &context, cwd);
+    install_exec_host(&runtime, &slots.broker, cwd);
+    install_host_api(&runtime, &session_slot, &data, &ui_slot, &context, &slots.broker, cwd);
     let (runner, errors) = build_luau_runner(&paths, cwd, &loader, true);
     ExtensionWiring {
         runtime,
@@ -245,8 +255,7 @@ impl ExtensionCommandSlot {
         *self
             .current
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-            extension_command_handler(runtime);
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = extension_command_handler(runtime);
     }
 
     /// The stable handler to give the session; it resolves the slot at call
@@ -265,28 +274,13 @@ impl ExtensionCommandSlot {
 
 /// Install the `pi.exec` host (upstream the process layer behind `exec`):
 /// the command runs with the session's cwd, and the extension receives
-/// `{ stdout, stderr, code, killed }`.
-fn install_exec_host(runtime: &SharedRuntime, cwd: &str) {
+/// `{ stdout, stderr, code, killed }`. The broker authorizes and executes
+/// (never call the process API from here).
+fn install_exec_host(runtime: &SharedRuntime, broker: &Arc<EffectBroker>, cwd: &str) {
     let cwd = cwd.to_string();
+    let broker = Arc::clone(broker);
     let exec: pillar_extensions::runtime::ExecHost = Arc::new(move |command, args| {
-        let output = std::process::Command::new(command)
-            .args(args)
-            .current_dir(&cwd)
-            .output();
-        match output {
-            Ok(output) => serde_json::json!({
-                "stdout": String::from_utf8_lossy(&output.stdout),
-                "stderr": String::from_utf8_lossy(&output.stderr),
-                "code": output.status.code(),
-                "killed": false,
-            }),
-            Err(error) => serde_json::json!({
-                "stdout": "",
-                "stderr": error.to_string(),
-                "code": -1,
-                "killed": false,
-            }),
-        }
+        broker.exec(&cwd, &command, &args)
     });
     runtime
         .lock()
@@ -304,6 +298,7 @@ fn install_host_api(
     data: &Arc<Mutex<ExtensionDataSnapshot>>,
     ui_slot: &ExtensionUiSlot,
     context: &Arc<Mutex<ExtensionContextFacts>>,
+    broker: &Arc<EffectBroker>,
     cwd: &str,
 ) {
     use pillar_extensions::runtime::HostApi;
@@ -570,71 +565,12 @@ fn install_host_api(
         },
         fs: {
             let cwd = cwd.to_string();
-            Some(Arc::new(
-                move |op: &str, path: &str, content: Option<&str>| {
-                    // Paths resolve against the session cwd, like tool calls.
-                    let resolved = if std::path::Path::new(path).is_absolute() {
-                        std::path::PathBuf::from(path)
-                    } else {
-                        std::path::Path::new(&cwd).join(path)
-                    };
-                    match op {
-                        "read" => match std::fs::read_to_string(&resolved) {
-                            Ok(text) => Ok(serde_json::Value::String(text)),
-                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                                Ok(serde_json::Value::Null)
-                            }
-                            Err(error) => Err(format!("pillar.fs.read: {error}")),
-                        },
-                        "write" => {
-                            let Some(content) = content else {
-                                return Err("pillar.fs.write: missing content".to_string());
-                            };
-                            if let Some(parent) = resolved.parent() {
-                                let _ = std::fs::create_dir_all(parent);
-                            }
-                            std::fs::write(&resolved, content)
-                                .map(|_| serde_json::Value::Bool(true))
-                                .map_err(|error| format!("pillar.fs.write: {error}"))
-                        }
-                        "list" => {
-                            let entries = std::fs::read_dir(&resolved)
-                                .map_err(|error| format!("pillar.fs.list: {error}"))?;
-                            let mut names: Vec<String> = entries
-                                .filter_map(|entry| entry.ok())
-                                .map(|entry| entry.file_name().to_string_lossy().to_string())
-                                .collect();
-                            names.sort();
-                            Ok(serde_json::Value::Array(
-                                names.into_iter().map(serde_json::Value::String).collect(),
-                            ))
-                        }
-                        "stat" => match std::fs::metadata(&resolved) {
-                            Ok(metadata) => {
-                                let modified_ms = metadata
-                                    .modified()
-                                    .ok()
-                                    .and_then(|time| {
-                                        time.duration_since(std::time::UNIX_EPOCH).ok()
-                                    })
-                                    .map(|duration| duration.as_millis() as u64)
-                                    .unwrap_or(0);
-                                Ok(serde_json::json!({
-                                    "type": if metadata.is_dir() { "directory" } else { "file" },
-                                    "size": metadata.len(),
-                                    "modified_ms": modified_ms,
-                                }))
-                            }
-                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                                Ok(serde_json::Value::Null)
-                            }
-                            Err(error) => Err(format!("pillar.fs.stat: {error}")),
-                        },
-                        "exists" => Ok(serde_json::Value::Bool(resolved.exists())),
-                        other => Err(format!("pillar.fs: unknown operation {other}")),
-                    }
-                },
-            ))
+            let broker = Arc::clone(broker);
+            // The broker resolves the path, authorizes it and only then
+            // touches the filesystem (never call the fs API from here).
+            Some(Arc::new(move |op: &str, path: &str, content: Option<&str>| {
+                broker.fs(&cwd, op, path, content)
+            }))
         },
         set_active_tools: {
             let slot = Arc::clone(slot);
@@ -672,7 +608,6 @@ fn install_host_api(
             }))
         },
     };
-    let _ = cwd;
     runtime
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -877,10 +812,9 @@ pub fn refresh_extension_data_for(
             .map(|tool| serde_json::Value::String(tool.name().to_string()))
             .collect(),
     );
-    *data.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) =
-        ExtensionDataSnapshot {
-            commands,
-            all_tools,
-            active_tools,
-        };
+    *data.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = ExtensionDataSnapshot {
+        commands,
+        all_tools,
+        active_tools,
+    };
 }

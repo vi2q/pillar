@@ -10,6 +10,7 @@ pub mod cache_stats;
 pub mod client_transcript;
 pub mod compaction;
 pub mod diagnostics;
+pub mod effects;
 pub mod event_bus;
 pub mod export_html;
 pub mod extensions_loader;

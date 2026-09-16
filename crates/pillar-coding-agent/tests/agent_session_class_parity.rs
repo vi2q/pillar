@@ -2029,6 +2029,7 @@ async fn create_agent_session_wires_agent_tools_prompt_and_persistence() {
         custom_tools: Vec::new(),
         extension_runner: Arc::new(Mutex::new(ExtensionRunner::new(Vec::new()))),
         project_trusted: Some(true),
+        effect_authorizer: None,
         session_start_event: None,
         system_prompt_rebuild: None,
         extension_runner_rebuild: None,

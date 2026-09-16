@@ -430,6 +430,15 @@ impl Agent {
         *self.before_tool_call.lock().expect("before hook lock") = Some(hook);
     }
 
+    /// The installed before-tool-call hook (upstream reads it to chain a new
+    /// hook onto the previous one).
+    pub fn before_tool_call_hook(&self) -> Option<Arc<BeforeToolFn>> {
+        self.before_tool_call
+            .lock()
+            .expect("before hook lock")
+            .clone()
+    }
+
     /// Install the after-tool-call interception hook (upstream assigning
     /// `agent.afterToolCall`). Applies to the next run.
     pub fn set_after_tool_call(&self, hook: Arc<AfterToolFn>) {
