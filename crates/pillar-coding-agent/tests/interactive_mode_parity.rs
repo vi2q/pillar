@@ -2574,8 +2574,91 @@ fn an_unsupported_extension_ask_answers_an_error() {
     mode.begin_extension_ask(
         3,
         pillar_coding_agent::core::extensions_types::ExtensionUiRequest {
-            op: "input".to_string(),
+            op: "editor".to_string(),
             args: serde_json::json!({}),
+        },
+        reply,
+    );
+    let answered = answer.try_recv().expect("answered immediately");
+    assert!(answered.is_err(), "{answered:?}");
+}
+
+/// `ctx.ui.select` answers the chosen option and `null` when cancelled.
+#[test]
+fn a_select_ask_answers_the_chosen_option() {
+    let session = session();
+    let mode = make_mode(&session);
+    let (reply, answer) = std::sync::mpsc::sync_channel(1);
+    mode.begin_extension_ask(
+        5,
+        pillar_coding_agent::core::extensions_types::ExtensionUiRequest {
+            op: "select".to_string(),
+            args: serde_json::json!({ "title": "Pick", "options": ["one", "two"] }),
+        },
+        reply,
+    );
+    // Down then Enter picks the second option.
+    mode.handle_selector_key("\u{1b}[B").expect("selector");
+    mode.handle_selector_key("\r").expect("selector");
+    assert_eq!(answer.try_recv(), Ok(Ok(serde_json::json!("two"))));
+
+    let (reply, answer) = std::sync::mpsc::sync_channel(1);
+    mode.begin_extension_ask(
+        6,
+        pillar_coding_agent::core::extensions_types::ExtensionUiRequest {
+            op: "select".to_string(),
+            args: serde_json::json!({ "title": "Pick", "options": ["one", "two"] }),
+        },
+        reply,
+    );
+    mode.handle_selector_key("\u{1b}").expect("selector");
+    assert_eq!(answer.try_recv(), Ok(Ok(serde_json::Value::Null)));
+}
+
+/// `ctx.ui.input` answers the submitted text and `null` when cancelled.
+#[test]
+fn an_input_ask_answers_the_submitted_text() {
+    let session = session();
+    let mode = make_mode(&session);
+    let (reply, answer) = std::sync::mpsc::sync_channel(1);
+    mode.begin_extension_ask(
+        7,
+        pillar_coding_agent::core::extensions_types::ExtensionUiRequest {
+            op: "input".to_string(),
+            args: serde_json::json!({ "title": "Name" }),
+        },
+        reply,
+    );
+    for ch in "hello".chars() {
+        mode.handle_selector_key(&ch.to_string()).expect("input");
+    }
+    mode.handle_selector_key("\r").expect("input");
+    assert_eq!(answer.try_recv(), Ok(Ok(serde_json::json!("hello"))));
+
+    let (reply, answer) = std::sync::mpsc::sync_channel(1);
+    mode.begin_extension_ask(
+        8,
+        pillar_coding_agent::core::extensions_types::ExtensionUiRequest {
+            op: "input".to_string(),
+            args: serde_json::json!({ "title": "Name" }),
+        },
+        reply,
+    );
+    mode.handle_selector_key("\u{1b}").expect("input");
+    assert_eq!(answer.try_recv(), Ok(Ok(serde_json::Value::Null)));
+}
+
+/// `select` without options is an error instead of an empty dialog.
+#[test]
+fn a_select_ask_without_options_answers_an_error() {
+    let session = session();
+    let mode = make_mode(&session);
+    let (reply, answer) = std::sync::mpsc::sync_channel(1);
+    mode.begin_extension_ask(
+        9,
+        pillar_coding_agent::core::extensions_types::ExtensionUiRequest {
+            op: "select".to_string(),
+            args: serde_json::json!({ "title": "Pick" }),
         },
         reply,
     );

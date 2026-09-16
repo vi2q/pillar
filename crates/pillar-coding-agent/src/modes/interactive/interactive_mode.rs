@@ -315,7 +315,20 @@ pub struct InteractiveModeOptions {
 /// cancel exactly this dialog.
 struct PendingExtensionAsk {
     id: u64,
+    kind: PendingAskKind,
     reply: std::sync::mpsc::SyncSender<Result<serde_json::Value, String>>,
+}
+
+/// What a pending `ctx.ui` ask answers (upstream the awaited method's return
+/// shape).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PendingAskKind {
+    /// `ctx.ui.confirm` → a boolean.
+    Confirm,
+    /// `ctx.ui.select` → the chosen option, or `null` when cancelled.
+    Select,
+    /// `ctx.ui.input` → the entered text, or `null` when cancelled.
+    Input,
 }
 
 /// The assembled interactive mode (upstream `InteractiveMode`).
@@ -2106,14 +2119,51 @@ impl InteractiveMode {
         message: &str,
         reply: std::sync::mpsc::SyncSender<Result<serde_json::Value, String>>,
     ) -> Vec<ModeAction> {
-        *self.pending_confirm.lock().expect("pending confirm") =
-            Some(PendingExtensionAsk { id, reply });
+        *self.pending_confirm.lock().expect("pending confirm") = Some(PendingExtensionAsk {
+            id,
+            kind: PendingAskKind::Confirm,
+            reply,
+        });
         let title = if message.trim().is_empty() {
             title.to_string()
         } else {
             format!("{title}\n\n{message}")
         };
         self.show_extension_selector(&title, &["Yes".to_string(), "No".to_string()])
+    }
+
+    /// Show an extension's `ctx.ui.select(title, options)` dialog: the chosen
+    /// option goes back through `reply`, Escape answers `null`.
+    pub fn show_extension_select(
+        &self,
+        id: u64,
+        title: &str,
+        options: &[String],
+        reply: std::sync::mpsc::SyncSender<Result<serde_json::Value, String>>,
+    ) -> Vec<ModeAction> {
+        *self.pending_confirm.lock().expect("pending confirm") = Some(PendingExtensionAsk {
+            id,
+            kind: PendingAskKind::Select,
+            reply,
+        });
+        self.show_extension_selector(title, options)
+    }
+
+    /// Show an extension's `ctx.ui.input(title)` dialog: the submitted text
+    /// goes back through `reply`, Escape answers `null`.
+    pub fn show_extension_ask_input(
+        &self,
+        id: u64,
+        title: &str,
+        placeholder: Option<&str>,
+        reply: std::sync::mpsc::SyncSender<Result<serde_json::Value, String>>,
+    ) -> Vec<ModeAction> {
+        *self.pending_confirm.lock().expect("pending confirm") = Some(PendingExtensionAsk {
+            id,
+            kind: PendingAskKind::Input,
+            reply,
+        });
+        self.show_extension_input_with_placeholder(title, placeholder)
     }
 
     /// Route one `ctx.ui` dialog request (the pump's `ExtensionUiAsk`).
@@ -2137,6 +2187,32 @@ impl InteractiveMode {
             "confirm" => {
                 self.show_extension_confirm(id, title, message, reply);
             }
+            "select" => {
+                let options: Vec<String> = request
+                    .args
+                    .get("options")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|values| {
+                        values
+                            .iter()
+                            .filter_map(serde_json::Value::as_str)
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if options.is_empty() {
+                    let _ = reply.send(Err("ctx.ui.select: no options".to_string()));
+                    return;
+                }
+                self.show_extension_select(id, title, &options, reply);
+            }
+            "input" => {
+                let placeholder = request
+                    .args
+                    .get("placeholder")
+                    .and_then(serde_json::Value::as_str);
+                self.show_extension_ask_input(id, title, placeholder, reply);
+            }
             other => {
                 let _ = reply.send(Err(format!("ctx.ui.{other}: not supported")));
             }
@@ -2157,12 +2233,38 @@ impl InteractiveMode {
         self.close_selector(None)
     }
 
-    /// Answer a pending `ctx.ui` dialog (upstream the selector callbacks).
-    fn answer_pending_confirm(&self, yes: bool) -> bool {
+    /// Answer a pending `ctx.ui` dialog (upstream the selector callbacks):
+    /// `option` is the chosen selector entry, or `None` when the dialog was
+    /// cancelled.
+    fn answer_pending_ask(&self, option: Option<&str>) -> bool {
         let Some(ask) = self.pending_confirm.lock().expect("pending confirm").take() else {
             return false;
         };
-        let _ = ask.reply.send(Ok(serde_json::Value::Bool(yes)));
+        let answer = match ask.kind {
+            PendingAskKind::Confirm => {
+                Ok(serde_json::Value::Bool(option == Some("Yes")))
+            }
+            PendingAskKind::Select => Ok(option
+                .map(|option| serde_json::Value::String(option.to_string()))
+                .unwrap_or(serde_json::Value::Null)),
+            PendingAskKind::Input => Err("ctx.ui.input: not a selector".to_string()),
+        };
+        let _ = ask.reply.send(answer);
+        self.mark_dirty();
+        true
+    }
+
+    /// Answer a pending text ask (upstream the input component's callbacks).
+    fn answer_pending_input(&self, value: Option<&str>) -> bool {
+        let Some(ask) = self.pending_confirm.lock().expect("pending confirm").take() else {
+            return false;
+        };
+        if ask.kind != PendingAskKind::Input {
+            return false;
+        }
+        let _ = ask.reply.send(Ok(value
+            .map(|value| serde_json::Value::String(value.to_string()))
+            .unwrap_or(serde_json::Value::Null)));
         self.mark_dirty();
         true
     }
@@ -2170,8 +2272,16 @@ impl InteractiveMode {
     /// Upstream `showExtensionInput`: a single-line text dialog in the editor
     /// slot (the port uses it for custom branch-summary instructions).
     pub fn show_extension_input(&self, title: &str) -> Vec<ModeAction> {
+        self.show_extension_input_with_placeholder(title, None)
+    }
+
+    fn show_extension_input_with_placeholder(
+        &self,
+        title: &str,
+        placeholder: Option<&str>,
+    ) -> Vec<ModeAction> {
         let token = self.next_selector_token.fetch_add(1, Ordering::SeqCst);
-        let component = Shared::new(ExtensionInputComponent::new(title, None));
+        let component = Shared::new(ExtensionInputComponent::new(title, placeholder));
         self.show_selector(ActiveSelector::ExtensionInput { token, component })
     }
 
@@ -3212,7 +3322,7 @@ impl InteractiveMode {
                 match component.lock().handle_key(data) {
                     ExtensionSelectorOutcome::Consumed => Vec::new(),
                     ExtensionSelectorOutcome::Select(option) => {
-                        if self.answer_pending_confirm(option == "Yes") {
+                        if self.answer_pending_ask(Some(&option)) {
                             return Some(self.close_selector(Some(token)));
                         }
                         self.complete_tree_summary_choice(token, &option)
@@ -3222,7 +3332,7 @@ impl InteractiveMode {
                         Vec::new()
                     }
                     ExtensionSelectorOutcome::Cancel => {
-                        if self.answer_pending_confirm(false) {
+                        if self.answer_pending_ask(None) {
                             return Some(self.close_selector(Some(token)));
                         }
                         self.cancel_tree_summary_choice(token)
@@ -3232,9 +3342,17 @@ impl InteractiveMode {
             Handle::ExtensionInput(token, component) => match component.lock().handle_key(data) {
                 ExtensionInputOutcome::Consumed => Vec::new(),
                 ExtensionInputOutcome::Submit(value) => {
+                    if self.answer_pending_input(Some(&value)) {
+                        return Some(self.close_selector(Some(token)));
+                    }
                     self.complete_tree_custom_instructions(token, &value)
                 }
-                ExtensionInputOutcome::Cancel => self.cancel_tree_custom_instructions(token),
+                ExtensionInputOutcome::Cancel => {
+                    if self.answer_pending_input(None) {
+                        return Some(self.close_selector(Some(token)));
+                    }
+                    self.cancel_tree_custom_instructions(token)
+                }
             },
             // `/fork`: the pump intercepts the commit and rebuilds the run
             // loop as a branched session (upstream `runtimeHost.fork`).

@@ -146,7 +146,8 @@ loop starts (the usual `session_start` setup) are replayed when it does.
 | `getToolsExpanded()` / `setToolsExpanded(v)` | `ctx.ui.set_tools_expanded(v)` (`get_` not ported yet) |
 | `getAllThemes()` | `ctx.ui.get_all_themes()` → `{ { name = string, path = string? } }` |
 | `theme` (property) | `ctx.ui.theme` (table: `name`, `mode`, `fg`, `bg`, `bold`, `italic`, `underline`, `strikethrough`, `inverse`) |
-| `select` / `confirm` / `input` / `editor` / `custom` | not ported yet (TASKS 2e: needs a blocking bridge) |
+| `confirm` / `select` / `input` | ported: a dialog in the editor slot, answered through a per-request id with a timeout that cancels it (`ctx.ui.confirm` → boolean, `select` → the option or `null`, `input` → the text or `null`) |
+| `editor` / `custom` | not ported yet (TASKS 2e: needs the blocking bridge / a Luau component surface) |
 | `setWidget` / `setFooter` / `setHeader` / `setEditorComponent` | not ported yet (TASKS 2f) |
 | `getEditorText()` / `getTheme(name)` / `setTheme(name)` / `onTerminalInput` / `addAutocompleteProvider` | not ported yet (TASKS 2d-b/2d-c) |
 
