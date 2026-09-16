@@ -10,27 +10,34 @@ use std::path::Path;
 const ALLOWED: &[(&str, &[&str])] = &[
     ("pillar-agent", &["pillar-ai", "pillar-telemetry"]),
     ("pillar-ai", &[]),
-    ("pillar-cli", &[
-        "pillar-agent",
-        "pillar-ai",
-        "pillar-coding-agent",
-        "pillar-extensions",
-    ]),
+    (
+        "pillar-cli",
+        &[
+            "pillar-agent",
+            "pillar-ai",
+            "pillar-coding-agent",
+            "pillar-extensions",
+        ],
+    ),
     ("pillar-client", &["pillar-protocol"]),
-    ("pillar-coding-agent", &[
-        "pillar-agent",
-        "pillar-ai",
-        "pillar-protocol",
-        "pillar-tui",
-    ]),
-    ("pillar-extensions", &[
-        "pillar-agent",
-        "pillar-ai",
+    (
         "pillar-coding-agent",
-        "pillar-tui",
-    ]),
+        &["pillar-agent", "pillar-ai", "pillar-protocol", "pillar-tui"],
+    ),
+    (
+        "pillar-extensions",
+        &[
+            "pillar-agent",
+            "pillar-ai",
+            "pillar-coding-agent",
+            "pillar-tui",
+        ],
+    ),
     ("pillar-protocol", &[]),
-    ("pillar-server", &["pillar-ai", "pillar-client", "pillar-protocol"]),
+    (
+        "pillar-server",
+        &["pillar-ai", "pillar-client", "pillar-protocol"],
+    ),
     ("pillar-session-store", &["pillar-agent", "pillar-ai"]),
     ("pillar-telemetry", &[]),
     ("pillar-tui", &[]),
@@ -104,7 +111,9 @@ fn crate_dependencies_match_the_architecture_table() {
 fn no_crate_depends_on_the_cli() {
     for (name, manifest) in workspace_crates() {
         assert!(
-            !path_dependencies(&manifest).iter().any(|dep| dep == "pillar-cli"),
+            !path_dependencies(&manifest)
+                .iter()
+                .any(|dep| dep == "pillar-cli"),
             "{name} must not depend on pillar-cli"
         );
     }

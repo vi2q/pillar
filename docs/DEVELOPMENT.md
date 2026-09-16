@@ -4,6 +4,15 @@ This document preserves the repository guidance formerly kept in `AGENTS.md`. Th
 
 Current state of the port (what works, what remains, how to verify, known pitfalls): [HANDOFF.md](HANDOFF.md).
 
+## Verification
+
+`scripts/check.sh` is the gate: a locked build, clippy across the workspace with
+`-D warnings`, the locked test sweep (which includes the dependency-direction
+check), and a sandboxed smoke run of the binary with an isolated `HOME`/cwd,
+`PILLAR_OFFLINE=1` and a dead proxy. `--quick` skips the test sweep for a local
+loop. Wire it into CI as-is; the turn-level rule is one targeted test per change
+(docs/RULES.md).
+
 ## Project
 
 pillar is a Rust port of pi v0.84.3 with a Luau extension runtime on luaur v0.1.8. Upstream revisions are pinned in [docs/rules/06-upstream-sync.md](../docs/rules/06-upstream-sync.md). The rules docs under `docs/rules/` are optional reference material.
@@ -27,7 +36,7 @@ pillar is a Rust port of pi v0.84.3 with a Luau extension runtime on luaur v0.1.
 
 ## Extension development (Luau)
 
-Extensions live in `~/.pillar/extensions/` (global) or `.pillar/extensions/` (project-local) as `*.luau` files or `*/index.luau`. They must type-check under `--!strict` with the `@pillar` definitions. When editing extension docs or host API code, the contract is: type-check clean, then run; see [docs/rules/04-luau-extensions.md](../docs/rules/04-luau-extensions.md).
+Extensions live in `~/.pillar/agent/extensions/` (global; `$PILLAR_CODING_AGENT_DIR` overrides the agent directory) or `.pillar/extensions/` (project-local, only after project trust is granted) as `*.luau` files or `*/index.luau`. They must type-check under `--!strict` with the `@pillar` definitions. When editing extension docs or host API code, the contract is: type-check clean, then run; see [docs/rules/04-luau-extensions.md](../docs/rules/04-luau-extensions.md).
 
 ## Upstream reference checkouts
 
