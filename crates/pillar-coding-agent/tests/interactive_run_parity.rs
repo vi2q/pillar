@@ -13,7 +13,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -268,6 +268,8 @@ struct ScriptedIo {
     first_taken: bool,
     started: Arc<AtomicBool>,
     stopped: Arc<AtomicBool>,
+    /// The reported terminal size (mutable so a test can resize).
+    size: Arc<Mutex<(usize, usize)>>,
 }
 
 impl TerminalIo for ScriptedIo {
@@ -275,7 +277,7 @@ impl TerminalIo for ScriptedIo {
         self.writes.lock().unwrap().push_str(data);
     }
     fn size(&self) -> (usize, usize) {
-        (80, 24)
+        *self.size.lock().unwrap()
     }
     fn enable_raw_mode(&mut self) -> bool {
         self.started.store(true, Ordering::SeqCst);
@@ -318,6 +320,8 @@ struct Harness {
     chunks: Arc<Mutex<Vec<String>>>,
     started: Arc<AtomicBool>,
     stopped: Arc<AtomicBool>,
+    /// The terminal size the injected I/O reports.
+    size: Arc<Mutex<(usize, usize)>>,
 }
 
 fn harness(chunks: Vec<String>, release: Option<Arc<dyn Fn() -> bool + Send + Sync>>) -> Harness {
@@ -331,6 +335,17 @@ fn harness_with_writes(
     chunks: Vec<String>,
     release: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
 ) -> Harness {
+    harness_with_size(writes, chunks, release, Arc::new(Mutex::new((80, 24))))
+}
+
+/// [`harness_with_writes`] over a caller-owned terminal size (a test can then
+/// resize the terminal the loop reads).
+fn harness_with_size(
+    writes: Arc<Mutex<String>>,
+    chunks: Vec<String>,
+    release: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+    size: Arc<Mutex<(usize, usize)>>,
+) -> Harness {
     let started = Arc::new(AtomicBool::new(false));
     let stopped = Arc::new(AtomicBool::new(false));
     let chunks = Arc::new(Mutex::new(chunks));
@@ -341,6 +356,7 @@ fn harness_with_writes(
         first_taken: false,
         started: Arc::clone(&started),
         stopped: Arc::clone(&stopped),
+        size: Arc::clone(&size),
     };
     Harness {
         terminal: ProcessTerminal::with_io(Box::new(io)),
@@ -348,6 +364,7 @@ fn harness_with_writes(
         chunks,
         started,
         stopped,
+        size,
     }
 }
 
@@ -1408,4 +1425,75 @@ fn take_drains_one_bounded_batch() {
     assert_eq!(backlog.take(256).len(), 256);
     assert_eq!(backlog.take(256).len(), 44);
     assert!(backlog.take(256).is_empty());
+}
+
+/// A terminal resize repaints. Upstream's terminal calls `requestRender()` from
+/// its resize handler, so the port's loop must request a frame when
+/// `resize_if_changed()` reports one: otherwise the old-width frame stays on a
+/// terminal that already reflowed it (gaps / shifted rows) until some other
+/// dirty event happens to paint.
+#[tokio::test]
+async fn a_terminal_resize_paints_a_frame() {
+    install_dark();
+    let session = session(echo_stream("pong"), "resize");
+    let writes = Arc::new(Mutex::new(String::new()));
+    let size = Arc::new(Mutex::new((80usize, 24usize)));
+    let gate_writes = Arc::clone(&writes);
+    let gate_size = Arc::clone(&size);
+    // The clear count at the moment the size changed: clearOnShrink is off for
+    // this run, so only a frame painted after the resize can raise it.
+    let clears_before = Arc::new(AtomicUsize::new(0));
+    let gate_clears = Arc::clone(&clears_before);
+    let resized = Arc::new(AtomicBool::new(false));
+    let gate_resized = Arc::clone(&resized);
+    let release: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || {
+        if !gate_resized.load(Ordering::SeqCst) {
+            let painted = strip_terminal_sequences(&gate_writes.lock().unwrap());
+            if painted.contains("pong") {
+                let clears = gate_writes.lock().unwrap().matches("\u{1b}[2J").count();
+                gate_clears.store(clears, Ordering::SeqCst);
+                *gate_size.lock().unwrap() = (40, 24);
+                gate_resized.store(true, Ordering::SeqCst);
+            }
+            return false;
+        }
+        gate_writes.lock().unwrap().matches("\u{1b}[2J").count()
+            > gate_clears.load(Ordering::SeqCst)
+    });
+    let mut harness = harness_with_size(
+        Arc::clone(&writes),
+        vec!["hi\r".to_string(), "/quit\r".to_string()],
+        Some(release),
+        Arc::clone(&size),
+    );
+    let mut options = run_options(temp_dir("resize-options"));
+    options.mode.clear_on_shrink = Some(false);
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        run_interactive(
+            Arc::clone(&session),
+            Box::new(std::mem::replace(
+                &mut harness.terminal,
+                ProcessTerminal::with_io(Box::new(pillar_tui::process_terminal::NullTerminalIo)),
+            )),
+            options,
+        ),
+    )
+    .await
+    .expect("the resize repaints")
+    .expect("run loop ok");
+
+    assert_eq!(result, InteractiveOutcome::Exit(0));
+    assert_eq!(*harness.size.lock().unwrap(), (40, 24));
+    assert!(
+        harness
+            .writes
+            .lock()
+            .unwrap()
+            .matches("\u{1b}[2J")
+            .count()
+            > 0,
+        "the width change clears and redraws"
+    );
 }

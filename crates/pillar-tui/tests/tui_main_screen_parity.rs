@@ -319,3 +319,36 @@ fn hardware_cursor_follows_the_marker_when_enabled() {
     assert!(!written.contains("_pi:c"), "marker stripped: {written:?}");
     assert!(written.contains("\u{1b}[3G"), "{written:?}");
 }
+
+/// A shrinking frame keeps the previous viewport top: upstream ends the
+/// differential path with `previousViewportTop = max(prevViewportTop,
+/// finalCursorRow - height + 1)` because the terminal's working area only
+/// grows. Moving it up makes the next frame's cursor math land a row off, so
+/// the drift accumulates with every shrink (the abort path shrinks).
+#[test]
+fn a_shrinking_differential_frame_keeps_the_viewport_top() {
+    let terminal = terminal(40, 10);
+    let initial: Vec<String> = (0..20).map(|index| format!("line {index}")).collect();
+    let mut screen = screen(&terminal, &initial.iter().map(String::as_str).collect::<Vec<_>>());
+    // The differential path needs clearOnShrink off to see deletions.
+    screen.base_mut().set_clear_on_shrink(false);
+    screen.do_render().expect("first render");
+    assert_eq!(screen.capture_render_state().previous_viewport_top, 10);
+
+    // Change a line below the viewport top and drop the last line.
+    let mut next: Vec<String> = (0..19).map(|index| format!("line {index}")).collect();
+    next[12] = "CHANGED".to_string();
+    screen.base_mut().clear();
+    screen.base_mut().add_child(Box::new(Lines { lines: next.clone() }));
+    screen.do_render().expect("shrinking differential render");
+    assert!(
+        !terminal.written().contains("\u{1b}[2J"),
+        "the frame is differential: {:?}",
+        terminal.written()
+    );
+    assert_eq!(
+        screen.capture_render_state().previous_viewport_top,
+        10,
+        "the working area does not shrink"
+    );
+}

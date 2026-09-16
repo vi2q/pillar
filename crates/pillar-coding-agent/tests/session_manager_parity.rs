@@ -947,7 +947,7 @@ fn measure_session_scale() {
     const SESSIONS: usize = 1000;
     let started = Instant::now();
     let mut names = Vec::new();
-    for index in 0..SESSIONS {
+    for _index in 0..SESSIONS {
         let mut manager =
             SessionManager::create("/tmp/scale", Some(&dir), None).expect("create session");
         manager.append_message(user_msg("question")).unwrap();

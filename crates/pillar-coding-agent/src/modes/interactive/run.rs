@@ -1148,6 +1148,12 @@ fn pump_loop(
             // The 2-column picker lays out against the terminal height
             // (upstream reads `tui.terminal.rows` on every render).
             mode.set_terminal_rows(screen.base_mut().terminal_mut().rows());
+            // Upstream's terminal calls `requestRender()` from its resize
+            // handler; without a frame here the pre-resize lines stay on a
+            // terminal that has already reflowed them. The port's `force` only
+            // makes the request immediate (it does not reset the render state),
+            // so the width/height change still goes through `full_render`.
+            screen.base_mut().request_render(true);
         }
         if screen.base_mut().take_render_request(Instant::now()) {
             if let Err(error) = screen.do_render() {
