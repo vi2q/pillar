@@ -311,17 +311,11 @@ mod tests {
         assert!(result.as_mut().poll(&mut result_cx).is_pending());
 
         stream.push(7);
-        assert_eq!(
-            iter.as_mut().poll_next(&mut iter_cx),
-            Poll::Ready(Some(7))
-        );
+        assert_eq!(iter.as_mut().poll_next(&mut iter_cx), Poll::Ready(Some(7)));
         stream.push(0);
         assert_eq!(wakes(&result_count), 1);
         assert_eq!(result.as_mut().poll(&mut result_cx), Poll::Ready(0));
-        assert_eq!(
-            iter.as_mut().poll_next(&mut iter_cx),
-            Poll::Ready(Some(0))
-        );
+        assert_eq!(iter.as_mut().poll_next(&mut iter_cx), Poll::Ready(Some(0)));
         assert_eq!(iter.as_mut().poll_next(&mut iter_cx), Poll::Ready(None));
 
         stream.push(5);

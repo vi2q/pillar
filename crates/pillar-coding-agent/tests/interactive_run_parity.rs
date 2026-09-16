@@ -33,8 +33,9 @@ use pillar_coding_agent::core::resource_loader::{ResourceLoader, ResourceLoaderO
 use pillar_coding_agent::core::session_manager::SessionManager;
 use pillar_coding_agent::core::settings_manager::{SettingsManager, SettingsManagerCreateOptions};
 use pillar_coding_agent::modes::interactive::interactive_mode::InteractiveModeOptions;
+use pillar_coding_agent::core::agent_session_class::AgentSessionEvent;
 use pillar_coding_agent::modes::interactive::run::{
-    InteractiveOutcome, InteractiveRunOptions, run_interactive,
+    EventBacklog, InteractiveOutcome, InteractiveRunOptions, run_interactive,
 };
 use pillar_coding_agent::modes::interactive::theme;
 use pillar_coding_agent::modes::interactive::transcript::TranscriptSettings;
@@ -1321,4 +1322,90 @@ async fn settings_command_cycles_a_value_and_closes() {
             .transport(),
         "sse"
     );
+}
+
+// ============================================================================
+// Event backlog (docs/ARCHITECTURE-REVIEW-s05c0.md D)
+// ============================================================================
+
+fn message_update(text: &str) -> AgentSessionEvent {
+    AgentSessionEvent::MessageUpdate {
+        message: pillar_agent::types::AgentMessage::Message(
+            pillar_ai::types::Message::Assistant(Box::new(assistant_message(text))),
+        ),
+        assistant_message_event: Box::new(AssistantMessageEvent::TextDelta {
+            content_index: 0,
+            partial: assistant_message(text),
+            delta: text.to_string(),
+        }),
+    }
+}
+
+fn tool_update(tool_call_id: &str, output: &str) -> AgentSessionEvent {
+    AgentSessionEvent::ToolExecutionUpdate {
+        tool_call_id: tool_call_id.to_string(),
+        tool_name: "bash".to_string(),
+        args: serde_json::json!({}),
+        partial_result: serde_json::json!({ "output": output }),
+    }
+}
+
+fn message_end(text: &str) -> AgentSessionEvent {
+    AgentSessionEvent::MessageEnd {
+        message: pillar_agent::types::AgentMessage::Message(pillar_ai::types::Message::Assistant(
+            Box::new(assistant_message(text)),
+        )),
+    }
+}
+
+/// Each streaming update carries the full snapshot, so only the newest one per
+/// target has to reach the transcript: a fast producer cannot grow the backlog.
+#[test]
+fn streaming_updates_coalesce_to_the_newest() {
+    let mut backlog = EventBacklog::default();
+    for text in ["a", "ab", "abc"] {
+        backlog.push(message_update(text));
+    }
+    let taken = backlog.take(10);
+    assert_eq!(taken.len(), 1, "one update carries the newest snapshot");
+    match &taken[0] {
+        AgentSessionEvent::MessageUpdate { message, .. } => {
+            let rendered = format!("{message:?}");
+            assert!(rendered.contains("abc"), "{rendered}");
+        }
+        other => panic!("expected a message update, got {other:?}"),
+    }
+
+    // Tool output streams coalesce per tool call, and a different call starts
+    // a new entry.
+    backlog.push(tool_update("call-1", "one"));
+    backlog.push(tool_update("call-1", "one two"));
+    backlog.push(tool_update("call-2", "other"));
+    let taken = backlog.take(10);
+    assert_eq!(taken.len(), 2, "one update per tool call");
+}
+
+/// Critical events are never dropped or reordered: they carry the transcript.
+#[test]
+fn critical_events_break_the_coalescing_run() {
+    let mut backlog = EventBacklog::default();
+    backlog.push(message_update("a"));
+    backlog.push(message_end("a"));
+    backlog.push(message_update("b"));
+    let taken = backlog.take(10);
+    assert_eq!(taken.len(), 3);
+    assert!(matches!(taken[1], AgentSessionEvent::MessageEnd { .. }));
+}
+
+/// One pump iteration drains a bounded batch, so a backlog cannot starve
+/// terminal input or the executor's completion reports.
+#[test]
+fn take_drains_one_bounded_batch() {
+    let mut backlog = EventBacklog::default();
+    for index in 0..300 {
+        backlog.push(message_end(&format!("message {index}")));
+    }
+    assert_eq!(backlog.take(256).len(), 256);
+    assert_eq!(backlog.take(256).len(), 44);
+    assert!(backlog.take(256).is_empty());
 }

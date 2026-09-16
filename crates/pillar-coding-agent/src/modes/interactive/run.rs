@@ -17,9 +17,10 @@
 //! render request through [`InteractiveMode::mark_dirty`] instead of calling
 //! `ui.requestRender()` from the event handlers.
 
+use std::collections::VecDeque;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -278,37 +279,58 @@ pub async fn run_interactive(
     screen.base_mut().start();
 
     // Session events are queued for the pump, which owns all mode mutation.
-    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<AgentSessionEvent>();
-    let unsubscribe = session.subscribe(Arc::new(move |event| {
-        let _ = event_tx.send(event.clone());
-    }));
+    let events = Arc::new(Mutex::new(EventBacklog::default()));
+    let unsubscribe = session.subscribe({
+        let events = Arc::clone(&events);
+        Arc::new(move |event| {
+            events
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(event.clone());
+        })
+    });
 
     let (action_tx, mut action_rx) = tokio::sync::mpsc::unbounded_channel::<ModeAction>();
     let (ui_tx, ui_rx) = tokio::sync::mpsc::unbounded_channel::<UiCommand>();
+    // Refuses an extension's UI request once the pump is this far behind, so a
+    // flooding extension gets an error instead of growing the queue without
+    // bound (the executor must never wait on the pump: abort stays live).
+    let ui_pending = Arc::new(AtomicUsize::new(0));
     // The `ctx.ui` bridge (upstream `createExtensionUIContext` lives on the
     // mode): an extension only queues a request on this channel, so it never
     // blocks on — or locks — the mode while holding the Luau runtime.
     if let Some(slot) = &extension_ui {
         let sender = ui_tx.clone();
+        let pending = Arc::clone(&ui_pending);
         let bridge: crate::core::extensions_types::ExtensionUiFn = Arc::new(
             move |request: crate::core::extensions_types::ExtensionUiRequest| {
+                if pending.load(Ordering::SeqCst) >= UI_REQUEST_LIMIT {
+                    return Err("ctx.ui: the interactive mode is behind on UI requests".to_string());
+                }
                 sender
                     .send(UiCommand::ExtensionUi {
                         op: request.op,
                         args: request.args,
                     })
-                    .map_err(|_| "ctx.ui: the interactive mode has stopped".to_string())
+                    .map_err(|_| "ctx.ui: the interactive mode has stopped".to_string())?;
+                pending.fetch_add(1, Ordering::SeqCst);
+                Ok(())
             },
         );
         // Dialogs block the extension's thread until the pump answers (the
         // mode's dialog components are native, so the pump never needs the
         // runner lock while one is open).
         let ask_sender = ui_tx.clone();
+        let ask_pending = Arc::clone(&ui_pending);
         let ask: crate::core::extensions_types::ExtensionUiAskFn = Arc::new(move |request| {
+            if ask_pending.load(Ordering::SeqCst) >= UI_REQUEST_LIMIT {
+                return Err("ctx.ui: the interactive mode is behind on UI requests".to_string());
+            }
             let (reply, answer) = std::sync::mpsc::sync_channel(1);
             ask_sender
                 .send(UiCommand::ExtensionUiAsk { request, reply })
                 .map_err(|_| "ctx.ui: the interactive mode has stopped".to_string())?;
+            ask_pending.fetch_add(1, Ordering::SeqCst);
             match answer.recv_timeout(std::time::Duration::from_secs(600)) {
                 Ok(result) => result,
                 Err(_) => Err("ctx.ui: the dialog was not answered".to_string()),
@@ -358,9 +380,10 @@ pub async fn run_interactive(
             screen,
             pump_mode,
             pump_keybindings,
-            event_rx,
+            events,
             pump_actions,
             ui_rx,
+            ui_pending,
             &mut editor_slot,
             pump_stop,
             pump_title,
@@ -698,15 +721,111 @@ const APP_ACTION_PRECEDENCE: [&str; 17] = [
     "app.session.toggleNamedFilter",
 ];
 
+/// How many session events one pump iteration handles before it returns to
+/// terminal input: a flooding producer must not starve the keyboard, the abort
+/// keys or the executor's completion reports.
+const EVENT_DRAIN_BATCH: usize = 256;
+
+/// Hard cap on pending session events. It is only reached while the pump is
+/// blocked in a dialog and critical events keep arriving — streaming updates
+/// are coalesced away long before that.
+const EVENT_BACKLOG_LIMIT: usize = 4096;
+
+/// How many `ctx.ui` requests may wait for the pump before an extension's
+/// request is refused (the executor must never wait on the pump, so the
+/// refusal is free backpressure instead of a blocking send).
+const UI_REQUEST_LIMIT: usize = 256;
+
+/// The session events waiting for the pump, with streaming updates coalesced.
+///
+/// A streaming turn emits one `MessageUpdate` per token and one
+/// `ToolExecutionUpdate` per output chunk, and each of them carries the full
+/// snapshot (`message` / `partial_result`) the transcript renders, so only the
+/// newest update per streaming target matters. Everything else (message and
+/// tool boundaries, errors, persistence events) queues in order and is never
+/// dropped (docs/ARCHITECTURE-REVIEW-s05c0.md D).
+#[derive(Default)]
+pub struct EventBacklog {
+    queue: VecDeque<AgentSessionEvent>,
+}
+
+impl EventBacklog {
+    /// Queue an event, replacing the previous update of the same streaming
+    /// target: the newer snapshot subsumes the older one.
+    pub fn push(&mut self, event: AgentSessionEvent) {
+        if let Some(last) = self.queue.back_mut()
+            && same_streaming_target(last, &event)
+        {
+            *last = event;
+            return;
+        }
+        if self.queue.len() >= EVENT_BACKLOG_LIMIT {
+            // The pump is stalled (a dialog) and the backlog is at its cap:
+            // shed a coalescible update rather than a critical event.
+            let _ = self.drop_oldest_update();
+        }
+        self.queue.push_back(event);
+    }
+
+    /// Take up to `limit` events for one pump iteration.
+    pub fn take(&mut self, limit: usize) -> Vec<AgentSessionEvent> {
+        let count = limit.min(self.queue.len());
+        self.queue.drain(..count).collect()
+    }
+
+    /// Drop the oldest coalescible update; false when every pending event is
+    /// critical (they carry the transcript, so the cap yields to them).
+    fn drop_oldest_update(&mut self) -> bool {
+        let Some(index) = self
+            .queue
+            .iter()
+            .position(|event| is_streaming_update(event))
+        else {
+            return false;
+        };
+        self.queue.remove(index);
+        true
+    }
+}
+
+/// Whether two events update the same streaming target, so the newer one
+/// subsumes the older.
+fn same_streaming_target(previous: &AgentSessionEvent, next: &AgentSessionEvent) -> bool {
+    match (previous, next) {
+        (
+            AgentSessionEvent::MessageUpdate { .. },
+            AgentSessionEvent::MessageUpdate { .. },
+        ) => true,
+        (
+            AgentSessionEvent::ToolExecutionUpdate {
+                tool_call_id: previous,
+                ..
+            },
+            AgentSessionEvent::ToolExecutionUpdate {
+                tool_call_id: next, ..
+            },
+        ) => previous == next,
+        _ => false,
+    }
+}
+
+fn is_streaming_update(event: &AgentSessionEvent) -> bool {
+    matches!(
+        event,
+        AgentSessionEvent::MessageUpdate { .. } | AgentSessionEvent::ToolExecutionUpdate { .. }
+    )
+}
+
 /// The pump: terminal input, session events, and rendering, all on one thread.
 #[allow(clippy::too_many_arguments)]
 fn pump_loop(
     mut screen: TuiMainScreen,
     mode: Arc<InteractiveMode>,
     keybindings: Arc<KeybindingsManager>,
-    mut events: tokio::sync::mpsc::UnboundedReceiver<AgentSessionEvent>,
+    events: Arc<Mutex<EventBacklog>>,
     actions: tokio::sync::mpsc::UnboundedSender<ModeAction>,
     mut ui_commands: tokio::sync::mpsc::UnboundedReceiver<UiCommand>,
+    ui_pending: Arc<AtomicUsize>,
     editor_slot: &mut pillar_tui::tui::ComponentId,
     shutdown: Arc<AtomicBool>,
     pending_title: Arc<Mutex<Option<String>>>,
@@ -754,8 +873,14 @@ fn pump_loop(
             screen.base_mut().terminal_mut().set_progress(running);
         }
 
-        // Session events (the listener cloned them onto the channel).
-        while let Ok(event) = events.try_recv() {
+        // Session events (queued by the listener). One bounded batch per
+        // iteration: a flooding producer must not starve the terminal, the
+        // abort keys or the executor's completion reports.
+        let batch = {
+            let mut backlog = events.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            backlog.take(EVENT_DRAIN_BATCH)
+        };
+        for event in batch {
             let reported = mode.handle_event(&event);
             mode.mark_dirty();
             for action in reported {
@@ -767,6 +892,7 @@ fn pump_loop(
 
         // Executor reports (bash completion, model switches).
         while let Ok(command) = ui_commands.try_recv() {
+            ui_pending.fetch_sub(1, Ordering::SeqCst);
             let reported: Vec<ModeAction> = match command {
                 UiCommand::BashComplete {
                     exit_code,
