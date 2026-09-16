@@ -740,19 +740,22 @@ fn build_entry_index(entries: &[Entry]) -> BTreeMap<String, &Entry> {
     entries.iter().map(|e| (e.id().to_string(), e)).collect()
 }
 
-/// Build the path from root to `leaf_id` (or the last entry when omitted)
-/// (upstream `buildSessionPath`).
+/// Build the path from root to `leaf_id` (upstream `buildSessionPath`).
+///
+/// `None` is upstream's `leafId === null` (no leaf: empty path). Rust cannot
+/// distinguish that from `undefined`, but no port caller omits the leaf, so
+/// `None` is the null case. A non-empty id that cannot be resolved (or the
+/// empty string, which is falsy in upstream's check) falls back to the last
+/// entry, exactly like upstream.
 pub fn build_session_path<'a>(
     entries: &'a [Entry],
     leaf_id: Option<&str>,
     by_id: &BTreeMap<String, &'a Entry>,
 ) -> Vec<&'a Entry> {
-    if leaf_id == Some("") {
+    let Some(leaf_id) = leaf_id else {
         return Vec::new();
-    }
-    let leaf = leaf_id
-        .and_then(|id| by_id.get(id).copied())
-        .or_else(|| entries.last());
+    };
+    let leaf = by_id.get(leaf_id).copied().or_else(|| entries.last());
     let Some(leaf) = leaf else {
         return Vec::new();
     };
@@ -904,6 +907,11 @@ pub fn get_latest_compaction_entry(entries: &[Entry]) -> Option<&CompactionEntry
 /// (upstream `SessionManager`). Each entry has an id and parentId forming a
 /// tree; the leaf pointer tracks the current position. Appending creates a
 /// child of the current leaf; branching moves the leaf to an earlier entry.
+///
+/// `Clone` snapshots the in-memory state (entries, labels, leaf) so the fork
+/// flow can branch a session that has no file yet (upstream mutates the live
+/// manager in place; the port rebuilds the runtime from a copy).
+#[derive(Clone)]
 pub struct SessionManager {
     session_id: String,
     session_file: Option<PathBuf>,
@@ -1430,6 +1438,17 @@ impl SessionManager {
         self.get_entries().into_iter().cloned().collect()
     }
 
+    /// A read-only tree view for branch summarization (upstream passes the
+    /// session manager straight to `collectEntriesForBranchSummary`; the port
+    /// narrows it to [`SessionTreeView`]).
+    pub fn tree_view(&self) -> crate::core::session_entries::SessionTreeView {
+        let mut view = crate::core::session_entries::SessionTreeView::new();
+        for entry in self.get_entries() {
+            view.insert(entry.clone());
+        }
+        view
+    }
+
     /// The session as a tree structure (upstream `getTree`): roots are
     /// entries with a null/self parent or a broken parent chain; children
     /// are sorted oldest-first.
@@ -1858,7 +1877,7 @@ fn iso_now() -> String {
     format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z")
 }
 
-fn civil_from_days(days: i64) -> (i64, i64, i64) {
+pub(crate) fn civil_from_days(days: i64) -> (i64, i64, i64) {
     let z = days + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
     let doe = z - era * 146_097;

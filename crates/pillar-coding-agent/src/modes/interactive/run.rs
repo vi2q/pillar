@@ -92,6 +92,15 @@ enum UiCommand {
     },
     /// A session rename settled (upstream the `renameSession` callback).
     SessionRenamed { error: Option<String> },
+    /// A tree navigation settled (upstream the code after `await
+    /// session.navigateTree(...)` in `showTreeSelector`).
+    TreeNavigated {
+        target_id: String,
+        editor_text: Option<String>,
+        cancelled: bool,
+        aborted: bool,
+        error: Option<String>,
+    },
 }
 
 /// How [`run_interactive`] ends (upstream the interactive mode keeps running
@@ -103,6 +112,14 @@ pub enum InteractiveOutcome {
     /// `/resume` picked a session file: the caller re-enters the run loop
     /// with a session built from it.
     SwitchSession { session_path: String },
+    /// `/fork` or `/clone` picked an entry: the caller rebuilds the runtime
+    /// as a branched session (upstream `runtimeHost.fork`) and restores
+    /// `editor_text` into the new editor.
+    ForkSession {
+        entry_id: String,
+        position: String,
+        editor_text: Option<String>,
+    },
 }
 
 /// Options for [`run_interactive`].
@@ -114,6 +131,12 @@ pub struct InteractiveRunOptions {
     /// Sent through `session.prompt` before the loop starts (upstream
     /// `options.initialMessage`).
     pub initial_message: Option<String>,
+    /// Prefilled into the editor without submitting (upstream the
+    /// `editor.setText(result.selectedText)` after a fork).
+    pub initial_editor_text: Option<String>,
+    /// Shown as a status line once the loop starts (upstream's `showStatus`
+    /// after a fork / clone, which the rebuilt mode would otherwise lose).
+    pub initial_status: Option<String>,
     /// Where `<agentDir>/keybindings.json` lives.
     pub agent_dir: PathBuf,
 }
@@ -125,6 +148,8 @@ impl Default for InteractiveRunOptions {
             transcript: TranscriptSettings::default(),
             markdown_transformers: Vec::new(),
             initial_message: None,
+            initial_editor_text: None,
+            initial_status: None,
             agent_dir: PathBuf::new(),
         }
     }
@@ -141,6 +166,8 @@ pub async fn run_interactive(
         transcript,
         markdown_transformers,
         initial_message,
+        initial_editor_text,
+        initial_status,
         agent_dir,
     } = options;
 
@@ -247,6 +274,13 @@ pub async fn run_interactive(
             text: initial_message,
             streaming_behavior: None,
         });
+    }
+    if let Some(initial_editor_text) = initial_editor_text {
+        mode.set_editor_text(&initial_editor_text);
+    }
+    if let Some(initial_status) = initial_status {
+        mode.transcript().lock().show_status(&initial_status);
+        mode.mark_dirty();
     }
 
     let pump_mode = Arc::clone(&mode);
@@ -488,6 +522,41 @@ async fn execute_action(
         // The pump owns the session switch (it ends the run loop); the
         // executor only sees a no-op.
         ModeAction::ResumeSession { .. } => Ok(()),
+        // The pump also owns the fork (it ends the run loop and the caller
+        // rebuilds the runtime).
+        ModeAction::ForkSession { .. } => Ok(()),
+        // Upstream `showTreeSelector`'s `onSelect`: stop a streaming response
+        // first, then move the leaf (optionally summarizing the branch).
+        ModeAction::NavigateTree {
+            target_id,
+            summarize,
+            custom_instructions,
+        } => {
+            if session.is_streaming() {
+                session.abort().await;
+            }
+            let result = session
+                .navigate_tree(
+                    &target_id,
+                    crate::core::agent_session_class::TreeNavigationOptions {
+                        summarize,
+                        custom_instructions: custom_instructions.clone(),
+                        ..Default::default()
+                    },
+                )
+                .await;
+            let _ = ui.send(UiCommand::TreeNavigated {
+                target_id,
+                editor_text: result
+                    .as_ref()
+                    .ok()
+                    .and_then(|navigation| navigation.editor_text.clone()),
+                cancelled: result.as_ref().map(|r| r.cancelled).unwrap_or(false),
+                aborted: result.as_ref().map(|r| r.aborted).unwrap_or(false),
+                error: result.err(),
+            });
+            Ok(())
+        }
         ModeAction::Shutdown => Ok(()),
         // Handled by the pump (it owns the TUI); never reaches the executor.
         ModeAction::EditorSlotChanged => Ok(()),
@@ -659,6 +728,19 @@ fn pump_loop(
                     error,
                 } => mode.complete_session_delete(&path, ok, moved_to_trash, error),
                 UiCommand::SessionRenamed { error } => mode.complete_session_rename(error),
+                UiCommand::TreeNavigated {
+                    target_id,
+                    editor_text,
+                    cancelled,
+                    aborted,
+                    error,
+                } => mode.complete_tree_navigation(
+                    &target_id,
+                    editor_text,
+                    cancelled,
+                    aborted,
+                    error,
+                ),
             };
             for action in reported {
                 if dispatch_action(&mut screen, &mode, editor_slot, &actions, action).is_err() {
@@ -688,6 +770,7 @@ fn pump_loop(
         // Terminal input.
         let mut requested_shutdown = false;
         let mut resume_path: Option<String> = None;
+        let mut fork_request: Option<(String, String, Option<String>)> = None;
         let data = screen.base_mut().terminal_mut().read_input(interval);
         // On idle, a buffered partial escape sequence flushes once its
         // disambiguation deadline passed (upstream the StdinBuffer's own
@@ -716,12 +799,31 @@ fn pump_loop(
                 resume_path = Some(session_path);
                 break;
             }
+            // Upstream `runtimeHost.fork`: the branched session replaces the
+            // whole runtime, which in this port ends the run loop; the caller
+            // rebuilds it (and restores the forked-from message text).
+            if let ModeAction::ForkSession {
+                entry_id,
+                position,
+                editor_text,
+            } = action
+            {
+                fork_request = Some((entry_id, position, editor_text));
+                break;
+            }
             if dispatch_action(&mut screen, &mode, editor_slot, &actions, action).is_err() {
                 break;
             }
         }
         if let Some(session_path) = resume_path {
             break Ok(InteractiveOutcome::SwitchSession { session_path });
+        }
+        if let Some((entry_id, position, editor_text)) = fork_request {
+            break Ok(InteractiveOutcome::ForkSession {
+                entry_id,
+                position,
+                editor_text,
+            });
         }
 
         // Rendering (a shutdown request still paints the final frame).
@@ -763,6 +865,17 @@ fn dispatch_action(
 ) -> Result<(), tokio::sync::mpsc::error::SendError<ModeAction>> {
     if let ModeAction::Bash { command, excluded } = &action {
         mode.begin_bash(command, *excluded);
+    }
+    // Upstream the block before `session.navigateTree(...)`: stop a streaming
+    // response, restore its queued messages, and show the branch summary
+    // spinner. The abort is sent before the navigation so the executor sees
+    // it first.
+    if let ModeAction::NavigateTree { summarize, .. } = &action {
+        for pre_action in mode.begin_tree_navigation(*summarize) {
+            if actions.send(pre_action).is_err() {
+                return Ok(());
+            }
+        }
     }
     if matches!(action, ModeAction::EditorSlotChanged) {
         // Upstream `editorContainer.clear()` + `addChild(...)` + `setFocus`.

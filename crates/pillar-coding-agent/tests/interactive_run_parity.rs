@@ -365,6 +365,8 @@ fn run_options(agent_dir: PathBuf) -> InteractiveRunOptions {
         transcript: TranscriptSettings::default(),
         markdown_transformers: Vec::new(),
         initial_message: None,
+        initial_editor_text: None,
+        initial_status: None,
         agent_dir,
     }
 }
@@ -910,5 +912,197 @@ async fn resume_opens_the_session_selector_and_escape_cancels() {
     assert!(
         !output.contains("Resumed session"),
         "Esc cancelled the selector: {output:?}"
+    );
+}
+
+/// The session tree end to end: `/tree` paints the tree, the arrows move the
+/// highlight, Enter opens the "Summarize branch?" dialog, choosing "No
+/// summary" navigates (rebuilding the transcript) and `/quit` exits.
+#[tokio::test]
+async fn tree_navigation_rebuilds_the_transcript_in_the_run_loop() {
+    install_dark();
+    let session = session(echo_stream("pong"), "tree");
+    let ids: Vec<String> = {
+        let mut sm = session.session_manager().lock().unwrap();
+        let mut ids = Vec::new();
+        for (text, is_user) in [
+            ("first question", true),
+            ("first answer", false),
+            ("second question", true),
+            ("second answer", false),
+        ] {
+            let message = if is_user {
+                pillar_coding_agent::core::messages::CodingAgentMessage::Base(Message::User {
+                    content: pillar_ai::types::UserContent::Text(text.to_string()),
+                    timestamp: 1,
+                })
+            } else {
+                pillar_coding_agent::core::messages::CodingAgentMessage::Base(Message::Assistant(
+                    Box::new(assistant_message(text)),
+                ))
+            };
+            let id = sm.append_message(message).expect("append");
+            ids.push(id);
+        }
+        ids
+    };
+    let mut harness = harness(vec!["/tree\r".to_string()], None);
+    let chunks = Arc::clone(&harness.chunks);
+    let writes = Arc::clone(&harness.writes);
+    std::thread::spawn(move || {
+        let wait_for = |needle: &str| {
+            for _ in 0..800 {
+                if strip_terminal_sequences(&writes.lock().unwrap()).contains(needle) {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            false
+        };
+        wait_for("Session Tree");
+        // Up twice (the constructor selects the current leaf, the last entry)
+        // to the assistant entry, then Enter opens the dialog. An assistant
+        // target leaves the editor empty, so `/quit` below is not appended to
+        // restored editor text.
+        chunks.lock().unwrap().push("\u{1b}[A\u{1b}[A\r".to_string());
+        wait_for("Summarize branch?");
+        chunks.lock().unwrap().push("\r".to_string());
+        wait_for("Navigated to selected point");
+        std::thread::sleep(Duration::from_millis(50));
+        chunks.lock().unwrap().push("/quit\r".to_string());
+    });
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        run_interactive(
+            Arc::clone(&session),
+            Box::new(std::mem::replace(
+                &mut harness.terminal,
+                ProcessTerminal::with_io(Box::new(pillar_tui::process_terminal::NullTerminalIo)),
+            )),
+            run_options(temp_dir("keybindings")),
+        ),
+    )
+    .await
+    .expect("run loop finished")
+    .expect("run loop ok");
+
+    assert_eq!(result, InteractiveOutcome::Exit(0));
+    let output = rendered(&harness.writes);
+    assert!(output.contains("Session Tree"), "tree rendered: {output:?}");
+    assert!(
+        output.contains("Summarize branch?"),
+        "summary dialog rendered: {output:?}"
+    );
+    assert!(
+        output.contains("Navigated to selected point"),
+        "navigation status rendered: {output:?}"
+    );
+    assert!(
+        output.contains("first answer"),
+        "kept branch rendered: {output:?}"
+    );
+    // The rebuilt context holds only the kept branch (the last painted frame
+    // after the status shows it; earlier frames still carry the old branch).
+    let context_text: String = session
+        .state()
+        .messages
+        .iter()
+        .map(|message| match message {
+            pillar_agent::types::AgentMessage::Message(Message::User { content, .. }) => {
+                match content {
+                    pillar_ai::types::UserContent::Text(text) => text.clone(),
+                    pillar_ai::types::UserContent::Blocks(blocks) => blocks
+                        .iter()
+                        .filter_map(|block| match block {
+                            Content::Text { text, .. } => Some(text.clone()),
+                            _ => None,
+                        })
+                        .collect(),
+                }
+            }
+            pillar_agent::types::AgentMessage::Message(Message::Assistant(assistant)) => {
+                pillar_ai::text::content_text(&assistant.content, "")
+            }
+            _ => String::new(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(context_text.contains("first answer"), "{context_text:?}");
+    assert!(!context_text.contains("second"), "{context_text:?}");
+    // The leaf moved to the selected assistant entry.
+    assert_eq!(session.get_leaf_id().as_deref(), Some(ids[1].as_str()));
+}
+
+/// `/fork` end to end: the selector paints, Enter returns the fork outcome
+/// (the caller rebuilds the runtime as a branched session).
+#[tokio::test]
+async fn fork_command_returns_the_fork_outcome_from_the_run_loop() {
+    install_dark();
+    let session = session(echo_stream("pong"), "fork");
+    let ids: Vec<String> = {
+        let mut sm = session.session_manager().lock().unwrap();
+        let mut ids = Vec::new();
+        for (text, is_user) in [
+            ("first question", true),
+            ("first answer", false),
+            ("second question", true),
+            ("second answer", false),
+        ] {
+            let message = if is_user {
+                pillar_coding_agent::core::messages::CodingAgentMessage::Base(Message::User {
+                    content: pillar_ai::types::UserContent::Text(text.to_string()),
+                    timestamp: 1,
+                })
+            } else {
+                pillar_coding_agent::core::messages::CodingAgentMessage::Base(Message::Assistant(
+                    Box::new(assistant_message(text)),
+                ))
+            };
+            ids.push(sm.append_message(message).expect("append"));
+        }
+        ids
+    };
+    let mut harness = harness(vec!["/fork\r".to_string()], None);
+    let chunks = Arc::clone(&harness.chunks);
+    let writes = Arc::clone(&harness.writes);
+    std::thread::spawn(move || {
+        for _ in 0..800 {
+            if strip_terminal_sequences(&writes.lock().unwrap()).contains("Fork from Message") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        chunks.lock().unwrap().push("\r".to_string());
+    });
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        run_interactive(
+            Arc::clone(&session),
+            Box::new(std::mem::replace(
+                &mut harness.terminal,
+                ProcessTerminal::with_io(Box::new(pillar_tui::process_terminal::NullTerminalIo)),
+            )),
+            run_options(temp_dir("keybindings")),
+        ),
+    )
+    .await
+    .expect("run loop finished")
+    .expect("run loop ok");
+
+    // The default selection is the most recent user message.
+    assert_eq!(
+        result,
+        InteractiveOutcome::ForkSession {
+            entry_id: ids[2].clone(),
+            position: "before".to_string(),
+            editor_text: Some("second question".to_string()),
+        }
+    );
+    let output = rendered(&harness.writes);
+    assert!(
+        output.contains("Fork from Message"),
+        "selector rendered: {output:?}"
     );
 }

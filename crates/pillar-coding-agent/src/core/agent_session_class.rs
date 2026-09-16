@@ -34,13 +34,17 @@ use serde_json::Value;
 
 use crate::core::agent_session::{
     ContextUsage, CustomDelivery, CustomMessagePlan, compute_context_usage, plan_custom_message,
-    will_retry_after_agent_end,
+    plan_tree_navigation, will_retry_after_agent_end,
 };
 use crate::core::auth_guidance::{
     format_no_api_key_found_message, format_no_model_selected_message,
 };
 use crate::core::bash_executor::{BashResult, CallbackSink};
 use crate::core::compaction::auto_driver::{self, AutoReason, CompactionDecision};
+use crate::core::compaction::branch_summarization::{
+    BranchSummaryDetails, GenerateBranchSummaryOptions, collect_entries_for_branch_summary,
+    generate_branch_summary,
+};
 use crate::core::compaction::driver as compaction_driver;
 use crate::core::compaction::driver::{
     CompactionPreparation, CompactionResult, SummarizationOptions, SummarizeFn, compact,
@@ -66,6 +70,34 @@ use crate::core::resource_loader::{
 use crate::core::session_entries::SessionEntry;
 use crate::core::session_manager::{SessionManager, session_entry_to_context_messages};
 use crate::core::settings_manager::SettingsManager;
+
+/// Options for [`AgentSession::navigate_tree`] (upstream the
+/// `navigateTree` options object).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TreeNavigationOptions {
+    /// Whether to summarize the branch being left.
+    pub summarize: bool,
+    /// Custom instructions for the branch summarizer.
+    pub custom_instructions: Option<String>,
+    /// If true, custom instructions replace the default prompt.
+    pub replace_instructions: Option<bool>,
+    /// Label to attach to the branch summary entry (or the target entry when
+    /// no summary is created).
+    pub label: Option<String>,
+}
+
+/// Result of [`AgentSession::navigate_tree`] (upstream the resolve value).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TreeNavigationResult {
+    /// Text to place in the editor when the target is a user/custom message.
+    pub editor_text: Option<String>,
+    /// True when the navigation was cancelled (extension cancel).
+    pub cancelled: bool,
+    /// True when a branch summarization was aborted.
+    pub aborted: bool,
+    /// The id of the created branch summary entry, if any.
+    pub summary_entry_id: Option<String>,
+}
 
 /// Session-level events (upstream the `AgentSessionEvent` union; agent
 /// events pass through with `agent_end` enriched with `will_retry`).
@@ -354,6 +386,8 @@ struct SessionState {
     retry_abort: Option<AbortSignal>,
     compaction_abort: Option<AbortSignal>,
     auto_compaction_abort: Option<AbortSignal>,
+    /// Running branch summarization (upstream `_branchSummaryAbortController`).
+    branch_summary_abort: Option<AbortSignal>,
     system_prompt_override: Option<String>,
     /// Scoped models from `--models`, grown by persisted-default
     /// propagation (upstream `_scopedModels`).
@@ -3297,6 +3331,322 @@ impl AgentSession {
         .await
     }
 
+    /// The session tree (upstream `sessionManager.getTree()`).
+    pub fn get_tree(&self) -> Vec<crate::core::session_manager::SessionTreeNode> {
+        self.inner
+            .session_manager
+            .lock()
+            .expect("session lock")
+            .get_tree()
+    }
+
+    /// The current leaf id (upstream `sessionManager.getLeafId()`).
+    pub fn get_leaf_id(&self) -> Option<String> {
+        self.inner
+            .session_manager
+            .lock()
+            .expect("session lock")
+            .get_leaf_id()
+            .map(str::to_string)
+    }
+
+    /// Abort a running branch summarization (upstream
+    /// `abortBranchSummary`).
+    pub fn abort_branch_summary(&self) {
+        let signal = self
+            .inner
+            .state
+            .lock()
+            .expect("session state")
+            .branch_summary_abort
+            .clone();
+        if let Some(signal) = signal {
+            signal.abort(None);
+        }
+    }
+
+    /// Whether a branch summarization is running (upstream the abort
+    /// controller's presence).
+    pub fn is_branch_summarizing(&self) -> bool {
+        self.inner
+            .state
+            .lock()
+            .expect("session state")
+            .branch_summary_abort
+            .is_some()
+    }
+
+    /// Navigate the session tree: move the leaf to `target_id`, optionally
+    /// summarizing the abandoned branch (upstream `navigateTree`).
+    ///
+    /// divergence: upstream resolves after awaiting extension handlers and
+    /// the summarizer inline; the port keeps the same ordering but the host
+    /// drives it from the executor (the escape-to-abort hook uses
+    /// [`Self::abort_branch_summary`]).
+    #[allow(clippy::too_many_lines)]
+    pub async fn navigate_tree(
+        &self,
+        target_id: &str,
+        options: TreeNavigationOptions,
+    ) -> Result<TreeNavigationResult, String> {
+        if self.is_streaming() {
+            return Err(
+                "Wait for the current response to finish before navigating the session tree."
+                    .to_string(),
+            );
+        }
+
+        let old_leaf_id = self.get_leaf_id();
+
+        // No-op if already at the target.
+        if Some(target_id) == old_leaf_id.as_deref() {
+            return Ok(TreeNavigationResult::default());
+        }
+
+        // Model required for summarization.
+        let model = self.model();
+        if options.summarize && model.is_none() {
+            return Err("No model available for summarization".to_string());
+        }
+
+        // Target entry and the entries to summarize (from old leaf to the
+        // common ancestor).
+        let (target_entry, collected) = {
+            let session_manager = self.inner.session_manager.lock().expect("session lock");
+            let Some(target_entry) = session_manager.get_entry(target_id).cloned() else {
+                return Err(format!("Entry {target_id} not found"));
+            };
+            (
+                target_entry,
+                collect_entries_for_branch_summary(
+                    &session_manager.tree_view(),
+                    old_leaf_id.as_deref(),
+                    target_id,
+                ),
+            )
+        };
+        let entries_to_summarize = collected.entries;
+        let common_ancestor_id = collected.common_ancestor_id;
+
+        let mut custom_instructions = options.custom_instructions.clone();
+        let mut replace_instructions = options.replace_instructions;
+        let mut label = options.label.clone();
+
+        let preparation = crate::core::extensions_types::TreePreparation {
+            target_id: target_id.to_string(),
+            old_leaf_id: old_leaf_id.clone(),
+            common_ancestor_id,
+            entries_to_summarize: entries_to_summarize.clone(),
+            user_wants_summary: options.summarize,
+            custom_instructions: custom_instructions.clone(),
+            replace_instructions,
+            label: label.clone(),
+        };
+
+        let branch_signal = AbortSignal::new();
+        self.inner
+            .state
+            .lock()
+            .expect("session state")
+            .branch_summary_abort = Some(branch_signal.clone());
+
+        let result: Result<TreeNavigationResult, String> = async {
+            let mut extension_summary: Option<(String, Option<Value>, Option<pillar_ai::types::Usage>)> =
+                None;
+            let mut from_extension = false;
+
+            // Emit `session_before_tree`.
+            {
+                let runner = self.inner.extension_runner.lock().expect("runner lock");
+                if runner.has_handlers("session_before_tree") {
+                    let extension_result = runner.emit(&serde_json::json!({
+                        "type": "session_before_tree",
+                        "preparation": tree_preparation_to_json(&preparation),
+                    }));
+                    if let Some(result) = extension_result {
+                        if result
+                            .get("cancel")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false)
+                        {
+                            return Ok(TreeNavigationResult {
+                                cancelled: true,
+                                ..Default::default()
+                            });
+                        }
+                        let summary = result.get("summary");
+                        if options.summarize {
+                            if let Some(summary) = summary {
+                                if let Some(text) = summary.get("summary").and_then(Value::as_str) {
+                                    extension_summary = Some((
+                                        text.to_string(),
+                                        summary.get("details").cloned(),
+                                        summary
+                                            .get("usage")
+                                            .and_then(|u| serde_json::from_value(u.clone()).ok()),
+                                    ));
+                                    from_extension = true;
+                                }
+                            }
+                        }
+                        if let Some(value) = result.get("customInstructions") {
+                            custom_instructions = value.as_str().map(str::to_string);
+                        }
+                        if let Some(value) = result.get("replaceInstructions") {
+                            replace_instructions = value.as_bool();
+                        }
+                        if let Some(value) = result.get("label") {
+                            label = value.as_str().map(str::to_string);
+                        }
+                    }
+                }
+            }
+
+            // Run the default summarizer when needed.
+            let mut summary_text: Option<String> = None;
+            let mut summary_details: Option<Value> = None;
+            let mut summary_usage: Option<pillar_ai::types::Usage> = None;
+            if options.summarize && !entries_to_summarize.is_empty() && extension_summary.is_none() {
+                let model = model.clone().expect("model checked above");
+                let (request_model, api_key, headers, env) =
+                    self.get_summarization_request_auth(&model).await?;
+                let reserve_tokens = self
+                    .inner
+                    .settings_manager
+                    .lock()
+                    .expect("settings lock")
+                    .branch_summary_settings()
+                    .reserve_tokens;
+                let summarizer = SummarizeStreamFn {
+                    stream: self.inner.agent.stream_function.clone(),
+                };
+                let result = generate_branch_summary(
+                    &entries_to_summarize,
+                    GenerateBranchSummaryOptions {
+                        model: &request_model,
+                        api_key,
+                        headers: headers.and_then(|h| serde_json::from_value(h).ok()),
+                        env: env.and_then(|e| serde_json::from_value(e).ok()),
+                        signal: Some(branch_signal.clone()),
+                        custom_instructions: custom_instructions.as_deref(),
+                        replace_instructions: replace_instructions.unwrap_or(false),
+                        reserve_tokens,
+                        stream_fn: &summarizer,
+                    },
+                )
+                .await;
+                if result.aborted {
+                    return Ok(TreeNavigationResult {
+                        cancelled: true,
+                        aborted: true,
+                        ..Default::default()
+                    });
+                }
+                if let Some(error) = result.error {
+                    return Err(error);
+                }
+                summary_text = result.summary;
+                summary_usage = result.usage;
+                summary_details = Some(
+                    serde_json::to_value(BranchSummaryDetails {
+                        read_files: result.read_files.unwrap_or_default(),
+                        modified_files: result.modified_files.unwrap_or_default(),
+                    })
+                    .unwrap_or(Value::Null),
+                );
+            } else if let Some((text, details, usage)) = extension_summary {
+                summary_text = Some(text);
+                summary_details = details;
+                summary_usage = usage;
+            }
+
+            // Determine the new leaf position based on the target type.
+            let navigation = plan_tree_navigation(&target_entry, options.summarize)?;
+            let new_leaf_id = navigation.new_leaf_id;
+            let editor_text = navigation.editor_text;
+
+            // Switch the leaf (with or without summary).
+            let summary_entry_id = {
+                let mut session_manager =
+                    self.inner.session_manager.lock().expect("session lock");
+                if let Some(summary_text) = &summary_text {
+                    let id = session_manager.branch_with_summary(
+                        new_leaf_id.as_deref(),
+                        summary_text,
+                        summary_details,
+                        from_extension,
+                        summary_usage,
+                    )?;
+                    if let Some(label) = &label {
+                        let _ = session_manager.append_label_change(&id, Some(label));
+                    }
+                    Some(id)
+                } else {
+                    match new_leaf_id.as_deref() {
+                        Some(id) => session_manager.branch(id)?,
+                        None => session_manager.reset_leaf(),
+                    }
+                    if let Some(label) = &label {
+                        let _ = session_manager.append_label_change(target_id, Some(label));
+                    }
+                    None
+                }
+            };
+
+            // Update agent state.
+            let messages = {
+                let session_manager = self.inner.session_manager.lock().expect("session lock");
+                session_manager.session_context().messages
+            };
+            self.inner.agent.set_messages(
+                messages
+                    .iter()
+                    .cloned()
+                    .map(coding_message_to_agent)
+                    .collect(),
+            );
+
+            // Emit `session_tree`.
+            {
+                let new_leaf = self.get_leaf_id();
+                let summary_entry = summary_entry_id.as_ref().and_then(|id| {
+                    let session_manager =
+                        self.inner.session_manager.lock().expect("session lock");
+                    match session_manager.get_entry(id) {
+                        Some(SessionEntry::BranchSummary(entry)) => {
+                            Some(branch_summary_entry_to_json(entry))
+                        }
+                        _ => None,
+                    }
+                });
+                let runner = self.inner.extension_runner.lock().expect("runner lock");
+                let _ = runner.emit(&serde_json::json!({
+                    "type": "session_tree",
+                    "newLeafId": new_leaf,
+                    "oldLeafId": old_leaf_id,
+                    "summaryEntry": summary_entry,
+                    "fromExtension": if summary_text.is_some() { Value::Bool(from_extension) } else { Value::Null },
+                }));
+            }
+
+            Ok(TreeNavigationResult {
+                editor_text,
+                cancelled: false,
+                aborted: false,
+                summary_entry_id,
+            })
+        }
+        .await;
+
+        self.inner
+            .state
+            .lock()
+            .expect("session state")
+            .branch_summary_abort = None;
+
+        result
+    }
+
     /// Manually compact the session context (upstream `compact`; the entry
     /// point used by `/compact`, RPC, and extensions).
     #[allow(clippy::too_many_lines)]
@@ -3940,6 +4290,37 @@ fn compaction_entry_to_json(entry: &crate::core::session_entries::CompactionEntr
         "tokensBefore": entry.tokens_before,
         "fromHook": entry.from_hook,
         "usage": entry.usage,
+    })
+}
+
+/// Serialize a tree preparation for the `session_before_tree` payload.
+fn tree_preparation_to_json(preparation: &crate::core::extensions_types::TreePreparation) -> Value {
+    serde_json::json!({
+        "targetId": preparation.target_id,
+        "oldLeafId": preparation.old_leaf_id,
+        "commonAncestorId": preparation.common_ancestor_id,
+        "entriesToSummarize": branch_entries_to_json(&preparation.entries_to_summarize),
+        "userWantsSummary": preparation.user_wants_summary,
+        "customInstructions": preparation.custom_instructions,
+        "replaceInstructions": preparation.replace_instructions,
+        "label": preparation.label,
+    })
+}
+
+/// Serialize a branch summary entry for the `session_tree` payload.
+fn branch_summary_entry_to_json(
+    entry: &crate::core::session_entries::BranchSummaryEntry,
+) -> Value {
+    serde_json::json!({
+        "type": "branch_summary",
+        "id": entry.base.id,
+        "parentId": entry.base.parent_id,
+        "timestamp": entry.base.timestamp,
+        "fromId": entry.from_id,
+        "summary": entry.summary,
+        "details": entry.details,
+        "usage": entry.usage,
+        "fromHook": entry.from_hook,
     })
 }
 

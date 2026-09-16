@@ -333,6 +333,9 @@ async fn generate_branch_summary_prepends_preamble_and_appends_file_ops() {
     let result = collect_entries_for_branch_summary(&tree, Some("b"), "elsewhere");
     let options = GenerateBranchSummaryOptions {
         model: &model(),
+        api_key: None,
+        headers: None,
+        env: None,
         signal: None,
         custom_instructions: None,
         replace_instructions: false,
@@ -367,6 +370,9 @@ async fn generate_branch_summary_empty_returns_no_content() {
     let prompts: &'static Mutex<Vec<String>> = Box::leak(Box::new(Mutex::new(Vec::new())));
     let options = GenerateBranchSummaryOptions {
         model: &model(),
+        api_key: None,
+        headers: None,
+        env: None,
         signal: None,
         custom_instructions: None,
         replace_instructions: false,
@@ -385,6 +391,9 @@ async fn generate_branch_summary_aborted_and_error_stops() {
         &entries,
         GenerateBranchSummaryOptions {
             model: &model(),
+            api_key: None,
+            headers: None,
+            env: None,
             signal: None,
             custom_instructions: None,
             replace_instructions: false,
@@ -399,6 +408,9 @@ async fn generate_branch_summary_aborted_and_error_stops() {
         &entries,
         GenerateBranchSummaryOptions {
             model: &model(),
+            api_key: None,
+            headers: None,
+            env: None,
             signal: None,
             custom_instructions: None,
             replace_instructions: false,
@@ -424,6 +436,9 @@ async fn generate_branch_summary_custom_instructions_modes() {
         &entries,
         GenerateBranchSummaryOptions {
             model: &model(),
+            api_key: None,
+            headers: None,
+            env: None,
             signal: None,
             custom_instructions: Some("focus on tests"),
             replace_instructions: false,
@@ -444,6 +459,9 @@ async fn generate_branch_summary_custom_instructions_modes() {
         &entries,
         GenerateBranchSummaryOptions {
             model: &model(),
+            api_key: None,
+            headers: None,
+            env: None,
             signal: None,
             custom_instructions: Some("just list files"),
             replace_instructions: true,

@@ -391,9 +391,9 @@ fn build_session_path_walks_parents() {
     let path = build_session_path(&entries, Some(&a), &by_id);
     assert_eq!(path.len(), 1);
 
-    // leaf_id None falls back to the last entry.
+    // leaf_id None is upstream's null: no path (not the last entry).
     let path = build_session_path(&entries, None, &by_id);
-    assert_eq!(path.len(), 2);
+    assert!(path.is_empty());
 }
 
 #[test]
@@ -432,7 +432,7 @@ fn build_context_entries_without_compaction_is_the_full_path() {
         .collect::<Vec<_>>();
     let by_id = entries.iter().map(|e| (e.id().to_string(), e)).collect();
     let context = build_context_entries(&entries, None, &by_id);
-    assert_eq!(context.len(), 2);
+    assert!(context.is_empty());
 }
 
 // --- deferred file creation (upstream `_persist`) ------------------------------------

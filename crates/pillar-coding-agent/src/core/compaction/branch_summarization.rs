@@ -206,6 +206,9 @@ pub const BRANCH_SUMMARY_PROMPT: &str = "Create a structured summary of this con
 /// retry plumbing, which lands with the retry port).
 pub struct GenerateBranchSummaryOptions<'a> {
     pub model: &'a pillar_ai::types::Model,
+    pub api_key: Option<String>,
+    pub headers: Option<std::collections::BTreeMap<String, String>>,
+    pub env: Option<std::collections::BTreeMap<String, String>>,
     pub signal: Option<pillar_ai::abort::AbortSignal>,
     pub custom_instructions: Option<&'a str>,
     /// If true, custom instructions replace the default prompt.
@@ -223,6 +226,9 @@ pub async fn generate_branch_summary(
 ) -> BranchSummaryResult {
     let GenerateBranchSummaryOptions {
         model,
+        api_key,
+        headers,
+        env,
         signal,
         custom_instructions,
         replace_instructions,
@@ -272,6 +278,9 @@ pub async fn generate_branch_summary(
         tools: Vec::new(),
     };
     let request_options = SummarizationOptions {
+        api_key,
+        headers,
+        env,
         signal,
         max_tokens: Some(2048),
         ..Default::default()

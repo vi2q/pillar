@@ -2787,3 +2787,254 @@ async fn share_export_appends_pillar_share_metadata() {
         serde_json::from_str(lines[lines.len() - 2]).expect("branch json");
     assert_eq!(last["parentId"], previous["id"]);
 }
+
+// ============================================================================
+// Session tree navigation (upstream agent-session.ts navigateTree)
+// ============================================================================
+
+/// Append the standard `q1/a1/q2/a2` tree and return the entry ids.
+fn seed_tree(session: &Arc<AgentSession>) -> Vec<String> {
+    let mut ids = Vec::new();
+    let mut sm = session.session_manager().lock().unwrap();
+    for (text, is_user) in [
+        ("q1", true),
+        ("a1", false),
+        ("q2", true),
+        ("a2", false),
+    ] {
+        let message = if is_user {
+            CodingAgentMessage::Base(ai_types::Message::User {
+                content: UserContent::Text(text.to_string()),
+                timestamp: 1,
+            })
+        } else {
+            CodingAgentMessage::Base(ai_types::Message::Assistant(Box::new(
+                assistant_message(text, StopReason::Stop, None),
+            )))
+        };
+        ids.push(sm.append_message(message).unwrap());
+    }
+    ids
+}
+
+#[tokio::test]
+async fn navigate_tree_moves_the_leaf_and_surfaces_user_text() {
+    use pillar_coding_agent::core::agent_session_class::TreeNavigationOptions;
+
+    let (session, _) = make_session(
+        threshold_compaction_stream(),
+        serde_json::json!({ "retry": { "enabled": false } }),
+    );
+    let ids = seed_tree(&session);
+
+    // Already at the leaf: a no-op.
+    let result = session
+        .navigate_tree(&ids[3], TreeNavigationOptions::default())
+        .await
+        .expect("no-op");
+    assert!(!result.cancelled);
+    assert!(result.editor_text.is_none());
+
+    // The first user message: the leaf resets to its parent (root) and the
+    // text goes to the editor.
+    let result = session
+        .navigate_tree(&ids[0], TreeNavigationOptions::default())
+        .await
+        .expect("navigate to root user message");
+    assert_eq!(result.editor_text.as_deref(), Some("q1"));
+    assert!(result.summary_entry_id.is_none());
+    assert_eq!(session.get_leaf_id(), None);
+    assert!(session.state().messages.is_empty());
+
+    // A non-user entry becomes the leaf itself.
+    let result = session
+        .navigate_tree(&ids[1], TreeNavigationOptions::default())
+        .await
+        .expect("navigate to assistant");
+    assert!(result.editor_text.is_none());
+    assert_eq!(session.get_leaf_id().as_deref(), Some(ids[1].as_str()));
+
+    // Unknown targets are rejected.
+    let error = session
+        .navigate_tree("missing", TreeNavigationOptions::default())
+        .await
+        .expect_err("unknown target");
+    assert!(error.contains("missing"), "{error}");
+}
+
+#[tokio::test]
+async fn navigate_tree_with_summary_creates_a_branch_summary_entry() {
+    use pillar_coding_agent::core::agent_session_class::TreeNavigationOptions;
+
+    let (session, _) = make_session(
+        threshold_compaction_stream(),
+        serde_json::json!({ "retry": { "enabled": false } }),
+    );
+    let ids = seed_tree(&session);
+
+    let result = session
+        .navigate_tree(
+            &ids[1],
+            TreeNavigationOptions {
+                summarize: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("summarized navigation");
+    let summary_id = result.summary_entry_id.clone().expect("summary entry");
+    assert_eq!(session.get_leaf_id().as_deref(), Some(summary_id.as_str()));
+
+    let sm = session.session_manager().lock().unwrap();
+    let branch = sm.get_branch(None);
+    assert_eq!(branch.len(), 3, "{branch:?}");
+    let summary = branch
+        .iter()
+        .find_map(|entry| match entry {
+            session_entry::SessionEntry::BranchSummary(summary) => Some(summary),
+            _ => None,
+        })
+        .expect("branch summary entry");
+    // Preamble + the summarizer's text, parented at the navigation target.
+    assert!(summary.summary.contains("Compacted summary."), "{}", summary.summary);
+    assert!(
+        summary.summary.starts_with("The user explored a different conversation branch"),
+        "{}",
+        summary.summary
+    );
+    assert_eq!(summary.base.parent_id.as_deref(), Some(ids[1].as_str()));
+    assert_eq!(summary.from_id, ids[3]);
+    assert!(!summary.from_hook);
+    assert!(summary.usage.is_some());
+}
+
+#[tokio::test]
+async fn navigate_tree_emits_before_tree_and_tree_events() {
+    use pillar_coding_agent::core::agent_session_class::TreeNavigationOptions;
+    use pillar_coding_agent::core::extensions_runner::{ExtensionHandler, HostExtension};
+
+    let events: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
+    let handler: ExtensionHandler = {
+        let events = Arc::clone(&events);
+        Arc::new(move |event: &serde_json::Value| {
+            events.lock().unwrap().push(event.clone());
+            if event["type"] == "session_before_tree" {
+                return Ok(Some(serde_json::json!({
+                    "summary": { "summary": "extension summary", "details": { "readFiles": ["/x"] } },
+                    "label": "from-extension",
+                })));
+            }
+            Ok(None)
+        })
+    };
+    let mut handlers = BTreeMap::new();
+    handlers.insert("session_before_tree".to_string(), vec![handler.clone()]);
+    handlers.insert("session_tree".to_string(), vec![handler]);
+    let extension = HostExtension {
+        path: "<inline>".to_string(),
+        handlers,
+        commands: Vec::new(),
+        tools: BTreeMap::new(),
+        flags: BTreeMap::new(),
+        shortcuts: BTreeMap::new(),
+    };
+    let runner = Arc::new(Mutex::new(ExtensionRunner::new(vec![extension])));
+    let (session, _) = make_session_with_model_and_runner(
+        threshold_compaction_stream(),
+        serde_json::json!({ "retry": { "enabled": false } }),
+        mock_model(),
+        runner,
+    );
+    let ids = seed_tree(&session);
+
+    let result = session
+        .navigate_tree(
+            &ids[1],
+            TreeNavigationOptions {
+                summarize: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("extension summary navigation");
+    assert!(result.summary_entry_id.is_some());
+
+    let sm = session.session_manager().lock().unwrap();
+    let branch = sm.get_branch(None);
+    let summary = branch
+        .iter()
+        .find_map(|entry| match entry {
+            session_entry::SessionEntry::BranchSummary(summary) => Some(summary),
+            _ => None,
+        })
+        .expect("branch summary entry");
+    assert_eq!(summary.summary, "extension summary");
+    assert!(summary.from_hook);
+    assert_eq!(summary.details, Some(serde_json::json!({ "readFiles": ["/x"] })));
+    drop(sm);
+
+    // The label attaches to the summary entry.
+    let sm = session.session_manager().lock().unwrap();
+    let tree = sm.get_tree();
+    fn has_label(
+        nodes: &[pillar_coding_agent::core::session_manager::SessionTreeNode],
+        label: &str,
+    ) -> bool {
+        nodes
+            .iter()
+            .any(|node| node.label.as_deref() == Some(label) || has_label(&node.children, label))
+    }
+    assert!(has_label(&tree, "from-extension"), "{tree:?}");
+    drop(sm);
+
+    let events = events.lock().unwrap().clone();
+    let before = events
+        .iter()
+        .find(|event| event["type"] == "session_before_tree")
+        .expect("session_before_tree");
+    assert_eq!(before["preparation"]["targetId"], serde_json::json!(ids[1]));
+    assert_eq!(before["preparation"]["userWantsSummary"], serde_json::json!(true));
+    let after = events
+        .iter()
+        .find(|event| event["type"] == "session_tree")
+        .expect("session_tree");
+    assert_eq!(after["newLeafId"], serde_json::json!(session.get_leaf_id()));
+    assert_eq!(after["summaryEntry"]["id"], serde_json::json!(result.summary_entry_id));
+    assert_eq!(after["fromExtension"], serde_json::json!(true));
+    assert_eq!(after["summaryEntry"]["summary"], serde_json::json!("extension summary"));
+}
+
+#[tokio::test]
+async fn navigate_tree_honours_the_extension_cancel() {
+    use pillar_coding_agent::core::agent_session_class::TreeNavigationOptions;
+    use pillar_coding_agent::core::extensions_runner::{ExtensionHandler, HostExtension};
+
+    let handler: ExtensionHandler =
+        Arc::new(|_event: &serde_json::Value| Ok(Some(serde_json::json!({ "cancel": true }))));
+    let mut handlers = BTreeMap::new();
+    handlers.insert("session_before_tree".to_string(), vec![handler]);
+    let extension = HostExtension {
+        path: "<inline>".to_string(),
+        handlers,
+        commands: Vec::new(),
+        tools: BTreeMap::new(),
+        flags: BTreeMap::new(),
+        shortcuts: BTreeMap::new(),
+    };
+    let runner = Arc::new(Mutex::new(ExtensionRunner::new(vec![extension])));
+    let (session, _) = make_session_with_model_and_runner(
+        threshold_compaction_stream(),
+        serde_json::json!({ "retry": { "enabled": false } }),
+        mock_model(),
+        runner,
+    );
+    let ids = seed_tree(&session);
+
+    let result = session
+        .navigate_tree(&ids[1], TreeNavigationOptions::default())
+        .await
+        .expect("cancelled navigation");
+    assert!(result.cancelled);
+    // The leaf did not move.
+    assert_eq!(session.get_leaf_id().as_deref(), Some(ids[3].as_str()));
+}

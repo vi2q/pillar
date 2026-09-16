@@ -918,6 +918,18 @@ impl InteractiveTranscript {
         }
     }
 
+    /// Clear the chat container and the streaming/pending state (upstream
+    /// `chatContainer.clear()` before `renderInitialMessages()` when
+    /// navigating the session tree).
+    pub fn clear_conversation(&mut self) {
+        self.chat.clear();
+        self.pending_tools.clear();
+        self.streaming = None;
+        self.streaming_message = None;
+        self.last_status_spacer = None;
+        self.last_status_text = None;
+    }
+
     /// Upstream `renderSessionEntries`: flatten entries to items and render.
     pub fn render_session_entries(
         &mut self,

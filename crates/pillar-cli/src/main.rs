@@ -398,6 +398,69 @@ async fn resume_session(
     .await
 }
 
+/// A session replacement to install after `/resume` or `/fork` (upstream the
+/// runtime rebinding): the live session, its extension wiring, and the editor
+/// text / status the rebuilt mode starts with.
+struct InteractiveReplacement {
+    session: AgentSession,
+    wiring: Option<ExtensionWiring>,
+    initial_editor_text: Option<String>,
+    initial_status: Option<String>,
+}
+
+/// Rebuild the runtime as a branched session for `/fork` (position `before`)
+/// or `/clone` (position `at`), mirroring upstream `runtimeHost.fork`. Returns
+/// `None` when a `session_before_fork` handler cancelled.
+async fn fork_session(
+    parsed: &Args,
+    current: &Arc<AgentSession>,
+    entry_id: &str,
+    position: &str,
+) -> Result<Option<(AgentSession, ExtensionWiring)>, String> {
+    let agent_dir = agent_dir();
+    let model_runtime = create_model_runtime(&agent_dir).await?;
+    // Snapshot the live session: a fork branches whatever the session holds,
+    // including an in-memory session that has no file yet (upstream mutates
+    // the live manager in place).
+    let current_manager = current.session_manager().lock().expect("session lock").clone();
+    let mut factory = replacement_factory(parsed, &agent_dir);
+    let runtime = AgentSessionRuntime::create(
+        &mut factory,
+        current.cwd(),
+        &agent_dir,
+        current_manager,
+    )?;
+    let previous = runtime
+        .session_manager()
+        .session_file()
+        .map(|path| path.to_string_lossy().to_string());
+    let (outcome, runtime) = {
+        let mut hooks = RuntimeHooks::default();
+        runtime.fork(entry_id, position, &mut hooks, &mut factory)?
+    };
+    if outcome.cancelled {
+        return Ok(None);
+    }
+    let (services, session_manager, _diagnostics) = runtime.into_parts();
+    let settings_manager = Arc::clone(&services.settings_manager);
+    let resource_loader = Arc::new(Mutex::new(services.resource_loader));
+    let (session, wiring) = build_session_with(
+        parsed,
+        model_runtime,
+        SessionBuildInput {
+            cwd: services.cwd.to_string_lossy().to_string(),
+            agent_dir: services.agent_dir.to_string_lossy().to_string(),
+            session_manager: Some(session_manager),
+            settings_manager: Some(settings_manager),
+            resource_loader: Some(resource_loader),
+            start_reason: "fork".to_string(),
+            previous_session_file: previous,
+        },
+    )
+    .await?;
+    Ok(Some((session, wiring)))
+}
+
 async fn run_print(parsed: &Args, app_mode: AppMode) -> ExitCode {
     let (session, _wiring) = match build_session(parsed).await {
         Ok(built) => built,
@@ -566,6 +629,8 @@ async fn run_interactive(parsed: &Args) -> ExitCode {
         transcript,
         markdown_transformers: Vec::new(),
         initial_message,
+        initial_editor_text: None,
+        initial_status: None,
         agent_dir: PathBuf::from(agent_dir()),
     };
 
@@ -581,43 +646,93 @@ async fn run_interactive(parsed: &Args) -> ExitCode {
                 return ExitCode::from(1);
             }
         };
-        let session_path = match outcome {
-            InteractiveOutcome::Exit(code) => return ExitCode::from(code as u8),
-            InteractiveOutcome::SwitchSession { session_path } => session_path,
-        };
-        match resume_session(parsed, &session, &session_path).await {
-            Ok((next, wiring)) => {
-                let next = Arc::new(next);
-                // Upstream `rebindCurrentSession` → `bindCurrentSessionExtensions`.
-                next.bind_extensions(ExtensionBindings {
-                    ui_context: Some(false),
-                    mode: Some("tui".to_string()),
-                    on_error: None,
-                })
-                .await;
-                session = next;
-                wirings.push(wiring);
-                options.initial_message = None;
-                // The transcript settings rebuild per entry: a resumed session
-                // can live in another cwd with different settings.
-                options.transcript = {
-                    let settings = session.settings_manager().lock().expect("settings lock");
-                    TranscriptSettings {
-                        hide_thinking_block: settings.hide_thinking_block(),
-                        hidden_thinking_label: "Thinking...".to_string(),
-                        output_pad: settings.output_pad() as usize,
-                        tool_output_expanded: false,
-                        show_images: settings.show_images(),
-                        image_width_cells: settings.image_width_cells() as usize,
-                        show_cache_miss_notices: settings.show_cache_miss_notices(),
+        // `None` when the replacement was cancelled and the same session
+        // continues.
+        let replacement: Option<InteractiveReplacement> = match outcome {
+                InteractiveOutcome::Exit(code) => return ExitCode::from(code as u8),
+                InteractiveOutcome::SwitchSession { session_path } => {
+                    match resume_session(parsed, &session, &session_path).await {
+                        Ok((next, wiring)) => Some(InteractiveReplacement {
+                            session: next,
+                            wiring: Some(wiring),
+                            initial_editor_text: None,
+                            initial_status: None,
+                        }),
+                        Err(error) => {
+                            eprintln!("Error: {error}");
+                            return ExitCode::from(1);
+                        }
                     }
-                };
+                }
+                InteractiveOutcome::ForkSession {
+                    entry_id,
+                    position,
+                    editor_text,
+                } => {
+                    match fork_session(parsed, &session, &entry_id, &position).await {
+                        Ok(Some((next, wiring))) => {
+                            let status = if position == "at" {
+                                "Cloned to new session"
+                            } else {
+                                "Forked to new session"
+                            };
+                            Some(InteractiveReplacement {
+                                session: next,
+                                wiring: Some(wiring),
+                                initial_editor_text: editor_text,
+                                initial_status: Some(status.to_string()),
+                            })
+                        }
+                        Ok(None) => None,
+                        Err(error) => {
+                            eprintln!("Error: {error}");
+                            return ExitCode::from(1);
+                        }
+                    }
+                }
+            };
+
+        let Some(replacement) = replacement else {
+            // Upstream the cancelled fork returns to the same mode instance.
+            options.initial_message = None;
+            options.initial_editor_text = None;
+            options.initial_status = None;
+            continue;
+        };
+        let InteractiveReplacement {
+            session: next,
+            wiring,
+            initial_editor_text,
+            initial_status,
+        } = replacement;
+
+        let next = Arc::new(next);
+        // Upstream `rebindCurrentSession` → `bindCurrentSessionExtensions`.
+        next.bind_extensions(ExtensionBindings {
+            ui_context: Some(false),
+            mode: Some("tui".to_string()),
+            on_error: None,
+        })
+        .await;
+        session = next;
+        wirings.extend(wiring);
+        options.initial_message = None;
+        options.initial_editor_text = initial_editor_text;
+        options.initial_status = initial_status;
+        // The transcript settings rebuild per entry: a resumed session
+        // can live in another cwd with different settings.
+        options.transcript = {
+            let settings = session.settings_manager().lock().expect("settings lock");
+            TranscriptSettings {
+                hide_thinking_block: settings.hide_thinking_block(),
+                hidden_thinking_label: "Thinking...".to_string(),
+                output_pad: settings.output_pad() as usize,
+                tool_output_expanded: false,
+                show_images: settings.show_images(),
+                image_width_cells: settings.image_width_cells() as usize,
+                show_cache_miss_notices: settings.show_cache_miss_notices(),
             }
-            Err(error) => {
-                eprintln!("Error: {error}");
-                return ExitCode::from(1);
-            }
-        }
+        };
     }
 }
 

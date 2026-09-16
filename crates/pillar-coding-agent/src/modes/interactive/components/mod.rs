@@ -18,6 +18,8 @@ pub mod custom_entry;
 pub mod custom_message;
 pub mod diff;
 pub mod dynamic_border;
+pub mod extension_input;
+pub mod extension_selector;
 pub mod footer;
 pub mod keybinding_hints;
 pub mod markdown_transform;
@@ -29,5 +31,30 @@ pub mod skill_invocation_message;
 pub mod status_indicator;
 pub mod thinking_selector;
 pub mod tool_execution;
+pub mod tree_selector;
 pub mod user_message;
+pub mod user_message_selector;
 pub mod visual_truncate;
+
+/// Shared test setup for components that match the app-level keybindings
+/// (`app.*`) and render with a theme: installs the merged keybinding table
+/// and a theme under one process-wide lock.
+#[cfg(test)]
+pub mod test_support {
+    use std::sync::{Mutex, MutexGuard};
+
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    pub fn setup() -> MutexGuard<'static, ()> {
+        let guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::modes::interactive::theme::init_theme(Some("dark"));
+        let definitions = crate::core::keybindings::keybindings("darwin", &Default::default());
+        pillar_tui::keybindings::set_keybindings(pillar_tui::keybindings::KeybindingsManager::new(
+            definitions,
+            Default::default(),
+        ));
+        guard
+    }
+}

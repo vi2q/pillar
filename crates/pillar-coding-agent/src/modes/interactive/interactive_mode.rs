@@ -164,6 +164,12 @@ use crate::core::settings_manager::DoubleEscapeAction;
 use crate::core::truncate::TruncationResult;
 use crate::modes::interactive::autocomplete::InteractiveAutocomplete;
 use crate::modes::interactive::components::bash_execution::BashExecutionComponent;
+use crate::modes::interactive::components::extension_input::{
+    ExtensionInputComponent, ExtensionInputOutcome,
+};
+use crate::modes::interactive::components::extension_selector::{
+    ExtensionSelectorComponent, ExtensionSelectorOutcome,
+};
 use crate::modes::interactive::components::footer::FooterComponent;
 use crate::modes::interactive::components::model_picker::{
     CategoryKind, ModelPickerComponent, ModelPickerOutcome, PickerCategory, RECENT_CATEGORY_ID,
@@ -175,10 +181,17 @@ use crate::modes::interactive::components::session_selector::{
     SessionScope, SessionSelectorComponent, SessionSelectorOutcome, StatusKind,
 };
 use crate::modes::interactive::components::status_indicator::{
-    CompactionStatusReason, RetryStatusIndicator, StatusIndicatorKind, compaction_status_indicator,
+    CompactionStatusReason, RetryStatusIndicator, StatusIndicatorKind,
+    branch_summary_status_indicator, compaction_status_indicator,
 };
 use crate::modes::interactive::components::thinking_selector::{
     ThinkingSelectorComponent, ThinkingSelectorOutcome,
+};
+use crate::modes::interactive::components::tree_selector::{
+    TreeSelectorComponent, TreeSelectorOutcome,
+};
+use crate::modes::interactive::components::user_message_selector::{
+    UserMessageItem, UserMessageSelectorComponent, UserMessageSelectorOutcome,
 };
 use crate::modes::interactive::mode_ui::{PendingMessagesUi, QueueMode, StatusUi};
 use crate::modes::interactive::model_picker_recent::RecentModels;
@@ -240,6 +253,21 @@ pub enum ModeAction {
     /// The editor slot changed (a selector was shown or closed; upstream
     /// `showSelector`'s `editorContainer` swap + `setFocus`).
     EditorSlotChanged,
+    /// Upstream `showTreeSelector`'s `onSelect` continuation:
+    /// `session.navigateTree(targetId, { summarize, customInstructions })`.
+    NavigateTree {
+        target_id: String,
+        summarize: bool,
+        custom_instructions: Option<String>,
+    },
+    /// Upstream `runtimeHost.fork(entryId, { position })`: the caller rebuilds
+    /// the runtime as a branched session (the pump intercepts this and ends
+    /// the run loop; `editor_text` restores the forked-from message).
+    ForkSession {
+        entry_id: String,
+        position: String,
+        editor_text: Option<String>,
+    },
 }
 
 /// Mode-level options (upstream the settings-derived fields of
@@ -305,6 +333,19 @@ pub struct InteractiveMode {
     /// Host-side autocomplete (upstream the editor's provider; the port's
     /// editor only renders the dropdown).
     autocomplete: std::sync::Mutex<InteractiveAutocomplete>,
+    /// The tree-navigation dialog continuation (upstream the awaited
+    /// selector/editor chain inside `showTreeSelector`).
+    pending_tree_flow: std::sync::Mutex<Option<PendingTreeFlow>>,
+}
+
+/// The tree-navigation continuation waiting on a dialog (upstream the
+/// `await this.showExtensionSelector(...)` chain inside `showTreeSelector`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PendingTreeFlow {
+    /// Waiting for the "Summarize branch?" answer.
+    SummaryChoice { target_id: String },
+    /// Waiting for custom summarization instructions.
+    CustomInstructions { target_id: String },
 }
 
 /// The selector currently shown in place of the editor (upstream the
@@ -326,6 +367,22 @@ pub enum ActiveSelector {
         token: u64,
         component: Shared<SessionSelectorComponent>,
     },
+    Tree {
+        token: u64,
+        component: Shared<TreeSelectorComponent>,
+    },
+    ExtensionSelector {
+        token: u64,
+        component: Shared<ExtensionSelectorComponent>,
+    },
+    ExtensionInput {
+        token: u64,
+        component: Shared<ExtensionInputComponent>,
+    },
+    UserMessage {
+        token: u64,
+        component: Shared<UserMessageSelectorComponent>,
+    },
 }
 
 impl ActiveSelector {
@@ -335,6 +392,10 @@ impl ActiveSelector {
             ActiveSelector::ModelPicker { token, .. } => *token,
             ActiveSelector::ScopedModels { token, .. } => *token,
             ActiveSelector::Session { token, .. } => *token,
+            ActiveSelector::Tree { token, .. } => *token,
+            ActiveSelector::ExtensionSelector { token, .. } => *token,
+            ActiveSelector::ExtensionInput { token, .. } => *token,
+            ActiveSelector::UserMessage { token, .. } => *token,
         }
     }
 
@@ -351,6 +412,18 @@ impl ActiveSelector {
                 crate::modes::interactive::transcript::FocusHandle::new(component.clone()),
             ),
             ActiveSelector::Session { component, .. } => Box::new(
+                crate::modes::interactive::transcript::FocusHandle::new(component.clone()),
+            ),
+            ActiveSelector::Tree { component, .. } => Box::new(
+                crate::modes::interactive::transcript::FocusHandle::new(component.clone()),
+            ),
+            ActiveSelector::ExtensionSelector { component, .. } => Box::new(
+                crate::modes::interactive::transcript::FocusHandle::new(component.clone()),
+            ),
+            ActiveSelector::ExtensionInput { component, .. } => Box::new(
+                crate::modes::interactive::transcript::FocusHandle::new(component.clone()),
+            ),
+            ActiveSelector::UserMessage { component, .. } => Box::new(
                 crate::modes::interactive::transcript::FocusHandle::new(component.clone()),
             ),
         }
@@ -419,6 +492,7 @@ impl InteractiveMode {
                 &cwd,
                 5,
             )),
+            pending_tree_flow: std::sync::Mutex::new(None),
             session,
         }
     }
@@ -759,7 +833,7 @@ impl InteractiveMode {
 
         // Selector-backed commands answer a warning until the selectors
         // land (upstream opens the corresponding selector).
-        const SELECTOR_COMMANDS: [&str; 17] = [
+        const SELECTOR_COMMANDS: [&str; 14] = [
             "/settings",
             "/export",
             "/import",
@@ -768,9 +842,6 @@ impl InteractiveMode {
             "/session",
             "/changelog",
             "/hotkeys",
-            "/fork",
-            "/clone",
-            "/tree",
             "/trust",
             "/login",
             "/logout",
@@ -791,6 +862,18 @@ impl InteractiveMode {
         if text == "/resume" {
             self.set_editor_text("");
             return self.show_session_selector();
+        }
+        if text == "/tree" {
+            self.set_editor_text("");
+            return self.show_tree_selector(None);
+        }
+        if text == "/fork" {
+            self.set_editor_text("");
+            return self.show_user_message_selector(None);
+        }
+        if text == "/clone" {
+            self.set_editor_text("");
+            return self.clone_session();
         }
         if text == "/quit" {
             self.set_editor_text("");
@@ -1143,6 +1226,12 @@ impl InteractiveMode {
             self.transcript.lock().show_status("Bash command cancelled");
             return Vec::new();
         }
+        // Upstream the tree selector's summary path swaps the escape handler
+        // to abort the branch summarization.
+        if self.session.is_branch_summarizing() {
+            self.session.abort_branch_summary();
+            return Vec::new();
+        }
         if self.bash_mode.load(Ordering::SeqCst) {
             self.set_editor_text("");
             self.bash_mode.store(false, Ordering::SeqCst);
@@ -1161,9 +1250,13 @@ impl InteractiveMode {
                 let last = self.last_escape_ms.load(Ordering::SeqCst);
                 if now.saturating_sub(last) < 500 {
                     self.last_escape_ms.store(0, Ordering::SeqCst);
-                    self.transcript
-                        .lock()
-                        .show_warning("Session tree / fork selectors are not ported yet");
+                    match action {
+                        DoubleEscapeAction::Tree => return self.show_tree_selector(None),
+                        DoubleEscapeAction::Fork => {
+                            return self.show_user_message_selector(None);
+                        }
+                        DoubleEscapeAction::None => {}
+                    }
                 } else {
                     self.last_escape_ms.store(now, Ordering::SeqCst);
                 }
@@ -1619,6 +1712,331 @@ impl InteractiveMode {
         vec![ModeAction::LoadSessions { scope }]
     }
 
+    /// Upstream `showTreeSelector`: open the session-tree navigator (the
+    /// `/tree` command, `app.session.tree`, and double-Escape with the
+    /// `tree` setting). An empty session reports a status instead.
+    pub fn show_tree_selector(&self, initial_selected_id: Option<&str>) -> Vec<ModeAction> {
+        let tree = self.session.get_tree();
+        if tree.is_empty() {
+            self.transcript.lock().show_status("No entries in session");
+            self.mark_dirty();
+            return Vec::new();
+        }
+        let current_leaf_id = self.session.get_leaf_id();
+        let filter_mode = self
+            .session
+            .settings_manager()
+            .lock()
+            .expect("settings lock")
+            .tree_filter_mode();
+        let terminal_rows = self.terminal_rows.load(Ordering::SeqCst);
+        let token = self.next_selector_token.fetch_add(1, Ordering::SeqCst);
+        let component = Shared::new(TreeSelectorComponent::new(
+            &tree,
+            current_leaf_id,
+            terminal_rows,
+            initial_selected_id,
+            filter_mode,
+        ));
+        self.show_selector(ActiveSelector::Tree { token, component })
+    }
+
+    /// Upstream `showExtensionSelector`: a generic option dialog in the
+    /// editor slot (the port uses it for the "Summarize branch?" prompt).
+    pub fn show_extension_selector(&self, title: &str, options: &[String]) -> Vec<ModeAction> {
+        let token = self.next_selector_token.fetch_add(1, Ordering::SeqCst);
+        let component = Shared::new(ExtensionSelectorComponent::new(title, options));
+        self.show_selector(ActiveSelector::ExtensionSelector { token, component })
+    }
+
+    /// Upstream `showExtensionInput`: a single-line text dialog in the editor
+    /// slot (the port uses it for custom branch-summary instructions).
+    pub fn show_extension_input(&self, title: &str) -> Vec<ModeAction> {
+        let token = self.next_selector_token.fetch_add(1, Ordering::SeqCst);
+        let component = Shared::new(ExtensionInputComponent::new(title, None));
+        self.show_selector(ActiveSelector::ExtensionInput { token, component })
+    }
+
+    /// Upstream the tree selector's `onSelect` handler: the selected entry
+    /// either reports "already here", navigates immediately
+    /// (`branchSummary.skipPrompt`), or asks about summarization first.
+    fn tree_selection_committed(&self, token: u64, entry_id: &str) -> Vec<ModeAction> {
+        if self.session.get_leaf_id().as_deref() == Some(entry_id) {
+            let actions = self.close_selector(Some(token));
+            self.transcript.lock().show_status("Already at this point");
+            return actions;
+        }
+
+        let mut actions = self.close_selector(Some(token));
+        let skip_prompt = self
+            .session
+            .settings_manager()
+            .lock()
+            .expect("settings lock")
+            .branch_summary_settings()
+            .skip_prompt;
+        if skip_prompt {
+            actions.push(ModeAction::NavigateTree {
+                target_id: entry_id.to_string(),
+                summarize: false,
+                custom_instructions: None,
+            });
+            return actions;
+        }
+
+        *self.pending_tree_flow.lock().expect("tree flow") = Some(PendingTreeFlow::SummaryChoice {
+            target_id: entry_id.to_string(),
+        });
+        actions.extend(self.show_extension_selector(
+            "Summarize branch?",
+            &[
+                "No summary".to_string(),
+                "Summarize".to_string(),
+                "Summarize with custom prompt".to_string(),
+            ],
+        ));
+        actions
+    }
+
+    /// Upstream the summary-choice continuation.
+    fn complete_tree_summary_choice(&self, token: u64, option: &str) -> Vec<ModeAction> {
+        let pending = self.pending_tree_flow.lock().expect("tree flow").take();
+        let Some(PendingTreeFlow::SummaryChoice { target_id }) = pending else {
+            return self.close_selector(Some(token));
+        };
+        let mut actions = self.close_selector(Some(token));
+        match option {
+            "No summary" => actions.push(ModeAction::NavigateTree {
+                target_id,
+                summarize: false,
+                custom_instructions: None,
+            }),
+            "Summarize" => actions.push(ModeAction::NavigateTree {
+                target_id,
+                summarize: true,
+                custom_instructions: None,
+            }),
+            "Summarize with custom prompt" => {
+                *self.pending_tree_flow.lock().expect("tree flow") =
+                    Some(PendingTreeFlow::CustomInstructions { target_id });
+                actions.extend(self.show_extension_input("Custom summarization instructions"));
+            }
+            _ => {}
+        }
+        actions
+    }
+
+    /// Upstream escaping the summary choice: re-open the tree at the same
+    /// entry.
+    fn cancel_tree_summary_choice(&self, token: u64) -> Vec<ModeAction> {
+        let pending = self.pending_tree_flow.lock().expect("tree flow").take();
+        let mut actions = self.close_selector(Some(token));
+        if let Some(PendingTreeFlow::SummaryChoice { target_id }) = pending {
+            actions.extend(self.show_tree_selector(Some(&target_id)));
+        }
+        actions
+    }
+
+    /// Upstream the custom-instructions continuation.
+    fn complete_tree_custom_instructions(&self, token: u64, value: &str) -> Vec<ModeAction> {
+        let pending = self.pending_tree_flow.lock().expect("tree flow").take();
+        let mut actions = self.close_selector(Some(token));
+        if let Some(PendingTreeFlow::CustomInstructions { target_id }) = pending {
+            actions.push(ModeAction::NavigateTree {
+                target_id,
+                summarize: true,
+                custom_instructions: Some(value.to_string()),
+            });
+        }
+        actions
+    }
+
+    /// Upstream cancelling the custom-instructions editor: loop back to the
+    /// summary choice.
+    fn cancel_tree_custom_instructions(&self, token: u64) -> Vec<ModeAction> {
+        let pending = self.pending_tree_flow.lock().expect("tree flow").take();
+        match pending {
+            Some(PendingTreeFlow::CustomInstructions { target_id }) => {
+                let mut actions = self.close_selector(Some(token));
+                *self.pending_tree_flow.lock().expect("tree flow") =
+                    Some(PendingTreeFlow::SummaryChoice { target_id });
+                actions.extend(self.show_extension_selector(
+                    "Summarize branch?",
+                    &[
+                        "No summary".to_string(),
+                        "Summarize".to_string(),
+                        "Summarize with custom prompt".to_string(),
+                    ],
+                ));
+                actions
+            }
+            _ => self.close_selector(Some(token)),
+        }
+    }
+
+    /// Upstream the tree's `onCopy`: write the selected entry's text to the
+    /// clipboard (OSC 52 as the fallback).
+    fn copy_tree_selection(&self, text: Option<String>) -> Vec<ModeAction> {
+        let Some(text) = text else {
+            self.transcript
+                .lock()
+                .show_error("Selected entry has no text to copy");
+            self.mark_dirty();
+            return Vec::new();
+        };
+        match crate::utils::clipboard::copy_to_clipboard(&text, &mut std::io::stdout()) {
+            Ok(()) => {
+                self.transcript
+                    .lock()
+                    .show_status("Copied selected message to clipboard");
+            }
+            Err(error) => {
+                self.transcript.lock().show_error(&error);
+            }
+        }
+        self.mark_dirty();
+        Vec::new()
+    }
+
+    /// Upstream the tree's `onLabelChange`: append the label change entry.
+    fn apply_tree_label(&self, entry_id: &str, label: Option<String>) -> Vec<ModeAction> {
+        let result = self
+            .session
+            .session_manager()
+            .lock()
+            .expect("session lock")
+            .append_label_change(entry_id, label.as_deref());
+        if let Err(error) = result {
+            self.transcript.lock().show_error(&error);
+        }
+        self.mark_dirty();
+        Vec::new()
+    }
+
+    /// Upstream the block before `session.navigateTree(...)`: stop a
+    /// streaming response, restore its queued messages, and show the branch
+    /// summary spinner.
+    pub fn begin_tree_navigation(&self, summarize: bool) -> Vec<ModeAction> {
+        let mut actions = Vec::new();
+        if self.session.is_streaming() {
+            self.restore_queued_messages_to_editor();
+            actions.push(ModeAction::Abort);
+        }
+        if summarize {
+            self.status
+                .lock()
+                .show_status_indicator(branch_summary_status_indicator());
+        }
+        self.mark_dirty();
+        actions
+    }
+
+    /// Upstream the code after `await session.navigateTree(...)`: report the
+    /// outcome, rebuild the transcript on success, and flush the compaction
+    /// queue.
+    pub fn complete_tree_navigation(
+        &self,
+        target_id: &str,
+        editor_text: Option<String>,
+        cancelled: bool,
+        aborted: bool,
+        error: Option<String>,
+    ) -> Vec<ModeAction> {
+        self.status
+            .lock()
+            .clear_status_indicator(Some(StatusIndicatorKind::BranchSummary));
+        if let Some(error) = error {
+            self.transcript.lock().show_error(&error);
+            self.mark_dirty();
+            return Vec::new();
+        }
+        if aborted {
+            self.transcript
+                .lock()
+                .show_status("Branch summarization cancelled");
+            // Upstream re-opens the tree with the same selection.
+            return self.show_tree_selector(Some(target_id));
+        }
+        if cancelled {
+            self.transcript.lock().show_status("Navigation cancelled");
+            self.mark_dirty();
+            return Vec::new();
+        }
+
+        // Upstream `chatContainer.clear(); renderInitialMessages();`.
+        self.transcript.lock().clear_conversation();
+        self.render_initial_messages();
+        if let Some(editor_text) = editor_text {
+            if self.editor().lock().get_text().trim().is_empty() {
+                self.set_editor_text(&editor_text);
+            }
+        }
+        self.transcript
+            .lock()
+            .show_status("Navigated to selected point");
+        self.mark_dirty();
+        self.flush_compaction_queue_actions(false)
+    }
+
+    /// Upstream `showUserMessageSelector` (`/fork` and `app.session.fork`):
+    /// pick a user message to branch from. The initial selection is the most
+    /// recent message.
+    pub fn show_user_message_selector(&self, initial_selected_id: Option<&str>) -> Vec<ModeAction> {
+        let user_messages = self.session.user_messages_for_forking();
+        if user_messages.is_empty() {
+            self.transcript
+                .lock()
+                .show_status("No messages to fork from");
+            self.mark_dirty();
+            return Vec::new();
+        }
+        let initial = initial_selected_id
+            .map(str::to_string)
+            .or_else(|| user_messages.last().map(|(entry_id, _)| entry_id.clone()));
+        let items: Vec<UserMessageItem> = user_messages
+            .into_iter()
+            .map(|(entry_id, text)| UserMessageItem {
+                id: entry_id,
+                text,
+            })
+            .collect();
+        let token = self.next_selector_token.fetch_add(1, Ordering::SeqCst);
+        let component = Shared::new(UserMessageSelectorComponent::new(items, initial.as_deref()));
+        self.show_selector(ActiveSelector::UserMessage { token, component })
+    }
+
+    /// Upstream `showUserMessageSelector`'s `onSelect`: fork before the
+    /// selected user message, restoring its text to the editor.
+    fn fork_selected_user_message(&self, token: u64, entry_id: &str) -> Vec<ModeAction> {
+        let editor_text = self
+            .session
+            .user_messages_for_forking()
+            .into_iter()
+            .find(|(id, _)| id == entry_id)
+            .map(|(_, text)| text);
+        let mut actions = self.close_selector(Some(token));
+        actions.push(ModeAction::ForkSession {
+            entry_id: entry_id.to_string(),
+            position: "before".to_string(),
+            editor_text,
+        });
+        actions
+    }
+
+    /// Upstream `handleCloneCommand`: fork at the current leaf (no selector).
+    pub fn clone_session(&self) -> Vec<ModeAction> {
+        let Some(leaf_id) = self.session.get_leaf_id() else {
+            self.transcript.lock().show_status("Nothing to clone yet");
+            self.mark_dirty();
+            return Vec::new();
+        };
+        vec![ModeAction::ForkSession {
+            entry_id: leaf_id,
+            position: "at".to_string(),
+            editor_text: None,
+        }]
+    }
+
     /// Upstream `handleModelCommand`, minus the built-in selector: an exact
     /// model reference switches directly and anything else falls through to the
     /// 2-column picker (`/m`).
@@ -1892,6 +2310,10 @@ impl InteractiveMode {
             ModelPicker(u64, Shared<ModelPickerComponent>),
             ScopedModels(u64, Shared<ScopedModelsSelectorComponent>),
             Session(u64, Shared<SessionSelectorComponent>),
+            Tree(u64, Shared<TreeSelectorComponent>),
+            ExtensionSelector(u64, Shared<ExtensionSelectorComponent>),
+            ExtensionInput(u64, Shared<ExtensionInputComponent>),
+            UserMessage(u64, Shared<UserMessageSelectorComponent>),
         }
         let handle = {
             let guard = self.active_selector.lock().expect("active selector");
@@ -1907,6 +2329,18 @@ impl InteractiveMode {
                 }
                 Some(ActiveSelector::Session { token, component }) => {
                     Handle::Session(*token, component.clone())
+                }
+                Some(ActiveSelector::Tree { token, component }) => {
+                    Handle::Tree(*token, component.clone())
+                }
+                Some(ActiveSelector::ExtensionSelector { token, component }) => {
+                    Handle::ExtensionSelector(*token, component.clone())
+                }
+                Some(ActiveSelector::ExtensionInput { token, component }) => {
+                    Handle::ExtensionInput(*token, component.clone())
+                }
+                Some(ActiveSelector::UserMessage { token, component }) => {
+                    Handle::UserMessage(*token, component.clone())
                 }
                 None => return None,
             }
@@ -1983,6 +2417,54 @@ impl InteractiveMode {
                 }
                 SessionSelectorOutcome::Cancel => self.close_selector(Some(token)),
             },
+            // The session tree: navigation keys are internal; Select / Copy /
+            // LabelChanged / Cancel are host work (upstream the `onSelect` /
+            // `onCopy` / `onLabelChange` / `onCancel` callbacks).
+            Handle::Tree(token, component) => match component.lock().handle_key(data) {
+                TreeSelectorOutcome::Consumed => Vec::new(),
+                TreeSelectorOutcome::Select(entry_id) => {
+                    self.tree_selection_committed(token, &entry_id)
+                }
+                TreeSelectorOutcome::Copy(text) => self.copy_tree_selection(text),
+                TreeSelectorOutcome::LabelChanged { entry_id, label } => {
+                    self.apply_tree_label(&entry_id, label)
+                }
+                TreeSelectorOutcome::Cancel => self.close_selector(Some(token)),
+            },
+            // The "Summarize branch?" / custom-instructions dialogs.
+            Handle::ExtensionSelector(token, component) => {
+                match component.lock().handle_key(data) {
+                    ExtensionSelectorOutcome::Consumed => Vec::new(),
+                    ExtensionSelectorOutcome::Select(option) => {
+                        self.complete_tree_summary_choice(token, &option)
+                    }
+                    ExtensionSelectorOutcome::ToggleToolsExpanded => {
+                        self.toggle_tool_output_expansion();
+                        Vec::new()
+                    }
+                    ExtensionSelectorOutcome::Cancel => {
+                        self.cancel_tree_summary_choice(token)
+                    }
+                }
+            }
+            Handle::ExtensionInput(token, component) => match component.lock().handle_key(data) {
+                ExtensionInputOutcome::Consumed => Vec::new(),
+                ExtensionInputOutcome::Submit(value) => {
+                    self.complete_tree_custom_instructions(token, &value)
+                }
+                ExtensionInputOutcome::Cancel => {
+                    self.cancel_tree_custom_instructions(token)
+                }
+            },
+            // `/fork`: the pump intercepts the commit and rebuilds the run
+            // loop as a branched session (upstream `runtimeHost.fork`).
+            Handle::UserMessage(token, component) => match component.lock().handle_key(data) {
+                UserMessageSelectorOutcome::Consumed => Vec::new(),
+                UserMessageSelectorOutcome::Select(entry_id) => {
+                    self.fork_selected_user_message(token, &entry_id)
+                }
+                UserMessageSelectorOutcome::Cancel => self.close_selector(Some(token)),
+            },
         })
     }
 
@@ -2043,7 +2525,9 @@ impl InteractiveMode {
 
     /// Set the editor text programmatically and drop the dropdown: upstream
     /// `editor.setText` cancels the autocomplete first.
-    fn set_editor_text(&self, text: &str) {
+    /// Upstream `editor.setText` (also used by the host to restore editor
+    /// text after a fork rebuilds the run loop).
+    pub fn set_editor_text(&self, text: &str) {
         self.close_autocomplete();
         self.editor.lock().set_text(text);
     }
@@ -2300,6 +2784,8 @@ impl InteractiveMode {
             "app.model.cycleBackward" => vec![ModeAction::CycleModel { forward: false }],
             "app.model.select" => self.show_model_picker(None),
             "app.session.resume" => self.show_session_selector(),
+            "app.session.tree" => self.show_tree_selector(None),
+            "app.session.fork" => self.show_user_message_selector(None),
             "app.message.dequeue" => {
                 self.handle_dequeue();
                 Vec::new()

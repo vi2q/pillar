@@ -1706,3 +1706,321 @@ fn resume_selector_load_progress_shows_the_counts() {
     assert!(body.contains("Current Folder"), "{body:?}");
     assert!(!body.contains("Loading 1/2"), "{body:?}");
 }
+
+// --- session tree (/tree) -----------------------------------------------------------------
+
+/// q1 / a1 / q2 / a2; returns the entry ids.
+fn seed_linear_tree(session: &Arc<AgentSession>) -> Vec<String> {
+    let mut sm = session.session_manager().lock().expect("lock");
+    let mut ids = Vec::new();
+    for (text, is_user) in [("q1", true), ("a1", false), ("q2", true), ("a2", false)] {
+        let message = if is_user {
+            CodingAgentMessage::Base(Message::User {
+                content: UserContent::Text(text.to_string()),
+                timestamp: 1,
+            })
+        } else {
+            assistant_message(text, StopReason::Stop)
+        };
+        ids.push(sm.append_message(message).expect("append"));
+    }
+    ids
+}
+
+/// Up-arrow three times: the constructor selects the current leaf (a2, last),
+/// so this lands on q1 (the first entry).
+fn select_first_tree_entry(mode: &InteractiveMode) {
+    for _ in 0..3 {
+        assert_eq!(
+            mode.handle_selector_key("\u{1b}[A").expect("tree selector"),
+            Vec::new()
+        );
+    }
+}
+
+#[test]
+fn tree_command_shows_the_selector_and_enter_asks_about_summarization() {
+    install_app_keybindings();
+    let session = session();
+    let ids = seed_linear_tree(&session);
+    let mode = make_mode(&session);
+
+    assert_eq!(
+        mode.handle_submit("/tree"),
+        vec![ModeAction::EditorSlotChanged]
+    );
+    assert!(mode.has_active_selector());
+    let body = editor_slot_body(&mode, 100);
+    assert!(body.contains("Session Tree"), "{body:?}");
+    assert!(body.contains("q1"), "{body:?}");
+
+    select_first_tree_entry(&mode);
+    // Enter closes the tree and opens the summary dialog.
+    assert_eq!(
+        mode.handle_selector_key("\r").expect("tree"),
+        vec![ModeAction::EditorSlotChanged, ModeAction::EditorSlotChanged]
+    );
+    let body = editor_slot_body(&mode, 100);
+    assert!(body.contains("Summarize branch?"), "{body:?}");
+    assert!(body.contains("No summary"), "{body:?}");
+
+    // The default option is "No summary".
+    assert_eq!(
+        mode.handle_selector_key("\r").expect("dialog"),
+        vec![
+            ModeAction::EditorSlotChanged,
+            ModeAction::NavigateTree {
+                target_id: ids[0].clone(),
+                summarize: false,
+                custom_instructions: None,
+            }
+        ]
+    );
+    assert!(!mode.has_active_selector());
+}
+
+#[test]
+fn tree_summarize_with_custom_prompt_collects_instructions() {
+    install_app_keybindings();
+    let session = session();
+    let ids = seed_linear_tree(&session);
+    let mode = make_mode(&session);
+
+    mode.handle_submit("/tree");
+    select_first_tree_entry(&mode);
+    mode.handle_selector_key("\r").expect("tree");
+
+    // Down twice: "Summarize with custom prompt".
+    mode.handle_selector_key("\u{1b}[B").expect("dialog");
+    mode.handle_selector_key("\u{1b}[B").expect("dialog");
+    assert_eq!(
+        mode.handle_selector_key("\r").expect("dialog"),
+        vec![ModeAction::EditorSlotChanged, ModeAction::EditorSlotChanged]
+    );
+    let body = editor_slot_body(&mode, 100);
+    assert!(body.contains("Custom summarization instructions"), "{body:?}");
+
+    for ch in "focus on tests".chars() {
+        mode.handle_selector_key(&ch.to_string()).expect("input");
+    }
+    assert_eq!(
+        mode.handle_selector_key("\r").expect("input"),
+        vec![
+            ModeAction::EditorSlotChanged,
+            ModeAction::NavigateTree {
+                target_id: ids[0].clone(),
+                summarize: true,
+                custom_instructions: Some("focus on tests".to_string()),
+            }
+        ]
+    );
+}
+
+#[test]
+fn tree_escape_from_the_choice_reopens_the_tree() {
+    install_app_keybindings();
+    let session = session();
+    seed_linear_tree(&session);
+    let mode = make_mode(&session);
+
+    mode.handle_submit("/tree");
+    select_first_tree_entry(&mode);
+    mode.handle_selector_key("\r").expect("tree");
+
+    // Cancelling the summary choice closes the dialog and re-opens the tree
+    // (upstream `showTreeSelector(entryId)`).
+    assert_eq!(
+        mode.handle_selector_key("\u{1b}").expect("dialog"),
+        vec![ModeAction::EditorSlotChanged, ModeAction::EditorSlotChanged]
+    );
+    assert!(mode.has_active_selector());
+    let body = editor_slot_body(&mode, 100);
+    assert!(body.contains("Session Tree"), "{body:?}");
+}
+
+#[test]
+fn tree_cancelling_custom_instructions_loops_back_to_the_choice() {
+    install_app_keybindings();
+    let session = session();
+    seed_linear_tree(&session);
+    let mode = make_mode(&session);
+
+    mode.handle_submit("/tree");
+    select_first_tree_entry(&mode);
+    mode.handle_selector_key("\r").expect("tree");
+    mode.handle_selector_key("\u{1b}[B").expect("dialog");
+    mode.handle_selector_key("\u{1b}[B").expect("dialog");
+    mode.handle_selector_key("\r").expect("dialog");
+
+    // Escape on the input loops back to the summary choice.
+    assert_eq!(
+        mode.handle_selector_key("\u{1b}").expect("input"),
+        vec![ModeAction::EditorSlotChanged, ModeAction::EditorSlotChanged]
+    );
+    let body = editor_slot_body(&mode, 100);
+    assert!(body.contains("Summarize branch?"), "{body:?}");
+}
+
+#[test]
+fn tree_skips_the_summary_prompt_when_configured() {
+    install_app_keybindings();
+    let session = session();
+    session
+        .settings_manager()
+        .lock()
+        .expect("settings")
+        .apply_overrides(&serde_json::json!({ "branchSummary": { "skipPrompt": true } }));
+    let ids = seed_linear_tree(&session);
+    let mode = make_mode(&session);
+
+    mode.handle_submit("/tree");
+    select_first_tree_entry(&mode);
+    assert_eq!(
+        mode.handle_selector_key("\r").expect("tree"),
+        vec![
+            ModeAction::EditorSlotChanged,
+            ModeAction::NavigateTree {
+                target_id: ids[0].clone(),
+                summarize: false,
+                custom_instructions: None,
+            }
+        ]
+    );
+    assert!(!mode.has_active_selector());
+}
+
+#[test]
+fn tree_selecting_the_current_leaf_reports_already_at_this_point() {
+    install_app_keybindings();
+    let session = session();
+    let ids = seed_linear_tree(&session);
+    let mode = make_mode(&session);
+
+    mode.handle_submit("/tree");
+    // The constructor selects the current leaf (a2), so Enter is a no-op.
+    assert_eq!(
+        mode.handle_selector_key("\r").expect("tree"),
+        vec![ModeAction::EditorSlotChanged]
+    );
+    assert!(!mode.has_active_selector());
+    let body = plain(&mut mode.transcript().lock().chat, 100);
+    assert!(body.contains("Already at this point"), "{body:?}");
+    assert_eq!(session.get_leaf_id().as_deref(), Some(ids[3].as_str()));
+}
+
+#[test]
+fn complete_tree_navigation_rebuilds_the_transcript_and_sets_the_editor() {
+    install_app_keybindings();
+    let session = session();
+    let ids = seed_linear_tree(&session);
+    let mode = make_mode(&session);
+    mode.render_initial_messages();
+
+    // Run the actual navigation (the executor does this in the real loop),
+    // then report it like `UiCommand::TreeNavigated`.
+    let result = tokio::runtime::Runtime::new()
+        .expect("tokio runtime")
+        .block_on(session.navigate_tree(
+            &ids[0],
+            pillar_coding_agent::core::agent_session_class::TreeNavigationOptions::default(),
+        ))
+        .expect("navigate");
+    let actions = mode.complete_tree_navigation(
+        &ids[0],
+        result.editor_text,
+        result.cancelled,
+        result.aborted,
+        None,
+    );
+    assert_eq!(actions, Vec::new());
+
+    // The abandoned branch is gone from the transcript.
+    let body = plain(&mut mode.transcript().lock().chat, 100);
+    assert!(!body.contains("a2"), "{body:?}");
+    // The user message text went to the editor.
+    assert_eq!(mode.editor().lock().get_text(), "q1");
+    let body = plain(&mut mode.transcript().lock().chat, 100);
+    assert!(body.contains("Navigated to selected point"), "{body:?}");
+}
+
+// --- /fork and /clone ---------------------------------------------------------------------
+
+#[test]
+fn fork_command_shows_the_user_message_selector_and_reports_the_fork() {
+    install_app_keybindings();
+    let session = session();
+    let ids = seed_linear_tree(&session);
+    let mode = make_mode(&session);
+
+    assert_eq!(
+        mode.handle_submit("/fork"),
+        vec![ModeAction::EditorSlotChanged]
+    );
+    let body = editor_slot_body(&mode, 100);
+    assert!(body.contains("Fork from Message"), "{body:?}");
+    // The most recent user message (q2) is selected by default; up goes to q1.
+    assert!(body.contains("q2"), "{body:?}");
+    mode.handle_selector_key("\u{1b}[A").expect("selector");
+    assert_eq!(
+        mode.handle_selector_key("\r").expect("selector"),
+        vec![
+            ModeAction::EditorSlotChanged,
+            ModeAction::ForkSession {
+                entry_id: ids[0].clone(),
+                position: "before".to_string(),
+                editor_text: Some("q1".to_string()),
+            }
+        ]
+    );
+    assert!(!mode.has_active_selector());
+}
+
+#[test]
+fn clone_command_forks_at_the_leaf() {
+    install_app_keybindings();
+    let session = session();
+    let ids = seed_linear_tree(&session);
+    let mode = make_mode(&session);
+
+    assert_eq!(
+        mode.handle_submit("/clone"),
+        vec![ModeAction::ForkSession {
+            entry_id: ids[3].clone(),
+            position: "at".to_string(),
+            editor_text: None,
+        }]
+    );
+}
+
+#[test]
+fn fork_reports_when_there_is_nothing_to_fork_from() {
+    install_app_keybindings();
+    let session = session();
+    let mode = make_mode(&session);
+
+    assert_eq!(mode.handle_submit("/fork"), Vec::new());
+    let body = plain(&mut mode.transcript().lock().chat, 100);
+    assert!(body.contains("No messages to fork from"), "{body:?}");
+    let body = editor_slot_body(&mode, 100);
+    assert!(!body.contains("Fork from Message"), "{body:?}");
+
+    // `/clone` with no leaf reports the other status.
+    assert_eq!(mode.handle_submit("/clone"), Vec::new());
+    let body = plain(&mut mode.transcript().lock().chat, 100);
+    assert!(body.contains("Nothing to clone yet"), "{body:?}");
+}
+
+#[test]
+fn fork_app_action_opens_the_selector() {
+    install_app_keybindings();
+    let session = session();
+    seed_linear_tree(&session);
+    let mode = make_mode(&session);
+
+    assert_eq!(
+        mode.handle_app_action("app.session.fork"),
+        vec![ModeAction::EditorSlotChanged]
+    );
+    let body = editor_slot_body(&mode, 100);
+    assert!(body.contains("Fork from Message"), "{body:?}");
+}
