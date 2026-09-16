@@ -188,14 +188,16 @@ fn configured_extensions_register_renderers() {
     let wiring = build_extension_runner("", None, None, &configured);
     assert!(wiring.errors.is_empty(), "{:?}", wiring.errors);
 
-    let active = theme::theme();
-    let message = CustomMessage {
-        custom_type: "notice".to_string(),
-        content: vec![CustomContent::Text("body".to_string())],
-        display: true,
-        details: Some(serde_json::json!({ "title": "deployed" })),
-        timestamp: 0,
-    };
+    let style = pillar_coding_agent::core::extensions_types::theme_style_fn();
+    let message = pillar_coding_agent::core::extensions_types::message_render_payload(
+        &CustomMessage {
+            custom_type: "notice".to_string(),
+            content: vec![CustomContent::Text("body".to_string())],
+            display: true,
+            details: Some(serde_json::json!({ "title": "deployed" })),
+            timestamp: 0,
+        },
+    );
     let renderer = wiring
         .runner
         .get_message_renderer("notice")
@@ -206,7 +208,7 @@ fn configured_extensions_register_renderers() {
             expanded: false,
             output_pad: 4,
         },
-        &active,
+        &*style,
     )
     .expect("rendered lines")
     .join("\n");
@@ -214,19 +216,19 @@ fn configured_extensions_register_renderers() {
     assert!(rendered.contains("deployed"), "{rendered:?}");
     assert!(rendered.contains("pad=4"), "{rendered:?}");
 
-    let entry = CustomEntry {
+    let entry = pillar_coding_agent::core::extensions_types::entry_render_payload(&CustomEntry {
         base: SessionEntryBase {
             id: "e1".to_string(),
             ..Default::default()
         },
         custom_type: "widget".to_string(),
         data: Some(serde_json::json!({ "value": 11 })),
-    };
+    });
     let entry_renderer = wiring
         .runner
         .get_entry_renderer("widget")
         .expect("entry renderer registered");
-    let rendered = entry_renderer(&entry, &EntryRenderOptions { expanded: false }, &active)
+    let rendered = entry_renderer(&entry, &EntryRenderOptions { expanded: false }, &*style)
         .expect("rendered lines")
         .join("\n");
     assert!(rendered.contains("widget 11"), "{rendered:?}");

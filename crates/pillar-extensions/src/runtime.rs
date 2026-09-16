@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use luaur_rt::{Function, Lua, LuaSerdeExt, TypeDiagnostic, Value, check_with_definitions};
 use pillar_extensions_contract::{
     ExecOptions, ExecResult, ExtensionContextFn, ExtensionCustomEvent, ExtensionCustomFn,
-    ExtensionCustomSurface, ExtensionUiAskFn, ExtensionUiFn, ExtensionUiRequest,
+    ExtensionCustomSurface, ExtensionUiAskFn, ExtensionUiFn, ExtensionUiRequest, ThemeProvider,
 };
 
 /// One registration and the extension that made it. The shared VM records
@@ -480,6 +480,10 @@ pub struct HostApi {
     /// (upstream the live `KeybindingsManager`). The host owns the resolved
     /// bindings, so the VM crate does not name the TUI's keybinding table.
     pub keybindings_match: Option<KeybindingsMatchFn>,
+    /// `ctx.ui.theme` (upstream the live `Theme` object and `getAllThemes`).
+    /// The host owns the presentation theme, so the VM crate reads a snapshot
+    /// through this provider instead of naming the TUI's theme module.
+    pub theme: Option<std::sync::Arc<dyn ThemeProvider>>,
 }
 
 /// One live `ctx.ui.custom` render loop: the pump's events and the frame the
@@ -1230,14 +1234,20 @@ impl ExtensionRuntime {
     /// `getAllThemes`): the colour maps and the theme list. Without an
     /// initialized theme the styling helpers answer plain text.
     fn theme_table(&self) -> Result<(Value, Value), ExtensionLoadError> {
-        use pillar_coding_agent::modes::interactive::theme;
-        let active = theme::try_theme();
+        let provider = {
+            let guard = self
+                .host_api
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.theme.clone()
+        };
+        let active = provider.as_ref().and_then(|provider| provider.snapshot());
         let (name, mode, fg, bg) = match &active {
-            Some(theme) => (
-                theme.name().map(str::to_string),
-                theme.color_mode().as_str().to_string(),
-                theme.fg_colors().clone(),
-                theme.bg_colors().clone(),
+            Some(snapshot) => (
+                snapshot.name.clone(),
+                snapshot.mode.clone(),
+                snapshot.fg_colors.clone(),
+                snapshot.bg_colors.clone(),
             ),
             None => (
                 None,
@@ -1257,10 +1267,16 @@ impl ExtensionRuntime {
             .to_value(&value)
             .map_err(|error| ExtensionLoadError::Setup(error.to_string()))?;
         let themes = serde_json::Value::Array(
-            theme::all_themes()
-                .into_iter()
-                .map(|(name, path)| serde_json::json!({ "name": name, "path": path }))
-                .collect(),
+            provider
+                .as_ref()
+                .map(|provider| {
+                    provider
+                        .list()
+                        .into_iter()
+                        .map(|info| serde_json::json!({ "name": info.name, "path": info.path }))
+                        .collect()
+                })
+                .unwrap_or_default(),
         );
         let themes = self
             .lua
@@ -2375,6 +2391,17 @@ fn install_schema_module(lua: &Lua, module: &luaur_rt::Table) {
 
 #[cfg(test)]
 mod api_tests {
+    /// The host API with the coding agent's theme provider installed (the app
+    /// does this in `pillar-cli`; the VM itself never reads the theme global).
+    fn theme_host_api() -> HostApi {
+        HostApi {
+            theme: Some(
+                pillar_coding_agent::modes::interactive::theme::contract_provider(),
+            ),
+            ..Default::default()
+        }
+    }
+
     use super::*;
 
     /// Run one inline extension's top-level body (the `require("@pillar")`
@@ -2626,6 +2653,9 @@ mod api_tests {
     #[test]
     fn context_ui_without_a_host_is_a_noop() {
         let mut runtime = ExtensionRuntime::new();
+        // The theme list comes from the host provider (no file discovery in
+        // the VM); the UI methods stay no-ops without a UI host.
+        runtime.set_host_api(theme_host_api());
         runtime
             .load_extension(
                 "nohost.luau",
@@ -2658,6 +2688,7 @@ mod api_tests {
     fn context_theme_and_tool_context() {
         pillar_coding_agent::modes::interactive::theme::init_theme(Some("dark"));
         let mut runtime = ExtensionRuntime::new();
+        runtime.set_host_api(theme_host_api());
         runtime
             .load_extension(
                 "theme.luau",

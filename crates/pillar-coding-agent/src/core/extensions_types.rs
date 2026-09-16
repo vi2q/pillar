@@ -183,31 +183,62 @@ pub use pillar_extensions_contract::{
 // entry renderers, working-indicator options)
 // ============================================================================
 
-/// Renders a custom session entry (upstream `EntryRenderer`).
-///
-/// divergence: upstream returns a live `Component`; the port holds the
-/// renderer in an `Arc` so the runner can hand it to the transcript.
-pub type EntryRenderer = std::sync::Arc<
-    dyn Fn(
-            &crate::core::session_entries::CustomEntry,
-            &EntryRenderOptions,
-            &crate::modes::interactive::theme::Theme,
-        ) -> Option<RenderedLines>
-        + Send
-        + Sync,
->;
+// The renderer aliases live in the contract crate together with the payloads
+// and the theme-style lookup they take: they must not name the session, message,
+// or presentation models (TASKS: the remaining stages move the runner too).
+pub use pillar_extensions_contract::{
+    CustomEntryPayload, CustomMessagePayload, EntryRenderer, MessageRenderer, ThemeStyle,
+    ThemeStyleFn,
+};
 
-/// Renders a custom message (upstream `MessageRenderer`). A renderer that
-/// answers `None` falls back to the default message rendering.
-pub type MessageRenderer = std::sync::Arc<
-    dyn Fn(
-            &crate::core::messages::CustomMessage,
-            &MessageRenderOptions,
-            &crate::modes::interactive::theme::Theme,
-        ) -> Option<RenderedLines>
-        + Send
-        + Sync,
->;
+/// The payload a custom-message renderer receives, built from this crate's
+/// message model (upstream hands the renderer the `CustomMessage` itself).
+pub fn message_render_payload(
+    message: &crate::core::messages::CustomMessage,
+) -> CustomMessagePayload {
+    use crate::core::messages::CustomContent;
+    CustomMessagePayload {
+        custom_type: message.custom_type.clone(),
+        content: serde_json::Value::Array(
+            message
+                .content
+                .iter()
+                .map(|content| match content {
+                    CustomContent::Text(text) => serde_json::json!({ "type": "text", "text": text }),
+                    CustomContent::Image { data, mime_type } => {
+                        serde_json::json!({ "type": "image", "data": data, "mimeType": mime_type })
+                    }
+                })
+                .collect(),
+        ),
+        display: message.display,
+        // The model keeps `details` / `timestamp` optional; the payload is the
+        // Lua view, where an absent key means "no data" (see `to_json`).
+        details: message.details.clone().unwrap_or(serde_json::Value::Null),
+        timestamp: message.timestamp as i64,
+    }
+}
+
+/// The payload a custom-entry renderer receives.
+pub fn entry_render_payload(
+    entry: &crate::core::session_entries::CustomEntry,
+) -> CustomEntryPayload {
+    CustomEntryPayload {
+        custom_type: entry.custom_type.clone(),
+        id: entry.base.id.clone(),
+        data: entry.data.clone().unwrap_or(serde_json::Value::Null),
+    }
+}
+
+/// A [`ThemeStyle`] over the live presentation theme: the adapter side of the
+/// renderer contract (`custom_message` / `custom_entry` use it).
+pub fn theme_style_fn() -> ThemeStyleFn {
+    std::sync::Arc::new(|name: &str, text: &str| {
+        crate::modes::interactive::theme::theme()
+            .try_fg(name, text)
+            .unwrap_or_else(|| text.to_string())
+    })
+}
 
 #[cfg(test)]
 mod tests {

@@ -414,13 +414,12 @@ fn transcript_splices_custom_entries_before_the_streaming_component() {
             // Upstream `EntryRenderer`: the entry plus render options and
             // the theme; the stub answers a plain text component.
             Some(std::sync::Arc::new(
-                |entry: &pillar_coding_agent::core::session_entries::CustomEntry,
+                |entry: &pillar_coding_agent::core::extensions_types::CustomEntryPayload,
                  _options: &pillar_coding_agent::core::extensions_types::EntryRenderOptions,
-                 _theme: &pillar_coding_agent::modes::interactive::theme::Theme| {
+                 _theme: &dyn pillar_coding_agent::core::extensions_types::ThemeStyle| {
                     let text = entry
                         .data
-                        .as_ref()
-                        .and_then(|data| data.get("text"))
+                        .get("text")
                         .and_then(|text| text.as_str())
                         .unwrap_or("");
                     if text.is_empty() {

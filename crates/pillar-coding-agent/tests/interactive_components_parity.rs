@@ -480,7 +480,9 @@ fn custom_entry_renders_through_the_renderer_and_toggles_expanded() {
     let seen: Arc<Mutex<Vec<(String, bool)>>> = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&seen);
     let renderer: pillar_coding_agent::core::extensions_types::EntryRenderer = std::sync::Arc::new(
-        move |entry: &CustomEntry, options: &EntryRenderOptions, _theme| {
+        move |entry: &pillar_coding_agent::core::extensions_types::CustomEntryPayload,
+              options: &EntryRenderOptions,
+              _theme: &dyn pillar_coding_agent::core::extensions_types::ThemeStyle| {
             sink.lock()
                 .unwrap()
                 .push((entry.custom_type.clone(), options.expanded));
@@ -528,7 +530,11 @@ fn custom_entry_without_renderer_output_has_no_content() {
     let _guard = THEME_LOCK.lock().expect("theme lock");
     install_dark();
     let renderer: pillar_coding_agent::core::extensions_types::EntryRenderer =
-        std::sync::Arc::new(|_entry: &CustomEntry, _options: &EntryRenderOptions, _theme| None);
+        std::sync::Arc::new(
+            |_entry: &pillar_coding_agent::core::extensions_types::CustomEntryPayload,
+             _options: &EntryRenderOptions,
+             _theme: &dyn pillar_coding_agent::core::extensions_types::ThemeStyle| None,
+        );
     let mut component = CustomEntryComponent::new(custom_entry("hidden"), renderer);
     assert!(!component.has_content());
     assert!(component.render(20).is_empty());

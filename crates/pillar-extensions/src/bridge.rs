@@ -18,15 +18,11 @@ use pillar_coding_agent::core::extensions_runner::{
     ExtensionEventPayload, ExtensionFlag, ExtensionHandler, ExtensionShortcut, HostExtension,
     RegisteredCommand,
 };
-use pillar_coding_agent::core::extensions_types::{
-    EntryRenderer, MessageRenderer,
-};
 use pillar_extensions_contract::{
-    EntryRenderOptions, MarkdownTransformContext, MarkdownTransformer, MessageRenderOptions,
+    CustomEntryPayload, CustomMessagePayload, EntryRenderOptions, EntryRenderer,
+    MarkdownTransformContext, MarkdownTransformer, MessageRenderOptions, MessageRenderer,
+    ThemeStyle,
 };
-use pillar_coding_agent::core::messages::{CustomContent, CustomMessage};
-use pillar_coding_agent::core::session_entries::CustomEntry;
-use pillar_coding_agent::modes::interactive::theme::Theme;
 
 use crate::runtime::{ExtensionLoadError, ExtensionRuntime};
 
@@ -188,8 +184,10 @@ pub fn bridge_to_runner(
         let key = custom_type.clone();
         let hook = key.clone();
         let renderer: MessageRenderer = Arc::new(
-            move |message: &CustomMessage, options: &MessageRenderOptions, theme: &Theme| {
-                let payload = custom_message_payload(message);
+            move |message: &CustomMessagePayload,
+                  options: &MessageRenderOptions,
+                  style: &dyn ThemeStyle| {
+                let payload = message.to_json();
                 let options = renderer_options(options.expanded, options.output_pad);
                 // Lock only for the call: the renderer may call back into
                 // the host API.
@@ -198,8 +196,8 @@ pub fn bridge_to_runner(
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .render_custom_message(&key, &payload, &options);
                 match result {
-                    Ok(value) => value.and_then(|value| declarative_lines(theme, &value)),
-                    Err(error) => Some(renderer_error_lines(theme, &hook, &error)),
+                    Ok(value) => value.and_then(|value| declarative_lines(style, &value)),
+                    Err(error) => Some(renderer_error_lines(style, &hook, &error)),
                 }
             },
         );
@@ -220,16 +218,18 @@ pub fn bridge_to_runner(
         let key = custom_type.clone();
         let hook = key.clone();
         let renderer: EntryRenderer = Arc::new(
-            move |entry: &CustomEntry, options: &EntryRenderOptions, theme: &Theme| {
-                let payload = custom_entry_payload(entry);
+            move |entry: &CustomEntryPayload,
+                  options: &EntryRenderOptions,
+                  style: &dyn ThemeStyle| {
+                let payload = entry.to_json();
                 let options = serde_json::json!({ "expanded": options.expanded });
                 let result = runtime
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .render_custom_entry(&key, &payload, &options);
                 match result {
-                    Ok(value) => value.and_then(|value| declarative_lines(theme, &value)),
-                    Err(error) => Some(renderer_error_lines(theme, &hook, &error)),
+                    Ok(value) => value.and_then(|value| declarative_lines(style, &value)),
+                    Err(error) => Some(renderer_error_lines(style, &hook, &error)),
                 }
             },
         );
@@ -296,56 +296,12 @@ fn renderer_options(expanded: bool, output_pad: usize) -> serde_json::Value {
     serde_json::json!({ "expanded": expanded, "outputPad": output_pad })
 }
 
-/// Drop absent (`null`) top-level keys: the Lua boundary turns JSON `null`
-/// into an empty table, so an extension could not tell "no data" from "empty
-/// data" (`if entry.data == nil`).
-fn without_absent_keys(value: serde_json::Value) -> serde_json::Value {
-    match value {
-        serde_json::Value::Object(entries) => serde_json::Value::Object(
-            entries
-                .into_iter()
-                .filter(|(_, value)| !value.is_null())
-                .collect(),
-        ),
-        other => other,
-    }
-}
-
-/// The payload handed to a custom-message renderer (upstream `CustomMessage`).
-fn custom_message_payload(message: &CustomMessage) -> serde_json::Value {
-    without_absent_keys(serde_json::json!({
-        "customType": message.custom_type,
-        "content": message
-            .content
-            .iter()
-            .map(|content| match content {
-                CustomContent::Text(text) => serde_json::json!({ "type": "text", "text": text }),
-                CustomContent::Image { data, mime_type } => {
-                    serde_json::json!({ "type": "image", "data": data, "mimeType": mime_type })
-                }
-            })
-            .collect::<Vec<_>>(),
-        "display": message.display,
-        "details": message.details,
-        "timestamp": message.timestamp,
-    }))
-}
-
-/// The payload handed to a custom-entry renderer (upstream `CustomEntry`).
-fn custom_entry_payload(entry: &CustomEntry) -> serde_json::Value {
-    without_absent_keys(serde_json::json!({
-        "customType": entry.custom_type,
-        "id": entry.base.id,
-        "data": entry.data,
-    }))
-}
-
 /// The lines the failure notice shows when a renderer throws (upstream the
 /// notice `CustomEntryComponent` shows), styled with the theme's error colour.
-fn renderer_error_lines(theme: &Theme, custom_type: &str, message: &str) -> Vec<String> {
+fn renderer_error_lines(style: &dyn ThemeStyle, custom_type: &str, message: &str) -> Vec<String> {
     eprintln!("pillar-extensions: [{custom_type}] renderer failed: {message}");
     let text = format!("[{custom_type}] renderer failed: {message}");
-    vec![theme.try_fg("error", &text).unwrap_or(text)]
+    vec![style.fg("error", &text)]
 }
 
 /// Convert a Lua renderer's declarative result into themed lines (upstream the
@@ -362,17 +318,17 @@ fn renderer_error_lines(theme: &Theme, custom_type: &str, message: &str) -> Vec<
 ///
 /// `style` is a theme foreground colour name (`text`, `dim`, `accent`,
 /// `success`, `error`, …); an unknown name renders unstyled.
-fn declarative_lines(theme: &Theme, value: &serde_json::Value) -> Option<Vec<String>> {
+fn declarative_lines(style: &dyn ThemeStyle, value: &serde_json::Value) -> Option<Vec<String>> {
     let lines = match value {
         serde_json::Value::String(text) => vec![text.clone()],
         serde_json::Value::Object(object) => {
             if let Some(lines) = object.get("lines").and_then(serde_json::Value::as_array) {
                 lines
                     .iter()
-                    .map(|line| declarative_line(theme, line))
+                    .map(|line| declarative_line(style, line))
                     .collect()
             } else if object.contains_key("text") {
-                vec![declarative_line(theme, value)]
+                vec![declarative_line(style, value)]
             } else {
                 return None;
             }
@@ -386,28 +342,26 @@ fn declarative_lines(theme: &Theme, value: &serde_json::Value) -> Option<Vec<Str
 }
 
 /// One declarative line: a plain string or a list of styled segments.
-fn declarative_line(theme: &Theme, line: &serde_json::Value) -> String {
+fn declarative_line(style: &dyn ThemeStyle, line: &serde_json::Value) -> String {
     match line {
         serde_json::Value::String(text) => text.clone(),
-        serde_json::Value::Object(_) => declarative_segment(theme, line),
+        serde_json::Value::Object(_) => declarative_segment(style, line),
         serde_json::Value::Array(segments) => segments
             .iter()
-            .map(|segment| declarative_segment(theme, segment))
+            .map(|segment| declarative_segment(style, segment))
             .collect(),
         _ => String::new(),
     }
 }
 
 /// One styled segment (`{ text = ..., style = ... }`).
-fn declarative_segment(theme: &Theme, segment: &serde_json::Value) -> String {
+fn declarative_segment(style: &dyn ThemeStyle, segment: &serde_json::Value) -> String {
     let text = segment
         .get("text")
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default();
     match segment.get("style").and_then(serde_json::Value::as_str) {
-        Some(style) => theme
-            .try_fg(style, text)
-            .unwrap_or_else(|| text.to_string()),
+        Some(name) => style.fg(name, text),
         None => text.to_string(),
     }
 }
@@ -524,6 +478,8 @@ pub fn tool_result_from_json(json: serde_json::Value) -> AgentToolResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pillar_coding_agent::core::messages::{CustomContent, CustomMessage};
+    use pillar_coding_agent::core::session_entries::CustomEntry;
     use crate::runtime::ExtensionRuntime;
     use luaur_rt::LuaSerdeExt;
     use pillar_coding_agent::core::extensions_runner::ExtensionRunner;
@@ -814,6 +770,48 @@ mod tests {
         pillar_coding_agent::modes::interactive::theme::init_theme(Some("dark"));
     }
 
+    /// The renderer contract's theme lookup over the active theme (the
+    /// presentation adapter does this in the app).
+    fn style() -> pillar_extensions_contract::ThemeStyleFn {
+        std::sync::Arc::new(|name: &str, text: &str| {
+            pillar_coding_agent::modes::interactive::theme::theme()
+                .try_fg(name, text)
+                .unwrap_or_else(|| text.to_string())
+        })
+    }
+
+    /// A custom-message payload as the transcript builds it.
+    fn payload(
+        custom_type: &str,
+        content: Vec<CustomContent>,
+        details: Option<serde_json::Value>,
+    ) -> CustomMessagePayload {
+        let message = CustomMessage {
+            custom_type: custom_type.to_string(),
+            content,
+            display: true,
+            details,
+            timestamp: 0,
+        };
+        pillar_coding_agent::core::extensions_types::message_render_payload(&message)
+    }
+
+    /// A custom-entry payload as the transcript builds it.
+    fn entry_payload(
+        custom_type: &str,
+        data: Option<serde_json::Value>,
+    ) -> CustomEntryPayload {
+        let entry = CustomEntry {
+            base: pillar_coding_agent::core::session_entries::SessionEntryBase {
+                id: "e1".to_string(),
+                ..Default::default()
+            },
+            custom_type: custom_type.to_string(),
+            data,
+        };
+        pillar_coding_agent::core::extensions_types::entry_render_payload(&entry)
+    }
+
     /// A Luau message renderer reaches the runner and its declarative
     /// description becomes a component through the active theme.
     #[test]
@@ -845,18 +843,17 @@ mod tests {
         assert!(runner.get_message_renderer("other").is_none());
 
         let theme = pillar_coding_agent::modes::interactive::theme::theme();
-        let message = CustomMessage {
-            custom_type: "my-card".to_string(),
-            content: vec![CustomContent::Text("body".to_string())],
-            display: true,
-            details: Some(serde_json::json!({ "title": "hello" })),
-            timestamp: 0,
-        };
+        let message = payload(
+            "my-card",
+            vec![CustomContent::Text("body".to_string())],
+            Some(serde_json::json!({ "title": "hello" })),
+        );
         let options = MessageRenderOptions {
             expanded: true,
             output_pad: 0,
         };
-        let rendered = renderer(&message, &options, &theme)
+        let style = style();
+        let rendered = renderer(&message, &options, &*style)
             .expect("rendered lines")
             .join("\n");
         // The accent colour wraps the styled segment and the unstyled one
@@ -894,35 +891,25 @@ mod tests {
         }
         let extension = bridge_to_runner("widget.luau", &runtime).unwrap();
         let runner = ExtensionRunner::new(vec![extension]);
-        let theme = pillar_coding_agent::modes::interactive::theme::theme();
         let options = EntryRenderOptions { expanded: false };
 
         let renderer = runner.get_entry_renderer("widget").expect("registered");
-        let entry = CustomEntry {
-            base: pillar_coding_agent::core::session_entries::SessionEntryBase {
-                id: "e1".to_string(),
-                ..Default::default()
-            },
-            custom_type: "widget".to_string(),
-            data: Some(serde_json::json!({ "value": 3 })),
-        };
-        let rendered = renderer(&entry, &options, &theme)
+        let entry = entry_payload("widget", Some(serde_json::json!({ "value": 3 })));
+        let style = style();
+        let rendered = renderer(&entry, &options, &*style)
             .expect("rendered lines")
             .join("\n");
         assert!(rendered.contains("widget 3"), "{rendered:?}");
 
         // No data → nil → fall back.
-        let empty = CustomEntry {
-            data: None,
-            ..entry.clone()
-        };
-        assert!(renderer(&empty, &options, &theme).is_none());
+        let empty = entry_payload("widget", None);
+        assert!(renderer(&empty, &options, &*style).is_none());
 
         // An empty line list renders nothing, so the entry is skipped.
         let empty_renderer = runner
             .get_entry_renderer("empty-widget")
             .expect("registered");
-        assert!(empty_renderer(&entry, &options, &theme).is_none());
+        assert!(empty_renderer(&entry, &options, &*style).is_none());
     }
 
     /// A renderer that raises surfaces the upstream failure notice (the port
@@ -948,22 +935,16 @@ mod tests {
         }
         let extension = bridge_to_runner("broken.luau", &runtime).unwrap();
         let runner = ExtensionRunner::new(vec![extension]);
-        let theme = pillar_coding_agent::modes::interactive::theme::theme();
         let renderer = runner.get_message_renderer("broken").expect("registered");
-        let message = CustomMessage {
-            custom_type: "broken".to_string(),
-            content: Vec::new(),
-            display: true,
-            details: None,
-            timestamp: 0,
-        };
+        let style = style();
+        let message = payload("broken", Vec::new(), None);
         let rendered = renderer(
             &message,
             &MessageRenderOptions {
                 expanded: false,
                 output_pad: 0,
             },
-            &theme,
+            &*style,
         )
         .expect("failure notice")
         .join("\n");

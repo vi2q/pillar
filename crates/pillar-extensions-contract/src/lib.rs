@@ -12,6 +12,12 @@
 //! to it (the session-event payloads and the renderer aliases, which name the
 //! session and message models), so the moved types keep their old paths.
 
+use std::sync::Arc;
+
+// ============================================================================
+// Markdown transform, render options, the `ctx` facts, and the `ctx.ui` bridge
+// ============================================================================
+
 /// Which kind of message a Markdown transformer is rendering (upstream
 /// `MarkdownTransformContext["messageType"]`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -309,4 +315,150 @@ impl ExecResult {
             killed: false,
         }
     }
+}
+
+// ============================================================================
+// Renderer contract (the presentation theme stays out of the VM)
+// ============================================================================
+
+/// Styles text with a theme foreground colour name (`text`, `dim`, `accent`,
+/// `success`, `error`, …). Unknown names pass the text through unstyled.
+///
+/// The host implements this (usually as a closure over its live theme), so the
+/// renderer contract never names a presentation type.
+pub trait ThemeStyle: Send + Sync {
+    fn fg(&self, name: &str, text: &str) -> String;
+}
+
+impl<F> ThemeStyle for F
+where
+    F: Fn(&str, &str) -> String + Send + Sync,
+{
+    fn fg(&self, name: &str, text: &str) -> String {
+        self(name, text)
+    }
+}
+
+/// A shared [`ThemeStyle`] (what a renderer closure is handed).
+pub type ThemeStyleFn = Arc<dyn ThemeStyle>;
+
+/// The payload handed to a custom-message renderer (upstream the `CustomMessage`
+/// object). The coding agent converts its message model into this shape.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CustomMessagePayload {
+    /// The custom type the renderer registered under.
+    pub custom_type: String,
+    /// The content parts (`[{ "type": "text", "text": ... }]`).
+    pub content: serde_json::Value,
+    pub display: bool,
+    /// Opaque renderer state.
+    pub details: serde_json::Value,
+    pub timestamp: i64,
+}
+
+impl CustomMessagePayload {
+    /// The Lua/JSON view of the payload (absent top-level keys are dropped so
+    /// `nil` stays distinguishable from an empty table).
+    pub fn to_json(&self) -> serde_json::Value {
+        without_absent_keys(serde_json::json!({
+            "customType": self.custom_type,
+            "content": self.content,
+            "display": self.display,
+            "details": self.details,
+            "timestamp": self.timestamp,
+        }))
+    }
+}
+
+/// The payload handed to a custom-entry renderer (upstream the `CustomEntry`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CustomEntryPayload {
+    pub custom_type: String,
+    pub id: String,
+    /// Opaque renderer state.
+    pub data: serde_json::Value,
+}
+
+impl CustomEntryPayload {
+    pub fn to_json(&self) -> serde_json::Value {
+        without_absent_keys(serde_json::json!({
+            "customType": self.custom_type,
+            "id": self.id,
+            "data": self.data,
+        }))
+    }
+}
+
+/// Drop absent (`null`) top-level keys: the Lua boundary turns JSON `null` into
+/// an empty table, so an extension could not tell "no data" from "empty data"
+/// (`if entry.data == nil`).
+pub fn without_absent_keys(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(entries) => serde_json::Value::Object(
+            entries
+                .into_iter()
+                .filter(|(_, value)| !value.is_null())
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
+/// Renders a custom session entry (upstream `EntryRenderer`). The renderer
+/// answers themed lines, or `None` to skip the entry.
+pub type EntryRenderer = Arc<
+    dyn Fn(
+            &CustomEntryPayload,
+            &EntryRenderOptions,
+            &dyn ThemeStyle,
+        ) -> Option<RenderedLines>
+        + Send
+        + Sync,
+>;
+
+/// Renders a custom message (upstream `MessageRenderer`); `None` falls back to
+/// the default message rendering.
+pub type MessageRenderer = Arc<
+    dyn Fn(
+            &CustomMessagePayload,
+            &MessageRenderOptions,
+            &dyn ThemeStyle,
+        ) -> Option<RenderedLines>
+        + Send
+        + Sync,
+>;
+
+// ============================================================================
+// `ctx.ui.theme`: the host owns the live theme, the VM sees a snapshot
+// ============================================================================
+
+/// The theme snapshot `ctx.ui.theme` exposes (upstream the live `Theme`
+/// object). The host builds it from its presentation theme; the VM never
+/// names a presentation type.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
+pub struct ThemeSnapshot {
+    /// The active theme's name (`None` when it has none).
+    pub name: Option<String>,
+    /// "dark" | "light" | "" (no theme initialized).
+    pub mode: String,
+    /// Foreground colours by theme key.
+    pub fg_colors: std::collections::BTreeMap<String, String>,
+    /// Background colours by theme key.
+    pub bg_colors: std::collections::BTreeMap<String, String>,
+}
+
+/// One entry of `ctx.ui.theme.getAllThemes()`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct ThemeInfo {
+    pub name: String,
+    pub path: String,
+}
+
+/// The host's theme provider for `ctx.ui.theme`: the live snapshot and the
+/// installed themes. Without one, the styling helpers answer plain text.
+pub trait ThemeProvider: Send + Sync {
+    /// `None` while no theme is initialized.
+    fn snapshot(&self) -> Option<ThemeSnapshot>;
+    /// The installed themes (`getAllThemes`).
+    fn list(&self) -> Vec<ThemeInfo>;
 }

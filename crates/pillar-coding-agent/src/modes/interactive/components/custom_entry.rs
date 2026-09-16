@@ -59,7 +59,9 @@ impl CustomEntryComponent {
         let options = EntryRenderOptions {
             expanded: self.expanded,
         };
-        let Some(lines) = (self.renderer)(&self.entry, &options, &theme()) else {
+        let payload = crate::core::extensions_types::entry_render_payload(&self.entry);
+        let style = crate::core::extensions_types::theme_style_fn();
+        let Some(lines) = (self.renderer)(&payload, &options, &*style) else {
             return;
         };
         self.has_content = true;

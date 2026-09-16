@@ -526,6 +526,9 @@ fn install_host_api(
                 manager.matches(data, name)
             }))
         },
+        // `ctx.ui.theme`: the presentation adapter over the live coding-agent
+        // theme (the VM reads the snapshot through the contract provider).
+        theme: Some(pillar_coding_agent::modes::interactive::theme::contract_provider()),
         // `ctx.isIdle()` (upstream the session's `isIdle`).
         is_idle: {
             let slot = Arc::clone(slot);

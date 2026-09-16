@@ -165,6 +165,14 @@ text)` colour with a theme colour name (an unknown name renders plain), and
 the attribute helpers wrap text in the corresponding ANSI codes. `theme.name`
 / `theme.mode` are `nil` / empty before a theme is loaded.
 
+divergence: upstream reads the live TUI theme; the port asks the host through
+`pillar_extensions_contract::ThemeProvider`, which the app installs on
+`HostApi` (`pillar-cli` wires
+`pillar_coding_agent::modes::interactive::theme::contract_provider()`). The VM
+therefore neither names the theme module nor lists theme directories itself;
+without a provider every colour name renders plain and `getAllThemes()` is
+empty.
+
 ## Schema system (`pillar.schema`)
 
 pi uses typebox for tool parameter schemas; typebox types are plain JSON-Schema-generating objects, so pillar uses JSON Schema directly with builder helpers:
@@ -241,7 +249,12 @@ end)
 divergence (Rust contract): upstream's renderer returns a live `Component`;
 the port's `MessageRenderer` / `EntryRenderer` answer **themed lines**
 (`RenderedLines = Vec<String>`) and the presentation adapter wraps them in its
-own component. That keeps the extension contract free of TUI types, so
+own component. They also take neutral inputs: `{ CustomMessagePayload,
+MessageRenderOptions, &dyn ThemeStyle }` (and the entry equivalent), so the
+contract names neither the message/session models nor the theme type. The
+transcript builds the payload (`core::extensions_types::message_render_payload`
+/ `entry_render_payload`) and the theme lookup (`theme_style_fn`); the VM
+forwards them to Lua. That keeps the extension contract free of TUI types, so
 `pillar-extensions` does not depend on the terminal layer (the dependency
 table in [01-architecture.md](01-architecture.md) is asserted by
 `tests/dependency_direction.rs`).

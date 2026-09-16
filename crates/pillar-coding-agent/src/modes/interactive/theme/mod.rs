@@ -941,6 +941,35 @@ pub fn all_themes() -> Vec<(String, Option<String>)> {
     themes.into_iter().collect()
 }
 
+/// The [`ThemeProvider`] the app installs on the extension host API: the
+/// presentation adapter for `ctx.ui.theme` (the VM crate names no theme type).
+pub fn contract_provider() -> std::sync::Arc<dyn pillar_extensions_contract::ThemeProvider> {
+    struct Provider;
+
+    impl pillar_extensions_contract::ThemeProvider for Provider {
+        fn snapshot(&self) -> Option<pillar_extensions_contract::ThemeSnapshot> {
+            try_theme().map(|theme| pillar_extensions_contract::ThemeSnapshot {
+                name: theme.name().map(str::to_string),
+                mode: theme.color_mode().as_str().to_string(),
+                fg_colors: theme.fg_colors().clone(),
+                bg_colors: theme.bg_colors().clone(),
+            })
+        }
+
+        fn list(&self) -> Vec<pillar_extensions_contract::ThemeInfo> {
+            all_themes()
+                .into_iter()
+                .map(|(name, path)| pillar_extensions_contract::ThemeInfo {
+                    name,
+                    path: path.unwrap_or_default(),
+                })
+                .collect()
+        }
+    }
+
+    std::sync::Arc::new(Provider)
+}
+
 /// The active theme name, if any.
 pub fn current_theme_name() -> Option<String> {
     REGISTRY
