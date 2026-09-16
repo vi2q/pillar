@@ -528,3 +528,42 @@ fn the_agent_hooks_do_not_keep_the_session_alive() {
         "an installed hook must not keep the session's runner alive"
     );
 }
+
+/// Disposal must drop the agent-side callbacks and unbind the host API: a
+/// disposed session must not be mutated by a later event, hook or extension
+/// call.
+#[test]
+fn dispose_clears_the_agent_hooks_and_unbinds_the_host() {
+    let slots = ExtensionHostSlots::new("/tmp");
+    let session = session_for_reload(
+        ExtensionRunner::new(Vec::new()),
+        Vec::new(),
+        Arc::new(|_| ExtensionRunner::new(Vec::new())),
+    );
+    bind_session(&slots.session_slot, &session);
+    session.install_tool_hooks();
+    session.install_next_turn_refresh();
+    assert!(session.agent().before_tool_call_hook().is_some());
+    assert!(session.agent().prepare_next_turn_hook().is_some());
+    assert!(!session.is_disposed());
+
+    session.dispose();
+
+    assert!(session.is_disposed());
+    assert!(
+        session.agent().before_tool_call_hook().is_none(),
+        "a disposed session must drop its tool hook"
+    );
+    assert!(
+        session.agent().prepare_next_turn_hook().is_none(),
+        "a disposed session must drop its next-turn hook"
+    );
+    assert!(
+        resolve_session(&slots.session_slot).is_none(),
+        "the host API must not reach a disposed session"
+    );
+
+    // Disposal is idempotent (the interactive run and the caller can both ask).
+    session.dispose();
+    assert!(session.is_disposed());
+}

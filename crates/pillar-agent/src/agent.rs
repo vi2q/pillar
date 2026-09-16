@@ -439,6 +439,14 @@ impl Agent {
             .clone()
     }
 
+    /// Remove the installed tool-call and next-turn hooks: a disposed session
+    /// must not be called back by a later event (upstream session disposal).
+    pub fn clear_agent_hooks(&self) {
+        *self.before_tool_call.lock().expect("before hook lock") = None;
+        *self.after_tool_call.lock().expect("after hook lock") = None;
+        *self.prepare_next_turn.lock().expect("prepare hook lock") = None;
+    }
+
     /// Install the after-tool-call interception hook (upstream assigning
     /// `agent.afterToolCall`). Applies to the next run.
     pub fn set_after_tool_call(&self, hook: Arc<AfterToolFn>) {

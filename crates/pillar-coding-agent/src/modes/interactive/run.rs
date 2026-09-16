@@ -776,11 +776,7 @@ impl EventBacklog {
     /// Drop the oldest coalescible update; false when every pending event is
     /// critical (they carry the transcript, so the cap yields to them).
     fn drop_oldest_update(&mut self) -> bool {
-        let Some(index) = self
-            .queue
-            .iter()
-            .position(|event| is_streaming_update(event))
-        else {
+        let Some(index) = self.queue.iter().position(is_streaming_update) else {
             return false;
         };
         self.queue.remove(index);
@@ -792,10 +788,7 @@ impl EventBacklog {
 /// subsumes the older.
 fn same_streaming_target(previous: &AgentSessionEvent, next: &AgentSessionEvent) -> bool {
     match (previous, next) {
-        (
-            AgentSessionEvent::MessageUpdate { .. },
-            AgentSessionEvent::MessageUpdate { .. },
-        ) => true,
+        (AgentSessionEvent::MessageUpdate { .. }, AgentSessionEvent::MessageUpdate { .. }) => true,
         (
             AgentSessionEvent::ToolExecutionUpdate {
                 tool_call_id: previous,
@@ -877,7 +870,9 @@ fn pump_loop(
         // iteration: a flooding producer must not starve the terminal, the
         // abort keys or the executor's completion reports.
         let batch = {
-            let mut backlog = events.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut backlog = events
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             backlog.take(EVENT_DRAIN_BATCH)
         };
         for event in batch {

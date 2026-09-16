@@ -44,14 +44,15 @@ pub fn bind_session(slot: &SessionSlot, session: &Arc<AgentSession>) {
     *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::downgrade(session));
 }
 
-/// The session the slot points at: `None` before binding, and also after the
-/// last strong handle was dropped (the host then reports "not ready" instead
-/// of resurrecting it).
+/// The session the slot points at: `None` before binding, after the last
+/// strong handle was dropped, and after [`AgentSession::dispose`] (the host
+/// then reports "not ready" instead of touching a dead session).
 pub fn resolve_session(slot: &SessionSlot) -> Option<Arc<AgentSession>> {
     slot.lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .as_ref()
         .and_then(Weak::upgrade)
+        .filter(|session| !session.is_disposed())
 }
 
 /// The command / tool data `get_commands` and the tool getters answer.

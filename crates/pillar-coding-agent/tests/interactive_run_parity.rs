@@ -25,6 +25,7 @@ use pillar_ai::event_stream::assistant_message_event_stream;
 use pillar_ai::types::{
     AssistantMessage, AssistantMessageEvent, Content, Message, StopReason, Usage, UsageCost,
 };
+use pillar_coding_agent::core::agent_session_class::AgentSessionEvent;
 use pillar_coding_agent::core::agent_session_class::{AgentSession, AgentSessionConfig};
 use pillar_coding_agent::core::auth_storage::InMemoryCodingAgentModelsStore;
 use pillar_coding_agent::core::extensions_runner::ExtensionRunner;
@@ -33,7 +34,6 @@ use pillar_coding_agent::core::resource_loader::{ResourceLoader, ResourceLoaderO
 use pillar_coding_agent::core::session_manager::SessionManager;
 use pillar_coding_agent::core::settings_manager::{SettingsManager, SettingsManagerCreateOptions};
 use pillar_coding_agent::modes::interactive::interactive_mode::InteractiveModeOptions;
-use pillar_coding_agent::core::agent_session_class::AgentSessionEvent;
 use pillar_coding_agent::modes::interactive::run::{
     EventBacklog, InteractiveOutcome, InteractiveRunOptions, run_interactive,
 };
@@ -1330,9 +1330,9 @@ async fn settings_command_cycles_a_value_and_closes() {
 
 fn message_update(text: &str) -> AgentSessionEvent {
     AgentSessionEvent::MessageUpdate {
-        message: pillar_agent::types::AgentMessage::Message(
-            pillar_ai::types::Message::Assistant(Box::new(assistant_message(text))),
-        ),
+        message: pillar_agent::types::AgentMessage::Message(pillar_ai::types::Message::Assistant(
+            Box::new(assistant_message(text)),
+        )),
         assistant_message_event: Box::new(AssistantMessageEvent::TextDelta {
             content_index: 0,
             partial: assistant_message(text),

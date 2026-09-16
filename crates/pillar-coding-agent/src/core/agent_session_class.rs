@@ -20,6 +20,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use pillar_agent::types::{AfterToolFuture, BeforeToolFuture};
@@ -446,6 +447,8 @@ struct SessionInner {
     extension_runner_rebuild: Option<ExtensionRunnerFactory>,
     extension_reload_publish: Mutex<Option<ExtensionReloadPublishFn>>,
     effect_authorizer: Option<crate::core::effects::EffectAuthorizer>,
+    /// Set by [`AgentSession::dispose`].
+    disposed: AtomicBool,
     initial_active_tool_names: Option<Vec<String>>,
     allowed_tool_names: Option<BTreeSet<String>>,
     excluded_tool_names: Option<BTreeSet<String>>,
@@ -575,6 +578,7 @@ impl AgentSession {
             extension_runner_rebuild: config.extension_runner_rebuild,
             extension_reload_publish: Mutex::new(config.extension_reload_publish),
             effect_authorizer: config.effect_authorizer,
+            disposed: AtomicBool::new(false),
             initial_active_tool_names: config.initial_active_tool_names,
             allowed_tool_names: config.allowed_tool_names,
             excluded_tool_names: config.excluded_tool_names,
@@ -3012,11 +3016,18 @@ impl AgentSession {
     // --- Disposal -------------------------------------------------------
 
     /// Remove all listeners and disconnect from the agent (upstream
-    /// `dispose`).
+    /// `dispose`): after it no hook, listener or extension callback may
+    /// mutate this session (docs/ARCHITECTURE-REVIEW-s05c0.md D).
     pub fn dispose(&self) {
+        if self.inner.disposed.swap(true, Ordering::SeqCst) {
+            return;
+        }
         self.abort_retry();
         self.abort_compaction();
         self.inner.agent.abort();
+        // The agent keeps the tool / next-turn hooks: without clearing them a
+        // later event would still call back into a disposed session.
+        self.inner.agent.clear_agent_hooks();
         if let Some(unsubscribe) = self
             .inner
             .unsubscribe_agent
@@ -3026,12 +3037,26 @@ impl AgentSession {
         {
             unsubscribe();
         }
+        {
+            let mut runner = self.inner.extension_runner.lock().expect("runner lock");
+            // `disposed` is already set, so the host API is unbound while this
+            // event runs: a shutdown handler may clean up its own state but
+            // cannot mutate the session it is shutting down.
+            emit_session_shutdown_event(&mut runner, "quit", None);
+            runner.invalidate("The session was disposed.");
+        }
         self.inner
             .state
             .lock()
             .expect("session state")
             .event_listeners
             .clear();
+    }
+
+    /// Whether [`AgentSession::dispose`] ran (the host APIs treat a disposed
+    /// session like an unbound one).
+    pub fn is_disposed(&self) -> bool {
+        self.inner.disposed.load(Ordering::SeqCst)
     }
 
     // --- Compaction -----------------------------------------------------
