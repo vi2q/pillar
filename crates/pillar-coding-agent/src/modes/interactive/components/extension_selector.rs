@@ -60,7 +60,8 @@ impl ExtensionSelectorComponent {
             return ExtensionSelectorOutcome::Consumed;
         }
         if matches("tui.select.down") || data == "j" {
-            self.selected_index = (self.selected_index + 1).min(self.options.len().saturating_sub(1));
+            self.selected_index =
+                (self.selected_index + 1).min(self.options.len().saturating_sub(1));
             return ExtensionSelectorOutcome::Consumed;
         }
         if matches("tui.select.confirm") || data == "\n" {
@@ -83,8 +84,12 @@ impl Component for ExtensionSelectorComponent {
         lines.extend(DynamicBorder::new().render(width));
         lines.push(String::new());
         lines.extend(
-            Text::new(&theme_handle.fg("accent", &theme_handle.bold(&self.title)), 1, 0)
-                .render(width),
+            Text::new(
+                &theme_handle.fg("accent", &theme_handle.bold(&self.title)),
+                1,
+                0,
+            )
+            .render(width),
         );
         lines.push(String::new());
         for (index, option) in self.options.iter().enumerate() {
@@ -165,6 +170,9 @@ mod tests {
     fn cancel_and_tools_expand_are_reported() {
         let _guard = crate::modes::interactive::components::test_support::setup();
         let mut selector = ExtensionSelectorComponent::new("Summarize branch?", &options());
-        assert_eq!(selector.handle_key("\x1b"), ExtensionSelectorOutcome::Cancel);
+        assert_eq!(
+            selector.handle_key("\x1b"),
+            ExtensionSelectorOutcome::Cancel
+        );
     }
 }

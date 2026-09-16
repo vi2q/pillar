@@ -68,9 +68,7 @@ impl Component for ExtensionInputComponent {
         let mut lines: Vec<String> = Vec::new();
         lines.extend(DynamicBorder::new().render(width));
         lines.push(String::new());
-        lines.extend(
-            Text::new(&theme_handle.fg("accent", &self.title), 1, 0).render(width),
-        );
+        lines.extend(Text::new(&theme_handle.fg("accent", &self.title), 1, 0).render(width));
         lines.push(String::new());
         lines.extend(self.input.render(width));
         lines.push(String::new());

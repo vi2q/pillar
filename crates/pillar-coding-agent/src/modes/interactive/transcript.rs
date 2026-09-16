@@ -952,14 +952,15 @@ impl InteractiveTranscript {
             .unwrap_or_else(
                 crate::modes::interactive::components::markdown_transform::default_markdown_theme_factory,
             );
-        self.chat.add_child(Box::new(pillar_tui::markdown::Markdown::new(
-            markdown.trim(),
-            1,
-            1,
-            (markdown_theme)(),
-            None,
-            pillar_tui::markdown::MarkdownOptions::default(),
-        )));
+        self.chat
+            .add_child(Box::new(pillar_tui::markdown::Markdown::new(
+                markdown.trim(),
+                1,
+                1,
+                (markdown_theme)(),
+                None,
+                pillar_tui::markdown::MarkdownOptions::default(),
+            )));
         self.chat.add_child(Box::new(DynamicBorder::new()));
     }
 

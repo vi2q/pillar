@@ -1649,7 +1649,9 @@ fn resume_selector_delete_and_rename_route_through_the_executor() {
     let actions = mode.complete_session_delete("/s/one.jsonl", true, true, None);
     assert_eq!(
         actions,
-        vec![ModeAction::LoadSessions { scope: SessionScope::Current }]
+        vec![ModeAction::LoadSessions {
+            scope: SessionScope::Current
+        }]
     );
     let body = editor_slot_body(&mode, 120);
     assert!(body.contains("Session moved to trash"), "{body:?}");
@@ -1685,7 +1687,9 @@ fn resume_selector_delete_and_rename_route_through_the_executor() {
     let actions = mode.complete_session_rename(None);
     assert_eq!(
         actions,
-        vec![ModeAction::LoadSessions { scope: SessionScope::Current }]
+        vec![ModeAction::LoadSessions {
+            scope: SessionScope::Current
+        }]
     );
 }
 
@@ -1798,7 +1802,10 @@ fn tree_summarize_with_custom_prompt_collects_instructions() {
         vec![ModeAction::EditorSlotChanged, ModeAction::EditorSlotChanged]
     );
     let body = editor_slot_body(&mode, 100);
-    assert!(body.contains("Custom summarization instructions"), "{body:?}");
+    assert!(
+        body.contains("Custom summarization instructions"),
+        "{body:?}"
+    );
 
     for ch in "focus on tests".chars() {
         mode.handle_selector_key(&ch.to_string()).expect("input");

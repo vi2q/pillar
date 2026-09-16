@@ -340,3 +340,123 @@ fn in_memory_settings_are_loaded_and_migrated() {
     assert_eq!(manager.settings()["steeringMode"], json!("all"));
     assert_eq!(manager.settings()["theme"], json!("dark"));
 }
+
+// --- settings-selector accessors (upstream getter/setter pairs) ---------------------
+
+#[test]
+fn settings_selector_accessors_default_and_write() {
+    let mut manager = SettingsManager::in_memory(json!({}), SettingsManagerCreateOptions::default());
+
+    // Defaults.
+    assert!(manager.image_auto_resize());
+    assert!(!manager.block_images());
+    assert!(!manager.collapse_changelog());
+    assert!(!manager.show_terminal_progress());
+    assert_eq!(manager.fullscreen_exit_output(), "transcript");
+    assert_eq!(manager.fullscreen_scrollbar(), "auto");
+    assert!(manager.fullscreen_copy_on_select());
+    assert!(manager.warnings().as_object().unwrap().is_empty());
+    assert!(manager.all_model_thinking_levels().is_empty());
+
+    // Writes land in the global scope under the upstream keys.
+    manager.set_image_auto_resize(false);
+    manager.set_block_images(true);
+    manager.set_collapse_changelog(true);
+    manager.set_show_terminal_progress(true);
+    manager.set_fullscreen_exit_output("resume-hint");
+    manager.set_fullscreen_scrollbar("hidden");
+    manager.set_fullscreen_copy_on_select(false);
+    manager.set_show_images(false);
+    manager.set_image_width_cells(0); // clamped to 1
+    manager.set_enable_skill_commands(false);
+    manager.set_transport("websocket");
+    manager.set_http_idle_timeout_ms(120_000);
+    manager.set_hide_thinking_block(true);
+    manager.set_show_cache_miss_notices(true);
+    manager.set_quiet_startup(true);
+    manager.set_enable_install_telemetry(false);
+    manager.set_editor_padding_x(9); // clamped to 3
+    manager.set_output_pad(0);
+    manager.set_autocomplete_max_visible(99); // clamped to 20
+    manager.set_clear_on_shrink(true);
+    manager.set_show_hardware_cursor(true);
+    manager.set_mermaid_rendering_mode("off");
+    manager.set_double_escape_action(DoubleEscapeAction::Fork);
+    manager.set_tree_filter_mode(TreeFilterMode::UserOnly);
+    manager.set_default_project_trust(
+        pillar_coding_agent::core::settings_manager::DefaultProjectTrust::Never,
+    );
+    manager.set_warnings(json!({ "anthropicExtraUsage": false }));
+
+    assert!(!manager.image_auto_resize());
+    assert!(manager.block_images());
+    assert!(manager.collapse_changelog());
+    assert!(manager.show_terminal_progress());
+    assert_eq!(manager.fullscreen_exit_output(), "resume-hint");
+    assert_eq!(manager.fullscreen_scrollbar(), "hidden");
+    assert!(!manager.fullscreen_copy_on_select());
+    assert!(!manager.show_images());
+    assert_eq!(manager.image_width_cells(), 1);
+    assert!(!manager.enable_skill_commands());
+    assert_eq!(manager.transport(), "websocket");
+    assert_eq!(manager.http_idle_timeout_ms().unwrap(), 120_000);
+    assert!(manager.hide_thinking_block());
+    assert!(manager.show_cache_miss_notices());
+    assert!(manager.quiet_startup());
+    assert!(!manager.enable_install_telemetry());
+    assert_eq!(manager.editor_padding_x(), 3);
+    assert_eq!(manager.output_pad(), 0);
+    assert_eq!(manager.autocomplete_max_visible(), 20);
+    assert!(manager.clear_on_shrink());
+    assert!(manager.show_hardware_cursor());
+    assert_eq!(manager.mermaid_rendering_mode(), "off");
+    assert_eq!(manager.double_escape_action(), DoubleEscapeAction::Fork);
+    assert_eq!(manager.tree_filter_mode(), TreeFilterMode::UserOnly);
+    assert_eq!(
+        manager.default_project_trust(),
+        pillar_coding_agent::core::settings_manager::DefaultProjectTrust::Never
+    );
+    assert_eq!(manager.warnings()["anthropicExtraUsage"], json!(false));
+
+    // Nested writes create the parent object.
+    assert_eq!(manager.settings()["terminal"]["showImages"], json!(false));
+    assert_eq!(manager.settings()["images"]["blockImages"], json!(true));
+    assert_eq!(manager.settings()["markdown"]["mermaid"], json!("off"));
+}
+
+#[test]
+fn model_thinking_levels_map_and_removal() {
+    let mut manager = SettingsManager::in_memory(json!({}), SettingsManagerCreateOptions::default());
+    manager.set_model_thinking_level("anthropic", "claude-opus-5", "high");
+    manager.set_model_thinking_level("opencode-go", "omen-alpha", "low");
+
+    assert_eq!(
+        manager.model_thinking_level("anthropic", "claude-opus-5"),
+        Some("high".to_string())
+    );
+    let all = manager.all_model_thinking_levels();
+    assert_eq!(all.len(), 2);
+    assert_eq!(all["opencode-go/omen-alpha"], "low");
+
+    // Removing the only key drops the whole object (upstream behaviour).
+    manager.remove_model_thinking_level("anthropic", "claude-opus-5");
+    manager.remove_model_thinking_level("opencode-go", "omen-alpha");
+    assert!(manager.all_model_thinking_levels().is_empty());
+    assert!(manager.settings().get("modelThinkingLevels").is_none());
+}
+
+#[test]
+fn clear_on_shrink_and_hardware_cursor_fall_back_to_env() {
+    // The env fallbacks match the TUI options (`PILLAR_*`).
+    let manager = SettingsManager::in_memory(
+        json!({"terminal": {"clearOnShrink": true}, "showHardwareCursor": false}),
+        SettingsManagerCreateOptions::default(),
+    );
+    assert!(manager.clear_on_shrink());
+    assert!(!manager.show_hardware_cursor());
+
+    // Explicit settings win over the env defaults.
+    let manager = SettingsManager::in_memory(json!({}), SettingsManagerCreateOptions::default());
+    assert!(!manager.clear_on_shrink());
+    assert!(!manager.show_hardware_cursor());
+}

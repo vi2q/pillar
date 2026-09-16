@@ -1135,6 +1135,287 @@ impl SettingsManager {
         };
         self.set_global_setting("enabledModels", value);
     }
+
+    // --- settings-selector surface (upstream getter/setter pairs) ---------------
+
+    pub fn set_show_images(&mut self, show: bool) {
+        self.set_global_nested_setting("terminal", "showImages", Value::Bool(show));
+    }
+
+    pub fn set_image_width_cells(&mut self, width: u64) {
+        self.set_global_nested_setting(
+            "terminal",
+            "imageWidthCells",
+            Value::Number(width.max(1).into()),
+        );
+    }
+
+    /// Upstream `getImageAutoResize` (`images.autoResize`, default true).
+    pub fn image_auto_resize(&self) -> bool {
+        self.settings
+            .get("images")
+            .and_then(|images| images.get("autoResize"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true)
+    }
+
+    pub fn set_image_auto_resize(&mut self, enabled: bool) {
+        self.set_global_nested_setting("images", "autoResize", Value::Bool(enabled));
+    }
+
+    /// Upstream `getBlockImages` (`images.blockImages`, default false).
+    pub fn block_images(&self) -> bool {
+        self.settings
+            .get("images")
+            .and_then(|images| images.get("blockImages"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    }
+
+    pub fn set_block_images(&mut self, blocked: bool) {
+        self.set_global_nested_setting("images", "blockImages", Value::Bool(blocked));
+    }
+
+    pub fn set_enable_skill_commands(&mut self, enabled: bool) {
+        self.set_global_setting("enableSkillCommands", Value::Bool(enabled));
+    }
+
+    /// Upstream `getTransport` (already-normalized string form).
+    pub fn set_transport(&mut self, transport: &str) {
+        self.set_global_setting("transport", Value::String(transport.to_string()));
+    }
+
+    pub fn set_http_idle_timeout_ms(&mut self, timeout_ms: u64) {
+        self.set_global_setting(
+            "httpIdleTimeoutMs",
+            Value::Number(timeout_ms.into()),
+        );
+    }
+
+    pub fn set_hide_thinking_block(&mut self, hide: bool) {
+        self.set_global_setting("hideThinkingBlock", Value::Bool(hide));
+    }
+
+    pub fn set_show_cache_miss_notices(&mut self, show: bool) {
+        self.set_global_setting("showCacheMissNotices", Value::Bool(show));
+    }
+
+    /// Upstream `getCollapseChangelog` (default false).
+    pub fn collapse_changelog(&self) -> bool {
+        self.settings
+            .get("collapseChangelog")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    }
+
+    pub fn set_collapse_changelog(&mut self, collapse: bool) {
+        self.set_global_setting("collapseChangelog", Value::Bool(collapse));
+    }
+
+    pub fn set_quiet_startup(&mut self, quiet: bool) {
+        self.set_global_setting("quietStartup", Value::Bool(quiet));
+    }
+
+    pub fn set_enable_install_telemetry(&mut self, enabled: bool) {
+        self.set_global_setting("enableInstallTelemetry", Value::Bool(enabled));
+    }
+
+    pub fn set_default_project_trust(&mut self, trust: DefaultProjectTrust) {
+        let value = match trust {
+            DefaultProjectTrust::Ask => "ask",
+            DefaultProjectTrust::Always => "always",
+            DefaultProjectTrust::Never => "never",
+        };
+        self.set_global_setting("defaultProjectTrust", Value::String(value.to_string()));
+    }
+
+    pub fn set_double_escape_action(&mut self, action: DoubleEscapeAction) {
+        let value = match action {
+            DoubleEscapeAction::Fork => "fork",
+            DoubleEscapeAction::Tree => "tree",
+            DoubleEscapeAction::None => "none",
+        };
+        self.set_global_setting("doubleEscapeAction", Value::String(value.to_string()));
+    }
+
+    pub fn set_tree_filter_mode(&mut self, mode: TreeFilterMode) {
+        let value = match mode {
+            TreeFilterMode::Default => "default",
+            TreeFilterMode::NoTools => "no-tools",
+            TreeFilterMode::UserOnly => "user-only",
+            TreeFilterMode::LabeledOnly => "labeled-only",
+            TreeFilterMode::All => "all",
+        };
+        self.set_global_setting("treeFilterMode", Value::String(value.to_string()));
+    }
+
+    /// Upstream `getWarnings` (an object; unknown entries are preserved).
+    pub fn warnings(&self) -> Value {
+        self.settings
+            .get("warnings")
+            .filter(|value| value.is_object())
+            .cloned()
+            .unwrap_or_else(|| Value::Object(Default::default()))
+    }
+
+    pub fn set_warnings(&mut self, warnings: Value) {
+        self.set_global_setting("warnings", warnings);
+    }
+
+    /// Upstream `getAllModelThinkingLevels`: the `provider/model` keyed map.
+    pub fn all_model_thinking_levels(&self) -> BTreeMap<String, String> {
+        self.settings
+            .get("modelThinkingLevels")
+            .and_then(Value::as_object)
+            .map(|map| {
+                map.iter()
+                    .filter_map(|(key, value)| {
+                        value.as_str().map(|level| (key.clone(), level.to_string()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Upstream `removeModelThinkingLevel`: drops the key and the whole object
+    /// when it becomes empty.
+    pub fn remove_model_thinking_level(&mut self, provider: &str, model_id: &str) {
+        let key = format!("{provider}/{model_id}");
+        let empty = {
+            let Some(levels) = self
+                .global_settings
+                .get_mut("modelThinkingLevels")
+                .and_then(Value::as_object_mut)
+            else {
+                return;
+            };
+            levels.remove(&key);
+            levels.is_empty()
+        };
+        if empty {
+            // Upstream deletes the key entirely (`delete
+            // globalSettings.modelThinkingLevels`).
+            if let Some(global) = self.global_settings.as_object_mut() {
+                global.remove("modelThinkingLevels");
+            }
+            self.mark_modified("modelThinkingLevels", None);
+            self.save();
+            return;
+        }
+        self.mark_modified("modelThinkingLevels", None);
+        self.save();
+    }
+
+    /// Upstream `getShowHardwareCursor` (`showHardwareCursor` or
+    /// `PILLAR_HARDWARE_CURSOR=1`).
+    pub fn show_hardware_cursor(&self) -> bool {
+        self.settings
+            .get("showHardwareCursor")
+            .and_then(|v| v.as_bool())
+            .unwrap_or_else(|| std::env::var("PILLAR_HARDWARE_CURSOR").ok().as_deref() == Some("1"))
+    }
+
+    pub fn set_show_hardware_cursor(&mut self, enabled: bool) {
+        self.set_global_setting("showHardwareCursor", Value::Bool(enabled));
+    }
+
+    pub fn set_editor_padding_x(&mut self, padding: i64) {
+        self.set_global_setting(
+            "editorPaddingX",
+            Value::Number(padding.clamp(0, 3).into()),
+        );
+    }
+
+    pub fn set_output_pad(&mut self, padding: u8) {
+        self.set_global_setting("outputPad", Value::Number((padding as u64).into()));
+    }
+
+    pub fn set_autocomplete_max_visible(&mut self, max_visible: u64) {
+        self.set_global_setting(
+            "autocompleteMaxVisible",
+            Value::Number(max_visible.clamp(3, 20).into()),
+        );
+    }
+
+    /// Upstream `getClearOnShrink` (`terminal.clearOnShrink`, then
+    /// `PILLAR_CLEAR_ON_SHRINK=1`).
+    pub fn clear_on_shrink(&self) -> bool {
+        self.settings
+            .get("terminal")
+            .and_then(|terminal| terminal.get("clearOnShrink"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or_else(|| std::env::var("PILLAR_CLEAR_ON_SHRINK").ok().as_deref() == Some("1"))
+    }
+
+    pub fn set_clear_on_shrink(&mut self, enabled: bool) {
+        self.set_global_nested_setting("terminal", "clearOnShrink", Value::Bool(enabled));
+    }
+
+    /// Upstream `getShowTerminalProgress` (`terminal.showTerminalProgress`).
+    pub fn show_terminal_progress(&self) -> bool {
+        self.settings
+            .get("terminal")
+            .and_then(|terminal| terminal.get("showTerminalProgress"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    }
+
+    pub fn set_show_terminal_progress(&mut self, enabled: bool) {
+        self.set_global_nested_setting("terminal", "showTerminalProgress", Value::Bool(enabled));
+    }
+
+    /// Upstream `getFullscreenExitOutput` (`resume-hint` or `transcript`).
+    pub fn fullscreen_exit_output(&self) -> &str {
+        match self
+            .settings
+            .get("fullscreenExitOutput")
+            .and_then(|v| v.as_str())
+        {
+            Some("resume-hint") => "resume-hint",
+            _ => "transcript",
+        }
+    }
+
+    pub fn set_fullscreen_exit_output(&mut self, output: &str) {
+        self.set_global_setting(
+            "fullscreenExitOutput",
+            Value::String(output.to_string()),
+        );
+    }
+
+    /// Upstream `getFullscreenScrollbar` (`auto` | `always` | `hidden`).
+    pub fn fullscreen_scrollbar(&self) -> &str {
+        match self
+            .settings
+            .get("fullscreenScrollbar")
+            .and_then(|v| v.as_str())
+        {
+            Some("always") => "always",
+            Some("hidden") => "hidden",
+            _ => "auto",
+        }
+    }
+
+    pub fn set_fullscreen_scrollbar(&mut self, mode: &str) {
+        self.set_global_setting("fullscreenScrollbar", Value::String(mode.to_string()));
+    }
+
+    /// Upstream `getFullscreenCopyOnSelect` (default true).
+    pub fn fullscreen_copy_on_select(&self) -> bool {
+        self.settings
+            .get("fullscreenCopyOnSelect")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true)
+    }
+
+    pub fn set_fullscreen_copy_on_select(&mut self, enabled: bool) {
+        self.set_global_setting("fullscreenCopyOnSelect", Value::Bool(enabled));
+    }
+
+    /// Upstream `setMermaidRenderingMode` (`markdown.mermaid`).
+    pub fn set_mermaid_rendering_mode(&mut self, mode: &str) {
+        self.set_global_nested_setting("markdown", "mermaid", Value::String(mode.to_string()));
+    }
 }
 
 /// Steering/follow-up queue delivery mode (upstream

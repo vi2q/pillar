@@ -562,9 +562,13 @@ fn stamp_msg(text: &str, role_user: bool) -> CodingAgentMessage {
     }
 }
 
-fn write_session_file(dir: &std::path::Path, cwd: &str, name: Option<&str>, first: &str) -> PathBuf {
-    let mut manager =
-        SessionManager::create(cwd, Some(dir), None).expect("session");
+fn write_session_file(
+    dir: &std::path::Path,
+    cwd: &str,
+    name: Option<&str>,
+    first: &str,
+) -> PathBuf {
+    let mut manager = SessionManager::create(cwd, Some(dir), None).expect("session");
     manager
         .append_message(stamp_msg(first, true))
         .expect("append");
@@ -627,7 +631,8 @@ fn list_returns_the_directory_sorted_and_filters_the_cwd() {
     let sessions = SessionManager::list("/tmp", Some(&dir), None);
     assert_eq!(sessions.len(), 2, "both files listed: {sessions:?}");
     assert_eq!(
-        sessions[0].path, newer,
+        sessions[0].path,
+        newer,
         "newest first: {:?}",
         sessions.iter().map(|s| s.path.clone()).collect::<Vec<_>>()
     );

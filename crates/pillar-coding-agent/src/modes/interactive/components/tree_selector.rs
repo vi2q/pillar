@@ -28,7 +28,7 @@ use crate::core::session_manager::SessionTreeNode;
 use crate::core::settings_manager::TreeFilterMode;
 use crate::modes::interactive::components::dynamic_border::DynamicBorder;
 use crate::modes::interactive::components::keybinding_hints::{
-    format_key_text, KeyTextFormatOptions, key_hint,
+    KeyTextFormatOptions, format_key_text, key_hint,
 };
 use crate::modes::interactive::theme::theme;
 
@@ -115,10 +115,10 @@ fn render_horizontal_viewport(rows: &[HorizontalViewportRow], width: usize) -> V
     let mut horizontal_scroll = 0usize;
     if let Some(selected_row) = selected_row {
         if max_horizontal_scroll > 0 {
-            let min_visible_anchor_content_width = MAX_VISIBLE_ANCHOR_CONTENT_WIDTH.min(
-                MIN_VISIBLE_ANCHOR_CONTENT_WIDTH.max(viewport_width / 3),
-            );
-            if selected_row.anchor_col > viewport_width.saturating_sub(min_visible_anchor_content_width)
+            let min_visible_anchor_content_width = MAX_VISIBLE_ANCHOR_CONTENT_WIDTH
+                .min(MIN_VISIBLE_ANCHOR_CONTENT_WIDTH.max(viewport_width / 3));
+            if selected_row.anchor_col
+                > viewport_width.saturating_sub(min_visible_anchor_content_width)
             {
                 let anchor_context_width =
                     MAX_ANCHOR_CONTEXT_WIDTH.min(MIN_ANCHOR_CONTEXT_WIDTH.max(viewport_width / 4));
@@ -254,23 +254,36 @@ fn format_tool_call(name: &str, args: &serde_json::Value) -> String {
         }
         "grep" => {
             let pattern = string_arg("pattern");
-            let path = args.get("path").and_then(serde_json::Value::as_str).unwrap_or(".");
+            let path = args
+                .get("path")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(".");
             format!("[grep: /{pattern}/ in {}]", shorten_path(path))
         }
         "find" => {
             let pattern = string_arg("pattern");
-            let path = args.get("path").and_then(serde_json::Value::as_str).unwrap_or(".");
+            let path = args
+                .get("path")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(".");
             format!("[find: {pattern} in {}]", shorten_path(path))
         }
         "ls" => {
-            let path = args.get("path").and_then(serde_json::Value::as_str).unwrap_or(".");
+            let path = args
+                .get("path")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(".");
             format!("[ls: {}]", shorten_path(path))
         }
         _ => {
             // Custom tool: name plus truncated JSON args.
             let args_str = serde_json::to_string(args).unwrap_or_default();
             let truncated: String = args_str.chars().take(40).collect();
-            let ellipsis = if args_str.chars().count() > 40 { "..." } else { "" };
+            let ellipsis = if args_str.chars().count() > 40 {
+                "..."
+            } else {
+                ""
+            };
             format!("[{name}: {truncated}{ellipsis}]")
         }
     }
@@ -457,7 +470,11 @@ impl TreeList {
                     .as_deref()
                     .is_some_and(|leaf| node.entry.id() == leaf);
                 for child in &node.children {
-                    if contains_active.get(child.entry.id()).copied().unwrap_or(false) {
+                    if contains_active
+                        .get(child.entry.id())
+                        .copied()
+                        .unwrap_or(false)
+                    {
                         has = true;
                     }
                 }
@@ -502,14 +519,29 @@ impl TreeList {
             ));
         }
 
-        while let Some((node, indent, just_branched, show_connector, is_last, gutters, is_virtual_root_child)) =
-            stack.pop()
+        while let Some((
+            node,
+            indent,
+            just_branched,
+            show_connector,
+            is_last,
+            gutters,
+            is_virtual_root_child,
+        )) = stack.pop()
         {
             let entry = &node.entry;
             if let SessionEntry::Message(message_entry) = entry {
-                if let CodingAgentMessage::Base(Message::Assistant(assistant)) = &message_entry.message {
+                if let CodingAgentMessage::Base(Message::Assistant(assistant)) =
+                    &message_entry.message
+                {
                     for block in &assistant.content {
-                        if let Content::ToolCall { id, name, arguments, .. } = block {
+                        if let Content::ToolCall {
+                            id,
+                            name,
+                            arguments,
+                            ..
+                        } = block
+                        {
                             self.tool_call_map.insert(
                                 id.clone(),
                                 ToolCallInfo {
@@ -547,12 +579,11 @@ impl TreeList {
             });
 
             // Upstream splits the first two cases, but both are `indent + 1`.
-            let child_indent =
-                if multiple_children || (just_branched && indent > 0) {
-                    indent + 1
-                } else {
-                    indent
-                };
+            let child_indent = if multiple_children || (just_branched && indent > 0) {
+                indent + 1
+            } else {
+                indent
+            };
 
             let connector_displayed = show_connector && !is_virtual_root_child;
             let current_display_indent = if self.multiple_roots {
@@ -618,7 +649,8 @@ impl TreeList {
             // Hide assistant messages with only tool calls (no text) unless
             // error/aborted; always show the current leaf.
             if let SessionEntry::Message(message_entry) = entry {
-                if let CodingAgentMessage::Base(Message::Assistant(assistant)) = &message_entry.message
+                if let CodingAgentMessage::Base(Message::Assistant(assistant)) =
+                    &message_entry.message
                 {
                     if !is_current_leaf {
                         let has_text = assistant.content.iter().any(|block| match block {
@@ -627,7 +659,8 @@ impl TreeList {
                         });
                         let is_error_or_aborted = !matches!(
                             assistant.stop_reason,
-                            pillar_ai::types::StopReason::Stop | pillar_ai::types::StopReason::ToolUse
+                            pillar_ai::types::StopReason::Stop
+                                | pillar_ai::types::StopReason::ToolUse
                         );
                         if !has_text && !is_error_or_aborted {
                             continue;
@@ -733,13 +766,9 @@ impl TreeList {
                          flat_nodes: &[FlatNode],
                          id: &str|
          -> Option<String> {
-            entry_map.get(id).and_then(|&index| {
-                flat_nodes[index]
-                    .node
-                    .entry
-                    .parent_id()
-                    .map(str::to_string)
-            })
+            entry_map
+                .get(id)
+                .and_then(|&index| flat_nodes[index].node.entry.parent_id().map(str::to_string))
         };
 
         let find_visible_ancestor = |id: &str| -> Option<String> {
@@ -772,15 +801,7 @@ impl TreeList {
 
         // DFS over the visible tree using flattenTree() indentation
         // semantics.
-        type StackItem = (
-            String,
-            usize,
-            bool,
-            bool,
-            bool,
-            Vec<GutterInfo>,
-            bool,
-        );
+        type StackItem = (String, usize, bool, bool, bool, Vec<GutterInfo>, bool);
         let mut stack: Vec<StackItem> = Vec::new();
         for (index, node_id) in visible_root_ids.iter().enumerate().rev() {
             let is_last = index == visible_root_ids.len() - 1;
@@ -795,8 +816,15 @@ impl TreeList {
             ));
         }
 
-        while let Some((node_id, indent, just_branched, show_connector, is_last, gutters, is_virtual_root_child)) =
-            stack.pop()
+        while let Some((
+            node_id,
+            indent,
+            just_branched,
+            show_connector,
+            is_last,
+            gutters,
+            is_virtual_root_child,
+        )) = stack.pop()
         {
             let Some(&flat_index) = entry_map.get(&node_id) else {
                 continue;
@@ -810,15 +838,17 @@ impl TreeList {
                 flat_node.is_virtual_root_child = is_virtual_root_child;
             }
 
-            let children = visible_children.get(&Some(node_id.clone())).cloned().unwrap_or_default();
+            let children = visible_children
+                .get(&Some(node_id.clone()))
+                .cloned()
+                .unwrap_or_default();
             let multiple_children = children.len() > 1;
             // Upstream splits the first two cases, but both are `indent + 1`.
-            let child_indent =
-                if multiple_children || (just_branched && indent > 0) {
-                    indent + 1
-                } else {
-                    indent
-                };
+            let child_indent = if multiple_children || (just_branched && indent > 0) {
+                indent + 1
+            } else {
+                indent
+            };
 
             let connector_displayed = show_connector && !is_virtual_root_child;
             let current_display_indent = if self.multiple_roots {
@@ -870,7 +900,9 @@ impl TreeList {
                 let message = &message_entry.message;
                 parts.push(message_role(message).to_string());
                 let content = match message {
-                    CodingAgentMessage::Base(Message::User { content, .. }) => user_content_text(content),
+                    CodingAgentMessage::Base(Message::User { content, .. }) => {
+                        user_content_text(content)
+                    }
                     CodingAgentMessage::Base(Message::Assistant(assistant)) => {
                         content_blocks_text(&assistant.content)
                     }
@@ -953,11 +985,13 @@ impl TreeList {
                         format!("{}{content}", theme_handle.fg("accent", "user: "))
                     }
                     CodingAgentMessage::Base(Message::Assistant(assistant)) => {
-                        let text_content = normalize(&extract_content(&content_blocks_text(
-                            &assistant.content,
-                        )));
+                        let text_content =
+                            normalize(&extract_content(&content_blocks_text(&assistant.content)));
                         if !text_content.is_empty() {
-                            format!("{}{text_content}", theme_handle.fg("success", "assistant: "))
+                            format!(
+                                "{}{text_content}",
+                                theme_handle.fg("success", "assistant: ")
+                            )
                         } else if assistant.stop_reason == pillar_ai::types::StopReason::Aborted {
                             format!(
                                 "{}{}",
@@ -965,8 +999,7 @@ impl TreeList {
                                 theme_handle.fg("muted", "(aborted)")
                             )
                         } else if let Some(error_message) = &assistant.error_message {
-                            let error: String =
-                                normalize(error_message).chars().take(80).collect();
+                            let error: String = normalize(error_message).chars().take(80).collect();
                             format!(
                                 "{}{}",
                                 theme_handle.fg("success", "assistant: "),
@@ -983,8 +1016,10 @@ impl TreeList {
                     CodingAgentMessage::Base(Message::ToolResult(result)) => {
                         let tool_call = self.tool_call_map.get(&result.tool_call_id);
                         match tool_call {
-                            Some(tool_call) => theme_handle
-                                .fg("muted", &format_tool_call(&tool_call.name, &tool_call.arguments)),
+                            Some(tool_call) => theme_handle.fg(
+                                "muted",
+                                &format_tool_call(&tool_call.name, &tool_call.arguments),
+                            ),
                             None => theme_handle.fg(
                                 "muted",
                                 &format!(
@@ -998,10 +1033,9 @@ impl TreeList {
                             ),
                         }
                     }
-                    CodingAgentMessage::BashExecution(bash) => theme_handle.fg(
-                        "dim",
-                        &format!("[bash]: {}", normalize(&bash.command)),
-                    ),
+                    CodingAgentMessage::BashExecution(bash) => {
+                        theme_handle.fg("dim", &format!("[bash]: {}", normalize(&bash.command)))
+                    }
                     CodingAgentMessage::Custom(_) => theme_handle.fg("dim", "[custom]"),
                     CodingAgentMessage::BranchSummary(_) => {
                         theme_handle.fg("dim", "[branchSummary]")
@@ -1036,10 +1070,7 @@ impl TreeList {
             }
             SessionEntry::Label(label) => theme_handle.fg(
                 "dim",
-                &format!(
-                    "[label: {}]",
-                    label.label.as_deref().unwrap_or("(cleared)")
-                ),
+                &format!("[label: {}]", label.label.as_deref().unwrap_or("(cleared)")),
             ),
             SessionEntry::SessionInfo(info) => match &info.name {
                 Some(name) => format!(
@@ -1151,7 +1182,10 @@ impl TreeList {
                     .cloned()
                     .unwrap_or_default();
                 if children.is_empty() {
-                    return index_by_entry_id.get(&current_id).copied().unwrap_or(self.selected_index);
+                    return index_by_entry_id
+                        .get(&current_id)
+                        .copied()
+                        .unwrap_or(self.selected_index);
                 }
                 if children.len() > 1 {
                     return index_by_entry_id
@@ -1166,7 +1200,10 @@ impl TreeList {
         loop {
             let parent_id = self.visible_parent_map.get(&current_id).cloned().flatten();
             let Some(parent_id) = parent_id else {
-                return index_by_entry_id.get(&current_id).copied().unwrap_or(self.selected_index);
+                return index_by_entry_id
+                    .get(&current_id)
+                    .copied()
+                    .unwrap_or(self.selected_index);
             };
             let children = self
                 .visible_children_map
@@ -1386,13 +1423,15 @@ impl Component for TreeList {
         }
 
         let start_index = if self.selected_index >= self.max_visible_lines / 2 {
-            (self.selected_index - self.max_visible_lines / 2)
-                .min(self.filtered_indices.len().saturating_sub(self.max_visible_lines))
+            (self.selected_index - self.max_visible_lines / 2).min(
+                self.filtered_indices
+                    .len()
+                    .saturating_sub(self.max_visible_lines),
+            )
         } else {
             0
         };
-        let end_index =
-            (start_index + self.max_visible_lines).min(self.filtered_indices.len());
+        let end_index = (start_index + self.max_visible_lines).min(self.filtered_indices.len());
 
         let mut rendered_rows: Vec<HorizontalViewportRow> = Vec::new();
         for i in start_index..end_index {
@@ -1487,19 +1526,24 @@ impl Component for TreeList {
                 Some(label) => theme_handle.fg("warning", &format!("[{label}] ")),
                 None => String::new(),
             };
-            let label_timestamp =
-                if self.show_label_timestamps && flat_node.node.label.is_some() {
-                    match flat_node.node.label_timestamp {
-                        Some(timestamp) => theme_handle
-                            .fg("muted", &format!("{} ", format_label_timestamp(timestamp))),
-                        None => String::new(),
+            let label_timestamp = if self.show_label_timestamps && flat_node.node.label.is_some() {
+                match flat_node.node.label_timestamp {
+                    Some(timestamp) => {
+                        theme_handle.fg("muted", &format!("{} ", format_label_timestamp(timestamp)))
                     }
-                } else {
-                    String::new()
-                };
+                    None => String::new(),
+                }
+            } else {
+                String::new()
+            };
 
             let content = self.get_entry_display_text(&flat_node.node, is_selected);
-            let prefix_part = format!("{}{}{}", theme_handle.fg("dim", &prefix), fold_marker, path_marker);
+            let prefix_part = format!(
+                "{}{}{}",
+                theme_handle.fg("dim", &prefix),
+                fold_marker,
+                path_marker
+            );
             let anchor_col = visible_width(&prefix_part);
             let mut gutter = cursor;
             let mut body = format!("{prefix_part}{label}{label_timestamp}{content}");
@@ -2105,10 +2149,7 @@ mod tests {
             TreeFilterMode::Default,
         );
         // The constructor selects the current leaf (the last entry).
-        assert_eq!(
-            selector.handle_key("\x1b[A"),
-            TreeSelectorOutcome::Consumed
-        );
+        assert_eq!(selector.handle_key("\x1b[A"), TreeSelectorOutcome::Consumed);
         // Up moved to q2 → Enter reports it.
         let outcome = selector.handle_key("\r");
         assert_eq!(outcome, TreeSelectorOutcome::Select("q2".to_string()));
@@ -2133,10 +2174,7 @@ mod tests {
         assert!(!rendered.contains("q2 question"), "{rendered}");
 
         // The first cancel clears the query, the second cancels.
-        assert_eq!(
-            selector.handle_key("\x1b"),
-            TreeSelectorOutcome::Consumed
-        );
+        assert_eq!(selector.handle_key("\x1b"), TreeSelectorOutcome::Consumed);
         assert_eq!(selector.search_query(), "");
         assert_eq!(selector.handle_key("\x1b"), TreeSelectorOutcome::Cancel);
     }
@@ -2221,7 +2259,10 @@ mod tests {
         // Ctrl+A → all: the label entry shows.
         selector.handle_key("\x01");
         let rendered = strip_ansi(&plain(&mut selector));
-        assert!(rendered.contains("[label: tag]") || rendered.contains("[all]"), "{rendered}");
+        assert!(
+            rendered.contains("[label: tag]") || rendered.contains("[all]"),
+            "{rendered}"
+        );
         assert!(rendered.contains("[all]"), "{rendered}");
 
         // Ctrl+U → user-only: only user messages.

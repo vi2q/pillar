@@ -964,7 +964,10 @@ async fn tree_navigation_rebuilds_the_transcript_in_the_run_loop() {
         // to the assistant entry, then Enter opens the dialog. An assistant
         // target leaves the editor empty, so `/quit` below is not appended to
         // restored editor text.
-        chunks.lock().unwrap().push("\u{1b}[A\u{1b}[A\r".to_string());
+        chunks
+            .lock()
+            .unwrap()
+            .push("\u{1b}[A\u{1b}[A\r".to_string());
         wait_for("Summarize branch?");
         chunks.lock().unwrap().push("\r".to_string());
         wait_for("Navigated to selected point");

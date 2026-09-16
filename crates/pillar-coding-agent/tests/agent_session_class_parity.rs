@@ -2796,21 +2796,18 @@ async fn share_export_appends_pillar_share_metadata() {
 fn seed_tree(session: &Arc<AgentSession>) -> Vec<String> {
     let mut ids = Vec::new();
     let mut sm = session.session_manager().lock().unwrap();
-    for (text, is_user) in [
-        ("q1", true),
-        ("a1", false),
-        ("q2", true),
-        ("a2", false),
-    ] {
+    for (text, is_user) in [("q1", true), ("a1", false), ("q2", true), ("a2", false)] {
         let message = if is_user {
             CodingAgentMessage::Base(ai_types::Message::User {
                 content: UserContent::Text(text.to_string()),
                 timestamp: 1,
             })
         } else {
-            CodingAgentMessage::Base(ai_types::Message::Assistant(Box::new(
-                assistant_message(text, StopReason::Stop, None),
-            )))
+            CodingAgentMessage::Base(ai_types::Message::Assistant(Box::new(assistant_message(
+                text,
+                StopReason::Stop,
+                None,
+            ))))
         };
         ids.push(sm.append_message(message).unwrap());
     }
@@ -2896,9 +2893,15 @@ async fn navigate_tree_with_summary_creates_a_branch_summary_entry() {
         })
         .expect("branch summary entry");
     // Preamble + the summarizer's text, parented at the navigation target.
-    assert!(summary.summary.contains("Compacted summary."), "{}", summary.summary);
     assert!(
-        summary.summary.starts_with("The user explored a different conversation branch"),
+        summary.summary.contains("Compacted summary."),
+        "{}",
+        summary.summary
+    );
+    assert!(
+        summary
+            .summary
+            .starts_with("The user explored a different conversation branch"),
         "{}",
         summary.summary
     );
@@ -2970,7 +2973,10 @@ async fn navigate_tree_emits_before_tree_and_tree_events() {
         .expect("branch summary entry");
     assert_eq!(summary.summary, "extension summary");
     assert!(summary.from_hook);
-    assert_eq!(summary.details, Some(serde_json::json!({ "readFiles": ["/x"] })));
+    assert_eq!(
+        summary.details,
+        Some(serde_json::json!({ "readFiles": ["/x"] }))
+    );
     drop(sm);
 
     // The label attaches to the summary entry.
@@ -2993,15 +2999,24 @@ async fn navigate_tree_emits_before_tree_and_tree_events() {
         .find(|event| event["type"] == "session_before_tree")
         .expect("session_before_tree");
     assert_eq!(before["preparation"]["targetId"], serde_json::json!(ids[1]));
-    assert_eq!(before["preparation"]["userWantsSummary"], serde_json::json!(true));
+    assert_eq!(
+        before["preparation"]["userWantsSummary"],
+        serde_json::json!(true)
+    );
     let after = events
         .iter()
         .find(|event| event["type"] == "session_tree")
         .expect("session_tree");
     assert_eq!(after["newLeafId"], serde_json::json!(session.get_leaf_id()));
-    assert_eq!(after["summaryEntry"]["id"], serde_json::json!(result.summary_entry_id));
+    assert_eq!(
+        after["summaryEntry"]["id"],
+        serde_json::json!(result.summary_entry_id)
+    );
     assert_eq!(after["fromExtension"], serde_json::json!(true));
-    assert_eq!(after["summaryEntry"]["summary"], serde_json::json!("extension summary"));
+    assert_eq!(
+        after["summaryEntry"]["summary"],
+        serde_json::json!("extension summary")
+    );
 }
 
 #[tokio::test]

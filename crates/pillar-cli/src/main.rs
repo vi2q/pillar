@@ -362,12 +362,8 @@ async fn resume_session(
         None => SessionManager::in_memory(current.cwd(), None)?,
     };
     let mut factory = replacement_factory(parsed, &agent_dir);
-    let runtime = AgentSessionRuntime::create(
-        &mut factory,
-        current.cwd(),
-        &agent_dir,
-        current_manager,
-    )?;
+    let runtime =
+        AgentSessionRuntime::create(&mut factory, current.cwd(), &agent_dir, current_manager)?;
     let previous = runtime
         .session_manager()
         .session_file()
@@ -422,14 +418,14 @@ async fn fork_session(
     // Snapshot the live session: a fork branches whatever the session holds,
     // including an in-memory session that has no file yet (upstream mutates
     // the live manager in place).
-    let current_manager = current.session_manager().lock().expect("session lock").clone();
+    let current_manager = current
+        .session_manager()
+        .lock()
+        .expect("session lock")
+        .clone();
     let mut factory = replacement_factory(parsed, &agent_dir);
-    let runtime = AgentSessionRuntime::create(
-        &mut factory,
-        current.cwd(),
-        &agent_dir,
-        current_manager,
-    )?;
+    let runtime =
+        AgentSessionRuntime::create(&mut factory, current.cwd(), &agent_dir, current_manager)?;
     let previous = runtime
         .session_manager()
         .session_file()
@@ -649,48 +645,46 @@ async fn run_interactive(parsed: &Args) -> ExitCode {
         // `None` when the replacement was cancelled and the same session
         // continues.
         let replacement: Option<InteractiveReplacement> = match outcome {
-                InteractiveOutcome::Exit(code) => return ExitCode::from(code as u8),
-                InteractiveOutcome::SwitchSession { session_path } => {
-                    match resume_session(parsed, &session, &session_path).await {
-                        Ok((next, wiring)) => Some(InteractiveReplacement {
-                            session: next,
-                            wiring: Some(wiring),
-                            initial_editor_text: None,
-                            initial_status: None,
-                        }),
-                        Err(error) => {
-                            eprintln!("Error: {error}");
-                            return ExitCode::from(1);
-                        }
+            InteractiveOutcome::Exit(code) => return ExitCode::from(code as u8),
+            InteractiveOutcome::SwitchSession { session_path } => {
+                match resume_session(parsed, &session, &session_path).await {
+                    Ok((next, wiring)) => Some(InteractiveReplacement {
+                        session: next,
+                        wiring: Some(wiring),
+                        initial_editor_text: None,
+                        initial_status: None,
+                    }),
+                    Err(error) => {
+                        eprintln!("Error: {error}");
+                        return ExitCode::from(1);
                     }
                 }
-                InteractiveOutcome::ForkSession {
-                    entry_id,
-                    position,
-                    editor_text,
-                } => {
-                    match fork_session(parsed, &session, &entry_id, &position).await {
-                        Ok(Some((next, wiring))) => {
-                            let status = if position == "at" {
-                                "Cloned to new session"
-                            } else {
-                                "Forked to new session"
-                            };
-                            Some(InteractiveReplacement {
-                                session: next,
-                                wiring: Some(wiring),
-                                initial_editor_text: editor_text,
-                                initial_status: Some(status.to_string()),
-                            })
-                        }
-                        Ok(None) => None,
-                        Err(error) => {
-                            eprintln!("Error: {error}");
-                            return ExitCode::from(1);
-                        }
-                    }
+            }
+            InteractiveOutcome::ForkSession {
+                entry_id,
+                position,
+                editor_text,
+            } => match fork_session(parsed, &session, &entry_id, &position).await {
+                Ok(Some((next, wiring))) => {
+                    let status = if position == "at" {
+                        "Cloned to new session"
+                    } else {
+                        "Forked to new session"
+                    };
+                    Some(InteractiveReplacement {
+                        session: next,
+                        wiring: Some(wiring),
+                        initial_editor_text: editor_text,
+                        initial_status: Some(status.to_string()),
+                    })
                 }
-            };
+                Ok(None) => None,
+                Err(error) => {
+                    eprintln!("Error: {error}");
+                    return ExitCode::from(1);
+                }
+            },
+        };
 
         let Some(replacement) = replacement else {
             // Upstream the cancelled fork returns to the same mode instance.

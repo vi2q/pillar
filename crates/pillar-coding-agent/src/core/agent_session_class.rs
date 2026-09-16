@@ -4308,9 +4308,7 @@ fn tree_preparation_to_json(preparation: &crate::core::extensions_types::TreePre
 }
 
 /// Serialize a branch summary entry for the `session_tree` payload.
-fn branch_summary_entry_to_json(
-    entry: &crate::core::session_entries::BranchSummaryEntry,
-) -> Value {
+fn branch_summary_entry_to_json(entry: &crate::core::session_entries::BranchSummaryEntry) -> Value {
     serde_json::json!({
         "type": "branch_summary",
         "id": entry.base.id,

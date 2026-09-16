@@ -12,8 +12,8 @@
 use std::time::Instant;
 
 use pillar_tui::input::{Input, dispatch_input_keybinding};
-use pillar_tui::keys::matches_key;
 use pillar_tui::keybindings::with_global_keybindings;
+use pillar_tui::keys::matches_key;
 use pillar_tui::text_utils::{truncate_to_width, visible_width};
 use pillar_tui::tui::{Component, Focusable};
 

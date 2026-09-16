@@ -1275,7 +1275,9 @@ impl InteractiveMode {
     /// (`extensionRunner.getShortcuts`); the port needs the resolved
     /// keybinding map for the conflict check, which the mode does not hold yet.
     pub fn handle_hotkeys_command(&self) -> Vec<ModeAction> {
-        let key = |keybinding: &str| crate::modes::interactive::components::keybinding_hints::key_display_text(keybinding);
+        let key = |keybinding: &str| {
+            crate::modes::interactive::components::keybinding_hints::key_display_text(keybinding)
+        };
         let windows_newline_hint = if cfg!(windows) {
             " (Ctrl+Enter on Windows Terminal)"
         } else {
@@ -2100,10 +2102,7 @@ impl InteractiveMode {
             .or_else(|| user_messages.last().map(|(entry_id, _)| entry_id.clone()));
         let items: Vec<UserMessageItem> = user_messages
             .into_iter()
-            .map(|(entry_id, text)| UserMessageItem {
-                id: entry_id,
-                text,
-            })
+            .map(|(entry_id, text)| UserMessageItem { id: entry_id, text })
             .collect();
         let token = self.next_selector_token.fetch_add(1, Ordering::SeqCst);
         let component = Shared::new(UserMessageSelectorComponent::new(items, initial.as_deref()));
@@ -2547,9 +2546,7 @@ impl InteractiveMode {
                         self.toggle_tool_output_expansion();
                         Vec::new()
                     }
-                    ExtensionSelectorOutcome::Cancel => {
-                        self.cancel_tree_summary_choice(token)
-                    }
+                    ExtensionSelectorOutcome::Cancel => self.cancel_tree_summary_choice(token),
                 }
             }
             Handle::ExtensionInput(token, component) => match component.lock().handle_key(data) {
@@ -2557,9 +2554,7 @@ impl InteractiveMode {
                 ExtensionInputOutcome::Submit(value) => {
                     self.complete_tree_custom_instructions(token, &value)
                 }
-                ExtensionInputOutcome::Cancel => {
-                    self.cancel_tree_custom_instructions(token)
-                }
+                ExtensionInputOutcome::Cancel => self.cancel_tree_custom_instructions(token),
             },
             // `/fork`: the pump intercepts the commit and rebuilds the run
             // loop as a branched session (upstream `runtimeHost.fork`).
