@@ -308,7 +308,13 @@ pub fn filter_and_sort_sessions(
 mod tests {
     use super::*;
 
-    fn session(path: &str, id: &str, name: Option<&str>, modified_ms: u64, body: &str) -> SessionInfo {
+    fn session(
+        path: &str,
+        id: &str,
+        name: Option<&str>,
+        modified_ms: u64,
+        body: &str,
+    ) -> SessionInfo {
         SessionInfo {
             path: path.to_string(),
             id: id.to_string(),
@@ -383,7 +389,10 @@ mod tests {
 
         // No query: the name filter only.
         let named = filter_and_sort_sessions(&sessions, "", SortMode::Recent, NameFilter::Named);
-        assert_eq!(named.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), vec!["b"]);
+        assert_eq!(
+            named.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            vec!["b"]
+        );
 
         // Recent mode with a query: incoming (modified-desc) order is kept.
         let recent = filter_and_sort_sessions(&sessions, "bug", SortMode::Recent, NameFilter::All);
@@ -406,7 +415,10 @@ mod tests {
         );
 
         // An invalid regex matches nothing.
-        assert!(filter_and_sort_sessions(&sessions, "re:[", SortMode::Recent, NameFilter::All).is_empty());
+        assert!(
+            filter_and_sort_sessions(&sessions, "re:[", SortMode::Recent, NameFilter::All)
+                .is_empty()
+        );
     }
 
     #[test]
