@@ -413,7 +413,7 @@ fn transcript_splices_custom_entries_before_the_streaming_component() {
         if custom_type == "my-widget" {
             // Upstream `EntryRenderer`: the entry plus render options and
             // the theme; the stub answers a plain text component.
-            Some(Box::new(
+            Some(std::sync::Arc::new(
                 |entry: &pillar_coding_agent::core::session_entries::CustomEntry,
                  _options: &pillar_coding_agent::core::extensions_types::EntryRenderOptions,
                  _theme: &pillar_coding_agent::modes::interactive::theme::Theme| {

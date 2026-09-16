@@ -259,6 +259,110 @@ fn session_with_models_impl(
     Arc::new(AgentSession::new(config))
 }
 
+/// `InteractiveMode::new` installs the session's extension renderers and
+/// markdown transformers into the transcript (upstream reads
+/// `session.extensionRunner` while building each component).
+#[test]
+fn extension_renderers_reach_the_transcript() {
+    let _guard = THEME_LOCK.lock().expect("lock");
+    install_dark();
+    let session = session();
+    {
+        let runner = session.extension_runner_arc();
+        let mut runner = runner.lock().expect("runner");
+        let mut extension = pillar_coding_agent::core::extensions_runner::HostExtension {
+            path: "card.luau".to_string(),
+            handlers: BTreeMap::new(),
+            commands: Vec::new(),
+            tools: BTreeMap::new(),
+            flags: BTreeMap::new(),
+            shortcuts: BTreeMap::new(),
+            message_renderers: BTreeMap::new(),
+            entry_renderers: BTreeMap::new(),
+            markdown_transformer: None,
+        };
+        let message_renderer: pillar_coding_agent::core::extensions_types::MessageRenderer =
+            std::sync::Arc::new(|message, options, _theme| {
+                Some(Box::new(pillar_tui::components::Text::new(
+                    &format!(
+                        "card body {} expanded={}",
+                        message.custom_type, options.expanded
+                    ),
+                    0,
+                    0,
+                )) as Box<dyn pillar_tui::tui::Component>)
+            });
+        extension
+            .message_renderers
+            .insert("card".to_string(), message_renderer);
+        let entry_renderer: pillar_coding_agent::core::extensions_types::EntryRenderer =
+            std::sync::Arc::new(|entry, _options, _theme| {
+                Some(Box::new(pillar_tui::components::Text::new(
+                    &format!("entry body {}", entry.custom_type),
+                    0,
+                    0,
+                )) as Box<dyn pillar_tui::tui::Component>)
+            });
+        extension
+            .entry_renderers
+            .insert("widget".to_string(), entry_renderer);
+        let transformer: pillar_coding_agent::core::extensions_types::MarkdownTransformer =
+            std::sync::Arc::new(|markdown: &str, context| {
+                (context.message_type
+                    == pillar_coding_agent::core::extensions_types::MarkdownMessageType::User)
+                    .then(|| format!("// {markdown}"))
+            });
+        extension.markdown_transformer = Some(transformer);
+        *runner =
+            pillar_coding_agent::core::extensions_runner::ExtensionRunner::new(vec![extension]);
+    }
+    let mode = InteractiveMode::new(
+        Arc::clone(&session),
+        TranscriptSettings::default(),
+        Vec::new(),
+        InteractiveModeOptions {
+            tui_mode: Some(TuiMode::Regular),
+            clear_on_shrink: Some(false),
+            show_terminal_progress: Some(false),
+            version: Some("0.84.3".to_string()),
+            on_terminal_title: Some(Arc::new(|_| {})),
+            on_terminal_progress: None,
+            cwd_git_paths: None,
+            ..Default::default()
+        },
+    );
+
+    {
+        let mut transcript = mode.transcript().lock();
+        transcript.add_message_to_chat(
+            CodingAgentMessage::Custom(pillar_coding_agent::core::messages::CustomMessage {
+                custom_type: "card".to_string(),
+                content: Vec::new(),
+                display: true,
+                details: None,
+                timestamp: 0,
+            }),
+            false,
+        );
+        transcript.add_custom_entry_to_chat(
+            &pillar_coding_agent::core::session_entries::CustomEntry {
+                base: pillar_coding_agent::core::session_entries::SessionEntryBase {
+                    id: "e1".to_string(),
+                    ..Default::default()
+                },
+                custom_type: "widget".to_string(),
+                data: None,
+            },
+        );
+        let rendered = plain(&mut transcript.chat, 60);
+        assert!(
+            rendered.contains("card body card expanded=false"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("entry body widget"), "{rendered}");
+    }
+}
+
 fn make_mode(session: &Arc<AgentSession>) -> InteractiveMode {
     let _guard = THEME_LOCK.lock().expect("lock");
     install_dark();

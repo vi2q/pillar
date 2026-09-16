@@ -134,17 +134,109 @@ fn configured_extensions_can_use_fs_and_require_each_other() {
     std::fs::write(work.join("input.txt"), "hello").unwrap();
 
     let configured = vec![dir.to_string_lossy().to_string()];
-    let wiring = build_extension_runner(
-        &work.to_string_lossy(),
-        None,
-        None,
-        &configured,
-    );
+    let wiring = build_extension_runner(&work.to_string_lossy(), None, None, &configured);
     assert!(wiring.errors.is_empty(), "{:?}", wiring.errors);
 
-    let written = std::fs::read_to_string(work.join("output.txt")).expect("fs.write wrote the file");
+    let written =
+        std::fs::read_to_string(work.join("output.txt")).expect("fs.write wrote the file");
     assert_eq!(written, "HELLO! (true)");
     // The helper module is not an extension: only the writer has a setup
     // function, and only it registered anything.
     assert!(!wiring.runner.has_handlers("session_start"));
+}
+
+/// Extension renderers registered in Luau reach the runner the session
+/// binds to: the message/entry renderers produce components and the
+/// markdown transformer rewrites source.
+#[test]
+fn configured_extensions_register_renderers() {
+    use pillar_coding_agent::core::extensions_types::{
+        EntryRenderOptions, MarkdownMessageType, MarkdownTransformContext, MessageRenderOptions,
+    };
+    use pillar_coding_agent::core::messages::{CustomContent, CustomMessage};
+    use pillar_coding_agent::core::session_entries::{CustomEntry, SessionEntryBase};
+    use pillar_coding_agent::modes::interactive::theme;
+
+    theme::init_theme(Some("dark"));
+
+    let dir = temp_dir("renderers");
+    std::fs::write(
+        dir.join("renderers.luau"),
+        r#"
+        local pillar = require("@pillar")
+        pillar.register_message_renderer("notice", function(message, options)
+            return {
+                lines = {
+                    { { text = "NOTICE ", style = "accent" }, { text = message.details.title } },
+                    "pad=" .. tostring(options.outputPad),
+                },
+            }
+        end)
+        pillar.register_entry_renderer("widget", function(entry)
+            return "widget " .. tostring(entry.data.value)
+        end)
+        pillar.register_markdown_transformer(function(markdown, context)
+            if context.messageType ~= "user" then return nil end
+            return "> " .. markdown
+        end)
+        return nil
+        "#,
+    )
+    .unwrap();
+
+    let configured = vec![dir.to_string_lossy().to_string()];
+    let wiring = build_extension_runner("", None, None, &configured);
+    assert!(wiring.errors.is_empty(), "{:?}", wiring.errors);
+
+    let active = theme::theme();
+    let message = CustomMessage {
+        custom_type: "notice".to_string(),
+        content: vec![CustomContent::Text("body".to_string())],
+        display: true,
+        details: Some(serde_json::json!({ "title": "deployed" })),
+        timestamp: 0,
+    };
+    let renderer = wiring
+        .runner
+        .get_message_renderer("notice")
+        .expect("message renderer registered");
+    let mut component = renderer(
+        &message,
+        &MessageRenderOptions {
+            expanded: false,
+            output_pad: 4,
+        },
+        &active,
+    )
+    .expect("component");
+    let rendered = component.render(60).join("\n");
+    assert!(rendered.contains("NOTICE"), "{rendered:?}");
+    assert!(rendered.contains("deployed"), "{rendered:?}");
+    assert!(rendered.contains("pad=4"), "{rendered:?}");
+
+    let entry = CustomEntry {
+        base: SessionEntryBase {
+            id: "e1".to_string(),
+            ..Default::default()
+        },
+        custom_type: "widget".to_string(),
+        data: Some(serde_json::json!({ "value": 11 })),
+    };
+    let entry_renderer = wiring
+        .runner
+        .get_entry_renderer("widget")
+        .expect("entry renderer registered");
+    let mut component = entry_renderer(&entry, &EntryRenderOptions { expanded: false }, &active)
+        .expect("component");
+    let rendered = component.render(60).join("\n");
+    assert!(rendered.contains("widget 11"), "{rendered:?}");
+
+    let transformers = wiring.runner.get_markdown_transformers();
+    assert_eq!(transformers.len(), 1);
+    let user = MarkdownTransformContext {
+        message_type: MarkdownMessageType::User,
+        is_streaming: false,
+        available_width: 80,
+    };
+    assert_eq!(transformers[0]("hi", &user), Some("> hi".to_string()));
 }

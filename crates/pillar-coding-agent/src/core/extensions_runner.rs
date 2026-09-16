@@ -13,6 +13,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::core::extensions_types::{EntryRenderer, MarkdownTransformer, MessageRenderer};
 use crate::core::skills::ResourceDiagnostic;
 
 /// Extension flag definition (upstream `ExtensionFlag` subset).
@@ -38,6 +39,12 @@ pub struct HostExtension {
     pub flags: BTreeMap<String, ExtensionFlag>,
     /// Keyboard shortcuts by normalized key id.
     pub shortcuts: BTreeMap<String, ExtensionShortcut>,
+    /// Custom message renderers by custom type (upstream `messageRenderers`).
+    pub message_renderers: BTreeMap<String, MessageRenderer>,
+    /// Custom entry renderers by custom type (upstream `entryRenderers`).
+    pub entry_renderers: BTreeMap<String, EntryRenderer>,
+    /// Markdown transformer (upstream `markdownTransformer`).
+    pub markdown_transformer: Option<MarkdownTransformer>,
 }
 
 /// A handler closure (upstream an async JS handler; the port is sync).
@@ -222,6 +229,31 @@ impl ExtensionRunner {
 
     /// All registered tools across extensions; first per name wins
     /// (upstream `getAllRegisteredTools`).
+    /// The first registered custom-message renderer for `custom_type`
+    /// (upstream `getMessageRenderer`).
+    pub fn get_message_renderer(&self, custom_type: &str) -> Option<MessageRenderer> {
+        self.extensions
+            .iter()
+            .find_map(|extension| extension.message_renderers.get(custom_type).cloned())
+    }
+
+    /// The first registered custom-entry renderer for `custom_type`
+    /// (upstream `getEntryRenderer`).
+    pub fn get_entry_renderer(&self, custom_type: &str) -> Option<EntryRenderer> {
+        self.extensions
+            .iter()
+            .find_map(|extension| extension.entry_renderers.get(custom_type).cloned())
+    }
+
+    /// Every extension's Markdown transformer, in registration order
+    /// (upstream `getMarkdownTransformers`).
+    pub fn get_markdown_transformers(&self) -> Vec<MarkdownTransformer> {
+        self.extensions
+            .iter()
+            .filter_map(|extension| extension.markdown_transformer.clone())
+            .collect()
+    }
+
     pub fn all_registered_tool_names(&self) -> Vec<String> {
         let mut seen = BTreeSet::new();
         let mut names = Vec::new();

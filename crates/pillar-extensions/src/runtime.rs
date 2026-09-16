@@ -33,6 +33,15 @@ pub struct HostRegistry {
     pub messages: Vec<serde_json::Value>,
     /// `pillar.set_session_name(name)`.
     pub session_names: Vec<String>,
+    /// `pillar.register_message_renderer(custom_type, renderer)` — the
+    /// custom types, in registration order (the renderer function itself
+    /// stays in the VM, keyed by custom type).
+    pub message_renderers: Vec<String>,
+    /// `pillar.register_entry_renderer(custom_type, renderer)`.
+    pub entry_renderers: Vec<String>,
+    /// `pillar.register_markdown_transformer(transformer)` — the VM-side
+    /// identities (`@0`, `@1`, …) in registration order.
+    pub markdown_transformers: Vec<String>,
 }
 
 impl Default for HostRegistry {
@@ -56,6 +65,9 @@ impl HostRegistry {
             appended_entries: Vec::new(),
             messages: Vec::new(),
             session_names: Vec::new(),
+            message_renderers: Vec::new(),
+            entry_renderers: Vec::new(),
+            markdown_transformers: Vec::new(),
         }
     }
 
@@ -121,6 +133,9 @@ declare pillar: {
     register_command: (name: string, opts: any) -> (),
     register_shortcut: (key: string, opts: any) -> (),
     register_flag: (name: string, opts: any) -> (),
+    register_message_renderer: (custom_type: string, renderer: (message: any, options: any) -> any) -> (),
+    register_entry_renderer: (custom_type: string, renderer: (entry: any, options: any) -> any) -> (),
+    register_markdown_transformer: (transformer: (markdown: string, context: any) -> string?) -> (),
     get_flag: (name: string) -> any,
     append_entry: (kind: string, data: any?) -> (),
     send_message: (message: any) -> (),
@@ -408,6 +423,104 @@ impl ExtensionRuntime {
                 .lua
                 .from_value::<serde_json::Value>(other)
                 .map_err(|error| format!("{name}: {error}")),
+        }
+    }
+
+    /// Call a registered custom-message renderer (upstream `MessageRenderer`):
+    /// `renderer(message, { expanded, outputPad })` answers the declarative
+    /// component description (see [`crate::bridge`]) or `nil` to fall back.
+    pub fn render_custom_message(
+        &mut self,
+        custom_type: &str,
+        message: &serde_json::Value,
+        options: &serde_json::Value,
+    ) -> Result<Option<serde_json::Value>, String> {
+        self.call_declarative_renderer("__pillar_message_renderers", custom_type, message, options)
+    }
+
+    /// Call a registered custom-entry renderer (upstream `EntryRenderer`):
+    /// `renderer(entry, { expanded })`.
+    pub fn render_custom_entry(
+        &mut self,
+        custom_type: &str,
+        entry: &serde_json::Value,
+        options: &serde_json::Value,
+    ) -> Result<Option<serde_json::Value>, String> {
+        self.call_declarative_renderer("__pillar_entry_renderers", custom_type, entry, options)
+    }
+
+    fn call_declarative_renderer(
+        &mut self,
+        table: &str,
+        custom_type: &str,
+        payload: &serde_json::Value,
+        options: &serde_json::Value,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let payload_lua = self
+            .lua
+            .to_value(payload)
+            .map_err(|error| format!("{custom_type}: {error}"))?;
+        let options_lua = self
+            .lua
+            .to_value(options)
+            .map_err(|error| format!("{custom_type}: {error}"))?;
+        let result: Value = self
+            .lua
+            .load(
+                r#"
+                local table_name, custom_type, payload, options = ...
+                local registered = _G[table_name]
+                local renderer = registered and registered[custom_type]
+                if renderer == nil then return nil end
+                return renderer(payload, options)
+            "#,
+            )
+            .call((table, custom_type, payload_lua, options_lua))
+            .map_err(|error| format!("{custom_type}: {error}"))?;
+        match result {
+            Value::Nil => Ok(None),
+            other => self
+                .lua
+                .from_value::<serde_json::Value>(other)
+                .map(Some)
+                .map_err(|error| format!("{custom_type}: {error}")),
+        }
+    }
+
+    /// Run a registered Markdown transformer (upstream `MarkdownTransformer`):
+    /// `transformer(markdown, { messageType, isStreaming, availableWidth })`
+    /// answers the rewritten Markdown, or `nil` to keep it.
+    pub fn transform_markdown(
+        &mut self,
+        identity: &str,
+        markdown: &str,
+        context: &serde_json::Value,
+    ) -> Result<Option<String>, String> {
+        let context_lua = self
+            .lua
+            .to_value(context)
+            .map_err(|error| format!("{identity}: {error}"))?;
+        let result: Value = self
+            .lua
+            .load(
+                r#"
+                local identity, markdown, context = ...
+                local registered = __pillar_markdown_transformers
+                local index = tonumber(string.sub(identity, 2)) + 1
+                local transformer = registered and registered[index]
+                if transformer == nil then return nil end
+                return transformer(markdown, context)
+            "#,
+            )
+            .call((identity, markdown, context_lua))
+            .map_err(|error| format!("{identity}: {error}"))?;
+        match result {
+            Value::Nil => Ok(None),
+            Value::String(text) => Ok(Some(text.to_string_lossy().to_string())),
+            other => Err(format!(
+                "{identity}: expected a string, got {}",
+                other.type_name()
+            )),
         }
     }
 
@@ -1016,6 +1129,99 @@ fn install_pillar_api(
         )
         .expect("set pillar.get_flag");
 
+    // pillar.register_message_renderer(custom_type, renderer) /
+    // pillar.register_entry_renderer(custom_type, renderer): the renderer
+    // stays in the VM, keyed by custom type (upstream the extension's
+    // `messageRenderers` / `entryRenderers` maps); the registry records the
+    // custom type so the host can resolve it.
+    let messages_sink = Arc::clone(registry);
+    let messages_lua = lua.clone();
+    module
+        .set(
+            "register_message_renderer",
+            Function::wrap(move |custom_type: String, renderer: Value| {
+                let store = messages_lua
+                    .load(
+                        r#"
+                        local custom_type, renderer = ...
+                        __pillar_message_renderers = __pillar_message_renderers or {}
+                        __pillar_message_renderers[custom_type] = renderer
+                        return true
+                    "#,
+                    )
+                    .call::<bool>((custom_type.as_str(), renderer))
+                    .is_ok();
+                if store {
+                    messages_sink
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .message_renderers
+                        .push(custom_type);
+                }
+                Ok::<(), luaur_rt::Error>(())
+            }),
+        )
+        .expect("set pillar.register_message_renderer");
+
+    let entries_sink = Arc::clone(registry);
+    let entries_lua = lua.clone();
+    module
+        .set(
+            "register_entry_renderer",
+            Function::wrap(move |custom_type: String, renderer: Value| {
+                let store = entries_lua
+                    .load(
+                        r#"
+                        local custom_type, renderer = ...
+                        __pillar_entry_renderers = __pillar_entry_renderers or {}
+                        __pillar_entry_renderers[custom_type] = renderer
+                        return true
+                    "#,
+                    )
+                    .call::<bool>((custom_type.as_str(), renderer))
+                    .is_ok();
+                if store {
+                    entries_sink
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .entry_renderers
+                        .push(custom_type);
+                }
+                Ok::<(), luaur_rt::Error>(())
+            }),
+        )
+        .expect("set pillar.register_entry_renderer");
+
+    // pillar.register_markdown_transformer(transformer): the transformer
+    // stays in the VM; the registry records its identity (`@N`) in
+    // registration order (upstream keeps one transformer per extension).
+    let transformers_sink = Arc::clone(registry);
+    let transformers_lua = lua.clone();
+    module
+        .set(
+            "register_markdown_transformer",
+            Function::wrap(move |transformer: Value| {
+                let identity = transformers_lua
+                    .load(
+                        r#"
+                        local transformer = ...
+                        __pillar_markdown_transformers = __pillar_markdown_transformers or {}
+                        table.insert(__pillar_markdown_transformers, transformer)
+                        return "@" .. tostring(#__pillar_markdown_transformers - 1)
+                    "#,
+                    )
+                    .call::<String>((transformer,))
+                    .map_err(luaur_rt::Error::external)?;
+                transformers_sink
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .markdown_transformers
+                    .push(identity);
+                Ok::<(), luaur_rt::Error>(())
+            }),
+        )
+        .expect("set pillar.register_markdown_transformer");
+
     install_schema_module(lua, &module);
     install_events_bus(lua, &module);
     install_fs_module(lua, &module, host_api);
@@ -1146,8 +1352,7 @@ fn install_fs_module(lua: &Lua, module: &luaur_rt::Table, host_api: &Arc<Mutex<H
     fs.set(
         "write",
         Function::wrap(move |path: String, content: String| {
-            call(&write_api, "write", &path, Some(&content))
-                .map_err(luaur_rt::Error::external)?;
+            call(&write_api, "write", &path, Some(&content)).map_err(luaur_rt::Error::external)?;
             Ok::<bool, luaur_rt::Error>(true)
         }),
     )
@@ -1450,6 +1655,160 @@ mod api_tests {
         );
     }
 
+    /// `register_message_renderer` keeps the renderer in the VM and records
+    /// the custom type; the host call hands it the payload and options.
+    #[test]
+    fn message_renderer_registration_and_call() {
+        let mut runtime = ExtensionRuntime::new();
+        runtime
+            .load_extension(
+                "renderers.luau",
+                r#"
+                local pillar = require("@pillar")
+                pillar.register_message_renderer("my-card", function(message, options)
+                    return {
+                        lines = {
+                            { { text = "card: ", style = "dim" }, { text = message.details.title } },
+                            "expanded=" .. tostring(options.expanded),
+                        },
+                    }
+                end)
+                pillar.register_entry_renderer("my-entry", function(entry, options)
+                    return "entry " .. entry.customType .. " " .. tostring(entry.data.value)
+                end)
+                return nil
+                "#,
+            )
+            .unwrap();
+        assert_eq!(runtime.registry().message_renderers, vec!["my-card"]);
+        assert_eq!(runtime.registry().entry_renderers, vec!["my-entry"]);
+
+        let rendered = runtime
+            .render_custom_message(
+                "my-card",
+                &serde_json::json!({ "details": { "title": "hello" } }),
+                &serde_json::json!({ "expanded": true, "outputPad": 2 }),
+            )
+            .unwrap()
+            .expect("renderer answers a description");
+        assert_eq!(
+            rendered,
+            serde_json::json!({
+                "lines": [
+                    [{ "text": "card: ", "style": "dim" }, { "text": "hello" }],
+                    "expanded=true",
+                ],
+            })
+        );
+
+        let entry = runtime
+            .render_custom_entry(
+                "my-entry",
+                &serde_json::json!({ "customType": "my-entry", "data": { "value": 7 } }),
+                &serde_json::json!({ "expanded": false }),
+            )
+            .unwrap();
+        assert_eq!(entry, Some(serde_json::json!("entry my-entry 7")));
+
+        // An unregistered custom type answers nil (no renderer).
+        assert_eq!(
+            runtime
+                .render_custom_message("other", &serde_json::json!({}), &serde_json::json!({}))
+                .unwrap(),
+            None
+        );
+    }
+
+    /// A renderer that raises surfaces the error to the host (the bridge
+    /// turns it into the failure notice).
+    #[test]
+    fn message_renderer_errors_surface() {
+        let mut runtime = ExtensionRuntime::new();
+        runtime
+            .load_extension(
+                "broken.luau",
+                r#"
+                local pillar = require("@pillar")
+                pillar.register_message_renderer("broken", function()
+                    error("renderer blew up")
+                end)
+                return nil
+                "#,
+            )
+            .unwrap();
+        let error = runtime
+            .render_custom_message(
+                "broken",
+                &serde_json::json!({}),
+                &serde_json::json!({ "expanded": false }),
+            )
+            .unwrap_err();
+        assert!(error.contains("renderer blew up"), "{error}");
+    }
+
+    /// `register_markdown_transformer` runs the transformer with the
+    /// context, keeps `nil`, and rejects a non-string answer.
+    #[test]
+    fn markdown_transformer_registration_and_call() {
+        let mut runtime = ExtensionRuntime::new();
+        runtime
+            .load_extension(
+                "transform.luau",
+                r#"
+                local pillar = require("@pillar")
+                pillar.register_markdown_transformer(function(markdown, context)
+                    if context.messageType ~= "user" then return nil end
+                    return markdown .. " [" .. tostring(context.availableWidth) .. "]"
+                end)
+                return nil
+                "#,
+            )
+            .unwrap();
+        assert_eq!(runtime.registry().markdown_transformers, vec!["@0"]);
+
+        let user = serde_json::json!({
+            "messageType": "user", "isStreaming": false, "availableWidth": 80,
+        });
+        assert_eq!(
+            runtime.transform_markdown("@0", "hello", &user).unwrap(),
+            Some("hello [80]".to_string())
+        );
+        let assistant = serde_json::json!({
+            "messageType": "assistant", "isStreaming": false, "availableWidth": 80,
+        });
+        assert_eq!(
+            runtime
+                .transform_markdown("@0", "hello", &assistant)
+                .unwrap(),
+            None
+        );
+        // An out-of-range identity (no transformer) answers nil.
+        assert_eq!(
+            runtime.transform_markdown("@3", "hello", &user).unwrap(),
+            None
+        );
+    }
+
+    /// A transformer answering a non-string is an error.
+    #[test]
+    fn markdown_transformer_rejects_non_strings() {
+        let mut runtime = ExtensionRuntime::new();
+        runtime
+            .load_extension(
+                "bad-transform.luau",
+                r#"
+                local pillar = require("@pillar")
+                pillar.register_markdown_transformer(function() return 42 end)
+                return nil
+                "#,
+            )
+            .unwrap();
+        let error = runtime
+            .transform_markdown("@0", "hello", &serde_json::json!({}))
+            .unwrap_err();
+        assert!(error.contains("expected a string"), "{error}");
+    }
+
     /// `pillar.fs` forwards every operation to the host callback and
     /// answers nil / false for missing paths.
     #[test]
@@ -1459,7 +1818,9 @@ mod api_tests {
         let sink = Arc::clone(&calls);
         runtime.set_host_api(HostApi {
             fs: Some(Arc::new(move |op, path, _content| {
-                sink.lock().unwrap().push((op.to_string(), path.to_string()));
+                sink.lock()
+                    .unwrap()
+                    .push((op.to_string(), path.to_string()));
                 Ok(match op {
                     "read" => serde_json::json!("content"),
                     "write" => serde_json::json!(true),

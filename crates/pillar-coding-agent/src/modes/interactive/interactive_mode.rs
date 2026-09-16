@@ -473,8 +473,39 @@ impl InteractiveMode {
         let mut editor = Editor::new();
         editor.set_theme(get_editor_theme());
 
-        let transcript =
+        // Upstream reads `session.extensionRunner` while building each
+        // component; the port captures the renderers and transformers once,
+        // when the transcript is built (extensions are registered before the
+        // session exists).
+        let extension_runner = session.extension_runner_arc();
+        let mut markdown_transformers = markdown_transformers;
+        markdown_transformers.extend(
+            extension_runner
+                .lock()
+                .expect("extension runner lock")
+                .get_markdown_transformers(),
+        );
+
+        let mut transcript =
             InteractiveTranscript::new(transcript_settings, None, markdown_transformers, &cwd);
+        {
+            let runner = std::sync::Arc::clone(&extension_runner);
+            transcript.set_entry_renderer_lookup(Some(Box::new(move |custom_type: &str| {
+                runner
+                    .lock()
+                    .expect("extension runner lock")
+                    .get_entry_renderer(custom_type)
+            })));
+        }
+        {
+            let runner = std::sync::Arc::clone(&extension_runner);
+            transcript.set_message_renderer_lookup(Some(Box::new(move |custom_type: &str| {
+                runner
+                    .lock()
+                    .expect("extension runner lock")
+                    .get_message_renderer(custom_type)
+            })));
+        }
 
         let mut footer = FooterComponent::new(
             std::sync::Arc::clone(&session),

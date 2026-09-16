@@ -8,6 +8,7 @@ license.workspace = true
 pillar-coding-agent = { path = "../pillar-coding-agent" }
 pillar-agent = { path = "../pillar-agent" }
 pillar-ai = { path = "../pillar-ai" }
+pillar-tui = { path = "../pillar-tui" }
 luaur-rt = { version = "0.1.8", features = ["serde", "typecheck", "send"] }
 serde.workspace = true
 serde_json.workspace = true

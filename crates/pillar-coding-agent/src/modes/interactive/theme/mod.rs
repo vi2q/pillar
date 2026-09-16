@@ -327,6 +327,15 @@ impl Theme {
         format!("{ansi}{text}\x1b[39m")
     }
 
+    /// Colour `text` with a foreground colour, answering `None` for an
+    /// unknown name (upstream `Theme.fg` panics; extensions may ask for a
+    /// colour that the active theme does not define).
+    pub fn try_fg(&self, color: &str, text: &str) -> Option<String> {
+        self.fg_colors
+            .get(color)
+            .map(|ansi| format!("{ansi}{text}\x1b[39m"))
+    }
+
     /// Colour `text` with a background colour (upstream `Theme.bg`).
     pub fn bg(&self, color: &str, text: &str) -> String {
         let ansi = self

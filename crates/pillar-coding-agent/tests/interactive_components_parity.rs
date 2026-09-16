@@ -479,7 +479,7 @@ fn custom_entry_renders_through_the_renderer_and_toggles_expanded() {
     install_dark();
     let seen: Arc<Mutex<Vec<(String, bool)>>> = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&seen);
-    let renderer: pillar_coding_agent::core::extensions_types::EntryRenderer = Box::new(
+    let renderer: pillar_coding_agent::core::extensions_types::EntryRenderer = std::sync::Arc::new(
         move |entry: &CustomEntry, options: &EntryRenderOptions, _theme| {
             sink.lock()
                 .unwrap()
@@ -532,7 +532,7 @@ fn custom_entry_without_renderer_output_has_no_content() {
     let _guard = THEME_LOCK.lock().expect("theme lock");
     install_dark();
     let renderer: pillar_coding_agent::core::extensions_types::EntryRenderer =
-        Box::new(|_entry: &CustomEntry, _options: &EntryRenderOptions, _theme| None);
+        std::sync::Arc::new(|_entry: &CustomEntry, _options: &EntryRenderOptions, _theme| None);
     let mut component = CustomEntryComponent::new(custom_entry("hidden"), renderer);
     assert!(!component.has_content());
     assert!(component.render(20).is_empty());
@@ -923,7 +923,7 @@ fn custom_message_prefers_the_registered_renderer() {
     let seen: Arc<Mutex<Vec<(String, bool, usize)>>> = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&seen);
     let renderer: pillar_coding_agent::core::extensions_types::MessageRenderer =
-        Box::new(move |message, options, _theme| {
+        std::sync::Arc::new(move |message, options, _theme| {
             sink.lock().unwrap().push((
                 message.custom_type.clone(),
                 options.expanded,
@@ -951,7 +951,7 @@ fn custom_message_prefers_the_registered_renderer() {
 
     // A renderer that answers None falls back to the default rendering.
     let none_renderer: pillar_coding_agent::core::extensions_types::MessageRenderer =
-        Box::new(|_message, _options, _theme| None);
+        std::sync::Arc::new(|_message, _options, _theme| None);
     let mut fallback = CustomMessageComponent::new(
         custom_message("note", vec![CustomContent::Text("shown".to_string())]),
         Some(none_renderer),

@@ -1423,6 +1423,9 @@ async fn tool_hooks_dispatch_tool_call_and_tool_result_to_extensions() {
         tools: std::collections::BTreeMap::new(),
         flags: std::collections::BTreeMap::new(),
         shortcuts: std::collections::BTreeMap::new(),
+        message_renderers: Default::default(),
+        entry_renderers: Default::default(),
+        markdown_transformer: None,
     };
     let runner = Arc::new(Mutex::new(ExtensionRunner::new(vec![ext])));
 
@@ -1554,6 +1557,9 @@ fn runner_recording_model_events(
         tools: std::collections::BTreeMap::new(),
         flags: std::collections::BTreeMap::new(),
         shortcuts: std::collections::BTreeMap::new(),
+        message_renderers: Default::default(),
+        entry_renderers: Default::default(),
+        markdown_transformer: None,
     };
     Arc::new(Mutex::new(ExtensionRunner::new(vec![extension])))
 }
@@ -1782,6 +1788,9 @@ fn runner_with_resource_discovery(
         tools: BTreeMap::new(),
         flags: BTreeMap::new(),
         shortcuts: BTreeMap::new(),
+        message_renderers: Default::default(),
+        entry_renderers: Default::default(),
+        markdown_transformer: None,
     };
     Arc::new(Mutex::new(ExtensionRunner::new(vec![extension])))
 }
@@ -1889,6 +1898,9 @@ async fn reload_rebuilds_runner_and_reemits_session_start() {
         tools: BTreeMap::new(),
         flags: BTreeMap::new(),
         shortcuts: BTreeMap::new(),
+        message_renderers: Default::default(),
+        entry_renderers: Default::default(),
+        markdown_transformer: None,
     };
     let mut old_runner = ExtensionRunner::new(vec![old_extension]);
     old_runner.set_flag_value("theme", serde_json::json!("dark"));
@@ -1923,6 +1935,9 @@ async fn reload_rebuilds_runner_and_reemits_session_start() {
                 tools: BTreeMap::new(),
                 flags: BTreeMap::new(),
                 shortcuts: BTreeMap::new(),
+                message_renderers: Default::default(),
+                entry_renderers: Default::default(),
+                markdown_transformer: None,
             };
             ExtensionRunner::new(vec![extension])
         })
@@ -2940,6 +2955,9 @@ async fn navigate_tree_emits_before_tree_and_tree_events() {
         tools: BTreeMap::new(),
         flags: BTreeMap::new(),
         shortcuts: BTreeMap::new(),
+        message_renderers: Default::default(),
+        entry_renderers: Default::default(),
+        markdown_transformer: None,
     };
     let runner = Arc::new(Mutex::new(ExtensionRunner::new(vec![extension])));
     let (session, _) = make_session_with_model_and_runner(
@@ -3035,6 +3053,9 @@ async fn navigate_tree_honours_the_extension_cancel() {
         tools: BTreeMap::new(),
         flags: BTreeMap::new(),
         shortcuts: BTreeMap::new(),
+        message_renderers: Default::default(),
+        entry_renderers: Default::default(),
+        markdown_transformer: None,
     };
     let runner = Arc::new(Mutex::new(ExtensionRunner::new(vec![extension])));
     let (session, _) = make_session_with_model_and_runner(
@@ -3087,6 +3108,9 @@ async fn extension_handlers_may_trigger_session_mutations_without_deadlocking() 
         tools: BTreeMap::new(),
         flags: BTreeMap::new(),
         shortcuts: BTreeMap::new(),
+        message_renderers: Default::default(),
+        entry_renderers: Default::default(),
+        markdown_transformer: None,
     };
     let runner = Arc::new(Mutex::new(ExtensionRunner::new(vec![extension])));
     // A reasoning model, so the level is not clamped back to "off".

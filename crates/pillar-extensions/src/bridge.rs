@@ -18,6 +18,15 @@ use pillar_coding_agent::core::extensions_runner::{
     ExtensionEventPayload, ExtensionFlag, ExtensionHandler, ExtensionShortcut, HostExtension,
     RegisteredCommand,
 };
+use pillar_coding_agent::core::extensions_types::{
+    EntryRenderOptions, EntryRenderer, MarkdownTransformContext, MarkdownTransformer,
+    MessageRenderOptions, MessageRenderer,
+};
+use pillar_coding_agent::core::messages::{CustomContent, CustomMessage};
+use pillar_coding_agent::core::session_entries::CustomEntry;
+use pillar_coding_agent::modes::interactive::theme::Theme;
+use pillar_tui::components::Text;
+use pillar_tui::tui::Component;
 
 use crate::runtime::{ExtensionLoadError, ExtensionRuntime};
 
@@ -132,6 +141,90 @@ pub fn bridge_to_runner(
             });
     }
 
+    // Custom renderers (upstream the extension's `messageRenderers` /
+    // `entryRenderers` maps and its single `markdownTransformer`): the Lua
+    // function answers a declarative component description
+    // ([`declarative_component`]) which the bridge converts with the active
+    // theme. A renderer error is reported to stderr and answers the upstream
+    // failure notice so the transcript still shows something.
+    let mut message_renderers = std::collections::BTreeMap::new();
+    for custom_type in &registry.message_renderers {
+        if message_renderers.contains_key(custom_type) {
+            continue;
+        }
+        let runtime = Arc::clone(runtime);
+        let key = custom_type.clone();
+        let hook = key.clone();
+        let renderer: MessageRenderer = Arc::new(
+            move |message: &CustomMessage, options: &MessageRenderOptions, theme: &Theme| {
+                let payload = custom_message_payload(message);
+                let options = renderer_options(options.expanded, options.output_pad);
+                // Lock only for the call: the renderer may call back into
+                // the host API.
+                let result = runtime
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .render_custom_message(&key, &payload, &options);
+                match result {
+                    Ok(value) => value.and_then(|value| declarative_component(theme, &value)),
+                    Err(error) => Some(renderer_error_component(theme, &hook, &error)),
+                }
+            },
+        );
+        message_renderers.insert(custom_type.clone(), renderer);
+    }
+
+    let mut entry_renderers = std::collections::BTreeMap::new();
+    for custom_type in &registry.entry_renderers {
+        if entry_renderers.contains_key(custom_type) {
+            continue;
+        }
+        let runtime = Arc::clone(runtime);
+        let key = custom_type.clone();
+        let hook = key.clone();
+        let renderer: EntryRenderer = Arc::new(
+            move |entry: &CustomEntry, options: &EntryRenderOptions, theme: &Theme| {
+                let payload = custom_entry_payload(entry);
+                let options = serde_json::json!({ "expanded": options.expanded });
+                let result = runtime
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .render_custom_entry(&key, &payload, &options);
+                match result {
+                    Ok(value) => value.and_then(|value| declarative_component(theme, &value)),
+                    Err(error) => Some(renderer_error_component(theme, &hook, &error)),
+                }
+            },
+        );
+        entry_renderers.insert(custom_type.clone(), renderer);
+    }
+
+    let markdown_transformer = registry.markdown_transformers.last().map(|identity| {
+        let runtime = Arc::clone(runtime);
+        let identity = identity.clone();
+        let transformer: MarkdownTransformer = Arc::new(
+            move |markdown: &str, context: &MarkdownTransformContext| {
+                let context = serde_json::json!({
+                    "messageType": context.message_type.as_str(),
+                    "isStreaming": context.is_streaming,
+                    "availableWidth": context.available_width,
+                });
+                let result = runtime
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .transform_markdown(&identity, markdown, &context);
+                match result {
+                    Ok(value) => value,
+                    Err(error) => {
+                        eprintln!("pillar-extensions: markdown transformer failed: {error}");
+                        None
+                    }
+                }
+            },
+        );
+        transformer
+    });
+
     Ok(HostExtension {
         path: path.to_string(),
         handlers,
@@ -148,7 +241,130 @@ pub fn bridge_to_runner(
             .collect(),
         flags,
         shortcuts,
+        message_renderers,
+        entry_renderers,
+        markdown_transformer,
     })
+}
+
+/// Options handed to a custom-message renderer (upstream `MessageRenderOptions`).
+fn renderer_options(expanded: bool, output_pad: usize) -> serde_json::Value {
+    serde_json::json!({ "expanded": expanded, "outputPad": output_pad })
+}
+
+/// Drop absent (`null`) top-level keys: the Lua boundary turns JSON `null`
+/// into an empty table, so an extension could not tell "no data" from "empty
+/// data" (`if entry.data == nil`).
+fn without_absent_keys(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(entries) => serde_json::Value::Object(
+            entries
+                .into_iter()
+                .filter(|(_, value)| !value.is_null())
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
+/// The payload handed to a custom-message renderer (upstream `CustomMessage`).
+fn custom_message_payload(message: &CustomMessage) -> serde_json::Value {
+    without_absent_keys(serde_json::json!({
+        "customType": message.custom_type,
+        "content": message
+            .content
+            .iter()
+            .map(|content| match content {
+                CustomContent::Text(text) => serde_json::json!({ "type": "text", "text": text }),
+                CustomContent::Image { data, mime_type } => {
+                    serde_json::json!({ "type": "image", "data": data, "mimeType": mime_type })
+                }
+            })
+            .collect::<Vec<_>>(),
+        "display": message.display,
+        "details": message.details,
+        "timestamp": message.timestamp,
+    }))
+}
+
+/// The payload handed to a custom-entry renderer (upstream `CustomEntry`).
+fn custom_entry_payload(entry: &CustomEntry) -> serde_json::Value {
+    without_absent_keys(serde_json::json!({
+        "customType": entry.custom_type,
+        "id": entry.base.id,
+        "data": entry.data,
+    }))
+}
+
+/// A rendered component from the active theme's error colour (upstream the
+/// failure notice `CustomEntryComponent` shows when a renderer throws).
+fn renderer_error_component(theme: &Theme, custom_type: &str, message: &str) -> Box<dyn Component> {
+    eprintln!("pillar-extensions: [{custom_type}] renderer failed: {message}");
+    let text = format!("[{custom_type}] renderer failed: {message}");
+    Box::new(Text::new(
+        &theme.try_fg("error", &text).unwrap_or(text),
+        0,
+        0,
+    ))
+}
+
+/// Convert a Lua renderer's declarative result into a component (upstream the
+/// renderer returns a live `Component`; the port takes a description):
+///
+/// - `nil` → `None`: fall back to the default rendering (messages) or skip
+///   the entry (entries).
+/// - a string → one plain line.
+/// - `{ text = ..., style = ... }` → one styled line.
+/// - `{ lines = { line, ... } }` → one line per entry, where a line is a
+///   string or a list of `{ text, style }` segments. An empty line list
+///   answers `None` (nothing to show).
+///
+/// `style` is a theme foreground colour name (`text`, `dim`, `accent`,
+/// `success`, `error`, …); an unknown name renders unstyled.
+fn declarative_component(theme: &Theme, value: &serde_json::Value) -> Option<Box<dyn Component>> {
+    let lines = match value {
+        serde_json::Value::String(text) => vec![text.clone()],
+        serde_json::Value::Object(object) => {
+            if let Some(lines) = object.get("lines").and_then(serde_json::Value::as_array) {
+                lines.iter().map(|line| declarative_line(theme, line)).collect()
+            } else if object.contains_key("text") {
+                vec![declarative_line(theme, value)]
+            } else {
+                return None;
+            }
+        }
+        _ => return None,
+    };
+    let rendered = lines.join("\n");
+    if rendered.trim().is_empty() {
+        return None;
+    }
+    Some(Box::new(Text::new(&rendered, 0, 0)))
+}
+
+/// One declarative line: a plain string or a list of styled segments.
+fn declarative_line(theme: &Theme, line: &serde_json::Value) -> String {
+    match line {
+        serde_json::Value::String(text) => text.clone(),
+        serde_json::Value::Object(_) => declarative_segment(theme, line),
+        serde_json::Value::Array(segments) => segments
+            .iter()
+            .map(|segment| declarative_segment(theme, segment))
+            .collect(),
+        _ => String::new(),
+    }
+}
+
+/// One styled segment (`{ text = ..., style = ... }`).
+fn declarative_segment(theme: &Theme, segment: &serde_json::Value) -> String {
+    let text = segment
+        .get("text")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    match segment.get("style").and_then(serde_json::Value::as_str) {
+        Some(style) => theme.try_fg(style, text).unwrap_or_else(|| text.to_string()),
+        None => text.to_string(),
+    }
 }
 
 /// Build the callable agent tools for every tool an extension registered
@@ -549,5 +765,201 @@ mod tests {
             !reported.lock().unwrap().is_empty(),
             "expected reported errors"
         );
+    }
+
+    fn install_dark_theme() {
+        pillar_coding_agent::modes::interactive::theme::init_theme(Some("dark"));
+    }
+
+    /// A Luau message renderer reaches the runner and its declarative
+    /// description becomes a component through the active theme.
+    #[test]
+    fn message_renderer_bridges_into_the_runner() {
+        install_dark_theme();
+        let runtime = shared_runtime();
+        {
+            let mut runtime = runtime.lock().unwrap();
+            runtime
+                .load_extension(
+                    "card.luau",
+                    r#"
+                    local pillar = require("@pillar")
+                    pillar.register_message_renderer("my-card", function(message, options)
+                        return {
+                            lines = {
+                                { { text = "TITLE ", style = "accent" }, { text = message.details.title } },
+                            },
+                        }
+                    end)
+                    return nil
+                "#,
+                )
+                .unwrap();
+        }
+        let extension = bridge_to_runner("card.luau", &runtime).unwrap();
+        let runner = ExtensionRunner::new(vec![extension]);
+        let renderer = runner.get_message_renderer("my-card").expect("registered");
+        assert!(runner.get_message_renderer("other").is_none());
+
+        let theme = pillar_coding_agent::modes::interactive::theme::theme();
+        let message = CustomMessage {
+            custom_type: "my-card".to_string(),
+            content: vec![CustomContent::Text("body".to_string())],
+            display: true,
+            details: Some(serde_json::json!({ "title": "hello" })),
+            timestamp: 0,
+        };
+        let options = MessageRenderOptions {
+            expanded: true,
+            output_pad: 0,
+        };
+        let mut component = renderer(&message, &options, &theme).expect("component");
+        let rendered = component.render(40).join("\n");
+        // The accent colour wraps the styled segment and the unstyled one
+        // follows it.
+        assert!(rendered.contains(&theme.fg("accent", "TITLE ")), "{rendered:?}");
+        assert!(rendered.contains("hello"), "{rendered:?}");
+        assert!(!rendered.contains("style"), "{rendered:?}");
+    }
+
+    /// A Luau entry renderer answers the entry's content; `nil` and an empty
+    /// line list skip the entry.
+    #[test]
+    fn entry_renderer_bridges_into_the_runner() {
+        install_dark_theme();
+        let runtime = shared_runtime();
+        {
+            let mut runtime = runtime.lock().unwrap();
+            runtime
+                .load_extension(
+                    "widget.luau",
+                    r#"
+                    local pillar = require("@pillar")
+                    pillar.register_entry_renderer("widget", function(entry, options)
+                        if entry.data == nil then return nil end
+                        return "widget " .. tostring(entry.data.value)
+                    end)
+                    pillar.register_entry_renderer("empty-widget", function() return { lines = {} } end)
+                    return nil
+                "#,
+                )
+                .unwrap();
+        }
+        let extension = bridge_to_runner("widget.luau", &runtime).unwrap();
+        let runner = ExtensionRunner::new(vec![extension]);
+        let theme = pillar_coding_agent::modes::interactive::theme::theme();
+        let options = EntryRenderOptions { expanded: false };
+
+        let renderer = runner.get_entry_renderer("widget").expect("registered");
+        let entry = CustomEntry {
+            base: pillar_coding_agent::core::session_entries::SessionEntryBase {
+                id: "e1".to_string(),
+                ..Default::default()
+            },
+            custom_type: "widget".to_string(),
+            data: Some(serde_json::json!({ "value": 3 })),
+        };
+        let mut component = renderer(&entry, &options, &theme).expect("component");
+        let rendered = component.render(40).join("\n");
+        assert!(rendered.contains("widget 3"), "{rendered:?}");
+
+        // No data → nil → fall back.
+        let empty = CustomEntry {
+            data: None,
+            ..entry.clone()
+        };
+        assert!(renderer(&empty, &options, &theme).is_none());
+
+        // An empty line list renders nothing, so the entry is skipped.
+        let empty_renderer = runner.get_entry_renderer("empty-widget").expect("registered");
+        assert!(empty_renderer(&entry, &options, &theme).is_none());
+    }
+
+    /// A renderer that raises surfaces the upstream failure notice (the port
+    /// has no error channel on a renderer, so the bridge answers a component).
+    #[test]
+    fn renderer_errors_become_the_failure_notice() {
+        install_dark_theme();
+        let runtime = shared_runtime();
+        {
+            let mut runtime = runtime.lock().unwrap();
+            runtime
+                .load_extension(
+                    "broken.luau",
+                    r#"
+                    local pillar = require("@pillar")
+                    pillar.register_message_renderer("broken", function()
+                        error("renderer blew up")
+                    end)
+                    return nil
+                "#,
+                )
+                .unwrap();
+        }
+        let extension = bridge_to_runner("broken.luau", &runtime).unwrap();
+        let runner = ExtensionRunner::new(vec![extension]);
+        let theme = pillar_coding_agent::modes::interactive::theme::theme();
+        let renderer = runner.get_message_renderer("broken").expect("registered");
+        let message = CustomMessage {
+            custom_type: "broken".to_string(),
+            content: Vec::new(),
+            display: true,
+            details: None,
+            timestamp: 0,
+        };
+        let mut component = renderer(
+            &message,
+            &MessageRenderOptions {
+                expanded: false,
+                output_pad: 0,
+            },
+            &theme,
+        )
+        .expect("failure notice");
+        let rendered = component.render(200).join("\n");
+        assert!(rendered.contains("renderer failed"), "{rendered:?}");
+        assert!(rendered.contains("renderer blew up"), "{rendered:?}");
+    }
+
+    /// The markdown transformer reaches the runner and runs inside the VM.
+    #[test]
+    fn markdown_transformer_bridges_into_the_runner() {
+        install_dark_theme();
+        let runtime = shared_runtime();
+        {
+            let mut runtime = runtime.lock().unwrap();
+            runtime
+                .load_extension(
+                    "transform.luau",
+                    r#"
+                    local pillar = require("@pillar")
+                    pillar.register_markdown_transformer(function(markdown, context)
+                        if context.messageType ~= "user" then return nil end
+                        return "// " .. markdown
+                    end)
+                    return nil
+                "#,
+                )
+                .unwrap();
+        }
+        let extension = bridge_to_runner("transform.luau", &runtime).unwrap();
+        let runner = ExtensionRunner::new(vec![extension]);
+        let transformers = runner.get_markdown_transformers();
+        assert_eq!(transformers.len(), 1);
+        let context = MarkdownTransformContext {
+            message_type: pillar_coding_agent::core::extensions_types::MarkdownMessageType::User,
+            is_streaming: false,
+            available_width: 80,
+        };
+        assert_eq!(
+            transformers[0]("hello", &context),
+            Some("// hello".to_string())
+        );
+        let assistant = MarkdownTransformContext {
+            message_type:
+                pillar_coding_agent::core::extensions_types::MarkdownMessageType::Assistant,
+            ..context.clone()
+        };
+        assert_eq!(transformers[0]("hello", &assistant), None);
     }
 }

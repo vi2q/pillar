@@ -339,7 +339,10 @@ pub struct EntryRenderOptions {
 
 /// Renders a custom session entry (upstream `EntryRenderer`). The renderer
 /// owns the returned component; failures are reported by the caller.
-pub type EntryRenderer = Box<
+///
+/// divergence: upstream returns a live `Component`; the port holds the
+/// renderer in an `Arc` so the runner can hand it to the transcript.
+pub type EntryRenderer = std::sync::Arc<
     dyn Fn(
             &crate::core::session_entries::CustomEntry,
             &EntryRenderOptions,
@@ -368,7 +371,7 @@ pub struct MessageRenderOptions {
 
 /// Renders a custom message (upstream `MessageRenderer`). A renderer that
 /// answers `None` falls back to the default message rendering.
-pub type MessageRenderer = Box<
+pub type MessageRenderer = std::sync::Arc<
     dyn Fn(
             &crate::core::messages::CustomMessage,
             &MessageRenderOptions,
