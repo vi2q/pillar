@@ -454,14 +454,17 @@ pub fn bridge_to_agent_tools(runtime: &Arc<Mutex<ExtensionRuntime>>) -> Vec<Agen
             let runtime = Arc::clone(runtime);
             let execute_name = name.clone();
             let execute: Arc<ToolExecuteFn> = Arc::new(
-                move |tool_call_id: String, arguments: serde_json::Value, _signal, _on_update| {
+                move |tool_call_id: String,
+                      arguments: serde_json::Value,
+                      signal: Option<pillar_agent::abort::AbortSignal>,
+                      on_update: Option<pillar_agent::types::AgentToolUpdateCallback>| {
                     let runtime = Arc::clone(&runtime);
                     let name = execute_name.clone();
                     Box::pin(async move {
                         let result = runtime
                             .lock()
                             .unwrap_or_else(|poisoned| poisoned.into_inner())
-                            .call_tool(&name, &tool_call_id, arguments);
+                            .call_tool(&name, &tool_call_id, arguments, signal, on_update);
                         match result {
                             Ok(json) => Ok(tool_result_from_json(json)),
                             Err(message) => Err(ToolExecuteError(message)),
@@ -486,12 +489,13 @@ pub fn bridge_to_agent_tools(runtime: &Arc<Mutex<ExtensionRuntime>>) -> Vec<Agen
         .collect()
 }
 
-/// Convert an extension tool's Lua return value into the agent's result
-/// shape: `content` blocks deserialize verbatim (they cross the LLM
-/// boundary), everything else is passed through. A missing or malformed
-/// `content` becomes a single text block with the raw JSON, so a broken
-/// tool never drops its output silently.
-fn tool_result_from_json(json: serde_json::Value) -> AgentToolResult {
+/// Convert an extension tool's Lua value into the agent's result shape:
+/// `content` blocks deserialize verbatim (they cross the LLM boundary),
+/// everything else is passed through. A missing or malformed `content` becomes
+/// a single text block with the raw JSON, so a broken tool never drops its
+/// output silently. Shared by the bridge's execute and the runtime's
+/// `on_update` callback.
+pub fn tool_result_from_json(json: serde_json::Value) -> AgentToolResult {
     let content = json
         .get("content")
         .cloned()

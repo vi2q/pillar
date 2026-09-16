@@ -1131,6 +1131,7 @@ dependencies = [
  "fd-lock",
  "globset",
  "ignore",
+ "libc",
  "pillar-agent",
  "pillar-ai",
  "pillar-protocol",

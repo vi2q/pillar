@@ -285,7 +285,7 @@ fn install_exec_host(runtime: &SharedRuntime, broker: &Arc<EffectBroker>, cwd: &
     let cwd = cwd.to_string();
     let broker = Arc::clone(broker);
     let exec: pillar_extensions::runtime::ExecHost =
-        Arc::new(move |command, args| broker.exec(&cwd, command, args));
+        Arc::new(move |command, args, options| broker.exec(&cwd, command, args, options));
     runtime
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())

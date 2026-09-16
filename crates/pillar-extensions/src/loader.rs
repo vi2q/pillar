@@ -169,7 +169,14 @@ mod tests {
         "#,
         );
         let runtime = create_shared_runtime(Some(Arc::new(
-            |command: &str, _: &[String]| serde_json::json!({ "stdout": command, "stderr": "", "code": 0, "killed": false }),
+            |command: &str, _: &[String], _: &pillar_coding_agent::core::exec::ExecOptions| {
+                pillar_coding_agent::core::exec::ExecResult {
+                    stdout: command.to_string(),
+                    stderr: String::new(),
+                    code: 0,
+                    killed: false,
+                }
+            },
         )));
         let (extensions, errors) = discover_and_load(&runtime, Some(&global), None);
         assert!(errors.is_empty(), "errors={errors:?}");

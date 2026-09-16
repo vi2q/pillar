@@ -373,7 +373,12 @@ declare pillar: {
 /// Host command executor (upstream `pi.exec` backed by the process
 /// layer): the host injects the real executor; the extension receives
 /// `{ stdout, stderr, code, killed }`.
-pub type ExecHost = Arc<dyn Fn(&str, &[String]) -> serde_json::Value + Send + Sync>;
+pub type ExecHost = Arc<
+    dyn Fn(&str, &[String], &pillar_coding_agent::core::exec::ExecOptions)
+            -> pillar_coding_agent::core::exec::ExecResult
+        + Send
+        + Sync,
+>;
 
 /// Host callback for `pillar.get_flag` (upstream `getFlag`).
 pub type GetFlagFn = Arc<dyn Fn(&str) -> Option<serde_json::Value> + Send + Sync>;
@@ -486,6 +491,12 @@ pub struct ExtensionRuntime {
     exec_host: Arc<Mutex<Option<ExecHost>>>,
     /// Host callbacks for the read-only API methods (`get_flag`, …).
     host_api: Arc<Mutex<HostApi>>,
+    /// The abort signals of the tool calls currently running (upstream the
+    /// live `AbortSignal` the extension passes on to `pillar.exec`). Keyed by
+    /// the id the host stamps into the Lua `signal` table, cleared when the
+    /// call returns.
+    live_signals: Arc<Mutex<std::collections::BTreeMap<u64, pillar_agent::abort::AbortSignal>>>,
+    next_signal_id: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Result of dispatching one event to a handler (upstream the
@@ -515,12 +526,22 @@ impl ExtensionRuntime {
         let registry = HostRegistry::shared();
         let exec_host = Arc::new(Mutex::new(None));
         let host_api = Arc::new(Mutex::new(HostApi::default()));
-        install_pillar_api(&lua, &registry, &exec_host, &host_api);
+        let live_signals = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
+        let next_signal_id = Arc::new(std::sync::atomic::AtomicU64::new(1));
+        install_pillar_api(
+            &lua,
+            &registry,
+            &exec_host,
+            &host_api,
+            &live_signals,
+        );
         Self {
             lua,
             registry,
             exec_host,
             host_api,
+            live_signals,
+            next_signal_id,
         }
     }
 
@@ -680,37 +701,57 @@ impl ExtensionRuntime {
     /// closure): `execute(tool_call_id, params, signal, on_update, ctx)`
     /// returns `{ content, details?, usage?, addedToolNames?, terminate? }`.
     ///
-    /// divergences: `signal` / `on_update` are passed as nil until the async
-    /// slice lands.
+    /// `signal` is the tool call's abort signal: the Lua table answers
+    /// `aborted()` and carries the id `pillar.exec(opts.signal)` resolves back
+    /// to the live signal, so an aborted build is killed instead of awaited.
+    /// `on_update(partial)` forwards a partial result to the agent's update
+    /// sink (upstream the `onUpdate` callback).
     pub fn call_tool(
         &mut self,
         name: &str,
         tool_call_id: &str,
         params: serde_json::Value,
+        signal: Option<pillar_agent::abort::AbortSignal>,
+        on_update: Option<pillar_agent::types::AgentToolUpdateCallback>,
     ) -> Result<serde_json::Value, String> {
         let params_lua = self
             .lua
             .to_value(&params)
             .map_err(|error| format!("{name}: {error}"))?;
-        // The `signal` / `on_update` slots stay nil until the async slice;
         // `ctx` is the same table handlers receive (upstream the tool's
         // `ctx` argument).
         let context = self
             .context_value()
             .map_err(|error| format!("{name}: {error}"))?;
-        let result: Value = self
+        let (signal_lua, signal_id) = self.tool_signal_value(signal, name)?;
+        let on_update_lua = self.tool_update_value(on_update, name)?;
+        let result: Result<Value, String> = self
             .lua
             .load(
                 r#"
-                local name, tool_call_id, params, ctx = ...
+                local name, tool_call_id, params, signal, on_update, ctx = ...
                 local registered = __pillar_tool_execute
                 local execute = registered and registered[name]
                 if execute == nil then return nil end
-                return execute(tool_call_id, params, nil, nil, ctx)
+                return execute(tool_call_id, params, signal, on_update, ctx)
             "#,
             )
-            .call((name, tool_call_id, params_lua, context))
-            .map_err(|error| format!("{name}: {error}"))?;
+            .call((
+                name,
+                tool_call_id,
+                params_lua,
+                signal_lua,
+                on_update_lua,
+                context,
+            ))
+            .map_err(|error| format!("{name}: {error}"));
+        if let Some(id) = signal_id {
+            self.live_signals
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .remove(&id);
+        }
+        let result = result?;
         match result {
             Value::Nil => Err(format!("tool {name} returned no result")),
             other => self
@@ -718,6 +759,58 @@ impl ExtensionRuntime {
                 .from_value::<serde_json::Value>(other)
                 .map_err(|error| format!("{name}: {error}")),
         }
+    }
+
+    /// The Lua `signal` table for one tool call: `aborted()` plus the id
+    /// `pillar.exec` resolves through [`Self::live_signals`].
+    fn tool_signal_value(
+        &mut self,
+        signal: Option<pillar_agent::abort::AbortSignal>,
+        name: &str,
+    ) -> Result<(Value, Option<u64>), String> {
+        let Some(signal) = signal else {
+            return Ok((Value::Nil, None));
+        };
+        let id = self
+            .next_signal_id
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.live_signals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(id, signal.clone());
+        let table = self.lua.create_table();
+        let aborted = signal.clone();
+        table
+            .set(
+                "aborted",
+                Function::wrap(move || Ok::<bool, luaur_rt::Error>(aborted.is_aborted())),
+            )
+            .map_err(|error| format!("{name}: {error}"))?;
+        table
+            .set("__pillar_signal_id", id as f64)
+            .map_err(|error| format!("{name}: {error}"))?;
+        Ok((Value::Table(table), Some(id)))
+    }
+
+    /// The Lua `on_update` callback for one tool call (upstream the tool's
+    /// `onUpdate` partial-result callback).
+    fn tool_update_value(
+        &self,
+        on_update: Option<pillar_agent::types::AgentToolUpdateCallback>,
+        name: &str,
+    ) -> Result<Value, String> {
+        let Some(callback) = on_update else {
+            return Ok(Value::Nil);
+        };
+        let lua = self.lua.clone();
+        let function = Function::wrap(move |partial: Value| {
+            let json = lua
+                .from_value::<serde_json::Value>(partial)
+                .map_err(luaur_rt::Error::external)?;
+            callback(crate::bridge::tool_result_from_json(json));
+            Ok::<(), luaur_rt::Error>(())
+        });
+        luaur_rt::IntoLua::into_lua(function, &self.lua).map_err(|error| format!("{name}: {error}"))
     }
 
     /// Call a registered custom-message renderer (upstream `MessageRenderer`):
@@ -1372,35 +1465,69 @@ fn install_pillar_api(
     registry: &SharedRegistry,
     exec_host: &Arc<Mutex<Option<ExecHost>>>,
     host_api: &Arc<Mutex<HostApi>>,
+    live_signals: &Arc<Mutex<std::collections::BTreeMap<u64, pillar_agent::abort::AbortSignal>>>,
 ) {
     let module = lua.create_table();
 
     // pillar.exec(command, args?, opts?): returns
-    // { stdout, stderr, code, killed } (upstream pi.exec). The host
-    // callback performs the execution; the timeout/signal options are
-    // host-side (the port passes only command and args across).
+    // { stdout, stderr, code, killed } (upstream pi.exec). `opts.signal` is
+    // the tool call's signal table (the host stamps `__pillar_signal_id` into
+    // it), `opts.timeout` is milliseconds, and `opts.cwd` overrides the
+    // working directory.
     let exec_error_lua = lua.clone();
     let exec_slot = Arc::clone(exec_host);
+    let exec_signals = Arc::clone(live_signals);
     module
         .set(
             "exec",
-            Function::wrap(move |command: String, args: Option<Vec<String>>| {
-                let args = args.unwrap_or_default();
-                let guard = exec_slot
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                let result = match guard.as_ref() {
-                    Some(exec) => exec(&command, &args),
-                    None => serde_json::json!({
-                        "stdout": "", "stderr": "exec host not installed",
-                        "code": -1, "killed": false,
-                    }),
-                };
-                drop(guard);
-                exec_error_lua
-                    .to_value(&result)
-                    .map_err(luaur_rt::Error::external)
-            }),
+            Function::wrap(
+                move |command: String, args: Option<Vec<String>>, options: Option<Value>| {
+                    let args = args.unwrap_or_default();
+                    // Read the fields individually: the table holds the signal
+                    // table, whose functions cannot round-trip through serde.
+                    let (signal_id, timeout_ms, cwd) = match options {
+                        Some(Value::Table(table)) => {
+                            let timeout: Option<u64> = table.get("timeout")?;
+                            let cwd: Option<String> = table.get("cwd")?;
+                            let signal_id: Option<u64> = match table
+                                .get::<Option<Value>>("signal")?
+                            {
+                                Some(Value::Table(signal)) => {
+                                    signal.get("__pillar_signal_id")?
+                                }
+                                _ => None,
+                            };
+                            (signal_id, timeout, cwd)
+                        }
+                        _ => (None, None, None),
+                    };
+                    let signal = signal_id.and_then(|id| {
+                        exec_signals
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .get(&id)
+                            .cloned()
+                    });
+                    let exec_options = pillar_coding_agent::core::exec::ExecOptions {
+                        signal,
+                        timeout_ms,
+                        cwd,
+                    };
+                    let guard = exec_slot
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let result = match guard.as_ref() {
+                        Some(exec) => exec(&command, &args, &exec_options),
+                        None => pillar_coding_agent::core::exec::ExecResult::spawn_failure(
+                            "exec host not installed",
+                        ),
+                    };
+                    drop(guard);
+                    exec_error_lua
+                        .to_value(&result)
+                        .map_err(luaur_rt::Error::external)
+                },
+            ),
         )
         .expect("set pillar.exec");
 
@@ -2562,7 +2689,7 @@ mod api_tests {
         assert!(table["themes"].as_u64().unwrap_or_default() >= 2);
 
         let result = runtime
-            .call_tool("ctx-tool", "call-1", serde_json::json!({}))
+            .call_tool("ctx-tool", "call-1", serde_json::json!({}), None, None)
             .unwrap();
         assert_eq!(result["content"][0]["text"], serde_json::json!("print"));
         assert_eq!(
@@ -3867,14 +3994,14 @@ mod exec_tests {
     #[test]
     fn exec_returns_host_result_shape() {
         let runtime = ExtensionRuntime::new();
-        runtime.set_exec_host(Arc::new(|command: &str, args: &[String]| {
+        runtime.set_exec_host(Arc::new(|command: &str, args: &[String], _options| {
             assert_eq!(command, "git");
-            serde_json::json!({
-                "stdout": format!("args={args:?}"),
-                "stderr": "",
-                "code": 0,
-                "killed": false,
-            })
+            pillar_coding_agent::core::exec::ExecResult {
+                stdout: format!("args={args:?}"),
+                stderr: String::new(),
+                code: 0,
+                killed: false,
+            }
         }));
         let result: serde_json::Value = runtime
             .vm()
@@ -3917,8 +4044,13 @@ mod exec_tests {
     #[test]
     fn exec_accepts_nil_args() {
         let runtime = ExtensionRuntime::new();
-        runtime.set_exec_host(Arc::new(|command: &str, args: &[String]| {
-            serde_json::json!({ "stdout": command, "stderr": "", "code": args.len(), "killed": false })
+        runtime.set_exec_host(Arc::new(|command: &str, args: &[String], _options| {
+            pillar_coding_agent::core::exec::ExecResult {
+                stdout: command.to_string(),
+                stderr: String::new(),
+                code: args.len() as i32,
+                killed: false,
+            }
         }));
         let result: serde_json::Value = runtime
             .vm()

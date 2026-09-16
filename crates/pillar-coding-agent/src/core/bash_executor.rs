@@ -1,18 +1,17 @@
-//! Port of packages/coding-agent/src/core/bash-executor.ts and
-//! core/exec.ts (pi v0.84.3): unified bash execution with streaming,
-//! sanitization, tail truncation, and temp-file spill, plus the shared
-//! command execution utility for extensions and custom tools.
+//! Port of packages/coding-agent/src/core/bash-executor.ts (pi v0.84.3):
+//! unified bash execution with streaming, sanitization, tail truncation, and
+//! temp-file spill. The shared `exec.ts` utility lives in
+//! [`crate::core::exec`].
 //!
 //! divergence: upstream's `BashOperations` is an async callback interface
 //! over spawned processes; the port takes a synchronous `ExecFn` that feeds
 //! output chunks (the local-spawn implementation lands with the tools
-//! port). `exec_command` runs a process to completion with timeout/abort.
+//! port).
 
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
 
 use pillar_agent::abort::AbortSignal;
 
@@ -20,100 +19,6 @@ use crate::core::truncate::{
     DEFAULT_MAX_BYTES, TruncationOptions, TruncationResult, sanitize_binary_output, strip_ansi,
     truncate_tail,
 };
-
-// ============================================================================
-// exec.ts — execCommand
-// ============================================================================
-
-/// Result of executing a command to completion (upstream `ExecResult`).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ExecResult {
-    pub stdout: String,
-    pub stderr: String,
-    pub code: i32,
-    pub killed: bool,
-}
-
-/// Options for `exec_command` (upstream `ExecOptions`).
-#[derive(Debug, Clone, Default)]
-pub struct ExecOptions {
-    /// Timeout in milliseconds.
-    pub timeout: Option<u64>,
-    pub signal: Option<AbortSignal>,
-}
-
-/// Execute a command (no shell) and collect stdout/stderr/code with
-/// optional timeout and abort support (upstream `execCommand`).
-///
-/// divergence: upstream kills with SIGTERM then SIGKILL after 5s; the port
-/// kills the child directly when the timeout or abort fires.
-pub fn exec_command(command: &str, args: &[String], cwd: &str, options: ExecOptions) -> ExecResult {
-    let mut cmd = Command::new(command);
-    cmd.args(args)
-        .current_dir(cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    let Ok(mut child) = cmd.spawn() else {
-        return ExecResult {
-            code: 1,
-            ..Default::default()
-        };
-    };
-
-    let deadline = options
-        .timeout
-        .map(|ms| Instant::now() + Duration::from_millis(ms));
-    let mut killed = false;
-    let mut aborted = false;
-
-    loop {
-        if let Some(signal) = &options.signal {
-            if signal.is_aborted() && !killed {
-                let _ = child.kill();
-                killed = true;
-                aborted = true;
-            }
-        }
-        if let Some(deadline) = deadline {
-            if Instant::now() >= deadline && !killed {
-                let _ = child.kill();
-                killed = true;
-            }
-        }
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let mut stdout_bytes = Vec::new();
-                let mut stderr_bytes = Vec::new();
-                if let Some(mut stdout) = child.stdout.take() {
-                    use std::io::Read;
-                    let _ = stdout.read_to_end(&mut stdout_bytes);
-                }
-                if let Some(mut stderr) = child.stderr.take() {
-                    use std::io::Read;
-                    let _ = stderr.read_to_end(&mut stderr_bytes);
-                }
-                return ExecResult {
-                    stdout: String::from_utf8_lossy(&stdout_bytes).to_string(),
-                    stderr: String::from_utf8_lossy(&stderr_bytes).to_string(),
-                    code: status.code().unwrap_or(if aborted { 1 } else { 0 }),
-                    killed,
-                };
-            }
-            Ok(None) => {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            Err(_) => {
-                return ExecResult {
-                    code: 1,
-                    killed,
-                    ..Default::default()
-                };
-            }
-        }
-    }
-}
 
 // ============================================================================
 // bash-executor.ts — executeBashWithOperations

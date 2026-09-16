@@ -12,6 +12,7 @@ pub mod compaction;
 pub mod diagnostics;
 pub mod effects;
 pub mod event_bus;
+pub mod exec;
 pub mod export_html;
 pub mod extensions_loader;
 pub mod extensions_luau;

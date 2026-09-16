@@ -60,38 +60,42 @@ impl EffectBroker {
 
     /// `pi.exec`: authorize, then run the command with the session's cwd. A
     /// denial answers the same shape as a failed run, so an extension cannot
-    /// tell the policy from a missing binary.
-    pub fn exec(&self, cwd: &str, command: &str, args: &[String]) -> serde_json::Value {
+    /// tell the policy from a missing binary. The command runs through
+    /// `core::exec`, so `signal` / `timeout` cancel it (upstream
+    /// `execCommand`).
+    pub fn exec(
+        &self,
+        cwd: &str,
+        command: &str,
+        args: &[String],
+        options: &pillar_coding_agent::core::exec::ExecOptions,
+    ) -> pillar_coding_agent::core::exec::ExecResult {
         let intent = EffectIntent::Exec {
             command: command.to_string(),
             args: args.to_vec(),
         };
         if let EffectDecision::Deny { reason } = self.authorize(&intent) {
-            return serde_json::json!({
-                "stdout": "",
-                "stderr": format!("pi.exec denied: {reason}"),
-                "code": -1,
-                "killed": false,
-            });
+            return pillar_coding_agent::core::exec::ExecResult::spawn_failure(format!(
+                "pi.exec denied: {reason}"
+            ));
         }
-        match std::process::Command::new(command)
-            .args(args)
-            .current_dir(cwd)
-            .output()
-        {
-            Ok(output) => serde_json::json!({
-                "stdout": String::from_utf8_lossy(&output.stdout),
-                "stderr": String::from_utf8_lossy(&output.stderr),
-                "code": output.status.code(),
-                "killed": false,
-            }),
-            Err(error) => serde_json::json!({
-                "stdout": "",
-                "stderr": error.to_string(),
-                "code": -1,
-                "killed": false,
-            }),
-        }
+        let resolved_cwd = match options.cwd.as_deref() {
+            Some(override_cwd) if !override_cwd.is_empty() => {
+                let path = Path::new(override_cwd);
+                if path.is_absolute() {
+                    path.to_path_buf()
+                } else {
+                    Path::new(cwd).join(path)
+                }
+            }
+            _ => PathBuf::from(cwd),
+        };
+        pillar_coding_agent::core::exec::exec_command(
+            command,
+            args,
+            &resolved_cwd.to_string_lossy(),
+            options,
+        )
     }
 
     /// `pillar.fs.*`: authorize, then act. Paths resolve against the session

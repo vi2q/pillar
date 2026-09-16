@@ -184,7 +184,7 @@ fn tasks_init_creates_the_templates_once() {
 
     let result = fixture
         .runtime
-        .call_tool("tasks_init", "call-1", serde_json::json!({}))
+        .call_tool("tasks_init", "call-1", serde_json::json!({}), None, None)
         .expect("tasks_init");
     let text = result["content"][0]["text"].as_str().expect("text");
     assert!(text.contains("created docs/TASKS.md (skeleton)"), "{text}");
@@ -210,7 +210,7 @@ fn tasks_init_creates_the_templates_once() {
     fixture.write("docs/TASKS.md", "hand written\n");
     let result = fixture
         .runtime
-        .call_tool("tasks_init", "call-2", serde_json::json!({}))
+        .call_tool("tasks_init", "call-2", serde_json::json!({}), None, None)
         .expect("tasks_init");
     assert_eq!(
         result["details"],
@@ -230,7 +230,7 @@ fn tasks_tidy_normalizes_without_reordering() {
     );
     let result = fixture
         .runtime
-        .call_tool("tasks_tidy", "call-1", serde_json::json!({}))
+        .call_tool("tasks_tidy", "call-1", serde_json::json!({}), None, None)
         .expect("tasks_tidy");
     let text = result["content"][0]["text"].as_str().expect("text");
     assert!(
@@ -248,7 +248,7 @@ fn tasks_tidy_normalizes_without_reordering() {
     // Idempotent: a second tidy changes nothing.
     let result = fixture
         .runtime
-        .call_tool("tasks_tidy", "call-2", serde_json::json!({}))
+        .call_tool("tasks_tidy", "call-2", serde_json::json!({}), None, None)
         .expect("tasks_tidy");
     assert_eq!(result["details"]["status"], serde_json::json!("unchanged"));
 
@@ -256,7 +256,7 @@ fn tasks_tidy_normalizes_without_reordering() {
     fixture.write("docs/TASKS.md", "# TASKS\n\nnothing to do\n");
     let result = fixture
         .runtime
-        .call_tool("tasks_tidy", "call-3", serde_json::json!({}))
+        .call_tool("tasks_tidy", "call-3", serde_json::json!({}), None, None)
         .expect("tasks_tidy");
     assert_eq!(result["details"]["status"], serde_json::json!("no-items"));
     assert_eq!(fixture.read("docs/TASKS.md"), "# TASKS\n\nnothing to do\n");
@@ -265,7 +265,7 @@ fn tasks_tidy_normalizes_without_reordering() {
     std::fs::remove_file(fixture.path("docs/TASKS.md")).unwrap();
     let result = fixture
         .runtime
-        .call_tool("tasks_tidy", "call-4", serde_json::json!({}))
+        .call_tool("tasks_tidy", "call-4", serde_json::json!({}), None, None)
         .expect("tasks_tidy");
     assert_eq!(result["details"]["status"], serde_json::json!("missing"));
 }

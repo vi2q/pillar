@@ -77,6 +77,17 @@ pillar.register_command("hello", {
 })
 ```
 
+### Tool `execute` arguments
+
+`execute(tool_call_id, params, signal, on_update, ctx)`（upstreamと同じ順序）:
+
+| 引数 | 内容 |
+| --- | --- |
+| `signal` | そのtool callのabort signal。`signal.aborted()`がbooleanを返す。`pillar.exec(..., { signal = signal })`へ渡すと、中断・timeoutで実行中のコマンドがkillされる（killされると結果の`killed = true`）。abortはpump/Host側のスレッドから伝わるため、toolのスレッドがコマンド待ちでも届く |
+| `on_update(partial)` | 途中結果の通知。`partial`は最終結果と同じ`{ content = {...}, details = ... }`で、agentの`tool_execution_update`イベントとしてUIへ流れる（呼出は同期。toolの完了後の呼出は無視される） |
+
+divergences: piの`AbortSignal`は`aborted`プロパティと`addEventListener`を持ち、signalは`AbortController`で作られてrun全体で共有される。portはtool callごとのsignalをtable（`aborted()`メソッド）として渡し、`on_abort`リスナーは提供しない。signalはそのcallの間だけ有効。
+
 ### Registration methods
 
 | pi (`ExtensionAPI`) | pillar (`@pillar`) |
@@ -95,7 +106,7 @@ pillar.register_command("hello", {
 | `appendEntry(type, data?)` | `pillar.append_entry(type, data?)` |
 | `setSessionName(name)` / `getSessionName()` | `pillar.set_session_name(name)` / `pillar.get_session_name()` |
 | `setLabel(entryId, label?)` | `pillar.set_label(entry_id, label?)` |
-| `exec(cmd, args, opts?)` | `pillar.exec(cmd, args, opts?)`（現在のExecHostは同期callback。非同期・中断・進捗の完成は別途必要） |
+| `exec(cmd, args, opts?)` | `pillar.exec(cmd, args, opts?)`。`opts`は`signal`（tool `execute`のsignal）/ `timeout`（ms）/ `cwd`を受け、結果は`{ stdout, stderr, code, killed }`。中断・timeout時はunixでSIGTERM→5秒後SIGKILL（[`pillar_coding_agent::core::exec`](../../crates/pillar-coding-agent/src/core/exec.rs)） |
 | `getActiveTools()` / `getAllTools()` / `setActiveTools(names)` | `pillar.get_active_tools()` / `pillar.get_all_tools()` / `pillar.set_active_tools(names)` |
 | `getCommands()` | `pillar.get_commands()` |
 | `setModel(m)` / `getThinkingLevel()` / `setThinkingLevel(l)` | `pillar.set_model(m)` / `pillar.get_thinking_level()` / `pillar.set_thinking_level(l)` |
@@ -122,7 +133,7 @@ fifth argument. `ctx` carries the host facts and the UI bridge:
 | `hasUI` | `ctx.hasUI` |
 | `ui` | `ctx.ui` (table, see below) |
 | `isIdle()` / `sessionManager` | 現在は`ctx.isIdle()`と`ctx.sessionManager.getSessionId()` / `getEntries()`を提供 |
-| その他のcontext操作 | 完了状態はruntime・host配線・実経路テストで確認する。`call_tool`の`signal` / `on_update`引数は現在nil |
+| その他のcontext操作 | 完了状態はruntime・host配線・実経路テストで確認する |
 
 ### `ctx.ui`
 
@@ -189,7 +200,7 @@ Return directions follow the same table. Handler return values that pi types as 
 
 ## 実行・非同期の現在地と目標
 
-現在のhost bridgeには同期callbackがあり、`ctx.ui.custom`はイベントを`recv_timeout`で待つ。`call_tool`のsignal/on_updateも未接続であり、非同期host呼出・coroutine再開・停止保証を完成済みと扱わない。
+現在のhost bridgeには同期callbackがあり、`ctx.ui.custom`はイベントを`recv_timeout`で待つ。tool `execute`の`signal` / `on_update`は接続済みだが、host呼出（`pillar.exec` / `pillar.fs`）は同期で、Luaコード自体をVM側から横取りしない。したがって停止は「次のhost呼出で観測される」保証であり、coroutine再開・VM実行予算・無制限Luaループの停止は未完成として扱う。
 
 目標は、既存Luau機能を保ったまま、host要求のrequest/replyと取消・deadlineを接続し、待機がUIや実行核を止めないこと。実装方式はluaurとazparamの実host条件で検証して決める。`spawn_blocking`だけでVMの永久ループを強制停止できるとはみなさない。
 

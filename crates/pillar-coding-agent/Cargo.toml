@@ -27,5 +27,10 @@ tokio = { version = "1.47", features = ["sync", "time"] }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 fd-lock = "4"
 
+# Unix-only: SIGTERM before SIGKILL when a command is aborted
+# (`core::exec`, upstream `exec.ts`).
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
 [dev-dependencies]
 tokio = { version = "1.47", features = ["rt", "macros", "time"] }

@@ -1,13 +1,13 @@
-//! Parity tests for bash-executor.ts + exec.ts (pi v0.84.3): sanitized
-//! streaming, rolling-buffer + temp-file spill, tail truncation, and
-//! cancellation semantics, plus the exec_command utility.
+//! Parity tests for bash-executor.ts (pi v0.84.3): sanitized streaming,
+//! rolling-buffer + temp-file spill, tail truncation, and cancellation
+//! semantics. `exec.ts` has its own tests in
+//! `crates/pillar-coding-agent/src/core/exec.rs`.
 
 use std::sync::{Arc, Mutex};
 
 use pillar_agent::abort::AbortSignal;
 use pillar_coding_agent::core::bash_executor::{
-    BashResult, CallbackSink, ExecOptions, exec_command, execute_bash_local,
-    execute_bash_with_operations,
+    BashResult, CallbackSink, execute_bash_local, execute_bash_with_operations,
 };
 use pillar_coding_agent::core::truncate::DEFAULT_MAX_BYTES;
 
@@ -33,47 +33,6 @@ fn exec_ok(
 #[test]
 fn constants_and_helpers_exist() {
     assert_eq!(DEFAULT_MAX_BYTES, 50 * 1024);
-}
-
-// --- execCommand -----------------------------------------------------------------
-
-#[test]
-fn exec_command_captures_stdout_stderr_and_code() {
-    let result = exec_command(
-        "sh",
-        &["-c".to_string(), "echo out; echo err 1>&2".to_string()],
-        ".",
-        ExecOptions::default(),
-    );
-    assert_eq!(result.code, 0);
-    assert!(!result.killed);
-    assert!(result.stdout.contains("out"), "{}", result.stdout);
-    assert!(result.stderr.contains("err"), "{}", result.stderr);
-}
-
-#[test]
-fn exec_command_missing_binary_reports_error() {
-    let result = exec_command(
-        "definitely-not-a-binary-xyz",
-        &[],
-        ".",
-        ExecOptions::default(),
-    );
-    assert_eq!(result.code, 1);
-}
-
-#[test]
-fn exec_command_timeout_kills_the_process() {
-    let result = exec_command(
-        "sh",
-        &["-c".to_string(), "sleep 5".to_string()],
-        ".",
-        ExecOptions {
-            timeout: Some(100),
-            signal: None,
-        },
-    );
-    assert!(result.killed, "{result:?}");
 }
 
 // --- bash executor -------------------------------------------------------------------
