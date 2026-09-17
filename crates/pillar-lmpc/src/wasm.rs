@@ -17,6 +17,19 @@ static TRACE: Mutex<String> = Mutex::new(String::new());
 /// The prompt the demo turn uses (fixed so native and Wasm traces match).
 pub const WASM_DEMO_PROMPT: &str = "remember something";
 
+/// Install the panic hook. A host calls this once after instantiating.
+///
+/// This target is `panic = "abort"`, so `catch_unwind` cannot help: a panic
+/// traps and the module's exports throw. The hook still runs *before* the
+/// abort, so it can leave the message in the trace buffer for the host to read
+/// after the trap — otherwise a failing turn is an opaque `RuntimeError`.
+#[unsafe(no_mangle)]
+pub extern "C" fn lmpc_init() {
+    std::panic::set_hook(Box::new(|info| {
+        *TRACE.lock().expect("trace lock") = format!("panic: {info}");
+    }));
+}
+
 /// Run one demo turn and store its trace. Returns the trace length in bytes
 /// (0 when the turn failed, in which case [`lmpc_trace_text`] holds the error).
 #[unsafe(no_mangle)]
@@ -32,6 +45,12 @@ pub extern "C" fn lmpc_demo_turn() -> u32 {
     let length = text.len() as u32;
     *TRACE.lock().expect("trace lock") = text;
     length
+}
+
+/// The stored trace's length (also the panic hook's message length).
+#[unsafe(no_mangle)]
+pub extern "C" fn lmpc_trace_len() -> u32 {
+    TRACE.lock().expect("trace lock").len() as u32
 }
 
 /// The stored trace's address (for `new Uint8Array(memory.buffer, ptr, len)`).

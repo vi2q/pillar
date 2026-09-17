@@ -20,13 +20,26 @@ const bytes = await readFile(path);
 const { instance } = await WebAssembly.instantiate(bytes, {});
 const exports = instance.exports;
 
-const length = exports.lmpc_demo_turn();
+const readTrace = (length) => {
+  const pointer = exports.lmpc_trace_ptr();
+  return new TextDecoder().decode(
+    new Uint8Array(exports.memory.buffer, pointer, length),
+  );
+};
+
+// A panic on this target aborts the module (the exports throw) but the hook
+// leaves its message in the trace buffer, so read it out here.
+exports.lmpc_init?.();
+let length;
+try {
+  length = exports.lmpc_demo_turn();
+} catch (error) {
+  const message = readTrace(Number(exports.lmpc_trace_len?.() ?? 0));
+  console.error(`wasm_trace: the turn trapped: ${message || error}`);
+  process.exit(1);
+}
 if (length === 0) {
   console.error("wasm_trace: the turn produced no trace");
   process.exit(1);
 }
-const pointer = exports.lmpc_trace_ptr();
-const trace = new TextDecoder().decode(
-  new Uint8Array(exports.memory.buffer, pointer, length),
-);
-process.stdout.write(trace);
+process.stdout.write(readTrace(length));
