@@ -152,7 +152,7 @@ Cargo featureはビルド内容の選択であり、セキュリティ境界で�
 6. import/exportとtransitive dependencyを機械検査し、最小構成へterminal・process・暗黙FS・package取得が混入したら落とす。
    進捗: dependency graph（profile別）と、coreのsourcesに対する`std::process`/`std::fs`/`std::net`の検査を実装（`dependency_profiles.rs`）。terminal層はcoding-agent/tuiの依存として残っており、外す軸は未実装。
 7. native/Wasm間の同一入力・記録済みmodel/tool結果に対する意味的event traceが一致する。時刻等は注入し、LLM自身の決定性は仮定しない。
-   進捗: 縮小版を実装。`pillar-lmpc::FrameHost`（thread/tokio無しのフレーム駆動host、仮想時計）で回したturnが、thread駆動のturnとtranscript・event traceともに一致することをテストで固定。実Wasm hostでの実行は未着手。
+   進捗: **デモturnで達成**。`pillar-lmpc`を`cdylib`として`wasm32-unknown-unknown`へビルドし、Node（`scripts/wasm_trace.mjs`）でinstantiateして実行、nativeの`lmpc-minimal`と**event trace・transcriptが完全一致**することを`scripts/check.sh`で確認する。同じturnを`FrameHost`（thread/tokio無し・仮想時計）で回しても一致することをテストで固定。残りは実engine（azparam/ブラウザ）からのmodel接続（`StreamFn`）とreleaseサイズ・panic可視化。
 
 Wasm境界はversion付き要求／結果、opaque handle、サイズ上限、所有権・解放、cancel/deadline、再入禁止または規則を定義する。Rustの参照やArcをABIにしない。
 

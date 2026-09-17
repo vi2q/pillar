@@ -6,6 +6,12 @@ license.workspace = true
 rust-version.workspace = true
 description = "The LMPC minimum: the pillar runtime core with host-provided services (no provider catalog, no terminal, no VM)."
 
+[lib]
+name = "pillar_lmpc"
+# `cdylib` is the Wasm host's entry point (`scripts/wasm_trace.mjs`); the rlib
+# serves Rust embedders and the tests.
+crate-type = ["rlib", "cdylib"]
+
 [[bin]]
 name = "lmpc-minimal"
 path = "src/main.rs"

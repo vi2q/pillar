@@ -28,7 +28,45 @@ impl std::fmt::Display for Elapsed {
 
 impl std::error::Error for Elapsed {}
 
+/// A host-supplied wall clock: milliseconds since the Unix epoch.
+pub type NowFn = Arc<dyn Fn() -> i64 + Send + Sync>;
+
 static SLEEP: RwLock<Option<SleepFn>> = RwLock::new(None);
+static NOW: RwLock<Option<NowFn>> = RwLock::new(None);
+
+/// Install the host's wall clock (`None` restores the platform default).
+///
+/// A Wasm host has no system clock: `std::time::SystemTime::now` traps there,
+/// so an embedding host either installs its own (a frame clock) or the port
+/// reports time `0` — deterministic, never a trap.
+pub fn set_default_now(now: Option<NowFn>) {
+    *NOW.write().expect("now lock") = now;
+}
+
+/// The installed host wall clock, if any.
+pub fn get_default_now() -> Option<NowFn> {
+    NOW.read().expect("now lock").clone()
+}
+
+/// Milliseconds since the Unix epoch, from the host's clock when it has one.
+pub fn now_millis() -> i64 {
+    if let Some(now) = get_default_now() {
+        return now();
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as i64)
+            .unwrap_or(0)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        // No system clock on this target; a host that needs real timestamps
+        // installs one with `set_default_now`.
+        0
+    }
+}
 
 /// Install the host's timer (`None` restores the platform default).
 pub fn set_default_sleep(sleep: Option<SleepFn>) {

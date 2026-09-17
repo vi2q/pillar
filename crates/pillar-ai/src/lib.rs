@@ -67,7 +67,10 @@ pub mod types;
 pub mod uuid;
 
 pub use abort::{AbortReason, AbortSignal, operation_signal};
-pub use clock::{Elapsed, SleepFn, get_default_sleep, set_default_sleep, sleep, timeout};
+pub use clock::{
+    Elapsed, NowFn, SleepFn, get_default_now, get_default_sleep, now_millis, set_default_now,
+    set_default_sleep, sleep, timeout,
+};
 #[cfg(feature = "providers")]
 pub use auth_resolve::{ModelsError, resolve_provider_auth};
 #[cfg(feature = "providers")]

@@ -59,11 +59,14 @@ fn a_turn_runs_with_host_services() {
 /// which is the §5-7 comparison in miniature.
 #[test]
 fn a_frame_driven_host_runs_the_same_turn() {
-    let _guard = TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _guard = TESTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
 
     // The thread-driven run first (it installs the native defaults), then the
     // frame-driven one (which points the services at its own queue).
-    let threaded = pillar_lmpc::demo_turn("remember something").expect("the thread-driven turn runs");
+    let threaded =
+        pillar_lmpc::demo_turn("remember something").expect("the thread-driven turn runs");
 
     let host = pillar_lmpc::FrameHost::new();
     let trace = pillar_lmpc::demo_turn_on(

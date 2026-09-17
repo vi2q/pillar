@@ -60,10 +60,8 @@ impl std::fmt::Debug for AgentEventSink {
 pub type AgentStream = EventStream<AgentEvent, Vec<AgentMessage>>;
 
 fn now_millis() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+    // The host's clock: `SystemTime::now` traps on the embedding target.
+    pillar_ai::clock::now_millis().max(0) as u64
 }
 
 /// Start an agent loop with new prompt messages.

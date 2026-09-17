@@ -18,10 +18,8 @@ static STATE: Mutex<UuidState> = Mutex::new(UuidState {
 });
 
 fn now_millis() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+    // The host's clock: `SystemTime::now` traps on the embedding target.
+    crate::clock::now_millis()
 }
 
 fn fill_random<const N: usize>() -> [u8; N] {

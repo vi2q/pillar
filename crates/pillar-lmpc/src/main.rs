@@ -6,9 +6,6 @@ fn main() -> Result<(), String> {
         .nth(1)
         .unwrap_or_else(|| "remember something".to_string());
     let trace = pillar_lmpc::demo_turn(&prompt)?;
-    println!("events: {}", trace.events.join(","));
-    for (role, text) in &trace.messages {
-        println!("{role}: {text}");
-    }
+    print!("{}", pillar_lmpc::trace_text(&trace));
     Ok(())
 }

@@ -77,6 +77,24 @@ if [ "$quick" -eq 0 ]; then
         # and for the embedding target.
         say "LMPC minimum artifact (host services only)"
         cargo check --locked -p pillar-lmpc --target wasm32-unknown-unknown
+        # The §5-7 comparison: the same input on the same recorded model must
+        # produce the same trace in a Wasm host as natively. `node` can run a
+        # `wasm32-unknown-unknown` module directly (the LMPC artifact imports
+        # nothing).
+        if command -v node >/dev/null 2>&1; then
+            say "wasm trace matches native (§5-7)"
+            cargo build --locked -q -p pillar-lmpc --target wasm32-unknown-unknown
+            native_trace=$(cargo run --locked -q -p pillar-lmpc -- "remember something")
+            wasm_trace=$(node "$root/scripts/wasm_trace.mjs" \
+                "$root/target/wasm32-unknown-unknown/debug/pillar_lmpc.wasm")
+            if [ "$native_trace" != "$wasm_trace" ]; then
+                printf 'native:\n%s\nwasm:\n%s\n' "$native_trace" "$wasm_trace" >&2
+                echo "check: the Wasm trace differs from the native one" >&2
+                exit 1
+            fi
+        else
+            say "wasm trace comparison (skipped: node is not installed)"
+        fi
         say "LMPC minimal without the OS-bound features"
         cargo check --locked -p pillar-agent --no-default-features
         cargo check --locked -p pillar-agent --no-default-features --target wasm32-unknown-unknown

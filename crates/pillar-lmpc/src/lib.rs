@@ -57,6 +57,8 @@ static HOST_SPAWN: std::sync::RwLock<Option<SpawnFn>> = std::sync::RwLock::new(N
 /// plain futures executor and resolve waits immediately. A host that has a
 /// frame loop uses [`FrameHost`] instead.
 pub fn thread_host_services() -> (SpawnFn, pillar_ai::SleepFn) {
+    // The native default keeps the system clock.
+    pillar_ai::set_default_now(None);
     (
         Arc::new(|body| {
             std::thread::spawn(move || futures::executor::block_on(body));
@@ -289,6 +291,20 @@ pub fn demo_turn(prompt: &str) -> Result<TurnTrace, String> {
     })
 }
 
+/// The trace as the host prints it: the event kinds and the transcript, one
+/// line each. The Wasm export and the native binary share this so their output
+/// can be compared byte for byte (§5-7).
+pub fn trace_text(trace: &TurnTrace) -> String {
+    let mut text = format!("events: {}\n", trace.events.join(","));
+    for (role, body) in &trace.messages {
+        text.push_str(&format!("{role}: {body}\n"));
+    }
+    text
+}
+
+#[cfg(target_arch = "wasm32")]
+mod wasm;
+
 fn text_of(message: &pillar_agent::AgentMessage) -> String {
     use pillar_agent::AgentMessage;
     match message {
@@ -385,6 +401,12 @@ impl FrameHost {
         let sleep_host = Arc::clone(self);
         let sleep: pillar_ai::SleepFn = Arc::new(move |duration| sleep_host.sleep(duration));
         install_host_services(spawn, Some(sleep));
+        // The frame clock is also the wall clock: a Wasm host has no system
+        // clock, and a frame time makes timestamps deterministic.
+        let now_host = Arc::clone(self);
+        pillar_ai::set_default_now(Some(Arc::new(move || {
+            now_host.now().as_millis() as i64
+        })));
     }
 
     fn spawn(&self, body: pillar_agent::spawn::Spawned) {
