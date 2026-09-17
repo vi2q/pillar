@@ -132,6 +132,19 @@ if [ "$quick" -eq 0 ]; then
                 echo "check: the streamed turn produced no message_update events" >&2
                 exit 1
             }
+            # Storing and resuming a conversation: the host exports the
+            # conversation, starts a new session, imports it, and continues.
+            say "wasm stored conversation resume matches native"
+            native_resume=$(cargo run --locked -q -p pillar-lmpc -- --host-model --resume \\
+                "my name is Ada" "what is my name?")
+            wasm_resume=$(node "$root/scripts/wasm_host_model.mjs" \\
+                "$root/target/wasm32-unknown-unknown/debug/pillar_lmpc.wasm" \\
+                --resume "my name is Ada" "what is my name?")
+            if [ "$native_resume" != "$wasm_resume" ]; then
+                printf 'native:\\n%s\\nwasm:\\n%s\\n' "$native_resume" "$wasm_resume" >&2
+                echo "check: the Wasm resume trace differs from the native one" >&2
+                exit 1
+            fi
             # Host-driven cancellation: the guest must stop instead of waiting
             # for a model answer it will never get.
             say "wasm host cancel"

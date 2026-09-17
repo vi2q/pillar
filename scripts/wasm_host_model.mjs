@@ -21,6 +21,7 @@ import { readFile } from "node:fs/promises";
 const path = process.argv[2];
 const cancel = process.argv.includes("--cancel");
 const stream = process.argv.includes("--stream");
+const resume = process.argv.includes("--resume");
 // Every positional argument is one turn on the same session (an NPC keeps its
 // state), which is what the native `--host-model <p1> <p2>` does.
 const prompts = process.argv
@@ -57,6 +58,35 @@ const writeInput = (text) => {
 const read = (pointer, length) =>
   decoder.decode(memory().subarray(pointer, pointer + length));
 
+/// Ask for a pending model request's JSON.
+const readRequest = (length) =>
+  read(exports.lmpc_host_request_ptr(), length);
+
+/// Answer requests until the turn ends; returns the trace when it is done.
+const driveTurn = () => {
+  for (let frame = 0; frame < 100_000; frame += 1) {
+    const state = exports.lmpc_host_poll();
+    if (state === 2) {
+      return read(exports.lmpc_trace_ptr(), exports.lmpc_trace_len());
+    }
+    if (state === 3 || state === 4) {
+      console.error(`host_model: the turn ended in state ${state}`);
+      process.exit(1);
+    }
+    if (state === 1 && !cancelled) {
+      if (stream) {
+        for (const delta of ["the ", "answer ", "is 42"]) {
+          exports.lmpc_host_stream(writeInput(delta));
+        }
+      }
+      exports.lmpc_host_reply(writeInput(replyFor(repliesSent)));
+      repliesSent += 1;
+    }
+  }
+  console.error("host_model: the turn did not finish");
+  process.exit(1);
+};
+
 // The host's scripted model, mirroring `host_model_scripted_reply` in
 // crates/pillar-lmpc/src/lib.rs: call the `remember` tool, then answer with it.
 const replyFor = (requestIndex) => {
@@ -68,9 +98,28 @@ const replyFor = (requestIndex) => {
 };
 
 let turn = 0;
-let state = exports.lmpc_host_turn_start(writeInput(prompts[turn]));
 let repliesSent = 0;
 let cancelled = false;
+
+// `--resume`: run the first turn, store the conversation, then continue it in a
+// *new* session (the host-side persistence round trip).
+if (resume && prompts.length > 1) {
+  exports.lmpc_host_turn_start(writeInput(prompts[0]));
+  driveTurn();
+  const stored = readRequest(exports.lmpc_session_export());
+  // The scripted answers restart with the new session (the native twin does
+  // the same).
+  repliesSent = 0;
+  exports.lmpc_host_turn_start(writeInput(prompts[1]));
+  if (exports.lmpc_session_import(writeInput(stored)) === 0) {
+    console.error("host_model: the conversation was not restored");
+    process.exit(1);
+  }
+  process.stdout.write(driveTurn());
+  process.exit(0);
+}
+
+let state = exports.lmpc_host_turn_start(writeInput(prompts[turn]));
 for (let frame = 0; frame < 100_000; frame += 1) {
   if (state === 1 && cancel && !cancelled) {
     // A game cancels an NPC's turn when the scene changes: stop instead of

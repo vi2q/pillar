@@ -350,6 +350,24 @@ impl HostModelSession {
         Ok(())
     }
 
+    /// The conversation so far, as JSON (the messages the agent holds). A host
+    /// stores this and hands it back with [`HostModelSession::restore`] to
+    /// resume an NPC in a later run.
+    pub fn messages_json(&self) -> Result<String, String> {
+        serde_json::to_string(&self.agent.state().messages)
+            .map_err(|error| format!("cannot serialize the conversation: {error}"))
+    }
+
+    /// Resume a stored conversation: the messages are installed before any new
+    /// turn, so the next model request carries the old context.
+    pub fn restore(&self, json: &str) -> Result<usize, String> {
+        let messages: Vec<pillar_agent::AgentMessage> = serde_json::from_str(json)
+            .map_err(|error| format!("bad conversation JSON: {error}"))?;
+        let count = messages.len();
+        self.agent.set_messages(messages);
+        Ok(count)
+    }
+
     /// Whether the guest is waiting for the host.
     pub fn needs_model(&self) -> bool {
         self.slot.lock().expect("model slot lock").request.is_some()

@@ -241,6 +241,37 @@ pub extern "C" fn lmpc_host_reply(length: u32) -> i32 {
     }
 }
 
+/// The conversation so far (JSON) for the host to store; also its length.
+#[unsafe(no_mangle)]
+pub extern "C" fn lmpc_session_export() -> u32 {
+    let guard = SESSION.lock().expect("session lock");
+    let Some(session) = guard.as_ref() else {
+        return 0;
+    };
+    match session.messages_json() {
+        Ok(json) => {
+            let length = json.len() as u32;
+            *REQUEST.lock().expect("request lock") = json;
+            length
+        }
+        Err(_) => 0,
+    }
+}
+
+/// Resume a stored conversation (`length` bytes of the input buffer) in the
+/// current session; returns how many messages were restored.
+#[unsafe(no_mangle)]
+pub extern "C" fn lmpc_session_import(length: u32) -> u32 {
+    let Some(json) = read_input(length) else {
+        return 0;
+    };
+    let guard = SESSION.lock().expect("session lock");
+    let Some(session) = guard.as_ref() else {
+        return 0;
+    };
+    session.restore(&json).unwrap_or(0) as u32
+}
+
 /// Cancel the running turn (state 4 afterwards; the trace shows how far it got).
 #[unsafe(no_mangle)]
 pub extern "C" fn lmpc_host_cancel() {

@@ -411,6 +411,53 @@ pub fn demo_tools() -> Vec<AgentTool> {
     vec![remember_tool(DemoModel::new())]
 }
 
+/// A resumed conversation: turn 1 runs, the host stores the conversation, a
+/// *new* session resumes it, and turn 2 runs there.
+///
+/// This is the round trip an NPC needs across restarts; the twin of the
+/// `lmpc_session_export` / `lmpc_session_import` ABI calls.
+pub fn host_model_resume_demo(prompts: &[String]) -> Result<TurnTrace, String> {
+    let first = prompts
+        .first()
+        .map(String::as_str)
+        .unwrap_or("my name is Ada");
+    let second = prompts.get(1).map(String::as_str);
+    let host = FrameHost::new();
+    let mut session = HostModelSession::start(&host, first, demo_tools());
+    drive_session(&mut session)?;
+    let stored = session.messages_json()?;
+
+    let Some(second) = second else {
+        // Nothing to resume into: report the stored conversation's trace.
+        return Ok(session.trace());
+    };
+    let resumed_host = FrameHost::new();
+    let mut resumed = HostModelSession::start(&resumed_host, second, demo_tools());
+    resumed.restore(&stored)?;
+    drive_session(&mut resumed)?;
+    Ok(resumed.trace())
+}
+
+/// Answer every model request of one turn with the scripted replies.
+fn drive_session(session: &mut HostModelSession) -> Result<(), String> {
+    let mut requests = 0usize;
+    for _ in 0..10_000 {
+        match session.poll(Duration::from_millis(1)) {
+            HostModelState::NeedsModel => {
+                session.reply(host_model_scripted_reply(requests))?;
+                requests += 1;
+            }
+            HostModelState::Running => {}
+            HostModelState::Done => return Ok(()),
+            HostModelState::Cancelled => return Err("the turn was cancelled".to_string()),
+            HostModelState::Failed => {
+                return Err(session.error().unwrap_or("the turn failed").to_string());
+            }
+        }
+    }
+    Err("the turn did not finish".to_string())
+}
+
 /// The types a host needs to build its own turn, re-exported so an embedder
 /// depends on this crate alone.
 pub use pillar_agent::{

@@ -308,3 +308,67 @@ fn the_host_can_stream_partial_text() {
     assert_eq!(updates, 3, "one update per delta: {:?}", trace.events);
     assert_eq!(trace.messages[1].1, "the answer is 42");
 }
+
+/// A host can store the conversation and resume it later: the restored session
+/// carries the old context into the next model request (an NPC that survives a
+/// restart).
+#[test]
+fn a_conversation_can_be_stored_and_resumed() {
+    use std::time::Duration;
+
+    let answer_once = |session: &mut pillar_lmpc::HostModelSession, text: &str| {
+        for _ in 0..1000 {
+            match session.poll(Duration::from_millis(1)) {
+                HostModelState::NeedsModel => {
+                    session
+                        .reply(&format!("[{{\"type\":\"text\",\"text\":\"{text}\"}}]"))
+                        .expect("the host answers");
+                }
+                HostModelState::Running => {}
+                HostModelState::Done => return,
+                other => panic!("unexpected state {other:?}"),
+            }
+        }
+        panic!("the turn did not finish");
+    };
+
+    let host = Arc::new(pillar_lmpc::FrameHost::new());
+    let mut session = pillar_lmpc::HostModelSession::start(&host, "my name is Ada", Vec::new());
+    answer_once(&mut session, "hello Ada");
+    let stored = session.messages_json().expect("the conversation serializes");
+    assert!(stored.contains("my name is Ada"), "{stored}");
+
+    // A later run: a fresh session resumes the stored conversation.
+    let later_host = Arc::new(pillar_lmpc::FrameHost::new());
+    let mut resumed = pillar_lmpc::HostModelSession::start(&later_host, "what is my name?", Vec::new());
+    assert_eq!(resumed.restore(&stored).expect("restore"), 2);
+
+    let mut seen = None;
+    for _ in 0..1000 {
+        match resumed.poll(Duration::from_millis(1)) {
+            HostModelState::NeedsModel => {
+                seen = resumed.request_json();
+                resumed
+                    .reply(r#"[{"type":"text","text":"Ada"}]"#)
+                    .expect("the host answers");
+            }
+            HostModelState::Running => {}
+            HostModelState::Done => break,
+            other => panic!("unexpected state {other:?}"),
+        }
+    }
+    let request = seen.expect("a model request");
+    assert!(
+        request.contains("my name is Ada") && request.contains("hello Ada"),
+        "the resumed request carries the stored conversation: {request}"
+    );
+    let trace = resumed.trace();
+    let roles: Vec<&str> = trace.messages.iter().map(|(role, _)| role.as_str()).collect();
+    assert_eq!(
+        roles,
+        ["user", "assistant", "user", "assistant"],
+        "{:?}",
+        trace.messages
+    );
+    assert_eq!(trace.messages[3].1, "Ada");
+}

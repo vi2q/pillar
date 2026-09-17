@@ -15,13 +15,21 @@ fn main() -> Result<(), String> {
     if stream {
         let _ = args.next();
     }
+    // `--resume`: store the conversation after the first turn and continue it in
+    // a new session (the host-side persistence round trip).
+    let resume = args.peek().map(String::as_str) == Some("--resume");
+    if resume {
+        let _ = args.next();
+    }
     let prompts: Vec<String> = args.collect();
     let prompts = if prompts.is_empty() {
         vec!["remember something".to_string()]
     } else {
         prompts
     };
-    let trace = if host_model {
+    let trace = if host_model && resume {
+        pillar_lmpc::host_model_resume_demo(&prompts)?
+    } else if host_model {
         // Several prompts mean several turns on one session (the NPC keeps its
         // state), which is what the Wasm host does too.
         pillar_lmpc::host_model_demo_turns_with(&prompts, stream)?
