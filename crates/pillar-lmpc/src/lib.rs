@@ -305,6 +305,9 @@ pub fn trace_text(trace: &TurnTrace) -> String {
 #[cfg(target_arch = "wasm32")]
 mod wasm;
 
+pub mod host_model;
+pub use host_model::{HostModelSession, HostModelState};
+
 fn text_of(message: &pillar_agent::AgentMessage) -> String {
     use pillar_agent::AgentMessage;
     match message {
@@ -322,6 +325,43 @@ fn text_of(message: &pillar_agent::AgentMessage) -> String {
         }
         other => format!("{other:?}"),
     }
+}
+
+/// A turn whose model answers come from a scripted host: the host calls the
+/// `remember` tool, then answers with what it remembered.
+///
+/// This is the native twin of `scripts/wasm_host_model.mjs`: both drive
+/// [`HostModelSession`] with the same replies, so their traces must match
+/// (§5-7) and a real host has a worked example of the protocol.
+pub fn host_model_demo_turn(prompt: &str) -> Result<TurnTrace, String> {
+    let host = FrameHost::new();
+    let mut session = HostModelSession::start(&host, prompt, demo_tools());
+    let mut requests = 0usize;
+    for _ in 0..10_000 {
+        match session.poll(Duration::from_millis(1)) {
+            HostModelState::NeedsModel => {
+                let reply = if requests == 0 {
+                    r#"[{"type":"toolCall","id":"remember-1","name":"remember","arguments":{"value":"the answer is 42"}}]"#
+                } else {
+                    r#"[{"type":"text","text":"the answer is 42"}]"#
+                };
+                session.reply(reply)?;
+                requests += 1;
+            }
+            HostModelState::Running => {}
+            HostModelState::Done => return Ok(session.trace()),
+            HostModelState::Failed => {
+                return Err(session.error().unwrap_or("the host model turn failed").to_string());
+            }
+        }
+    }
+    Err("the host model turn did not finish".to_string())
+}
+
+/// The demo turn's host tool (`remember`), for hosts that script a tool call
+/// (the Wasm ABI installs the same set).
+pub fn demo_tools() -> Vec<AgentTool> {
+    vec![remember_tool(DemoModel::new())]
 }
 
 /// The types a host needs to build its own turn, re-exported so an embedder
@@ -404,14 +444,18 @@ impl FrameHost {
         // The frame clock is also the wall clock: a Wasm host has no system
         // clock, and a frame time makes timestamps deterministic.
         let now_host = Arc::clone(self);
-        pillar_ai::set_default_now(Some(Arc::new(move || {
-            now_host.now().as_millis() as i64
-        })));
+        pillar_ai::set_default_now(Some(Arc::new(move || now_host.now().as_millis() as i64)));
     }
 
     fn spawn(&self, body: pillar_agent::spawn::Spawned) {
         self.spawns.fetch_add(1, Ordering::SeqCst);
         self.tasks.lock().expect("frame tasks lock").push(body);
+    }
+
+    /// Queue a body for the next pump (the runtime's `SpawnFn` uses this; a
+    /// host that builds its own agent can too).
+    pub fn enqueue(&self, body: pillar_agent::spawn::Spawned) {
+        self.spawn(body);
     }
 
     /// How many backgrounds bodies this host started (a host-side check that
@@ -561,8 +605,7 @@ pub fn demo_turn_on(
             let mut slot = run.lock().expect("run lock");
             if let Some(future) = slot.as_mut() {
                 let mut context = std::task::Context::from_waker(futures::task::noop_waker_ref());
-                if let std::task::Poll::Ready(result) = future.as_mut().poll(&mut context)
-                {
+                if let std::task::Poll::Ready(result) = future.as_mut().poll(&mut context) {
                     result.map_err(|error| error.to_string())?;
                     *slot = None;
                 }

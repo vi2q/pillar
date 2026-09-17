@@ -92,6 +92,17 @@ if [ "$quick" -eq 0 ]; then
                 echo "check: the Wasm trace differs from the native one" >&2
                 exit 1
             fi
+            # The host-model protocol: the Wasm host supplies the model answers
+            # (including a tool call), and the trace must still match native.
+            say "wasm host model matches native (§4 host model)"
+            native_host=$(cargo run --locked -q -p pillar-lmpc -- --host-model "remember something")
+            wasm_host=$(node "$root/scripts/wasm_host_model.mjs" \
+                "$root/target/wasm32-unknown-unknown/debug/pillar_lmpc.wasm" "remember something")
+            if [ "$native_host" != "$wasm_host" ]; then
+                printf 'native:\n%s\nwasm:\n%s\n' "$native_host" "$wasm_host" >&2
+                echo "check: the Wasm host-model trace differs from the native one" >&2
+                exit 1
+            fi
         else
             say "wasm trace comparison (skipped: node is not installed)"
         fi

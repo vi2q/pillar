@@ -1,0 +1,142 @@
+//! The host-driven model protocol: the *host* answers the model requests, which
+//! is how an engine or a page supplies its own brain (§4 "host model").
+//!
+//! A plain `#[test]`: the whole session runs on the frame host (no threads, no
+//! tokio, no provider catalog). The same protocol is what `src/wasm.rs` exposes
+//! to a JavaScript host.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use pillar_lmpc::HostModelState;
+
+/// Drive the session: answer every model request, stop at the end.
+fn drive(
+    session: &mut pillar_lmpc::HostModelSession,
+    mut answer: impl FnMut(usize, &str) -> String,
+) -> usize {
+    let mut requests = 0usize;
+    for _ in 0..10_000 {
+        match session.poll(Duration::from_millis(1)) {
+            HostModelState::NeedsModel => {
+                let request = session.request_json().expect("a pending request");
+                let reply = answer(requests, &request);
+                session.reply(&reply).expect("the host answers");
+                requests += 1;
+            }
+            HostModelState::Running => {}
+            HostModelState::Done => return requests,
+            HostModelState::Failed => panic!("the turn failed: {:?}", session.error()),
+        }
+    }
+    panic!("the session never finished");
+}
+
+#[test]
+fn the_host_answers_the_model_requests() {
+    let host = Arc::new(pillar_lmpc::FrameHost::new());
+    // No tools: the host model itself produces the answer.
+    let mut session = pillar_lmpc::HostModelSession::start(&host, "who are you?", Vec::new());
+
+    let requests = drive(&mut session, |_, request| {
+        assert!(
+            request.contains("who are you?"),
+            "the request carries the context: {request}"
+        );
+        r#"[{"type":"text","text":"I am the host's NPC."}]"#.to_string()
+    });
+    assert_eq!(requests, 1, "one model round trip");
+
+    let trace = session.trace();
+    assert!(
+        trace.events.iter().any(|event| event == "agent_end"),
+        "{:?}",
+        trace.events
+    );
+    let roles: Vec<&str> = trace.messages.iter().map(|(role, _)| role.as_str()).collect();
+    assert_eq!(roles, ["user", "assistant"], "{:?}", trace.messages);
+    assert_eq!(trace.messages[1].1, "I am the host's NPC.");
+    assert!(host.is_idle(), "the session left nothing queued");
+}
+
+#[test]
+fn the_host_can_drive_a_tool_call() {
+    let host = Arc::new(pillar_lmpc::FrameHost::new());
+    // The host installs its own tool, so the model can call it.
+    let host_tool = pillar_agent::AgentTool {
+        tool: pillar_ai::types::Tool {
+            name: "look_up".to_string(),
+            description: "Look a fact up in the host".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": { "key": { "type": "string" } },
+                "required": ["key"],
+            }),
+            constrained_sampling: None,
+        },
+        label: "Look up".to_string(),
+        prepare_arguments: None,
+        execute: std::sync::Arc::new(|_id, args, _signal, _update| {
+            let key = args
+                .get("key")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            Box::pin(async move {
+                Ok(pillar_agent::AgentToolResult {
+                    content: vec![pillar_ai::types::Content::text(format!("{key} = 42"))],
+                    details: serde_json::json!({}),
+                    usage: None,
+                    added_tool_names: None,
+                    terminate: false,
+                })
+            })
+        }),
+        execution_mode: Some(pillar_agent::ToolExecutionMode::Parallel),
+    };
+    let mut session = pillar_lmpc::HostModelSession::start(
+        &host,
+        "what is the answer?",
+        vec![host_tool],
+    );
+
+    let requests = drive(&mut session, |index, _request| {
+        if index == 0 {
+            // The host's model decides to call the host's tool.
+            r#"[{"type":"toolCall","id":"call-1","name":"look_up","arguments":{"key":"answer"}}]"#
+                .to_string()
+        } else {
+            r#"[{"type":"text","text":"the host says 42"}]"#.to_string()
+        }
+    });
+    assert_eq!(requests, 2, "the tool call needed a second model round trip");
+
+    let trace = session.trace();
+    let roles: Vec<&str> = trace.messages.iter().map(|(role, _)| role.as_str()).collect();
+    assert_eq!(
+        roles,
+        ["user", "assistant", "toolResult", "assistant"],
+        "{:?}",
+        trace.messages
+    );
+    assert_eq!(trace.messages[2].1, "answer = 42", "the host tool ran");
+    assert_eq!(trace.messages[3].1, "the host says 42");
+}
+
+#[test]
+fn a_host_reply_must_be_json() {
+    let host = Arc::new(pillar_lmpc::FrameHost::new());
+    let mut session = pillar_lmpc::HostModelSession::start(&host, "hi", Vec::new());
+    // One poll is enough: the guest publishes its request in the first frame.
+    assert_eq!(
+        session.poll(Duration::from_millis(1)),
+        HostModelState::NeedsModel
+    );
+    let error = session.reply("not json").expect_err("the reply is rejected");
+    assert!(error.contains("bad reply JSON"), "{error}");
+    // The request stays pending, so the host can try again.
+    assert!(session.needs_model());
+    session
+        .reply(r#"[{"type":"text","text":"ok"}]"#)
+        .expect("a valid reply is accepted");
+}
