@@ -12,6 +12,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use luaur_rt::Function;
 use pillar_agent::abort::AbortSignal;
 use pillar_extensions::runtime::{ExtensionRuntime, HostApi, VmBudget};
 use pillar_extensions_contract::{
@@ -375,4 +376,56 @@ fn an_endless_registration_loop_is_refused() {
         0,
         "the failed setup left nothing behind"
     );
+}
+
+/// The host functions a tool calls must work inside a coroutine too — that is
+/// the precondition for running tool calls there (so a waiting host call can
+/// suspend instead of blocking). They build their results with the *calling*
+/// state (`Lua::create_function`), which this pins against the real runtime.
+#[test]
+fn the_runtimes_host_functions_survive_a_coroutine() {
+    let mut runtime = runtime_with_exec(Arc::new(Mutex::new(Vec::new())));
+    runtime.set_host_api(HostApi {
+        fs: Some(Arc::new(|op: &str, _path: &str, _content: Option<&str>| {
+            Ok(match op {
+                "read" => serde_json::json!("content"),
+                "list" => serde_json::json!(["a.luau"]),
+                "stat" => serde_json::json!({ "type": "file" }),
+                _ => serde_json::Value::Null,
+            })
+        })),
+        get_commands: Some(Arc::new(|| serde_json::json!([{ "name": "hello" }]))),
+        get_flag: Some(Arc::new(|name: &str| {
+            (name == "level").then(|| serde_json::json!("high"))
+        })),
+        ..Default::default()
+    });
+    let lua = runtime.vm().clone();
+    let script = r#"
+        local pillar = require("@pillar")
+        return function()
+            local text = pillar.fs.read("notes.txt")
+            local names = pillar.fs.list(".")
+            local commands = pillar.get_commands()
+            local flag = pillar.get_flag("level")
+            local schema = pillar.schema.object({ name = pillar.schema.string() })
+            return text .. "/" .. names[1] .. "/" .. commands[1].name .. "/" .. flag .. "/" .. schema.type
+        end
+    "#;
+    let expected = "content/a.luau/hello/high/object";
+
+    // Inside a coroutine (the shape a tool call will run in).
+    let body: Function = lua.load(script).eval().expect("the body compiles");
+    let thread = lua.create_thread(body).expect("the thread is created");
+    let out: String = thread.resume(()).expect("the call runs");
+    assert_eq!(out, expected, "the host functions answer inside a coroutine");
+
+    // …and on the main state, unchanged.
+    let out: String = lua
+        .load(script)
+        .eval::<Function>()
+        .expect("the body compiles")
+        .call(())
+        .expect("the call runs");
+    assert_eq!(out, expected);
 }

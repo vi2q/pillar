@@ -1319,48 +1319,54 @@ impl ExtensionRuntime {
             Ok::<Option<String>, luaur_rt::Error>(callback.and_then(|callback| callback()))
         });
         let entries_readers = Arc::clone(&self.host_api);
-        let entries_lua = self.lua.clone();
-        let session_entries = Function::wrap(move || {
-            let callback = {
-                let guard = entries_readers
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                guard.session_entries.clone()
-            };
-            let value = match callback {
-                Some(callback) => callback(),
-                None => serde_json::Value::Array(Vec::new()),
-            };
-            entries_lua
-                .to_value(&value)
-                .map_err(luaur_rt::Error::external)
-        });
+        let session_entries = self
+            .lua
+            .create_function(move |calling: &Lua, ()| {
+                let callback = {
+                    let guard = entries_readers
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    guard.session_entries.clone()
+                };
+                let value = match callback {
+                    Some(callback) => callback(),
+                    None => serde_json::Value::Array(Vec::new()),
+                };
+                calling
+                    .to_value(&value)
+                    .map_err(luaur_rt::Error::external)
+            })
+            .map_err(|error| ExtensionLoadError::Setup(error.to_string()))?;
         // `ctx.ui.confirm/select/input/editor` (upstream the awaited
         // `ExtensionUIContext` methods): the host shows a dialog and answers
         // its value. A cancelled dialog answers `null`, which the port maps to
         // Lua `nil` (luaur's serde null sentinel would otherwise be truthy).
         let ask_slot = Arc::clone(&self.host_api);
-        let ask_lua = self.lua.clone();
-        let ui_request = Function::wrap(move |op: String, args: Value| {
-            let callback = {
-                let guard = ask_slot
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                guard.ui_ask.clone()
-            };
-            let Some(callback) = callback else {
-                return Ok::<Value, luaur_rt::Error>(Value::Nil);
-            };
-            let args = ask_lua
-                .from_value::<serde_json::Value>(args)
-                .map_err(luaur_rt::Error::external)?;
-            let answer =
-                callback(ExtensionUiRequest { op, args }).map_err(luaur_rt::Error::external)?;
-            if answer.is_null() {
-                return Ok(Value::Nil);
-            }
-            ask_lua.to_value(&answer).map_err(luaur_rt::Error::external)
-        });
+        let ui_request = self
+            .lua
+            .create_function(move |calling: &Lua, (op, args): (String, Value)| {
+                let callback = {
+                    let guard = ask_slot
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    guard.ui_ask.clone()
+                };
+                let Some(callback) = callback else {
+                    return Ok::<Value, luaur_rt::Error>(Value::Nil);
+                };
+                let args = calling
+                    .from_value::<serde_json::Value>(args)
+                    .map_err(luaur_rt::Error::external)?;
+                let answer =
+                    callback(ExtensionUiRequest { op, args }).map_err(luaur_rt::Error::external)?;
+                if answer.is_null() {
+                    return Ok(Value::Nil);
+                }
+                calling
+                    .to_value(&answer)
+                    .map_err(luaur_rt::Error::external)
+            })
+            .map_err(|error| ExtensionLoadError::Setup(error.to_string()))?;
 
         // `ctx.ui.custom(factory, options)`: the factory's component is rendered
         // by the extension's own thread (it holds the runtime lock while the UI
@@ -1409,50 +1415,52 @@ impl ExtensionRuntime {
             Ok(Some(id as f64))
         });
         let next_sessions = Arc::clone(&custom_sessions);
-        let next_lua = self.lua.clone();
         let next_limit = Arc::clone(&self.vm_limit);
-        let custom_next = Function::wrap(move |id: f64| {
-            let event = {
-                let guard = next_sessions
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                let Some(session) = guard.get(&(id as u64)) else {
-                    return next_lua
-                        .to_value(&serde_json::json!({ "kind": "close" }))
-                        .map_err(luaur_rt::Error::external);
-                };
-                // Wait in slices so the loop ends when the operation behind the
-                // component ends: an abort (or the operation's wall clock) stops
-                // the wait within one slice instead of after the whole timeout,
-                // and the runtime lock this thread holds is released with it.
-                let started = std::time::Instant::now();
-                loop {
-                    match session.receiver.recv_timeout(CUSTOM_WAIT_SLICE) {
-                        Ok(event) => break Ok(event),
-                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break Err(()),
-                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                            if next_limit.stopped() || started.elapsed() >= CUSTOM_WAIT_TIMEOUT {
-                                break Err(());
+        let custom_next = self
+            .lua
+            .create_function(move |calling: &Lua, id: f64| {
+                let event = {
+                    let guard = next_sessions
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let Some(session) = guard.get(&(id as u64)) else {
+                        return calling
+                            .to_value(&serde_json::json!({ "kind": "close" }))
+                            .map_err(luaur_rt::Error::external);
+                    };
+                    // Wait in slices so the loop ends when the operation behind
+                    // the component ends: an abort (or the operation's wall
+                    // clock) stops the wait within one slice instead of after the
+                    // whole timeout.
+                    let started = std::time::Instant::now();
+                    loop {
+                        match session.receiver.recv_timeout(CUSTOM_WAIT_SLICE) {
+                            Ok(event) => break Ok(event),
+                            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break Err(()),
+                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                                if next_limit.stopped() || started.elapsed() >= CUSTOM_WAIT_TIMEOUT {
+                                    break Err(());
+                                }
                             }
                         }
                     }
-                }
-            };
-            let payload = match event {
-                Ok(ExtensionCustomEvent::Resize(width)) => {
-                    serde_json::json!({ "kind": "resize", "width": width })
-                }
-                Ok(ExtensionCustomEvent::Input(data)) => {
-                    serde_json::json!({ "kind": "input", "data": data })
-                }
-                Ok(ExtensionCustomEvent::Close) | Err(_) => {
-                    serde_json::json!({ "kind": "close" })
-                }
-            };
-            next_lua
-                .to_value(&payload)
-                .map_err(luaur_rt::Error::external)
-        });
+                };
+                let payload = match event {
+                    Ok(ExtensionCustomEvent::Resize(width)) => {
+                        serde_json::json!({ "kind": "resize", "width": width })
+                    }
+                    Ok(ExtensionCustomEvent::Input(data)) => {
+                        serde_json::json!({ "kind": "input", "data": data })
+                    }
+                    Ok(ExtensionCustomEvent::Close) | Err(_) => {
+                        serde_json::json!({ "kind": "close" })
+                    }
+                };
+                calling
+                    .to_value(&payload)
+                    .map_err(luaur_rt::Error::external)
+            })
+            .map_err(|error| ExtensionLoadError::Setup(error.to_string()))?;
         let paint_lua = self.lua.clone();
         let paint_sessions = Arc::clone(&custom_sessions);
         let custom_paint = Function::wrap(move |id: f64, lines: Value| {
@@ -1760,14 +1768,13 @@ fn install_pillar_api(
     // the tool call's signal table (the host stamps `__pillar_signal_id` into
     // it), `opts.timeout` is milliseconds, and `opts.cwd` overrides the
     // working directory.
-    let exec_error_lua = lua.clone();
     let exec_slot = Arc::clone(exec_host);
     let exec_signals = Arc::clone(live_signals);
     module
         .set(
             "exec",
-            Function::wrap(
-                move |command: String, args: Option<Vec<String>>, options: Option<Value>| {
+            lua.create_function(
+                move |calling: &Lua, (command, args, options): (String, Option<Vec<String>>, Option<Value>)| {
                     let args = args.unwrap_or_default();
                     // Read the fields individually: the table holds the signal
                     // table, whose functions cannot round-trip through serde.
@@ -1805,11 +1812,12 @@ fn install_pillar_api(
                         None => ExecResult::spawn_failure("exec host not installed"),
                     };
                     drop(guard);
-                    exec_error_lua
+                    calling
                         .to_value(&result)
                         .map_err(luaur_rt::Error::external)
                 },
-            ),
+            )
+            .expect("build pillar.exec"),
         )
         .expect("set pillar.exec");
 
@@ -2160,11 +2168,10 @@ fn install_pillar_api(
     // `get_all_tools`. Without a host callback they answer an empty array.
     for name in ["get_commands", "get_active_tools", "get_all_tools"] {
         let getter_api = Arc::clone(host_api);
-        let getter_lua = lua.clone();
         module
             .set(
                 name,
-                Function::wrap(move || {
+                lua.create_function(move |calling: &Lua, ()| {
                     let callback = {
                         let guard = getter_api
                             .lock()
@@ -2178,10 +2185,11 @@ fn install_pillar_api(
                     let json = callback
                         .map(|callback| callback())
                         .unwrap_or_else(|| serde_json::json!([]));
-                    getter_lua
+                    calling
                         .to_value(&json)
                         .map_err(luaur_rt::Error::external)
-                }),
+                })
+                .expect("build pillar tool/command getter"),
             )
             .expect("set pillar tool/command getter");
     }
@@ -2270,11 +2278,10 @@ fn install_pillar_api(
     // pillar.get_flag(name): the parsed CLI flag value (upstream
     // `getFlag`); `nil` when the flag was not given.
     let flag_slot = Arc::clone(host_api);
-    let lua_get_flag = lua.clone();
     module
         .set(
             "get_flag",
-            Function::wrap(move |name: String| {
+            lua.create_function(move |calling: &Lua, name: String| {
                 let value = {
                     let guard = flag_slot
                         .lock()
@@ -2282,12 +2289,13 @@ fn install_pillar_api(
                     guard.get_flag.as_ref().and_then(|get_flag| get_flag(&name))
                 };
                 match value {
-                    Some(value) => lua_get_flag
+                    Some(value) => calling
                         .to_value(&value)
                         .map_err(luaur_rt::Error::external),
                     None => Ok(Value::Nil),
                 }
-            }),
+            })
+            .expect("build pillar.get_flag"),
         )
         .expect("set pillar.get_flag");
 
@@ -2516,16 +2524,16 @@ fn install_fs_module(lua: &Lua, module: &luaur_rt::Table, host_api: &Arc<Mutex<H
 
     // pillar.fs.read(path) -> string? (nil when the file is missing)
     let read_api = Arc::clone(host_api);
-    let read_lua = lua.clone();
     fs.set(
         "read",
-        Function::wrap(move |path: String| {
+        lua.create_function(move |calling: &Lua, path: String| {
             let result = call(&read_api, "read", &path, None).map_err(luaur_rt::Error::external)?;
             match result {
                 Some(serde_json::Value::Null) | None => Ok(Value::Nil),
-                Some(value) => read_lua.to_value(&value).map_err(luaur_rt::Error::external),
+                Some(value) => calling.to_value(&value).map_err(luaur_rt::Error::external),
             }
-        }),
+        })
+        .expect("build pillar.fs.read"),
     )
     .expect("set pillar.fs.read");
 
@@ -2542,29 +2550,29 @@ fn install_fs_module(lua: &Lua, module: &luaur_rt::Table, host_api: &Arc<Mutex<H
 
     // pillar.fs.list(path) -> { string } (sorted names)
     let list_api = Arc::clone(host_api);
-    let list_lua = lua.clone();
     fs.set(
         "list",
-        Function::wrap(move |path: String| {
+        lua.create_function(move |calling: &Lua, path: String| {
             let result = call(&list_api, "list", &path, None).map_err(luaur_rt::Error::external)?;
             let value = result.unwrap_or_else(|| serde_json::json!([]));
-            list_lua.to_value(&value).map_err(luaur_rt::Error::external)
-        }),
+            calling.to_value(&value).map_err(luaur_rt::Error::external)
+        })
+        .expect("build pillar.fs.list"),
     )
     .expect("set pillar.fs.list");
 
     // pillar.fs.stat(path) -> { type, size, modified_ms }? (nil when missing)
     let stat_api = Arc::clone(host_api);
-    let stat_lua = lua.clone();
     fs.set(
         "stat",
-        Function::wrap(move |path: String| {
+        lua.create_function(move |calling: &Lua, path: String| {
             let result = call(&stat_api, "stat", &path, None).map_err(luaur_rt::Error::external)?;
             match result {
                 Some(serde_json::Value::Null) | None => Ok(Value::Nil),
-                Some(value) => stat_lua.to_value(&value).map_err(luaur_rt::Error::external),
+                Some(value) => calling.to_value(&value).map_err(luaur_rt::Error::external),
             }
-        }),
+        })
+        .expect("build pillar.fs.stat"),
     )
     .expect("set pillar.fs.stat");
 
@@ -2595,72 +2603,70 @@ fn install_schema_module(lua: &Lua, module: &luaur_rt::Table) {
 
     // The scalar builders only attach `type` to the caller's options.
     for type_name in ["string", "number", "boolean"] {
-        let lua_builder = lua.clone();
         schema
             .set(
                 type_name,
-                Function::wrap(move |options: Option<Value>| {
-                    let mut json = options_to_json(&lua_builder, options)?;
+                lua.create_function(move |calling: &Lua, options: Option<Value>| {
+                    let mut json = options_to_json(calling, options)?;
                     if let Some(object) = json.as_object_mut() {
                         object.insert(
                             "type".to_string(),
                             serde_json::Value::String(type_name.to_string()),
                         );
                     }
-                    lua_builder
-                        .to_value(&json)
-                        .map_err(luaur_rt::Error::external)
-                }),
+                    calling.to_value(&json).map_err(luaur_rt::Error::external)
+                })
+                .expect("build pillar.schema scalar"),
             )
             .expect("set pillar.schema scalar");
     }
 
     // pillar.schema.enum({...}) → { type = "string", enum = {...} }
-    let lua_enum = lua.clone();
     schema
         .set(
             "enum",
-            Function::wrap(move |values: Value| {
-                let values = lua_enum.from_value::<serde_json::Value>(values)?;
+            lua.create_function(move |calling: &Lua, values: Value| {
+                let values = calling.from_value::<serde_json::Value>(values)?;
                 let json = serde_json::json!({ "type": "string", "enum": values });
-                lua_enum.to_value(&json).map_err(luaur_rt::Error::external)
-            }),
+                calling.to_value(&json).map_err(luaur_rt::Error::external)
+            })
+            .expect("build pillar.schema.enum"),
         )
         .expect("set pillar.schema.enum");
 
     // pillar.schema.array(item) → { type = "array", items = item }
-    let lua_array = lua.clone();
     schema
         .set(
             "array",
-            Function::wrap(move |item: Value| {
-                let item = lua_array.from_value::<serde_json::Value>(item)?;
+            lua.create_function(move |calling: &Lua, item: Value| {
+                let item = calling.from_value::<serde_json::Value>(item)?;
                 let json = serde_json::json!({ "type": "array", "items": item });
-                lua_array.to_value(&json).map_err(luaur_rt::Error::external)
-            }),
+                calling.to_value(&json).map_err(luaur_rt::Error::external)
+            })
+            .expect("build pillar.schema.array"),
         )
         .expect("set pillar.schema.array");
 
     // pillar.schema.object(properties, opts?) →
     // { type = "object", properties = ..., ...opts }
-    let lua_object = lua.clone();
     schema
         .set(
             "object",
-            Function::wrap(move |properties: Value, options: Option<Value>| {
-                let properties = lua_object.from_value::<serde_json::Value>(properties)?;
-                let mut json = options_to_json(&lua_object, options)?;
-                if let Some(object) = json.as_object_mut() {
-                    object.insert(
-                        "type".to_string(),
-                        serde_json::Value::String("object".to_string()),
-                    );
-                    object.insert("properties".to_string(), properties);
-                }
-                lua_object
-                    .to_value(&json)
-                    .map_err(luaur_rt::Error::external)
-            }),
+            lua.create_function(
+                move |calling: &Lua, (properties, options): (Value, Option<Value>)| {
+                    let properties = calling.from_value::<serde_json::Value>(properties)?;
+                    let mut json = options_to_json(calling, options)?;
+                    if let Some(object) = json.as_object_mut() {
+                        object.insert(
+                            "type".to_string(),
+                            serde_json::Value::String("object".to_string()),
+                        );
+                        object.insert("properties".to_string(), properties);
+                    }
+                    calling.to_value(&json).map_err(luaur_rt::Error::external)
+                },
+            )
+            .expect("build pillar.schema.object"),
         )
         .expect("set pillar.schema.object");
 

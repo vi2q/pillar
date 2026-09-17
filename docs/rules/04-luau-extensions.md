@@ -228,7 +228,7 @@ Return directions follow the same table. Handler return values that pi types as 
 
 制約: **yield は coroutine の中でしか起きない**ため、tool `execute` / event handler を main state ではなく `Thread` で走らせる必要がある（現状は main state で直接 call している）。VM 予算は resume をまたいで残り step を持ち越す。
 
-**host 関数を coroutine で呼ぶときの必須条件**: 値を組み立てる host 関数は **呼び出し元の state** で作らなければならない。`Function::wrap` の closure は state を受け取れず captured した `Lua`（main state）を使うため、coroutine 内では別スタックに push され **VM が引数を返してしまう**（probe: `crates/pillar-extensions/tests/vm_quirk_probe.rs`）。`Lua::create_function` は closure に呼び出し元の `&Lua` を渡すので coroutine でも正しく返る。tool を coroutine で走らせる前に、値を組み立てる host 関数を `create_function` へ移す（値を作らない関数はそのまま）。`spawn_blocking` だけで VM の永久ループを強制停止できるとはみなさない（interrupt hook が実際の停止点）。
+**host 関数を coroutine で呼ぶときの必須条件**: 値を組み立てる host 関数は **呼び出し元の state** で作らなければならない。`Function::wrap` の closure は state を受け取れず captured した `Lua`（main state）を使うため、coroutine 内では別スタックに push され **VM が引数を返してしまう**（probe: `crates/pillar-extensions/tests/vm_quirk_probe.rs`）。`Lua::create_function` は closure に呼び出し元の `&Lua` を渡すので coroutine でも正しく返る。値を組み立てる host 関数は `create_function` へ移設済み（`pillar.exec` の同期版 / `pillar.fs.read|list|stat` / `sessionManager.getEntries` / `ctx.ui.confirm|select|input|editor` / `custom.next` / `pillar.get_flag` / `get_commands|get_active_tools|get_all_tools` / `pillar.schema.*`）。値を作らない関数（`signal.aborted()` など）は `Function::wrap` のままで問題ない。`spawn_blocking` だけで VM の永久ループを強制停止できるとはみなさない（interrupt hook が実際の停止点）。
 
 ## Session persistence & custom entries
 
