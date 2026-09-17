@@ -141,7 +141,7 @@ Cargo featureはビルド内容の選択であり、セキュリティ境界で�
 
 1. 実行核＋in-memory状態＋fake model＋fake toolで、TUI/Luau/OS環境なしに一turnとtool往復が動く。
 2. 同じ核をnative hostとazparam用Wasm hostで駆動できる。compiledだけでなくstreaming・cancel・保存／復帰・shutdownまで実行する。
-   進捗: **前提のみ達成＋ループのホスト駆動化**。LMPC最小（`pillar-ai`＋`pillar-agent`）とLMPC＋Luau（＋`pillar-extensions`）は`wasm32-unknown-unknown`でコンパイルできる（`scripts/check.sh`のゲート）。ループの背景bodyはホスト注入のspawner（`pillar-agent/src/spawn.rs`、`AgentLoopConfig::spawn`）で駆動でき、リアクタ無しのホストでも動く。実行往復は未検証で、残る阻害要因はTASKSに列挙（harnessのOS境界分離、拡張の読み込みをhost供給へ、codex providerの`tokio::net`、`tokio::time`依存）。
+   進捗: **前提のみ達成＋ループのホスト駆動化**。埋め込みhostが直接駆動するcore（loop/state/stream型）はtimer・socket・生spawnを持たない（`dependency_profiles::the_host_driven_core_is_free_of_timers_sockets_and_raw_spawning`が機械検査）。LMPC最小（`pillar-ai`＋`pillar-agent`）とLMPC＋Luau（＋`pillar-extensions`）は`wasm32-unknown-unknown`でコンパイルできる（`scripts/check.sh`のゲート）。ループの背景bodyはホスト注入のspawner（`pillar-agent/src/spawn.rs`、`AgentLoopConfig::spawn`）で駆動でき、リアクタ無しのホストでも動く。実行往復は未検証で、残る阻害要因はTASKSに列挙（harnessのOS境界分離、拡張の読み込みをhost供給へ、codex providerの`tokio::net`、`tokio::time`依存）。
 3. Luau有／無が独立してビルド・動作する。有の場合もTUIを要求せず、実拡張からhost toolを呼べる。
    進捗: ビルド軸と起動は満たした（`scripts/check.sh`が`--no-default-features`のビルドとsmokeを実行、`dependency_profiles.rs::the_luau_feature_gates_the_vm_dependency`がfeature解決後のgraphを検査）。「TUIを要求せず実拡張からhost toolを呼べる」はVM単体＋契約で満たし、常時ゲート（headlessでの実拡張tool呼び出し）は未着手。
 4. native検索backendをhost/VFS backendへ替えても、採用した検索契約が同じ。NPC構成からは検索自体を外せる。

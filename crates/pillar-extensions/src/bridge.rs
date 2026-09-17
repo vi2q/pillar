@@ -15,13 +15,13 @@ use std::sync::{Arc, Mutex};
 use pillar_agent::types::{AgentTool, AgentToolResult, ToolExecuteError, ToolExecuteFn};
 use pillar_ai::types::{Content, Tool};
 use pillar_extensions_contract::{
-    ExtensionEventPayload, ExtensionFlag, ExtensionHandler, ExtensionShortcut, HostExtension,
-    RegisteredCommand,
-};
-use pillar_extensions_contract::{
     CustomEntryPayload, CustomMessagePayload, EntryRenderOptions, EntryRenderer,
     MarkdownTransformContext, MarkdownTransformer, MessageRenderOptions, MessageRenderer,
     ThemeStyle,
+};
+use pillar_extensions_contract::{
+    ExtensionEventPayload, ExtensionFlag, ExtensionHandler, ExtensionShortcut, HostExtension,
+    RegisteredCommand,
 };
 
 use crate::runtime::{ExtensionLoadError, ExtensionRuntime};
@@ -478,12 +478,10 @@ pub fn tool_result_from_json(json: serde_json::Value) -> AgentToolResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pillar_extensions_contract::{
-        CustomEntryPayload, CustomMessagePayload, ThemeStyleFn,
-    };
     use crate::runtime::ExtensionRuntime;
     use luaur_rt::LuaSerdeExt;
     use pillar_extensions_contract::ExtensionRunner;
+    use pillar_extensions_contract::{CustomEntryPayload, CustomMessagePayload, ThemeStyleFn};
 
     fn shared_runtime() -> Arc<Mutex<ExtensionRuntime>> {
         Arc::new(Mutex::new(ExtensionRuntime::new()))
@@ -965,8 +963,7 @@ mod tests {
             Some("// hello".to_string())
         );
         let assistant = MarkdownTransformContext {
-            message_type:
-                pillar_extensions_contract::MarkdownMessageType::Assistant,
+            message_type: pillar_extensions_contract::MarkdownMessageType::Assistant,
             ..context.clone()
         };
         assert_eq!(transformers[0]("hello", &assistant), None);

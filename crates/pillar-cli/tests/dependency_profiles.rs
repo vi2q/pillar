@@ -481,3 +481,63 @@ fn the_embedding_core_keeps_os_capabilities_behind_features() {
         "the LMPC core reaches an OS capability outside the gated modules: {offenders:?}"
     );
 }
+
+/// §5-2: the files an embedding host drives directly — the loop, its state, the
+/// stream plumbing, and the shared message types — must stay free of timers,
+/// sockets, and raw task spawning. A Wasm host has no reactor, no timer driver,
+/// and no sockets (docs/DEVELOPMENT-STRATEGY.md §5-2; TASKS records the
+/// provider-side timers that still need the same treatment).
+///
+/// `tokio::spawn` is allowed in exactly one place, [`pillar_agent::spawn`],
+/// which is the native default a host replaces.
+#[test]
+fn the_host_driven_core_is_free_of_timers_sockets_and_raw_spawning() {
+    let root = repo_root();
+    let core_files = [
+        "crates/pillar-agent/src/agent.rs",
+        "crates/pillar-agent/src/agent_loop.rs",
+        "crates/pillar-agent/src/abort.rs",
+        "crates/pillar-agent/src/types.rs",
+        "crates/pillar-agent/src/stream_fn.rs",
+        "crates/pillar-agent/src/spawn.rs",
+        "crates/pillar-ai/src/types.rs",
+        "crates/pillar-ai/src/event_stream.rs",
+    ];
+    // The agent's `AbortSignal` is the timer-free one the loop uses;
+    // `pillar-ai`'s `AbortSignal::timeout` (a provider/auth helper built on
+    // `tokio::time` + `tokio::spawn`) lives in another file and is listed in
+    // TASKS as the same kind of work.
+    let forbidden = [
+        "tokio::time",
+        "tokio::net",
+        "Instant::now",
+        "std::process",
+        "std::fs",
+        "std::net",
+    ];
+    let mut offenders: Vec<String> = Vec::new();
+    for file in core_files {
+        let source = std::fs::read_to_string(root.join(file)).expect("read a core file");
+        let production = strip_test_blocks(&source);
+        for (number, line) in production.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") || trimmed.starts_with('*') || trimmed.starts_with("/*") {
+                // Comments name the forbidden calls when they explain the
+                // boundary; only code counts.
+                continue;
+            }
+            for needle in forbidden {
+                if line.contains(needle) {
+                    offenders.push(format!("{file}:{}: {needle}", number + 1));
+                }
+            }
+            if line.contains("tokio::spawn") && !file.ends_with("spawn.rs") {
+                offenders.push(format!("{file}:{}: tokio::spawn (use crate::spawn)", number + 1));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "the host-driven core gained a runtime dependency: {offenders:?}"
+    );
+}
