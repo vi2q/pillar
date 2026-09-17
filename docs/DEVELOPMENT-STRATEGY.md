@@ -129,7 +129,11 @@ composition roots
 
 Cargo featureはビルド内容の選択であり、セキュリティ境界ではない。独立profileの依存解決を検査し、workspace全体のfeature unionやリンク時dead-code除去だけで「外せた」と判定しない。
 
-現状の実装: 開発CLIのLuau軸だけが実featureになっている（`pillar-cli`の`luau` feature、既定on。`--no-default-features`でVM・`luaur`抜きにビルド・起動できる）。LMPC最小／LMPC＋Luauはまだcrate集合として定義し、`crates/pillar-cli/tests/dependency_profiles.rs`が解決済みgraphを検査している（crate分割・feature化は未着手）。terminal層を外す軸（azparam/LMPC）はCLIでは未実装。
+現状の実装: 実行核のOS能力とLuauがfeatureになっている。
+- `pillar-agent`: `harness-tools`（coding-agent向けfile/shell toolとstd/tokio実行環境）、`session-files`（JSONL file backend）、`search`（native検索scanner）が既定on。`--no-default-features`でLMPC最小の形になり、nativeでもwasm32でもコンパイルできる（`scripts/check.sh`のゲート）。
+- `pillar-cli`: `luau` feature（既定on）でVM・`luaur`を外せる。
+- ゲート: `crates/pillar-cli/tests/dependency_profiles.rs`が解決済みgraph（profile別）と、coreのsources（`std::process` / `std::fs` / `std::net`がgated moduleの外に無いこと）を検査する。
+未着手: terminal層を外す軸（azparam/LMPC向けのUI adapter分離）、LMPC最小の実際のartifact（Wasm package/最小ハーネス）、feature unionに依存しない独立解決の検証。
 
 ## 5. 疎結合の合格条件
 
@@ -143,6 +147,7 @@ Cargo featureはビルド内容の選択であり、セキュリティ境界で�
 4. native検索backendをhost/VFS backendへ替えても、採用した検索契約が同じ。NPC構成からは検索自体を外せる。
 5. 通信・ツール・UI・保存の遅延応答にsession/generation/request識別があり、取消・切替後に別sessionを変更しない。
 6. import/exportとtransitive dependencyを機械検査し、最小構成へterminal・process・暗黙FS・package取得が混入したら落とす。
+   進捗: dependency graph（profile別）と、coreのsourcesに対する`std::process`/`std::fs`/`std::net`の検査を実装（`dependency_profiles.rs`）。terminal層はcoding-agent/tuiの依存として残っており、外す軸は未実装。
 7. native/Wasm間の同一入力・記録済みmodel/tool結果に対する意味的event traceが一致する。時刻等は注入し、LLM自身の決定性は仮定しない。
 
 Wasm境界はversion付き要求／結果、opaque handle、サイズ上限、所有権・解放、cancel/deadline、再入禁止または規則を定義する。Rustの参照やArcをABIにしない。

@@ -1,6 +1,8 @@
 //! Port of packages/agent/test/harness/skills.test.ts and
 //! resource-formatting.test.ts (pi v0.84.3).
 
+#![cfg(feature = "harness-tools")]
+
 use pillar_agent::harness::env::StdFsExecutionEnv;
 use pillar_agent::harness::skills::{format_skill_invocation, load_skills, load_sourced_skills};
 use pillar_agent::harness::types::{FileSystem, Skill};

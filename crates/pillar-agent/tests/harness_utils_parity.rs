@@ -1,6 +1,8 @@
 //! Port of packages/agent/test/harness/truncate.test.ts and the
 //! shell-output case from nodejs-env.test.ts (pi v0.84.3).
 
+#![cfg(feature = "harness-tools")]
+
 use pillar_agent::harness::env::StdFsExecutionEnv;
 use pillar_agent::harness::types::FileSystem;
 use pillar_agent::harness::utils::shell_output::{ShellCaptureOptions, execute_shell_with_capture};

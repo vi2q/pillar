@@ -9,6 +9,8 @@
 //! storage-shaped methods, so the "binds lane views" case asserts the same
 //! per-lane leaf/branch behavior through lane-scoped reads.
 
+#![cfg(feature = "session-files")]
+
 use pillar_agent::harness::env::StdFsExecutionEnv;
 use pillar_agent::harness::session::jsonl::repo::JsonlSessionRepo;
 use pillar_agent::harness::session::jsonl::types::{

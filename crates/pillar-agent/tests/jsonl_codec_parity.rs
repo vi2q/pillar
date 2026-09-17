@@ -1,6 +1,8 @@
 //! Port of packages/agent/test/harness/session/jsonl-codec.test.ts
 //! (pi v0.84.3) — JSONL v4 header/mutation encode/decode parity.
 
+#![cfg(feature = "session-files")]
+
 use pillar_agent::harness::session::jsonl::codec::JsonlDecodeKind;
 use pillar_agent::harness::session::jsonl::codec::{
     encode_header, encode_mutation, parse_header, parse_mutation,

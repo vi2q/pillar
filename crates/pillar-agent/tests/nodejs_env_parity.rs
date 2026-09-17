@@ -6,6 +6,8 @@
 //! stdio semantics and is skipped: the port kills the process group, so a
 //! detached descendant holding the pipe does not block completion.
 
+#![cfg(feature = "harness-tools")]
+
 use std::sync::Arc;
 
 use pillar_agent::AbortSignal;

@@ -2,6 +2,8 @@
 //! (pi v0.84.3) — file-backed session storage round trips, record recovery,
 //! cross-lane sequencing, and payload validation.
 
+#![cfg(feature = "session-files")]
+
 use pillar_agent::harness::env::StdFsExecutionEnv;
 use pillar_agent::harness::session::jsonl::repo::JsonlSessionRepo;
 use pillar_agent::harness::session::jsonl::types::{

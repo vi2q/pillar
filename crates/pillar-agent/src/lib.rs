@@ -13,6 +13,7 @@ pub mod agent;
 pub mod agent_loop;
 pub mod harness;
 pub mod proxy;
+#[cfg(feature = "search")]
 pub mod search;
 pub mod spawn;
 pub mod stream_fn;
@@ -28,6 +29,7 @@ pub use harness::messages::{
     COMPACTION_SUMMARY_SUFFIX, bash_execution_to_text, convert_to_llm as harness_convert_to_llm,
     create_branch_summary_message, create_compaction_summary_message, create_custom_message,
 };
+#[cfg(feature = "search")]
 pub use search::{
     ScanningReadableSource, ScanningSessionSearch, ScanningSessionSearchHit,
     ScanningSessionSearchOptions, SearchError, SessionSearch, SessionSearchHit,

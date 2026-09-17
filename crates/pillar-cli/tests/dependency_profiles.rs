@@ -329,3 +329,149 @@ fn the_luau_feature_gates_the_vm_dependency() {
         "the default build must contain the Luau runtime (the gate above would be vacuous)"
     );
 }
+
+/// Remove `#[cfg(test)]`-gated blocks: test code may read the disk, the
+/// production profile may not.
+fn strip_test_blocks(source: &str) -> String {
+    let mut out = String::with_capacity(source.len());
+    let bytes = source.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if source[index..].starts_with("#[cfg(test)]") {
+            // Skip the attribute plus the item it guards (brace matched).
+            let mut cursor = index + "#[cfg(test)]".len();
+            while cursor < bytes.len() && bytes[cursor] != b'{' {
+                if bytes[cursor] == b';' {
+                    break;
+                }
+                cursor += 1;
+            }
+            if cursor < bytes.len() && bytes[cursor] == b';' {
+                index = cursor + 1;
+                continue;
+            }
+            let mut depth = 0usize;
+            while cursor < bytes.len() {
+                match bytes[cursor] {
+                    b'{' => depth += 1,
+                    b'}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            cursor += 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                cursor += 1;
+            }
+            index = cursor;
+            continue;
+        }
+        let ch = source[index..].chars().next().expect("a character");
+        out.push(ch);
+        index += ch.len_utf8();
+    }
+    out
+}
+
+fn rust_sources(dir: &std::path::Path, into: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            rust_sources(&path, into);
+        } else if path.extension().is_some_and(|extension| extension == "rs") {
+            into.push(path);
+        }
+    }
+}
+
+/// §5-6: the embedding core must not reach the process, the filesystem, or the
+/// network — not even through `std`, which a dependency graph cannot show. The
+/// core's OS capabilities are the coding agent's tools and execution
+/// environment, the durable JSONL file backend, and the native search scanner:
+/// all of them are behind features (`harness-tools` / `session-files` /
+/// `search`) so `--no-default-features` drops them. This gate walks the
+/// profile's production sources, requires those modules to stay gated, and
+/// fails on any other `std::process` / `std::fs` / `std::net` use. The one
+/// documented exception is `pillar-ai`'s uuid entropy read, which falls back to
+/// a time-seeded source when `/dev/urandom` is unavailable.
+#[test]
+fn the_embedding_core_keeps_os_capabilities_behind_features() {
+    let root = repo_root();
+    // The gate reads the *gated* declarations: an allowlisted path that is not
+    // actually behind a feature would silently widen the profile.
+    let gated_declarations = [
+        (
+            "crates/pillar-agent/src/harness/mod.rs",
+            "feature = \"harness-tools\"",
+        ),
+        (
+            "crates/pillar-agent/src/harness/session/jsonl/mod.rs",
+            "feature = \"session-files\"",
+        ),
+        (
+            "crates/pillar-agent/src/lib.rs",
+            "feature = \"search\"",
+        ),
+    ];
+    for (path, needle) in gated_declarations {
+        let source = std::fs::read_to_string(root.join(path)).expect("read the module declaration");
+        assert!(
+            source.contains(needle),
+            "{path} must gate its OS-bound modules with {needle}"
+        );
+    }
+
+    // Paths allowed to own an OS capability, each matching the declarations
+    // above (plus the entropy exception).
+    let allowed = [
+        "crates/pillar-agent/src/harness/env/",
+        "crates/pillar-agent/src/harness/tools/",
+        "crates/pillar-agent/src/harness/session/jsonl/storage.rs",
+        "crates/pillar-agent/src/harness/session/jsonl/repo.rs",
+        "crates/pillar-agent/src/search/",
+        "crates/pillar-ai/src/bin/",
+        "crates/pillar-ai/src/uuid.rs",
+    ];
+
+    let graph = lock_graph();
+    let profile = closure(&graph, &LMPC_MINIMAL);
+    let mut offenders: Vec<String> = Vec::new();
+    for name in profile.iter().filter(|name| name.starts_with("pillar-")) {
+        let crate_dir = root.join("crates").join(name).join("src");
+        if !crate_dir.is_dir() {
+            continue;
+        }
+        let mut files = Vec::new();
+        rust_sources(&crate_dir, &mut files);
+        for file in files {
+            let relative = file
+                .strip_prefix(&root)
+                .expect("a path under the repo root")
+                .to_string_lossy()
+                .replace('\\', "/");
+            if allowed
+                .iter()
+                .any(|prefix| relative.starts_with(prefix))
+            {
+                continue;
+            }
+            let source = std::fs::read_to_string(&file).expect("read a source file");
+            let production = strip_test_blocks(&source);
+            for needle in ["std::process", "std::fs::", "std::net::"] {
+                if production.contains(needle) {
+                    offenders.push(format!("{relative}: {needle}"));
+                }
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "the LMPC core reaches an OS capability outside the gated modules: {offenders:?}"
+    );
+}

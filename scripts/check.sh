@@ -71,6 +71,13 @@ if [ "$quick" -eq 0 ]; then
     if rustup target list --installed 2>/dev/null | grep -qx "wasm32-unknown-unknown"; then
         say "wasm32-unknown-unknown (LMPC minimal + Luau)"
         cargo check --locked -p pillar-agent -p pillar-extensions --target wasm32-unknown-unknown
+        # The LMPC minimum is the core without its OS-bound features (the
+        # coding agent's tools / execution environment, the file session
+        # backend, the native search scanner): it must still compile, natively
+        # and for the embedding target.
+        say "LMPC minimal without the OS-bound features"
+        cargo check --locked -p pillar-agent --no-default-features
+        cargo check --locked -p pillar-agent --no-default-features --target wasm32-unknown-unknown
     else
         say "wasm32-unknown-unknown (skipped: run 'rustup target add wasm32-unknown-unknown')"
     fi

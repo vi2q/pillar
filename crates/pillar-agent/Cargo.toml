@@ -6,6 +6,17 @@ license.workspace = true
 rust-version.workspace = true
 description = "Agent runtime with tool calling and state management. Port of pi packages/agent (pi v0.84.3)."
 
+[features]
+default = ["harness-tools", "search", "session-files"]
+# The OS-bound coding-agent surface: the harness's file/shell tools and the
+# native session-search scanner. An embedding profile with a host-provided
+# tool set and no filesystem turns them off (`--no-default-features`), which is
+# what the LMPC minimum does (docs/DEVELOPMENT-STRATEGY.md §4/§5-6).
+harness-tools = []
+search = []
+# The durable JSONL file-backed session backend.
+session-files = []
+
 [dependencies]
 async-trait = "0.1.89"
 futures = "0.3.31"

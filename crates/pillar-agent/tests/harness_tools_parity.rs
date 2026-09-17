@@ -8,6 +8,8 @@
 //! shell_output.rs), so assertions cover the settled output and the
 //! persisted spill file.
 
+#![cfg(feature = "harness-tools")]
+
 use std::sync::{Arc, Mutex};
 
 use pillar_agent::AbortSignal;

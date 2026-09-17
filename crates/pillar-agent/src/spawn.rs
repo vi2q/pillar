@@ -26,7 +26,10 @@ pub type SpawnFn = Arc<dyn Fn(Spawned) + Send + Sync>;
 /// Without a spawner the platform default applies: `tokio::spawn` on native
 /// targets. On `wasm32` there is no reactor to spawn onto, so this panics with
 /// the actionable message instead of hanging the returned stream forever.
-pub fn spawn_background(spawner: Option<&SpawnFn>, body: impl Future<Output = ()> + Send + 'static) {
+pub fn spawn_background(
+    spawner: Option<&SpawnFn>,
+    body: impl Future<Output = ()> + Send + 'static,
+) {
     let body: Spawned = Box::pin(body);
     if let Some(spawner) = spawner {
         spawner(body);

@@ -9,6 +9,8 @@
 //! closure resolves the metadata list on first poll and yields the loaded
 //! readables from it.
 
+#![cfg(all(feature = "search", feature = "session-files"))]
+
 use std::sync::Arc;
 
 use futures::{FutureExt, StreamExt};
