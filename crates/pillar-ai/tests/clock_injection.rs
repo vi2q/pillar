@@ -26,11 +26,9 @@ fn the_host_timer_drives_sleep_and_timeout() {
     );
 
     // A future that finishes first wins, and the host timer is still requested.
-    let value = futures::executor::block_on(pillar_ai::timeout(
-        Duration::from_secs(5),
-        async { 7u8 },
-    ))
-    .expect("the inner future wins");
+    let value =
+        futures::executor::block_on(pillar_ai::timeout(Duration::from_secs(5), async { 7u8 }))
+            .expect("the inner future wins");
     assert_eq!(value, 7);
     assert_eq!(calls.lock().unwrap().len(), 2);
 
