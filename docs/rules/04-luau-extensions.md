@@ -228,7 +228,7 @@ Return directions follow the same table. Handler return values that pi types as 
 
 制約: **yield は coroutine の中でしか起きない**ため、tool `execute` / event handler を main state ではなく `Thread` で走らせる必要がある（現状は main state で直接 call している）。VM 予算は resume をまたいで残り step を持ち越す。
 
-**いま止まっている理由（luaur 0.1.8）**: coroutine の中で呼ばれた Rust の host 関数の戻り値が Lua に届かない（第1引数が返る。`crates/pillar-extensions/tests/vm_quirk_probe.rs` に最小再現、`bool` を返す関数だけは届く）。tool を coroutine で走らせると `ctx.ui.*` / `pillar.fs.*` が壊れるため、実装は `wip/luau-async-state-machine` ブランチに保留し、main は tool を main state で実行する（待つ呼出は inline、停止は VM 予算・abort・`pillar.exec` の kill・待ちのスライスで有界）。`spawn_blocking` だけで VM の永久ループを強制停止できるとはみなさない（interrupt hook が実際の停止点）。
+**host 関数を coroutine で呼ぶときの必須条件**: 値を組み立てる host 関数は **呼び出し元の state** で作らなければならない。`Function::wrap` の closure は state を受け取れず captured した `Lua`（main state）を使うため、coroutine 内では別スタックに push され **VM が引数を返してしまう**（probe: `crates/pillar-extensions/tests/vm_quirk_probe.rs`）。`Lua::create_function` は closure に呼び出し元の `&Lua` を渡すので coroutine でも正しく返る。tool を coroutine で走らせる前に、値を組み立てる host 関数を `create_function` へ移す（値を作らない関数はそのまま）。`spawn_blocking` だけで VM の永久ループを強制停止できるとはみなさない（interrupt hook が実際の停止点）。
 
 ## Session persistence & custom entries
 
