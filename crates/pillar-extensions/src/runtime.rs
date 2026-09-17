@@ -500,6 +500,154 @@ struct CustomSession {
     closed: Arc<std::sync::atomic::AtomicBool>,
 }
 
+/// How much Lua code one operation (a load, an event dispatch, a tool call) may
+/// run before the VM stops it.
+///
+/// A pure-Lua loop never calls back into the host, so neither a host timer nor
+/// the tool's abort signal can stop it from the outside — the VM's interrupt
+/// callback is the only place that can (the policy review's remaining unbounded
+/// wait: "a Lua loop that occupies the VM"). The guard is per operation and
+/// bounds both the work (safepoints) and, optionally, the wall clock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VmBudget {
+    /// Safepoints (loop back-edges, calls/returns) one operation may pass.
+    pub steps: u64,
+    /// Wall-clock limit for one operation, when the host wants one.
+    pub deadline_ms: Option<u64>,
+}
+
+impl VmBudget {
+    /// The default: finite, but far beyond what a real extension needs.
+    pub const DEFAULT_STEPS: u64 = 50_000_000;
+    /// A step budget (no wall-clock limit).
+    pub fn steps(steps: u64) -> Self {
+        Self {
+            steps,
+            deadline_ms: None,
+        }
+    }
+    /// No guard at all (a host that trusts its extensions).
+    pub fn unlimited() -> Self {
+        Self {
+            steps: u64::MAX,
+            deadline_ms: None,
+        }
+    }
+}
+
+impl Default for VmBudget {
+    fn default() -> Self {
+        Self {
+            steps: Self::DEFAULT_STEPS,
+            deadline_ms: None,
+        }
+    }
+}
+
+/// Safepoints between two abort / deadline checks (the step counter is an
+/// atomic, the boundary needs a lock, so it is read only this often).
+const VM_SLOW_CHECK_EVERY: u64 = 4096;
+
+/// The live guard [`install_vm_limit`] consults.
+struct VmLimit {
+    remaining: std::sync::atomic::AtomicU64,
+    countdown: std::sync::atomic::AtomicU64,
+    boundary: Mutex<VmBoundary>,
+}
+
+/// The current operation's boundary: what stops it besides the step count.
+#[derive(Default)]
+struct VmBoundary {
+    /// The running tool call's abort signal, if any.
+    signal: Option<pillar_agent::abort::AbortSignal>,
+    /// When the operation runs out of wall clock.
+    deadline: Option<std::time::Instant>,
+    /// Nested operations keep the outermost boundary.
+    depth: usize,
+}
+
+impl VmLimit {
+    fn new(budget: VmBudget) -> Self {
+        Self {
+            remaining: std::sync::atomic::AtomicU64::new(budget.steps),
+            countdown: std::sync::atomic::AtomicU64::new(VM_SLOW_CHECK_EVERY),
+            boundary: Mutex::new(VmBoundary::default()),
+        }
+    }
+
+    /// Start an operation: only the outermost one sets the boundary.
+    fn begin(&self, budget: VmBudget, signal: Option<pillar_agent::abort::AbortSignal>) {
+        let mut boundary = self
+            .boundary
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if boundary.depth == 0 {
+            boundary.signal = signal;
+            boundary.deadline = budget
+                .deadline_ms
+                .map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms));
+            self.remaining
+                .store(budget.steps, std::sync::atomic::Ordering::Relaxed);
+            self.countdown
+                .store(VM_SLOW_CHECK_EVERY, std::sync::atomic::Ordering::Relaxed);
+        }
+        boundary.depth += 1;
+    }
+
+    fn end(&self) {
+        let mut boundary = self
+            .boundary
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        boundary.depth = boundary.depth.saturating_sub(1);
+        if boundary.depth == 0 {
+            boundary.signal = None;
+            boundary.deadline = None;
+        }
+    }
+}
+
+/// Install the budget as a VM interrupt. Returns `Err` from the callback to
+/// raise a Lua error, which unwinds the extension's frame.
+fn install_vm_limit(lua: &Lua, limit: Arc<VmLimit>) {
+    use std::sync::atomic::Ordering;
+    lua.set_interrupt(move |_| {
+        // Fast path: one atomic per safepoint.
+        let remaining = limit.remaining.load(Ordering::Relaxed);
+        if remaining == 0 {
+            return Err(luaur_rt::Error::runtime(
+                "the extension's Lua code exceeded its VM step budget",
+            ));
+        }
+        limit.remaining.store(remaining - 1, Ordering::Relaxed);
+        if limit.countdown.fetch_sub(1, Ordering::Relaxed) == 1 {
+            limit.countdown.store(VM_SLOW_CHECK_EVERY, Ordering::Relaxed);
+            let boundary = limit
+                .boundary
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if boundary
+                .signal
+                .as_ref()
+                .is_some_and(|signal| signal.is_aborted())
+            {
+                return Err(luaur_rt::Error::runtime(
+                    "the extension's Lua code was aborted",
+                ));
+            }
+            if boundary
+                .deadline
+                .is_some_and(|deadline| std::time::Instant::now() >= deadline)
+            {
+                return Err(luaur_rt::Error::runtime(
+                    "the extension's Lua code exceeded its VM time budget",
+                ));
+            }
+        }
+        Ok(luaur_rt::VmState::Continue)
+    });
+}
+
 /// The process-wide extension runtime.
 pub struct ExtensionRuntime {
     lua: Lua,
@@ -515,6 +663,10 @@ pub struct ExtensionRuntime {
     /// call returns.
     live_signals: Arc<Mutex<std::collections::BTreeMap<u64, pillar_agent::abort::AbortSignal>>>,
     next_signal_id: Arc<std::sync::atomic::AtomicU64>,
+    /// The VM budget in effect (see [`VmBudget`]).
+    vm_budget: VmBudget,
+    /// The live guard the VM interrupt consults.
+    vm_limit: Arc<VmLimit>,
 }
 
 /// Result of dispatching one event to a handler (upstream the
@@ -546,6 +698,9 @@ impl ExtensionRuntime {
         let host_api = Arc::new(Mutex::new(HostApi::default()));
         let live_signals = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
         let next_signal_id = Arc::new(std::sync::atomic::AtomicU64::new(1));
+        let vm_budget = VmBudget::default();
+        let vm_limit = Arc::new(VmLimit::new(vm_budget));
+        install_vm_limit(&lua, Arc::clone(&vm_limit));
         install_pillar_api(&lua, &registry, &exec_host, &host_api, &live_signals);
         Self {
             lua,
@@ -554,7 +709,24 @@ impl ExtensionRuntime {
             host_api,
             live_signals,
             next_signal_id,
+            vm_budget,
+            vm_limit,
         }
+    }
+
+    /// Set the VM budget for later operations ([`VmBudget::unlimited`] turns the
+    /// guard off). A tool call, an event dispatch and an extension load each get
+    /// a fresh budget; a tool call also carries its abort signal into the guard,
+    /// so an abort stops a pure-Lua loop too.
+    pub fn set_vm_budget(&mut self, budget: VmBudget) {
+        self.vm_budget = budget;
+        self.vm_limit.begin(budget, None);
+        self.vm_limit.end();
+    }
+
+    /// The budget in effect.
+    pub fn vm_budget(&self) -> VmBudget {
+        self.vm_budget
     }
 
     /// Install the host callbacks the read-only API reads (upstream the
@@ -588,6 +760,19 @@ impl ExtensionRuntime {
     /// registration order (upstream the runner's emit loop): a
     /// `block = true` return stops the chain.
     pub fn dispatch(
+        &mut self,
+        event: &str,
+        payload: serde_json::Value,
+    ) -> Result<HandlerOutcome, ExtensionLoadError> {
+        // Handlers run Lua too, so they get a fresh budget (no abort signal:
+        // an event dispatch has no tool call behind it).
+        self.vm_limit.begin(self.vm_budget, None);
+        let outcome = self.dispatch_inner(event, payload);
+        self.vm_limit.end();
+        outcome
+    }
+
+    fn dispatch_inner(
         &mut self,
         event: &str,
         payload: serde_json::Value,
@@ -641,6 +826,18 @@ impl ExtensionRuntime {
     /// handler — dispatching the whole event from every bridge handler runs
     /// N handlers N times (docs/ARCHITECTURE-REVIEW-s05c0.md B).
     pub fn dispatch_handler(
+        &mut self,
+        event: &str,
+        handler_id: &str,
+        payload: serde_json::Value,
+    ) -> Result<HandlerOutcome, ExtensionLoadError> {
+        self.vm_limit.begin(self.vm_budget, None);
+        let outcome = self.dispatch_handler_inner(event, handler_id, payload);
+        self.vm_limit.end();
+        outcome
+    }
+
+    fn dispatch_handler_inner(
         &mut self,
         event: &str,
         handler_id: &str,
@@ -726,6 +923,22 @@ impl ExtensionRuntime {
         signal: Option<pillar_agent::abort::AbortSignal>,
         on_update: Option<pillar_agent::types::AgentToolUpdateCallback>,
     ) -> Result<serde_json::Value, String> {
+        // The call runs under the VM budget and its abort signal: a pure-Lua
+        // loop is stopped at a safepoint instead of occupying the VM.
+        self.vm_limit.begin(self.vm_budget, signal.clone());
+        let outcome = self.call_tool_inner(name, tool_call_id, params, signal, on_update);
+        self.vm_limit.end();
+        outcome
+    }
+
+    fn call_tool_inner(
+        &mut self,
+        name: &str,
+        tool_call_id: &str,
+        params: serde_json::Value,
+        signal: Option<pillar_agent::abort::AbortSignal>,
+        on_update: Option<pillar_agent::types::AgentToolUpdateCallback>,
+    ) -> Result<serde_json::Value, String> {
         let params_lua = self
             .lua
             .to_value(&params)
@@ -783,7 +996,7 @@ impl ExtensionRuntime {
         // Upstream always hands the tool an AbortSignal; a host that has none
         // gets a detached one, so `signal.aborted()` in the extension is always
         // callable (a nil there would fail the tool with a runtime error).
-        let signal = signal.unwrap_or_else(pillar_agent::abort::AbortSignal::new);
+        let signal = signal.unwrap_or_default();
         let id = self
             .next_signal_id
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -1326,10 +1539,13 @@ impl ExtensionRuntime {
         // The module chunk runs the extension's top-level code (the port
         // executes both it and the returned setup factory), so everything it
         // registers belongs to this file — and a chunk that fails is rolled
-        // back like a failed setup.
+        // back like a failed setup. The load runs under the VM budget too: an
+        // extension whose top-level code loops is stopped like a tool call.
+        self.vm_limit.begin(self.vm_budget, None);
         self.set_current_owner(Some(path.to_string()));
         let result = self.load_extension_inner(path, source);
         self.set_current_owner(None);
+        self.vm_limit.end();
         if result.is_err() {
             self.registry
                 .lock()

@@ -290,3 +290,17 @@ Extensions features intentionally NOT ported (with replacement):
 | Dynamic `import()` of other extension files | `require("@ext/<name>")` for files in the same discovery root |
 
 機能の完了は、宣言・実装・host配線・型チェック・成功／失敗／中断の検証が揃った能力ごとに判定する。upstream一覧から「それ以外は全て移植済み」と推定しない。
+
+## VM budget
+
+An extension's Lua runs under a budget (`ExtensionRuntime::set_vm_budget`, default
+`VmBudget::DEFAULT_STEPS`): the VM's interrupt callback fires at safepoints (loop
+back-edges, calls/returns) and stops the operation when the step budget is spent,
+when the host's wall-clock deadline passed, or when the running tool call's abort
+signal is set. Each tool call, event dispatch and extension load gets a fresh
+budget.
+
+Why it exists: a pure-Lua loop never calls back into the host, so no host timer
+or abort can stop it from the outside — without the guard a `while true do end`
+in an extension occupies the runtime's VM forever. A host that trusts its
+extensions can pass `VmBudget::unlimited()`.

@@ -19,7 +19,6 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-
 /// How often the wait loop checks the child and the abort / timeout state.
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 /// How long a SIGTERM gets before the child is killed outright.
