@@ -8,9 +8,15 @@ license.workspace = true
 # No dependency on pillar-coding-agent: the shared shapes live in the contract
 # crate, and the host joins the two (docs/DEVELOPMENT-STRATEGY.md §4). The
 # profile gate asserts this edge stays gone.
-pillar-agent = { path = "../pillar-agent" }
+# The VM takes the *contract* form of the runtime, not the coding agent's native
+# surface: the OS-bound features (harness tools, the provider catalog, the
+# file-backed session store, the native search scanner) stay off here, and the
+# development CLI turns them on at its own root. Otherwise "LMPC plus Luau"
+# silently re-enables every provider and the terminal-adjacent tooling (policy
+# review sb39f R9).
+pillar-agent = { path = "../pillar-agent", default-features = false }
 pillar-extensions-contract = { path = "../pillar-extensions-contract" }
-pillar-ai = { path = "../pillar-ai" }
+pillar-ai = { path = "../pillar-ai", default-features = false }
 luaur-rt = { version = "0.1.8", features = ["serde", "typecheck", "send"] }
 serde.workspace = true
 serde_json.workspace = true

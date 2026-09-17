@@ -7,6 +7,8 @@ rust-version.workspace = true
 description = "The extension contract shared by the Luau runtime and the coding agent (no TUI, no CLI)."
 
 [dependencies]
-pillar-agent = { path = "../pillar-agent" }
+# A leaf contract: it needs the runtime's shapes, not the coding agent's native
+# surface (see crates/pillar-extensions/Cargo.toml).
+pillar-agent = { path = "../pillar-agent", default-features = false }
 serde.workspace = true
 serde_json.workspace = true

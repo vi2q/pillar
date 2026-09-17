@@ -627,3 +627,62 @@ fn the_lmpc_minimum_has_no_provider_catalog() {
         "the default build must contain the provider catalog (otherwise this gate is vacuous)"
     );
 }
+
+/// §4/§5-6: "LMPC plus the Luau VM" is its own composition root, and it takes
+/// the runtime the *contract* way — the VM and the contract are a leaf pair that
+/// must not re-enable the coding agent's native surface (policy review sb39f R9).
+///
+/// Before this gate existed, `pillar-extensions` and
+/// `pillar-extensions-contract` depended on `pillar-agent` / `pillar-ai` with
+/// their default features, so adding the VM brought the whole provider catalog,
+/// the harness tools and the native search scanner back into the embedding
+/// profile: the minimal profile's own tree was clean, and the Luau profile only
+/// checked the terminal layer.
+#[test]
+fn the_luau_profile_takes_the_runtime_without_its_native_surface() {
+    let vm = tree_names("pillar-extensions", true);
+    let forbidden = [
+        "reqwest",
+        "tokio-tungstenite",
+        "zstd",
+        "hyper",
+        "globset",
+        "crossterm",
+        "fd-lock",
+        "portable-pty",
+    ];
+    let leaked: Vec<&String> = vm
+        .iter()
+        .filter(|name| {
+            forbidden.contains(&name.as_str())
+                || name.starts_with("rustls")
+                || name.starts_with("hyper-")
+        })
+        .collect();
+    assert!(
+        leaked.is_empty(),
+        "the LMPC plus Luau profile resolves {leaked:?}; the VM takes the \
+         contract form of the runtime and the development CLI composes the \
+         native surface at its own root"
+    );
+    // Positive control: the VM, its contract and the runtime core are there.
+    for expected in [
+        "luaur-rt",
+        "pillar-extensions-contract",
+        "pillar-agent",
+        "pillar-ai",
+    ] {
+        assert!(
+            vm.contains(expected),
+            "the Luau profile must contain {expected}: {vm:?}"
+        );
+    }
+
+    // Non-vacuous: the same package inside the development build *does* resolve
+    // them, because the CLI composes that surface for itself.
+    let cli = tree_names("pillar-cli", false);
+    assert!(
+        cli.contains("reqwest") && cli.contains("globset") && cli.contains("luaur-rt"),
+        "the development CLI must compose the native surface and the VM"
+    );
+}

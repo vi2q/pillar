@@ -363,10 +363,7 @@ pub fn host_model_demo_turns(prompts: &[String]) -> Result<TurnTrace, String> {
 
 /// [`host_model_demo_turns`] with optional streaming: the scripted host sends
 /// the answer in deltas before its final reply (the `--stream` flag).
-pub fn host_model_demo_turns_with(
-    prompts: &[String],
-    stream: bool,
-) -> Result<TurnTrace, String> {
+pub fn host_model_demo_turns_with(prompts: &[String], stream: bool) -> Result<TurnTrace, String> {
     let host = FrameHost::new();
     let mut session = HostModelSession::start(
         &host,
@@ -406,7 +403,10 @@ pub fn host_model_demo_turns_with(
                 return Err("the host model turn was cancelled".to_string());
             }
             HostModelState::Failed => {
-                return Err(session.error().unwrap_or("the host model turn failed").to_string());
+                return Err(session
+                    .error()
+                    .unwrap_or("the host model turn failed")
+                    .to_string());
             }
         }
     }
@@ -498,7 +498,10 @@ pub fn host_tools_demo_turn(prompt: &str) -> Result<TurnTrace, String> {
             HostModelState::Done => return Ok(session.trace()),
             HostModelState::Cancelled => return Err("the turn was cancelled".to_string()),
             HostModelState::Failed => {
-                return Err(session.error().unwrap_or("the host model turn failed").to_string());
+                return Err(session
+                    .error()
+                    .unwrap_or("the host model turn failed")
+                    .to_string());
             }
         }
     }
@@ -551,10 +554,10 @@ fn drive_session(session: &mut HostModelSession) -> Result<(), String> {
 pub use pillar_agent::{
     AbortSignal, AgentEvent, AgentMessage, AgentToolUpdateCallback, SpawnFn as HostSpawnFn,
 };
+pub use pillar_ai::types::{Content as HostContent, ToolChoice as HostToolChoice};
 /// The host clock a frame loop installs (see [`FrameHost`]): an embedder waits
 /// and timestamps through these instead of reaching for a platform clock.
 pub use pillar_ai::{now_millis, set_default_sleep, sleep};
-pub use pillar_ai::types::{Content as HostContent, ToolChoice as HostToolChoice};
 
 // ============================================================================
 // A frame-driven host (no threads, no tokio)
@@ -622,8 +625,7 @@ pub struct FrameHostScope {
 
 impl Drop for FrameHostScope {
     fn drop(&mut self) {
-        CURRENT_FRAME_HOST
-            .with(|cell| *cell.borrow_mut() = self.previous.take());
+        CURRENT_FRAME_HOST.with(|cell| *cell.borrow_mut() = self.previous.take());
     }
 }
 
@@ -684,8 +686,8 @@ impl FrameHost {
     /// [`FrameHost::enter`] from a `&self` (the pump has no `Arc`).
     fn enter_current(&self) -> FrameHostScope {
         let weak = self.self_weak.get().cloned();
-        let previous: Option<std::sync::Weak<FrameHost>> = CURRENT_FRAME_HOST
-            .with(|cell| std::mem::replace(&mut *cell.borrow_mut(), weak));
+        let previous: Option<std::sync::Weak<FrameHost>> =
+            CURRENT_FRAME_HOST.with(|cell| std::mem::replace(&mut *cell.borrow_mut(), weak));
         FrameHostScope { previous }
     }
 
@@ -793,10 +795,7 @@ impl FrameHost {
             // Merge instead of replacing: a task that enqueued a child while it
             // was polled would otherwise be dropped by this assignment and never
             // run (policy review sb39f R8).
-            self.tasks
-                .lock()
-                .expect("frame tasks lock")
-                .extend(pending);
+            self.tasks.lock().expect("frame tasks lock").extend(pending);
             if !progressed {
                 break;
             }
