@@ -60,8 +60,7 @@ const read = (pointer, length) =>
   decoder.decode(memory().subarray(pointer, pointer + length));
 
 /// Ask for a pending model request's JSON.
-const readRequest = (length) =>
-  read(exports.lmpc_host_request_ptr(), length);
+const readRequest = (length) => read(exports.lmpc_host_request_ptr(), length);
 
 /// Read a guest-owned buffer: ask for its length first (that call stores the
 /// content), then for its address — the address taken before may dangle.

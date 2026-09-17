@@ -428,7 +428,11 @@ fn the_host_runs_the_tools_the_model_calls() {
     );
 
     let trace = session.trace();
-    let roles: Vec<&str> = trace.messages.iter().map(|(role, _)| role.as_str()).collect();
+    let roles: Vec<&str> = trace
+        .messages
+        .iter()
+        .map(|(role, _)| role.as_str())
+        .collect();
     assert_eq!(
         roles,
         ["user", "assistant", "toolResult", "assistant"],
