@@ -166,8 +166,8 @@ impl std::future::Future for HostToolFuture {
 
 /// The host's tool result JSON into the guest's tool result.
 fn parse_tool_result(json: &str) -> Result<AgentToolResult, ToolExecuteError> {
-    let value: serde_json::Value =
-        serde_json::from_str(json).map_err(|error| ToolExecuteError(format!("bad tool result JSON: {error}")))?;
+    let value: serde_json::Value = serde_json::from_str(json)
+        .map_err(|error| ToolExecuteError(format!("bad tool result JSON: {error}")))?;
     if let Some(error) = value.get("error").and_then(serde_json::Value::as_str) {
         return Err(ToolExecuteError(error.to_string()));
     }
@@ -208,33 +208,35 @@ fn host_action_tool(slot: &Arc<Mutex<ModelSlot>>) -> pillar_agent::AgentTool {
         },
         label: "Host action".to_string(),
         prepare_arguments: None,
-        execute: Arc::new(move |id: String, args: serde_json::Value, _signal, _update| {
-            let slot = Arc::clone(&tool_slot);
-            Box::pin(async move {
-                let ticket = {
-                    let mut guard = slot.lock().expect("model slot lock");
-                    if guard.cancelled {
-                        return Err(ToolExecuteError("cancelled".to_string()));
-                    }
-                    let ticket = guard.ticket();
-                    guard.tool_requests.insert(
-                        ticket,
-                        HostToolRequest {
+        execute: Arc::new(
+            move |id: String, args: serde_json::Value, _signal, _update| {
+                let slot = Arc::clone(&tool_slot);
+                Box::pin(async move {
+                    let ticket = {
+                        let mut guard = slot.lock().expect("model slot lock");
+                        if guard.cancelled {
+                            return Err(ToolExecuteError("cancelled".to_string()));
+                        }
+                        let ticket = guard.ticket();
+                        guard.tool_requests.insert(
                             ticket,
-                            call_json: serde_json::json!({
-                                "id": id,
-                                "name": HOST_ACTION_TOOL,
-                                "arguments": args,
-                            })
-                            .to_string(),
-                        },
-                    );
-                    guard.tool_order.push_back(ticket);
-                    ticket
-                };
-                HostToolFuture { slot, ticket }.await
-            })
-        }),
+                            HostToolRequest {
+                                ticket,
+                                call_json: serde_json::json!({
+                                    "id": id,
+                                    "name": HOST_ACTION_TOOL,
+                                    "arguments": args,
+                                })
+                                .to_string(),
+                            },
+                        );
+                        guard.tool_order.push_back(ticket);
+                        ticket
+                    };
+                    HostToolFuture { slot, ticket }.await
+                })
+            },
+        ),
         execution_mode: Some(pillar_agent::ToolExecutionMode::Parallel),
     }
 }
@@ -470,7 +472,10 @@ impl HostModelSession {
         let agent = Arc::clone(&self.agent);
         let prompt = prompt.to_string();
         self.run = Some(Box::pin(async move {
-            agent.prompt(prompt).await.map_err(|error| error.to_string())
+            agent
+                .prompt(prompt)
+                .await
+                .map_err(|error| error.to_string())
         }));
         self.state = HostModelState::Running;
         self.started = false;
@@ -527,10 +532,7 @@ impl HostModelSession {
         // first (the model asked for an action), then the model itself.
         let (tool_pending, model_pending) = {
             let slot = self.slot.lock().expect("model slot lock");
-            (
-                slot.pending_tool().is_some(),
-                slot.request.is_some(),
-            )
+            (slot.pending_tool().is_some(), slot.request.is_some())
         };
         self.state = if tool_pending {
             HostModelState::NeedsTool

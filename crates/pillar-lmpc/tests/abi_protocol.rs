@@ -22,7 +22,10 @@ const CANCELLED: i32 = 4;
 /// functions take).
 fn put(text: &str) -> u32 {
     let capacity = pillar_lmpc::lmpc_input_cap() as usize;
-    assert!(text.len() <= capacity, "the input buffer holds {capacity} bytes");
+    assert!(
+        text.len() <= capacity,
+        "the input buffer holds {capacity} bytes"
+    );
     // Ask for the pointer after the capacity: the first call allocates the
     // buffer, and a pointer taken before it would dangle.
     let pointer = pillar_lmpc::lmpc_input_ptr();
@@ -135,7 +138,10 @@ fn the_abi_restores_a_conversation_before_the_first_poll() {
     assert_eq!(pillar_lmpc::lmpc_session_create(0), 0);
     let restored = pillar_lmpc::lmpc_session_import(put(&stored));
     assert!(restored > 0, "the conversation was restored: {restored}");
-    assert_eq!(pillar_lmpc::lmpc_host_turn_start(put("what is my name?")), 0);
+    assert_eq!(
+        pillar_lmpc::lmpc_host_turn_start(put("what is my name?")),
+        0
+    );
 
     let state = pillar_lmpc::lmpc_host_poll();
     assert_eq!(state, NEEDS_MODEL, "the first poll publishes the request");

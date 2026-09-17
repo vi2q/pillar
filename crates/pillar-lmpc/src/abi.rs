@@ -159,7 +159,9 @@ fn read_input(length: u32) -> Option<String> {
     ensure_input();
     let guard = INPUT.lock().expect("input lock");
     let count = (length as usize).min(INPUT_CAPACITY);
-    std::str::from_utf8(&guard[..count]).ok().map(str::to_string)
+    std::str::from_utf8(&guard[..count])
+        .ok()
+        .map(str::to_string)
 }
 
 /// The address of the input buffer (`new Uint8Array(memory.buffer, ptr, cap)`).

@@ -22,12 +22,18 @@ const CORPUS_LINE_LEN: usize = 80;
 const MATCH_EVERY: usize = 10;
 /// The single large file keeps the needle on its last line.
 const BIG_FILE_LINES: usize = 200_000;
+/// A large file where every n-th line matches, searched *with context*: the
+/// case where a per-match whole-file snapshot (or an unbounded context window)
+/// turns the search quadratic.
+const DENSE_FILE_LINES: usize = 200_000;
+const DENSE_EVERY: usize = 40;
 
 /// The corpus identity a baseline record must carry alongside the numbers.
 fn corpus_id() -> String {
     format!(
         "files={CORPUS_FILES},lines={CORPUS_LINES},line_len={CORPUS_LINE_LEN},\
-         match_every={MATCH_EVERY},big_lines={BIG_FILE_LINES}"
+         match_every={MATCH_EVERY},big_lines={BIG_FILE_LINES},\
+         dense_lines={DENSE_FILE_LINES},dense_every={DENSE_EVERY}"
     )
 }
 
@@ -57,6 +63,16 @@ fn build_corpus() -> (PathBuf, String) {
     }
     content.push_str("needle at the end\n");
     fs::write(big, content).unwrap();
+    let dense = dir.join("dense.txt");
+    let mut content = String::with_capacity(DENSE_FILE_LINES * 32);
+    for index in 0..DENSE_FILE_LINES {
+        if index % DENSE_EVERY == 0 {
+            content.push_str(&format!("needle dense {index}\n"));
+        } else {
+            content.push_str(&format!("filler line {index}\n"));
+        }
+    }
+    fs::write(dense, content).unwrap();
     let cwd = dir.to_string_lossy().to_string();
     (dir, cwd)
 }
@@ -100,15 +116,18 @@ fn measure_search_corpus() {
     };
     let (dir, cwd) = build_corpus();
     let root = dir.to_string_lossy().to_string();
-    let files = CORPUS_FILES + 1;
+    let files = CORPUS_FILES + 2;
 
     let expect_hits = CORPUS_FILES.div_ceil(MATCH_EVERY);
-    // `.txt` files are the ones whose index is not a multiple of three, plus
-    // the big file; the glob-filtered hits are the needle files that are `.md`.
-    let expect_txt = (0..CORPUS_FILES).filter(|index| index % 3 != 0).count() + 1;
+    // `.txt` files are the ones whose index is not a multiple of three, plus the
+    // two standalone `.txt` files (big / dense); the glob-filtered hits are the
+    // needle files that are `.md`.
+    let expect_txt = (0..CORPUS_FILES).filter(|index| index % 3 != 0).count() + 2;
     let expect_md_hits = (0..CORPUS_FILES)
         .filter(|index| index % MATCH_EVERY == 0 && index % 3 == 0)
         .count();
+    let dense_hits = DENSE_FILE_LINES.div_ceil(DENSE_EVERY);
+    let rss_before_dense = peak_rss_kb();
     let cases = vec![
         timed("find *.txt", || {
             let result = find_files(
@@ -196,7 +215,29 @@ fn measure_search_corpus() {
             .expect("grep");
             result.text.matches("needle at the end").count()
         }),
+        // Many hits *with* context: each match carries a bounded window, so this
+        // costs the number of renders, not (lines × hits) copies.
+        timed("grep dense.txt 200k lines ctx=2", || {
+            let result = grep_files(
+                "needle dense",
+                &dir.join("dense.txt").to_string_lossy(),
+                &cwd,
+                GrepOptions {
+                    context: 2,
+                    limit: dense_hits,
+                    ..Default::default()
+                },
+            )
+            .expect("grep");
+            result.text.lines().filter(|line| line.contains("needle")).count()
+        }),
     ];
+    let dense_rss = peak_rss_kb();
+    let dense_elapsed = cases
+        .iter()
+        .find(|(label, _, _)| label.starts_with("grep dense"))
+        .map(|(_, _, elapsed)| *elapsed)
+        .unwrap_or_default();
 
     println!(
         "search corpus: {} profile={profile} files={files} rss={:?}kB",
@@ -222,6 +263,22 @@ fn measure_search_corpus() {
     assert_eq!(cases[3].1, 1, "the no-hit message is one line");
     assert_eq!(cases[4].1, expect_md_hits, "glob-filtered context grep");
     assert_eq!(cases[5].1, 1, "the needle at the end of the big file");
+    assert!(
+        cases[6].1 > 100,
+        "the dense context search renders many hits ({}): the output byte \
+         budget truncates the render, not the match collection",
+        cases[6].1
+    );
+    // Structural guard on the *retention*: a window per match stays proportional
+    // to the render, so this must not look like the file being held per hit.
+    assert!(
+        dense_elapsed < Duration::from_secs(60),
+        "the dense context search took {dense_elapsed:?} (structural guard: a \
+         per-match file snapshot makes this quadratic)"
+    );
+    if let (Some(before), Some(after)) = (rss_before_dense, dense_rss) {
+        println!("  dense context search peak RSS {before} -> {after} kB");
+    }
     let total: Duration = cases.iter().map(|(_, _, elapsed)| *elapsed).sum();
     assert!(
         total < Duration::from_secs(120),

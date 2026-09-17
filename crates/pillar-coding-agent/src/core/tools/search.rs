@@ -289,12 +289,44 @@ impl Default for GrepOptions {
     }
 }
 
-/// A single content match (file, line number, line text).
+/// The lines around one match, captured *while scanning* rather than by
+/// re-reading (or retaining) the file at output time.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ContextWindow {
+    /// Up to `context` lines before the match (each already cut to
+    /// [`GREP_MAX_LINE_LENGTH`], so a pathological line is not copied per
+    /// match).
+    pub before: Vec<String>,
+    /// Up to `context` lines after the match.
+    pub after: Vec<String>,
+    /// Whether a line in this window was longer than [`GREP_MAX_LINE_LENGTH`].
+    pub truncated: bool,
+}
+
+/// One context line as it will be rendered: line terminators removed and the
+/// length budget applied *at capture*, so the search never holds a copy of a
+/// huge line.
+fn capture_context_line(text: &str, truncated: &mut bool) -> String {
+    let (line, was_truncated) = truncate_line(&text.replace('\r', ""), GREP_MAX_LINE_LENGTH);
+    if was_truncated {
+        *truncated = true;
+    }
+    line
+}
+
+/// A single content match (file, line number, line text, and — when context was
+/// requested — the captured window around it).
 #[derive(Debug, Clone)]
 pub struct ContentMatch {
     pub file_path: PathBuf,
     pub line_number: usize,
     pub line_text: String,
+    /// `Some` when `context > 0`: the window the scan captured for this match.
+    ///
+    /// Keeping it per match bounds what the search retains by the *output* size
+    /// (limit × (2·context + 1) lines) instead of by the corpus, and lets the
+    /// output stage render without touching the file again.
+    pub window: Option<ContextWindow>,
 }
 
 /// Search file contents for a pattern (upstream grep tool execute). The
@@ -341,9 +373,6 @@ pub fn grep_files(
     let matches: Arc<Mutex<Vec<ContentMatch>>> = Arc::new(Mutex::new(Vec::new()));
     let limit_hit = Arc::new(AtomicUsize::new(0));
     let aborted = Arc::new(AtomicUsize::new(0));
-    let line_cache: Arc<Mutex<std::collections::BTreeMap<PathBuf, Vec<String>>>> =
-        Arc::new(Mutex::new(std::collections::BTreeMap::new()));
-
     let mut builder = WalkBuilder::new(&search_path);
     builder.hidden(true);
     builder.require_git(inside_git_repo(&search_path));
@@ -361,7 +390,6 @@ pub fn grep_files(
         limit: effective_limit,
         limit_hit: limit_hit.clone(),
         aborted: aborted.clone(),
-        line_cache: line_cache.clone(),
         context: context_value,
         signal: options.signal.clone(),
         search_path: search_path.clone(),
@@ -386,12 +414,8 @@ pub fn grep_files(
             .cmp(&b.file_path)
             .then(a.line_number.cmp(&b.line_number))
     });
-    let line_cache = Arc::try_unwrap(line_cache)
-        .map(|cache| cache.into_inner().unwrap())
-        .unwrap_or_else(|arc| arc.lock().unwrap().clone());
     finish_grep_output(
         matches,
-        line_cache,
         limit_hit.load(Ordering::SeqCst) == 1,
         effective_limit,
         context_value,
@@ -417,7 +441,6 @@ fn format_grep_path(file_path: &Path, is_directory: bool, search_path: &Path) ->
 
 fn finish_grep_output(
     matches: Vec<ContentMatch>,
-    line_cache: std::collections::BTreeMap<PathBuf, Vec<String>>,
     match_limit_reached: bool,
     effective_limit: usize,
     context_value: usize,
@@ -431,8 +454,14 @@ fn finish_grep_output(
         });
     }
 
-    // The per-file line snapshots the scan captured (upstream `fileCache`,
-    // filled by re-reading the file there).
+    // `flush` enforces the limit while appending; this is the belt-and-braces
+    // check that the rendered list can never exceed it.
+    let matches = if matches.len() > effective_limit {
+        matches[..effective_limit].to_vec()
+    } else {
+        matches
+    };
+
     let mut output_lines: Vec<String> = Vec::new();
     let mut lines_truncated = false;
 
@@ -440,6 +469,7 @@ fn finish_grep_output(
         file_path,
         line_number,
         line_text,
+        window,
     } in &matches
     {
         let relative_path = format_grep_path(file_path, is_directory, search_path);
@@ -451,31 +481,24 @@ fn finish_grep_output(
             }
             output_lines.push(format!("{relative_path}:{line_number}: {truncated_text}"));
         } else {
-            let lines = line_cache
-                .get(file_path)
-                .cloned()
-                .unwrap_or_default();
-            if lines.is_empty() {
-                output_lines.push(format!(
-                    "{relative_path}:{line_number}: (unable to read file)"
-                ));
-                continue;
+            let empty = ContextWindow::default();
+            let captured = window.as_ref().unwrap_or(&empty);
+            if captured.truncated {
+                lines_truncated = true;
             }
-            let start = line_number.saturating_sub(context_value).max(1);
-            let end = (*line_number + context_value).min(lines.len());
-            for current in start..=end {
-                let line_text = lines.get(current - 1).map(String::as_str).unwrap_or("");
-                let sanitized = line_text.replace('\r', "");
-                let (truncated_text, was_truncated) =
-                    truncate_line(&sanitized, GREP_MAX_LINE_LENGTH);
-                if was_truncated {
-                    lines_truncated = true;
-                }
-                if current == *line_number {
-                    output_lines.push(format!("{relative_path}:{current}: {truncated_text}"));
-                } else {
-                    output_lines.push(format!("{relative_path}-{current}- {truncated_text}"));
-                }
+            for (offset, context_line) in captured.before.iter().enumerate() {
+                let current = line_number.saturating_sub(captured.before.len() - offset);
+                output_lines.push(format!("{relative_path}-{current}- {context_line}"));
+            }
+            let (truncated_text, was_truncated) =
+                truncate_line(&line_text.replace('\r', ""), GREP_MAX_LINE_LENGTH);
+            if was_truncated {
+                lines_truncated = true;
+            }
+            output_lines.push(format!("{relative_path}:{line_number}: {truncated_text}"));
+            for (offset, context_line) in captured.after.iter().enumerate() {
+                let current = line_number + 1 + offset;
+                output_lines.push(format!("{relative_path}-{current}- {context_line}"));
             }
         }
     }
@@ -640,10 +663,9 @@ struct GrepWalker {
     limit: usize,
     limit_hit: Arc<AtomicUsize>,
     aborted: Arc<AtomicUsize>,
-    /// Per-file line snapshots for the context blocks, captured during the
-    /// scan so the output stage never re-reads a file (upstream re-reads
-    /// through `GrepOperations.readFile`).
-    line_cache: Arc<Mutex<std::collections::BTreeMap<PathBuf, Vec<String>>>>,
+    /// Lines of context each match carries (captured during the scan, so the
+    /// output stage never re-reads a file — upstream re-reads through
+    /// `GrepOperations.readFile`).
     context: usize,
     signal: Option<pillar_agent::abort::AbortSignal>,
     search_path: PathBuf,
@@ -663,7 +685,6 @@ impl<'s> ignore::ParallelVisitorBuilder<'s> for GrepVisitorBuilder {
             limit: self.walker.limit,
             limit_hit: self.walker.limit_hit.clone(),
             aborted: self.walker.aborted.clone(),
-            line_cache: self.walker.line_cache.clone(),
             context: self.walker.context,
             signal: self.walker.signal.clone(),
             search_path: self.walker.search_path.clone(),
@@ -679,7 +700,6 @@ struct GrepVisitor {
     limit: usize,
     limit_hit: Arc<AtomicUsize>,
     aborted: Arc<AtomicUsize>,
-    line_cache: Arc<Mutex<std::collections::BTreeMap<PathBuf, Vec<String>>>>,
     context: usize,
     signal: Option<pillar_agent::abort::AbortSignal>,
     search_path: PathBuf,
@@ -704,8 +724,9 @@ impl GrepVisitor {
     }
 
     /// Scan one file line by line. The file is streamed (no whole-file
-    /// allocation, reusing one line buffer); when context is requested the
-    /// lines are kept for the output stage instead of re-reading the file.
+    /// allocation, reusing one line buffer); when context is requested each
+    /// match carries a bounded window (at most `context` lines each side) that
+    /// is filled as the scan passes, so nothing is retained per file.
     fn scan_file(&mut self, path: &Path) -> WalkState {
         let Ok(file) = std::fs::File::open(path) else {
             return WalkState::Continue;
@@ -721,8 +742,20 @@ impl GrepVisitor {
         }
 
         let total = self.matches.lock().unwrap().len();
+        let context = self.context;
         let mut local: Vec<ContentMatch> = Vec::new();
-        let mut lines: Vec<String> = Vec::new();
+        // The lines just before the current one: the `before` side of the next
+        // match's window, bounded by `context`.
+        let mut before: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+        // Local matches still waiting for their `after` lines (a line can be
+        // the trailing context of several).
+        let mut open: Vec<usize> = Vec::new();
+        // Once the limit is reached no new match is collected; the scan reads on
+        // only to complete the open windows, so the last match is not left
+        // without its trailing context.
+        let mut limit_reached = false;
+        // Whether a captured context line was cut to `GREP_MAX_LINE_LENGTH`.
+        let mut captured_truncated = false;
         let mut raw: Vec<u8> = Vec::new();
         let mut line_number = 0usize;
         loop {
@@ -740,47 +773,92 @@ impl GrepVisitor {
             let text = String::from_utf8_lossy(&raw);
             let text = text.strip_suffix('\n').unwrap_or(&text);
             let text = text.strip_suffix('\r').unwrap_or(text);
-            if self.context > 0 {
-                lines.push(text.to_string());
-            }
-            if self.regex.is_match(text) {
-                if total + local.len() >= self.limit {
-                    // Keep every match already found; the notice reports the
-                    // limit, not a truncated list.
-                    self.flush(path, &mut local, &mut lines);
-                    self.limit_hit.store(1, Ordering::SeqCst);
-                    return WalkState::Quit;
+            if context > 0 {
+                // Trailing context for the open windows (the match line itself
+                // is part of the *previous* match's window, as upstream's
+                // line-range rendering has it).
+                let line = capture_context_line(text, &mut captured_truncated);
+                for index in &open {
+                    if let Some(window) = local[*index].window.as_mut()
+                        && window.after.len() < context
+                    {
+                        window.after.push(line.clone());
+                    }
                 }
-                local.push(ContentMatch {
-                    file_path: path.to_path_buf(),
-                    line_number,
-                    line_text: text.to_string(),
+                open.retain(|index| {
+                    local[*index]
+                        .window
+                        .as_ref()
+                        .is_some_and(|window| window.after.len() < context)
                 });
             }
+            if self.regex.is_match(text) && !limit_reached {
+                if total + local.len() >= self.limit {
+                    // The limit is reached: stop collecting matches, but finish
+                    // the windows already open.
+                    limit_reached = true;
+                    self.limit_hit.store(1, Ordering::SeqCst);
+                } else {
+                    local.push(ContentMatch {
+                        file_path: path.to_path_buf(),
+                        line_number,
+                        line_text: text.to_string(),
+                        window: (context > 0).then(|| ContextWindow {
+                            before: before.iter().cloned().collect(),
+                            after: Vec::new(),
+                            truncated: false,
+                        }),
+                    });
+                    if context > 0 {
+                        open.push(local.len() - 1);
+                    }
+                }
+            }
+            if context > 0 {
+                before.push_back(capture_context_line(text, &mut captured_truncated));
+                while before.len() > context {
+                    before.pop_front();
+                }
+            }
+            if limit_reached && open.is_empty() {
+                break;
+            }
         }
-        let reached_limit = total + local.len() >= self.limit;
-        self.flush(path, &mut local, &mut lines);
-        if reached_limit {
-            self.limit_hit.store(1, Ordering::SeqCst);
+        if captured_truncated {
+            // The window lines are already cut; record that this file's windows
+            // were so the output can say so.
+            for entry in &mut local {
+                if let Some(window) = entry.window.as_mut() {
+                    window.truncated = true;
+                }
+            }
+        }
+        self.flush(path, &mut local);
+        if limit_reached {
             return WalkState::Quit;
         }
         WalkState::Continue
     }
 
-    /// Move one file's matches (and, when context is requested, its line
-    /// snapshot) into the shared state: one lock per file instead of one per
-    /// line.
-    fn flush(&self, path: &Path, local: &mut Vec<ContentMatch>, lines: &mut Vec<String>) {
+    /// Move one file's matches into the shared state: one lock per file instead
+    /// of one per line.
+    ///
+    /// The limit is applied **here**, under the lock: workers used to read the
+    /// shared count when they started and append unconditionally, so several
+    /// files scanned in parallel could push the total past the limit. Appending
+    /// only what fits makes the count a hard bound no matter how the walk
+    /// interleaves.
+    fn flush(&self, _path: &Path, local: &mut Vec<ContentMatch>) {
         if local.is_empty() {
             return;
         }
-        if self.context > 0 {
-            self.line_cache
-                .lock()
-                .unwrap()
-                .insert(path.to_path_buf(), std::mem::take(lines));
+        let mut shared = self.matches.lock().unwrap();
+        let room = self.limit.saturating_sub(shared.len());
+        if local.len() > room {
+            local.truncate(room);
+            self.limit_hit.store(1, Ordering::SeqCst);
         }
-        self.matches.lock().unwrap().append(local);
+        shared.append(local);
     }
 }
 

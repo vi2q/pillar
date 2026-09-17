@@ -461,3 +461,157 @@ fn find_aborts_before_walking() {
     .expect_err("the aborted call rejects");
     assert_eq!(error, "Operation aborted");
 }
+
+/// The `path:line: text` lines a result rendered (context lines use `-line-`,
+/// the notices carry no line number, so a match line is the one whose text
+/// after the first `:` starts with a digit).
+fn match_lines(text: &str) -> Vec<String> {
+    text.lines()
+        .filter(|line| {
+            line.split_once(':')
+                .is_some_and(|(_, rest)| rest.starts_with(|c: char| c.is_ascii_digit()))
+        })
+        .map(str::to_string)
+        .collect()
+}
+
+/// With context, each match renders its own window — overlapping windows repeat
+/// the shared lines and the window is clamped at the file's edges, exactly as
+/// upstream's `start..=end` rendering does. The scan captures the window while
+/// it passes (no whole-file snapshot, no re-read), so this pins the contract
+/// the capture has to reproduce.
+#[test]
+fn grep_context_window_is_per_match_and_clamped_at_the_edges() {
+    let (dir, cwd) = setup_repo("grep-ctx-window", &[("a.txt", "one\ntwo\nhit\nhit\nfive\nsix\n")]);
+    let result = grep_files(
+        "hit",
+        &dir.to_string_lossy(),
+        &cwd,
+        GrepOptions {
+            context: 2,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        result.text,
+        "a.txt-1- one\na.txt-2- two\na.txt:3: hit\na.txt-4- hit\na.txt-5- five\n\
+         a.txt-2- two\na.txt-3- hit\na.txt:4: hit\na.txt-5- five\na.txt-6- six"
+    );
+
+    // A match on the first line has no `before` side, and a file shorter than
+    // the window is rendered whole.
+    let (dir, cwd) = setup_repo("grep-ctx-edge", &[("b.txt", "hit\nb\nc")]);
+    let result = grep_files(
+        "hit",
+        &dir.to_string_lossy(),
+        &cwd,
+        GrepOptions {
+            context: 5,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(result.text, "b.txt:1: hit\nb.txt-2- b\nb.txt-3- c");
+}
+
+/// Reaching the match limit must not cut the trailing context of the last match
+/// found: the scan stops *collecting* at the limit but reads on until the open
+/// window is complete (policy review sb39f R5; before, the search stopped on the
+/// second hit and the first one lost its `after` lines).
+#[test]
+fn grep_keeps_trailing_context_when_the_limit_is_reached() {
+    let (dir, cwd) = setup_repo("grep-ctx-limit", &[("a.txt", "hit\nhit\nthree\nfour\n")]);
+    let result = grep_files(
+        "hit",
+        &dir.to_string_lossy(),
+        &cwd,
+        GrepOptions {
+            context: 3,
+            limit: 1,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(result.match_limit_reached, Some(1));
+    let matches = match_lines(&result.text);
+    assert_eq!(matches, ["a.txt:1: hit"], "{}", result.text);
+    assert!(result.text.contains("a.txt-2- hit"), "{}", result.text);
+    assert!(
+        result.text.contains("a.txt-3- three") && result.text.contains("a.txt-4- four"),
+        "the trailing context is complete: {}",
+        result.text
+    );
+}
+
+/// The limit is a hard bound however the parallel walk interleaves: each worker
+/// appends only what still fits under the lock (before, every worker compared
+/// against the count it saw when it started and then appended unconditionally,
+/// so concurrent files could push the total past the limit).
+#[test]
+fn grep_limit_bounds_the_parallel_walk() {
+    let files: Vec<(String, String)> = (0..60)
+        .map(|index| (format!("f{index}.txt"), "hit here\n".to_string()))
+        .collect();
+    let files: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(name, content)| (name.as_str(), content.as_str()))
+        .collect();
+    let (dir, cwd) = setup_repo("grep-hard-limit", &files);
+    // Repeated: the old accounting was a race (each worker compared against the
+    // count it saw when it started), so one run could pass by luck.
+    for _ in 0..10 {
+        for limit in [1usize, 2, 7] {
+            let result = grep_files(
+                "hit",
+                &dir.to_string_lossy(),
+                &cwd,
+                GrepOptions {
+                    limit,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                match_lines(&result.text).len(),
+                limit,
+                "limit {limit}: {}",
+                result.text
+            );
+            assert_eq!(result.match_limit_reached, Some(limit));
+        }
+    }
+}
+
+/// A pathological line inside a window is cut when it is captured, so a match
+/// never holds several copies of a huge line, and the output still reports the
+/// truncation.
+#[test]
+fn grep_budgets_a_huge_context_line() {
+    let long = "z".repeat(80_000);
+    let content = format!("before\n{long}\nhit\nafter\n");
+    let (dir, cwd) = setup_repo("grep-huge-context", &[("a.txt", &content)]);
+    let result = grep_files(
+        "hit",
+        &dir.to_string_lossy(),
+        &cwd,
+        GrepOptions {
+            context: 1,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(result.lines_truncated, "{}", result.text);
+    assert!(
+        result.text.contains("Some lines truncated to 500 chars"),
+        "{}",
+        result.text
+    );
+    for line in result.text.lines() {
+        assert!(
+            line.len() < 1000,
+            "every rendered line is within the budget: {} chars",
+            line.len()
+        );
+    }
+}

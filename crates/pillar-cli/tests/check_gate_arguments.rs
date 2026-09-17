@@ -135,19 +135,21 @@ fn the_wasm_comparison_gate_passes_whole_arguments() {
         .iter()
         .filter(|invocation| invocation.program == "cargo")
         .count();
-    assert!(node >= 6 && cargo >= 6, "node={node} cargo={cargo}: {:?}", invocations
-        .iter()
-        .map(|invocation| format!("{} {}", invocation.program, invocation.arguments.join(" ")))
-        .collect::<Vec<String>>());
+    assert!(
+        node >= 6 && cargo >= 6,
+        "node={node} cargo={cargo}: {:?}",
+        invocations
+            .iter()
+            .map(|invocation| format!("{} {}", invocation.program, invocation.arguments.join(" ")))
+            .collect::<Vec<String>>()
+    );
 
     // The multi-turn branch must reach one invocation with *both* prompts; with
     // the broken continuation the second prompt became its own command, so the
     // trace comparison degenerated into a no-op.
     let wasm_turns = invocations
         .iter()
-        .filter(|invocation| {
-            invocation.program == "node" && invocation.has("my name is Ada")
-        })
+        .filter(|invocation| invocation.program == "node" && invocation.has("my name is Ada"))
         .collect::<Vec<&Invocation>>();
     assert_eq!(wasm_turns.len(), 2, "the multi-turn and resume branches");
     for invocation in wasm_turns {
