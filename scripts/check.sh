@@ -145,6 +145,22 @@ if [ "$quick" -eq 0 ]; then
                 echo "check: the Wasm resume trace differs from the native one" >&2
                 exit 1
             fi
+            # Host-side tools: the model asks the host to act and the host runs
+            # it (engine actions), natively and in the Wasm host.
+            say "wasm host tools match native"
+            native_tool=$(cargo run --locked -q -p pillar-lmpc -- --host-tools "narrate")
+            wasm_tool=$(node "$root/scripts/wasm_host_model.mjs" \\
+                "$root/target/wasm32-unknown-unknown/debug/pillar_lmpc.wasm" \\
+                --host-tools "narrate")
+            if [ "$native_tool" != "$wasm_tool" ]; then
+                printf 'native:\\n%s\\nwasm:\\n%s\\n' "$native_tool" "$wasm_tool" >&2
+                echo "check: the Wasm host-tool trace differs from the native one" >&2
+                exit 1
+            fi
+            printf '%s' "$wasm_tool" | grep -q "toolResult: host narrate: 42" || {
+                echo "check: the host action did not run: $wasm_tool" >&2
+                exit 1
+            }
             # Host-driven cancellation: the guest must stop instead of waiting
             # for a model answer it will never get.
             say "wasm host cancel"

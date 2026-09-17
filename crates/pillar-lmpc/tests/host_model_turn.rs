@@ -28,6 +28,7 @@ fn drive(
             HostModelState::Done => return requests,
             HostModelState::Failed => panic!("the turn failed: {:?}", session.error()),
             HostModelState::Cancelled => panic!("the turn was cancelled"),
+            HostModelState::NeedsTool => panic!("this test installs no host tool"),
         }
     }
     panic!("the session never finished");
@@ -335,12 +336,15 @@ fn a_conversation_can_be_stored_and_resumed() {
     let host = Arc::new(pillar_lmpc::FrameHost::new());
     let mut session = pillar_lmpc::HostModelSession::start(&host, "my name is Ada", Vec::new());
     answer_once(&mut session, "hello Ada");
-    let stored = session.messages_json().expect("the conversation serializes");
+    let stored = session
+        .messages_json()
+        .expect("the conversation serializes");
     assert!(stored.contains("my name is Ada"), "{stored}");
 
     // A later run: a fresh session resumes the stored conversation.
     let later_host = Arc::new(pillar_lmpc::FrameHost::new());
-    let mut resumed = pillar_lmpc::HostModelSession::start(&later_host, "what is my name?", Vec::new());
+    let mut resumed =
+        pillar_lmpc::HostModelSession::start(&later_host, "what is my name?", Vec::new());
     assert_eq!(resumed.restore(&stored).expect("restore"), 2);
 
     let mut seen = None;
@@ -363,7 +367,11 @@ fn a_conversation_can_be_stored_and_resumed() {
         "the resumed request carries the stored conversation: {request}"
     );
     let trace = resumed.trace();
-    let roles: Vec<&str> = trace.messages.iter().map(|(role, _)| role.as_str()).collect();
+    let roles: Vec<&str> = trace
+        .messages
+        .iter()
+        .map(|(role, _)| role.as_str())
+        .collect();
     assert_eq!(
         roles,
         ["user", "assistant", "user", "assistant"],
@@ -371,4 +379,62 @@ fn a_conversation_can_be_stored_and_resumed() {
         trace.messages
     );
     assert_eq!(trace.messages[3].1, "Ada");
+}
+
+/// The guest's tool calls run in the *host*: the model asks for a host action,
+/// the host runs it, and the result comes back into the turn (this is how an
+/// engine's actions — move an NPC, narrate, update the scene — reach the world).
+#[test]
+fn the_host_runs_the_tools_the_model_calls() {
+    use std::time::Duration;
+
+    let host = Arc::new(pillar_lmpc::FrameHost::new());
+    let mut session =
+        pillar_lmpc::HostModelSession::start_with_host_tools(&host, "narrate", Vec::new());
+
+    let mut calls = Vec::new();
+    let mut replies = 0usize;
+    let mut done = false;
+    for _ in 0..1000 {
+        match session.poll(Duration::from_millis(1)) {
+            HostModelState::NeedsTool => {
+                let call = session.tool_request_json().expect("a pending tool call");
+                calls.push(call.clone());
+                session
+                    .tool_result(&pillar_lmpc::scripted_host_action(&call))
+                    .expect("the host runs the action");
+            }
+            HostModelState::NeedsModel => {
+                session
+                    .reply(pillar_lmpc::host_tool_scripted_reply(replies))
+                    .expect("the host answers");
+                replies += 1;
+            }
+            HostModelState::Running => {}
+            HostModelState::Done => {
+                done = true;
+                break;
+            }
+            other => panic!("unexpected state {other:?}"),
+        }
+    }
+    assert!(done, "the turn finished");
+
+    assert_eq!(calls.len(), 1, "one host call: {calls:?}");
+    assert!(
+        calls[0].contains("host_action") && calls[0].contains("narrate"),
+        "the call carries the action: {}",
+        calls[0]
+    );
+
+    let trace = session.trace();
+    let roles: Vec<&str> = trace.messages.iter().map(|(role, _)| role.as_str()).collect();
+    assert_eq!(
+        roles,
+        ["user", "assistant", "toolResult", "assistant"],
+        "{:?}",
+        trace.messages
+    );
+    assert_eq!(trace.messages[2].1, "host narrate: 42", "the host ran it");
+    assert_eq!(trace.messages[3].1, "the host acted");
 }

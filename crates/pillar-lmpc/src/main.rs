@@ -21,13 +21,20 @@ fn main() -> Result<(), String> {
     if resume {
         let _ = args.next();
     }
+    // `--host-tools`: the guest's tool calls run in the host (engine actions).
+    let host_tools = args.peek().map(String::as_str) == Some("--host-tools");
+    if host_tools {
+        let _ = args.next();
+    }
     let prompts: Vec<String> = args.collect();
     let prompts = if prompts.is_empty() {
         vec!["remember something".to_string()]
     } else {
         prompts
     };
-    let trace = if host_model && resume {
+    let trace = if host_tools {
+        pillar_lmpc::host_tools_demo_turn(&prompts[0])?
+    } else if host_model && resume {
         pillar_lmpc::host_model_resume_demo(&prompts)?
     } else if host_model {
         // Several prompts mean several turns on one session (the NPC keeps its

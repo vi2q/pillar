@@ -20,7 +20,9 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use pillar_agent::{Agent, AgentOptions, AgentState, SpawnFn, StreamFn};
+use pillar_agent::{
+    Agent, AgentOptions, AgentState, AgentToolResult, SpawnFn, StreamFn, ToolExecuteError,
+};
 use pillar_ai::event_stream::assistant_message_event_stream;
 use pillar_ai::types::{AssistantMessageEvent, Content, StopReason, Usage, UsageCost};
 
@@ -37,8 +39,25 @@ pub enum HostModelState {
     Done,
     /// The turn failed; [`HostModelSession::trace`] holds the reason.
     Failed,
+    /// The guest called a host tool; the host must run it and answer.
+    NeedsTool,
     /// The host cancelled the turn; the trace shows how far it got.
     Cancelled,
+}
+
+/// A tool call the host has to run (the engine's action).
+#[derive(Debug, Clone)]
+pub struct HostToolRequest {
+    /// The tool call as JSON: `{"id":…,"name":…,"arguments":…}`.
+    pub call_json: String,
+}
+
+/// The host's answer to a tool call: the result JSON.
+#[derive(Debug, Clone)]
+pub struct HostToolOutcome {
+    /// `{"content":[…],"details":…,"error":null}`; a non-null `error` becomes a
+    /// tool error in the guest.
+    pub result_json: String,
 }
 
 /// One guest-side model request the host has to answer.
@@ -56,6 +75,10 @@ struct ModelSlot {
     reply: Option<Vec<Content>>,
     /// The host cancelled the turn: the guest stops waiting for an answer.
     cancelled: bool,
+    /// The tool call waiting for the host, if any.
+    tool_request: Option<HostToolRequest>,
+    /// The result the host supplied for that call.
+    tool_result: Option<HostToolOutcome>,
     /// The stream the published request answers into, so the host can stream
     /// partial text before its final reply.
     stream: Option<pillar_ai::event_stream::AssistantMessageEventStream>,
@@ -67,6 +90,99 @@ struct ModelSlot {
 struct HostModelFuture {
     slot: Arc<Mutex<ModelSlot>>,
 }
+
+/// Waits for the host to run a tool the guest called.
+struct HostToolFuture {
+    slot: Arc<Mutex<ModelSlot>>,
+}
+
+impl std::future::Future for HostToolFuture {
+    type Output = Result<AgentToolResult, ToolExecuteError>;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        _context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let mut slot = self.slot.lock().expect("model slot lock");
+        if let Some(outcome) = slot.tool_result.take() {
+            return std::task::Poll::Ready(parse_tool_result(&outcome.result_json));
+        }
+        if slot.cancelled {
+            return std::task::Poll::Ready(Err(ToolExecuteError("cancelled".to_string())));
+        }
+        std::task::Poll::Pending
+    }
+}
+
+/// The host's tool result JSON into the guest's tool result.
+fn parse_tool_result(json: &str) -> Result<AgentToolResult, ToolExecuteError> {
+    let value: serde_json::Value =
+        serde_json::from_str(json).map_err(|error| ToolExecuteError(format!("bad tool result JSON: {error}")))?;
+    if let Some(error) = value.get("error").and_then(serde_json::Value::as_str) {
+        return Err(ToolExecuteError(error.to_string()));
+    }
+    let content = value
+        .get("content")
+        .and_then(|content| serde_json::from_value::<Vec<Content>>(content.clone()).ok())
+        .unwrap_or_default();
+    Ok(AgentToolResult {
+        content,
+        details: value
+            .get("details")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+        usage: None,
+        added_tool_names: None,
+        terminate: value
+            .get("terminate")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+    })
+}
+
+/// The agent tool that hands a call to the host (an engine action).
+fn host_action_tool(slot: &Arc<Mutex<ModelSlot>>) -> pillar_agent::AgentTool {
+    let tool_slot = Arc::clone(slot);
+    pillar_agent::AgentTool {
+        tool: pillar_ai::types::Tool {
+            name: HOST_ACTION_TOOL.to_string(),
+            description: "Ask the host to perform an action in its world".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "do": { "type": "string" },
+                    "value": { "type": "string" },
+                },
+            }),
+            constrained_sampling: None,
+        },
+        label: "Host action".to_string(),
+        prepare_arguments: None,
+        execute: Arc::new(move |id: String, args: serde_json::Value, _signal, _update| {
+            let slot = Arc::clone(&tool_slot);
+            Box::pin(async move {
+                {
+                    let mut guard = slot.lock().expect("model slot lock");
+                    guard.request = None;
+                    guard.tool_result = None;
+                    guard.tool_request = Some(HostToolRequest {
+                        call_json: serde_json::json!({
+                            "id": id,
+                            "name": HOST_ACTION_TOOL,
+                            "arguments": args,
+                        })
+                        .to_string(),
+                    });
+                }
+                HostToolFuture { slot }.await
+            })
+        }),
+        execution_mode: Some(pillar_agent::ToolExecutionMode::Parallel),
+    }
+}
+
+/// The name a host tool call uses in the demo scripts.
+pub const HOST_ACTION_TOOL: &str = "host_action";
 
 impl std::future::Future for HostModelFuture {
     type Output = Vec<Content>;
@@ -109,6 +225,25 @@ impl HostModelSession {
     /// Start a turn. The host services (spawner, clock) are pointed at `host`,
     /// so every step happens in a frame the host controls.
     pub fn start(host: &Arc<FrameHost>, prompt: &str, tools: Vec<pillar_agent::AgentTool>) -> Self {
+        Self::start_with(host, prompt, tools, false)
+    }
+
+    /// [`HostModelSession::start`] with the guest's tool set extended by
+    /// [`host_action_tool`], so the host runs the engine's actions.
+    pub fn start_with_host_tools(
+        host: &Arc<FrameHost>,
+        prompt: &str,
+        tools: Vec<pillar_agent::AgentTool>,
+    ) -> Self {
+        Self::start_with(host, prompt, tools, true)
+    }
+
+    fn start_with(
+        host: &Arc<FrameHost>,
+        prompt: &str,
+        mut tools: Vec<pillar_agent::AgentTool>,
+        host_tools: bool,
+    ) -> Self {
         host.install();
         let slot = Arc::new(Mutex::new(ModelSlot::default()));
         let model_slot = Arc::clone(&slot);
@@ -150,6 +285,9 @@ impl HostModelSession {
             }
         });
 
+        if host_tools {
+            tools.push(host_action_tool(&slot));
+        }
         let events = Arc::new(Mutex::new(Vec::<String>::new()));
         let recorded = Arc::clone(&events);
         let spawn: SpawnFn = Arc::new({
@@ -217,6 +355,8 @@ impl HostModelSession {
             slot.cancelled = false;
             slot.request = None;
             slot.reply = None;
+            slot.tool_request = None;
+            slot.tool_result = None;
             slot.stream = None;
             slot.partial = None;
         }
@@ -280,14 +420,55 @@ impl HostModelSession {
             };
             return self.state;
         }
-        // A pending request means the guest is waiting on the host.
-        let waiting = self.slot.lock().expect("model slot lock").request.is_some();
-        self.state = if waiting {
+        // A pending request means the guest is waiting on the host: a tool call
+        // first (the model asked for an action), then the model itself.
+        let (tool_pending, model_pending) = {
+            let slot = self.slot.lock().expect("model slot lock");
+            (slot.tool_request.is_some(), slot.request.is_some())
+        };
+        self.state = if tool_pending {
+            HostModelState::NeedsTool
+        } else if model_pending {
             HostModelState::NeedsModel
         } else {
             HostModelState::Running
         };
         self.state
+    }
+
+    /// The tool call the host has to run (`None` unless the state is
+    /// [`HostModelState::NeedsTool`]).
+    pub fn tool_request_json(&self) -> Option<String> {
+        self.slot
+            .lock()
+            .expect("model slot lock")
+            .tool_request
+            .as_ref()
+            .map(|request| request.call_json.clone())
+    }
+
+    /// Answer the pending tool call with a result JSON:
+    /// `{"content":[{"type":"text","text":"…"}],"details":{}}`. A non-null
+    /// `error` string becomes a tool error in the guest.
+    pub fn tool_result(&self, json: &str) -> Result<(), String> {
+        let mut slot = self.slot.lock().expect("model slot lock");
+        if slot.tool_request.is_none() {
+            return Err("no tool call is pending".to_string());
+        }
+        slot.tool_request = None;
+        slot.tool_result = Some(HostToolOutcome {
+            result_json: json.to_string(),
+        });
+        Ok(())
+    }
+
+    /// Whether the guest is waiting for a host tool result.
+    pub fn needs_tool(&self) -> bool {
+        self.slot
+            .lock()
+            .expect("model slot lock")
+            .tool_request
+            .is_some()
     }
 
     /// The model request the host has to answer (`None` unless the state is
@@ -392,6 +573,8 @@ impl HostModelSession {
             let mut slot = self.slot.lock().expect("model slot lock");
             slot.cancelled = true;
             slot.request = None;
+            slot.tool_request = None;
+            slot.tool_result = None;
             slot.stream = None;
             slot.partial = None;
         }

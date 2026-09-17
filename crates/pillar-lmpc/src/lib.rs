@@ -394,7 +394,7 @@ pub fn host_model_demo_turns_with(
                     None => return Ok(session.trace()),
                 }
             }
-            HostModelState::Cancelled => {
+            HostModelState::NeedsTool | HostModelState::Cancelled => {
                 return Err("the host model turn was cancelled".to_string());
             }
             HostModelState::Failed => {
@@ -438,6 +438,70 @@ pub fn host_model_resume_demo(prompts: &[String]) -> Result<TurnTrace, String> {
     Ok(resumed.trace())
 }
 
+/// The scripted host action: the guest called [`host_model::HOST_ACTION_TOOL`]
+/// with `{"do":…,"value":…}`, and the host runs it.
+///
+/// `scripts/wasm_host_model.mjs` runs the same script, which is what makes the
+/// two traces comparable.
+pub fn scripted_host_action(call_json: &str) -> String {
+    let value: serde_json::Value = serde_json::from_str(call_json).unwrap_or_default();
+    let arguments = value
+        .get("arguments")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let action = arguments
+        .get("do")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let value_text = arguments
+        .get("value")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    serde_json::json!({
+        "content": [{ "type": "text", "text": format!("host {action}: {value_text}") }],
+        "details": { "action": action, "value": value_text },
+    })
+    .to_string()
+}
+
+/// A turn whose tool calls run in the host: the scripted model asks for a host
+/// action, the host runs it, and the model then answers.
+pub fn host_tools_demo_turn(prompt: &str) -> Result<TurnTrace, String> {
+    let host = FrameHost::new();
+    let mut session = HostModelSession::start_with_host_tools(&host, prompt, Vec::new());
+    let mut requests = 0usize;
+    for _ in 0..10_000 {
+        match session.poll(Duration::from_millis(1)) {
+            HostModelState::NeedsTool => {
+                let call = session.tool_request_json().unwrap_or_default();
+                session.tool_result(&scripted_host_action(&call))?;
+            }
+            HostModelState::NeedsModel => {
+                session.reply(host_tool_scripted_reply(requests))?;
+                requests += 1;
+            }
+            HostModelState::Running => {}
+            HostModelState::Done => return Ok(session.trace()),
+            HostModelState::Cancelled => return Err("the turn was cancelled".to_string()),
+            HostModelState::Failed => {
+                return Err(session.error().unwrap_or("the host model turn failed").to_string());
+            }
+        }
+    }
+    Err("the host-tools turn did not finish".to_string())
+}
+
+/// The scripted model answers for the host-tools demo: ask for the host action
+/// first, then answer.
+pub fn host_tool_scripted_reply(request_index: usize) -> &'static str {
+    match request_index {
+        0 => {
+            r#"[{"type":"toolCall","id":"call-1","name":"host_action","arguments":{"do":"narrate","value":"42"}}]"#
+        }
+        _ => r#"[{"type":"text","text":"the host acted"}]"#,
+    }
+}
+
 /// Answer every model request of one turn with the scripted replies.
 fn drive_session(session: &mut HostModelSession) -> Result<(), String> {
     let mut requests = 0usize;
@@ -449,6 +513,11 @@ fn drive_session(session: &mut HostModelSession) -> Result<(), String> {
             }
             HostModelState::Running => {}
             HostModelState::Done => return Ok(()),
+            HostModelState::NeedsTool => {
+                session.tool_result(&scripted_host_action(
+                    session.tool_request_json().as_deref().unwrap_or("{}"),
+                ))?;
+            }
             HostModelState::Cancelled => return Err("the turn was cancelled".to_string()),
             HostModelState::Failed => {
                 return Err(session.error().unwrap_or("the turn failed").to_string());

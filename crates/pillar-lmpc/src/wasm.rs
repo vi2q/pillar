@@ -123,18 +123,24 @@ fn state_code(state: crate::host_model::HostModelState) -> i32 {
         crate::host_model::HostModelState::Done => 2,
         crate::host_model::HostModelState::Failed => 3,
         crate::host_model::HostModelState::Cancelled => 4,
+        crate::host_model::HostModelState::NeedsTool => 5,
     }
 }
 
 /// Start a host-model turn; the prompt is `length` bytes of the input buffer.
+/// `host_tools` != 0 also hands the guest's tool calls to the host (engine
+/// actions).
 #[unsafe(no_mangle)]
-pub extern "C" fn lmpc_host_turn_start(length: u32) -> i32 {
+pub extern "C" fn lmpc_host_turn_start(length: u32, host_tools: u32) -> i32 {
     let Some(prompt) = read_input(length) else {
         return 3;
     };
     let host = crate::FrameHost::new();
-    let mut session =
-        crate::host_model::HostModelSession::start(&host, &prompt, crate::demo_tools());
+    let mut session = if host_tools == 0 {
+        crate::host_model::HostModelSession::start(&host, &prompt, crate::demo_tools())
+    } else {
+        crate::host_model::HostModelSession::start_with_host_tools(&host, &prompt, Vec::new())
+    };
     let state = state_code(session.poll(std::time::Duration::from_millis(1)));
     *SESSION.lock().expect("session lock") = Some(session);
     state
@@ -200,6 +206,46 @@ pub extern "C" fn lmpc_host_poll() -> i32 {
         _ => {}
     }
     state_code(state)
+}
+
+/// The pending tool call's length (0 when there is none).
+#[unsafe(no_mangle)]
+pub extern "C" fn lmpc_host_tool_request_len() -> u32 {
+    let mut guard = SESSION.lock().expect("session lock");
+    let Some(session) = guard.as_mut() else {
+        return 0;
+    };
+    match session.tool_request_json() {
+        Some(call) => {
+            let length = call.len() as u32;
+            *REQUEST.lock().expect("request lock") = call;
+            length
+        }
+        None => 0,
+    }
+}
+
+/// The pending tool call's address.
+#[unsafe(no_mangle)]
+pub extern "C" fn lmpc_host_tool_request_ptr() -> *const u8 {
+    REQUEST.lock().expect("request lock").as_ptr()
+}
+
+/// Answer the pending tool call with `length` bytes of the input buffer (the
+/// result JSON).
+#[unsafe(no_mangle)]
+pub extern "C" fn lmpc_host_tool_result(length: u32) -> i32 {
+    let Some(result) = read_input(length) else {
+        return 3;
+    };
+    let guard = SESSION.lock().expect("session lock");
+    let Some(session) = guard.as_ref() else {
+        return 3;
+    };
+    match session.tool_result(&result) {
+        Ok(()) => 0,
+        Err(_) => 3,
+    }
 }
 
 /// The pending model request's length (0 when there is none).
