@@ -12,9 +12,7 @@
 //! naming-convention table.
 
 pub mod bridge;
-pub mod discovery;
 pub mod loader;
 pub mod runtime;
 
-pub use discovery::{ExtensionOrigin, discover_extension_files};
 pub use runtime::{ExtensionLoadError, ExtensionRuntime, LoadedExtension};

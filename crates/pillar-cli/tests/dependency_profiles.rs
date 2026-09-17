@@ -389,16 +389,19 @@ fn rust_sources(dir: &std::path::Path, into: &mut Vec<PathBuf>) {
     }
 }
 
-/// §5-6: the embedding core must not reach the process, the filesystem, or the
-/// network — not even through `std`, which a dependency graph cannot show. The
-/// core's OS capabilities are the coding agent's tools and execution
+/// §5-6: the embedding profiles must not reach the process, the filesystem, or
+/// the network — not even through `std`, which a dependency graph cannot show.
+/// The core's OS capabilities are the coding agent's tools and execution
 /// environment, the durable JSONL file backend, and the native search scanner:
 /// all of them are behind features (`harness-tools` / `session-files` /
-/// `search`) so `--no-default-features` drops them. This gate walks the
-/// profile's production sources, requires those modules to stay gated, and
-/// fails on any other `std::process` / `std::fs` / `std::net` use. The one
-/// documented exception is `pillar-ai`'s uuid entropy read, which falls back to
-/// a time-seeded source when `/dev/urandom` is unavailable.
+/// `search`) so `--no-default-features` drops them. The Luau VM (in the Luau
+/// profile) takes extension sources from the host through a `SourceReader` and
+/// executes through an injected exec host, so it has no `std::fs` of its own
+/// either. This gate walks both profiles' production sources, requires those
+/// modules to stay gated, and fails on any other `std::process` / `std::fs` /
+/// `std::net` use. The one documented exception is `pillar-ai`'s uuid entropy
+/// read, which falls back to a time-seeded source when `/dev/urandom` is
+/// unavailable.
 #[test]
 fn the_embedding_core_keeps_os_capabilities_behind_features() {
     let root = repo_root();
@@ -439,7 +442,10 @@ fn the_embedding_core_keeps_os_capabilities_behind_features() {
     ];
 
     let graph = lock_graph();
-    let profile = closure(&graph, &LMPC_MINIMAL);
+    // The Luau profile is a superset of the minimal one, so one walk covers
+    // both: the VM (pillar-extensions) is expected to be fs-free too — it
+    // reads extension sources through the host's `SourceReader`.
+    let profile = closure(&graph, &LMPC_LUAU);
     let mut offenders: Vec<String> = Vec::new();
     for name in profile.iter().filter(|name| name.starts_with("pillar-")) {
         let crate_dir = root.join("crates").join(name).join("src");

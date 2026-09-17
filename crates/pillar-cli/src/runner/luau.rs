@@ -125,7 +125,8 @@ pub fn build_extension_runner_with_slots(
     slots: &ExtensionHostSlots,
 ) -> ExtensionWiring {
     let paths = discover_luau_paths(global_dir, project_dir, configured, cwd);
-    let (runtime, loader) = create_luau_loader(None);
+    let (runtime, loader) =
+        create_luau_loader(None, crate::extension_sources::filesystem_source_reader());
     let session_slot = Arc::clone(&slots.session_slot);
     let data = Arc::clone(&slots.data);
     let ui_slot = Arc::clone(&slots.ui_slot);

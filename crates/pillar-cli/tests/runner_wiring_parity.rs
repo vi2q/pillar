@@ -19,6 +19,51 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
     dir
 }
 
+/// One failing file never stops the others: the host's per-path loop keeps the
+/// good extensions and reports the bad one (upstream `loadExtensions`; the VM
+/// only answers per-path results).
+#[test]
+fn a_failing_extension_does_not_stop_the_others() {
+    let dir = temp_dir("mixed");
+    std::fs::write(
+        dir.join("bad.luau"),
+        "local n: number = \"text\"\nreturn nil\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("good.luau"),
+        r#"
+        local pillar = require("@pillar")
+        pillar.register_command("survivor", { description = "Loaded anyway" })
+        return nil
+        "#,
+    )
+    .unwrap();
+
+    let configured = vec![dir.to_string_lossy().to_string()];
+    let mut wiring = build_extension_runner("", None, None, &configured);
+
+    assert_eq!(wiring.errors.len(), 1, "{:?}", wiring.errors);
+    assert!(
+        wiring.errors[0].0.ends_with("bad.luau"),
+        "the failing path is reported: {:?}",
+        wiring.errors[0]
+    );
+    assert!(
+        wiring.errors[0].1.contains("type-check failed"),
+        "{:?}",
+        wiring.errors[0]
+    );
+    assert!(
+        wiring
+            .runner
+            .registered_commands()
+            .iter()
+            .any(|command| command.name == "survivor"),
+        "the good extension still loaded"
+    );
+}
+
 #[test]
 fn build_extension_runner_loads_configured_luau_extensions() {
     let dir = temp_dir("ext");

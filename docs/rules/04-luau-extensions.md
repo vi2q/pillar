@@ -9,6 +9,7 @@ Luau拡張のAPI対応と契約の参照資料。pi v0.84.3の `packages/coding-
 - Every extension file is type-checked with `luaur-analysis` against the `@pillar` definitions before it runs. Files that fail type-checking are skipped with a warning listing the diagnostics; they do not abort startup. (pi compiles TS with jiti and fails the same way: per-file load error, other extensions continue.)
 - Extensions declare `--!strict` at the top; non-strict files still type-check under the checker's non-strict mode.
 - Luauからの外部作用はhost API経由。CLIの信頼判定・Effect Brokerと、VMが提供する言語面は別の境界である。Luau採用だけでOS権限が隔離されるとはみなさない。Wasm構成でも最終的な能力・資源制限は外側のhostが強制する。
+- VMはディスクもプロセスも持たない。拡張の*ソース*はhostが`SourceReader`（`pillar_extensions::loader::SourceReader`）で供給し（nativeは`pillar-cli::extension_sources::filesystem_source_reader`）、execは`ExecHost` callbackで注入する。`LoadedExtension`は自分のsourceを保持し、setupの再実行でファイルを読み直さない。discovery（どのファイルを読むか）もhost側（`pillar-coding-agent::core::extensions_luau::discover_luau_paths`）の責務で、VM crateに`std::fs`は無い（`dependency_profiles::the_embedding_core_keeps_os_capabilities_behind_features`が機械検査）。
 
 ## Discovery locations
 
