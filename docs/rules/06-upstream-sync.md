@@ -7,7 +7,7 @@ pillar tracks two upstream projects. This document pins the revisions and define
 | Project | Role | Revision | Source |
 | --- | --- | --- | --- |
 | pi | Behavioral ground truth (all crates except `pillar-extensions` semantics source) | v0.84.3, commit `56700d42ed65a94a80af7376adb19a9298065164` | <https://github.com/earendil-works/pi> |
-| luaur | Extension runtime engine (VM, type checker, safe API) | v0.1.8, commit `c2ed1091fbe9b1fcf07cbbb5a252a875ba37f796` | <https://github.com/pjankiewicz/luaur> |
+| luaur | Extension runtime engine (VM, type checker, safe API) | v0.1.8, **fork** commit `2bb4838d45b3dd3fe01dc45c0ad229a6c110ecd1` (branch `azparam/custom`) | <https://github.com/vi2q/luaur> (upstream: <https://github.com/pjankiewicz/luaur>) |
 
 The pin lives in `UPSTREAM.toml` at the repo root:
 
@@ -19,9 +19,19 @@ repository = "https://github.com/earendil-works/pi"
 
 [luaur]
 version = "0.1.8"
-commit = "c2ed1091fbe9b1fcf07cbbb5a252a875ba37f796"
-repository = "https://github.com/pjankiewicz/luaur"
+commit = "2bb4838d45b3dd3fe01dc45c0ad229a6c110ecd1"
+branch = "azparam/custom"
+repository = "https://github.com/vi2q/luaur"
+upstream = "https://github.com/pjankiewicz/luaur"
 ```
+
+luaur is used through the **fork**: `Cargo.toml` patches every luaur crate to the
+pinned revision (a local checkout may be substituted with `path = "../luaur-fork/crates/…"`
+while working on the VM). The fork carries fixes pillar depends on — the current
+one being `Thread::finish_resume` moving an errored coroutine's whole register
+window to the parent, which aborts the process (`lua_xmove`'s frame check) when a
+tool call is driven from Rust. Fork fixes are recorded here and in the fork's own
+history; the upstream project is the source of everything else.
 
 `UPSTREAM.toml` is the single source of truth; CI reads it, the sync tooling reads it, and this document's table must match it. The version column here is descriptive; the commit is the pin.
 

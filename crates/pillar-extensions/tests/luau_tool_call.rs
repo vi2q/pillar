@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use luaur_rt::Function;
+use pillar_ai::types::Content;
 use pillar_agent::abort::AbortSignal;
 use pillar_extensions::runtime::{ExtensionRuntime, HostApi, ToolStep, VmBudget};
 use pillar_extensions_contract::{
@@ -405,18 +406,18 @@ fn the_runtimes_host_functions_survive_a_coroutine() {
         ..Default::default()
     });
     let lua = runtime.vm().clone();
+    // `pillar.fs.*` is not here: it *suspends* inside a tool now, so a bare
+    // coroutine cannot complete it (see the host-call tests).
     let script = r#"
         local pillar = require("@pillar")
         return function()
-            local text = pillar.fs.read("notes.txt")
-            local names = pillar.fs.list(".")
             local commands = pillar.get_commands()
             local flag = pillar.get_flag("level")
             local schema = pillar.schema.object({ name = pillar.schema.string() })
-            return text .. "/" .. names[1] .. "/" .. commands[1].name .. "/" .. flag .. "/" .. schema.type
+            return commands[1].name .. "/" .. flag .. "/" .. schema.type
         end
     "#;
-    let expected = "content/a.luau/hello/high/object";
+    let expected = "hello/high/object";
 
     // Inside a coroutine (the shape a tool call will run in).
     let body: Function = lua.load(script).eval().expect("the body compiles");
@@ -524,4 +525,129 @@ fn a_host_can_drive_a_tool_call_step_by_step() {
     assert_eq!(result["content"][0]["text"], "built story.bin");
     assert_eq!(result["details"]["code"], 0);
     assert_eq!(result["details"]["id"], "call-1");
+}
+
+#[test]
+fn a_tools_fs_read_returns_the_string_through_the_sync_driver() {
+    use pillar_extensions::runtime::HostApi;
+    let mut runtime = runtime_with_exec(Arc::new(Mutex::new(Vec::new())));
+    runtime.set_host_api(HostApi {
+        fs: Some(Arc::new(|op: &str, path: &str, _content: Option<&str>| {
+            if op == "read" && path == "notes.txt" {
+                Ok(serde_json::json!("file content"))
+            } else {
+                Ok(serde_json::Value::Null)
+            }
+        })),
+        ..Default::default()
+    });
+    runtime
+        .load_extension(
+            "/ext/notes.luau",
+            r#"
+            local pillar = require("@pillar")
+            pillar.register_tool({
+                name = "notes",
+                description = "reads notes",
+                parameters = pillar.schema.object({}),
+                execute = function(tool_call_id, params, signal, on_update, ctx)
+                    local text = pillar.fs.read("notes.txt")
+                    return { content = { { type = "text", text = type(text) .. "=" .. tostring(text) } } }
+                end,
+            })
+            return nil
+            "#,
+        )
+        .expect("the extension loads");
+    let result = runtime
+        .call_tool("notes", "call-1", serde_json::json!({}), None, None)
+        .expect("the tool finishes");
+    println!("RESULT: {}", result["content"][0]["text"]);
+    assert_eq!(result["content"][0]["text"], "string=file content");
+}
+
+/// The same fs calls through the *bridge runner* (the CLI's path): the host
+/// answers the `fs` request with `run_with` while holding no runtime lock.
+#[test]
+fn a_tools_fs_calls_run_through_the_host_call_runner() {
+    use pillar_extensions::bridge::{HostCallRunner, bridge_to_agent_tools_with};
+
+    let runtime = Arc::new(Mutex::new(runtime_with_exec(Arc::new(Mutex::new(Vec::new())))));
+    runtime.lock().unwrap().set_host_api(HostApi {
+        fs: Some(Arc::new(|op: &str, path: &str, _content: Option<&str>| {
+            match (op, path) {
+                ("read", "notes.txt") => Ok(serde_json::json!("file content")),
+                ("exists", "notes.txt") => Ok(serde_json::json!(true)),
+                ("read", "gone.txt") => Ok(serde_json::Value::Null),
+                _ => Err(format!("no such path: {path}")),
+            }
+        })),
+        ..Default::default()
+    });
+    runtime.lock().unwrap().load_extension(
+        "/ext/notes.luau",
+        r#"
+        local pillar = require("@pillar")
+        pillar.register_tool({
+            name = "notes",
+            description = "reads notes",
+            parameters = pillar.schema.object({}),
+            execute = function(tool_call_id, params, signal, on_update, ctx)
+                local text = pillar.fs.read("notes.txt")
+                local missing = pillar.fs.read("gone.txt")
+                local ok, err = pcall(function() return pillar.fs.read("boom.txt") end)
+                return {
+                    content = { { type = "text", text = text .. "/" .. tostring(missing) .. "/" .. tostring(ok) .. "/" .. tostring(err) } },
+                }
+            end,
+        })
+        return nil
+        "#,
+    )
+    .expect("the extension loads");
+
+    let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let runner_seen = Arc::clone(&seen);
+    let runner_runtime = Arc::clone(&runtime);
+    let runner: HostCallRunner = Arc::new(move |request, abort| {
+        let seen = Arc::clone(&runner_seen);
+        let runtime = Arc::clone(&runner_runtime);
+        Box::pin(async move {
+            assert!(
+                runtime.try_lock().is_ok(),
+                "the runtime is free while the host does the I/O"
+            );
+            let services = runtime.lock().unwrap().host_services();
+            seen.lock().unwrap().push(format!(
+                "{}/{}",
+                request.json["kind"].as_str().unwrap_or_default(),
+                request.json["op"].as_str().unwrap_or_default()
+            ));
+            request.run_with(&services, abort)
+        })
+    });
+
+    let tools = bridge_to_agent_tools_with(&runtime, Some(runner));
+    let tool = tools.first().expect("the tool is bridged");
+    let result = futures::executor::block_on((tool.execute)(
+        "call-1".to_string(),
+        serde_json::json!({}),
+        None,
+        None,
+    ))
+    .expect("the tool finishes");
+    let text = match &result.content[0] {
+        Content::Text { text, .. } => text.clone(),
+        other => panic!("unexpected content {other:?}"),
+    };
+    assert!(text.starts_with("file content/nil/"), "{text}");
+    assert!(text.contains("no such path"), "the host error reached the tool: {text}");
+    assert_eq!(
+        seen.lock().unwrap().as_slice(),
+        &[
+            "fs/read".to_string(),
+            "fs/read".to_string(),
+            "fs/read".to_string()
+        ]
+    );
 }

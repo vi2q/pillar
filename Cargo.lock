@@ -910,8 +910,7 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 [[package]]
 name = "luaur-analysis"
 version = "0.1.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "75bbc26840a5c9931ffe0d461e8dfb27640dc4ed3c1446a6bb746a9b8caf9423"
+source = "git+https://github.com/vi2q/luaur?rev=2bb4838d45b3dd3fe01dc45c0ad229a6c110ecd1#2bb4838d45b3dd3fe01dc45c0ad229a6c110ecd1"
 dependencies = [
  "luaur-ast",
  "luaur-bytecode",
@@ -925,8 +924,7 @@ dependencies = [
 [[package]]
 name = "luaur-ast"
 version = "0.1.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "764705892871b019d59ae715a3c258c05d4c0cdc91b48bc13de1dff9528c46aa"
+source = "git+https://github.com/vi2q/luaur?rev=2bb4838d45b3dd3fe01dc45c0ad229a6c110ecd1#2bb4838d45b3dd3fe01dc45c0ad229a6c110ecd1"
 dependencies = [
  "luaur-common",
 ]
@@ -934,8 +932,7 @@ dependencies = [
 [[package]]
 name = "luaur-bytecode"
 version = "0.1.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d04ae19a8ccc422eb05af31c3d72ea52417fe183cf3b12c5838cec539541ab3a"
+source = "git+https://github.com/vi2q/luaur?rev=2bb4838d45b3dd3fe01dc45c0ad229a6c110ecd1#2bb4838d45b3dd3fe01dc45c0ad229a6c110ecd1"
 dependencies = [
  "luaur-common",
 ]
@@ -943,8 +940,7 @@ dependencies = [
 [[package]]
 name = "luaur-common"
 version = "0.1.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d9c24d960012cf14bd4cfd056a89d41758d5548305e91552fc71aa0318edae7"
+source = "git+https://github.com/vi2q/luaur?rev=2bb4838d45b3dd3fe01dc45c0ad229a6c110ecd1#2bb4838d45b3dd3fe01dc45c0ad229a6c110ecd1"
 dependencies = [
  "libc",
  "windows-sys 0.52.0",
@@ -953,8 +949,7 @@ dependencies = [
 [[package]]
 name = "luaur-compiler"
 version = "0.1.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e84db18b5d4b63286e3725ef8473a1181dc70bad9941608ec120ecc2e255397"
+source = "git+https://github.com/vi2q/luaur?rev=2bb4838d45b3dd3fe01dc45c0ad229a6c110ecd1#2bb4838d45b3dd3fe01dc45c0ad229a6c110ecd1"
 dependencies = [
  "luaur-ast",
  "luaur-bytecode",
@@ -964,8 +959,7 @@ dependencies = [
 [[package]]
 name = "luaur-config"
 version = "0.1.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "25268a18ce43d0f81c7640608d1bdee37e4982fa21733444528ec5b00c7ac07b"
+source = "git+https://github.com/vi2q/luaur?rev=2bb4838d45b3dd3fe01dc45c0ad229a6c110ecd1#2bb4838d45b3dd3fe01dc45c0ad229a6c110ecd1"
 dependencies = [
  "luaur-ast",
  "luaur-bytecode",
@@ -977,8 +971,7 @@ dependencies = [
 [[package]]
 name = "luaur-rt"
 version = "0.1.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e2f75240c12ca15167dae8542d7d477d28a58491e33a752c4e160f424dc6e588"
+source = "git+https://github.com/vi2q/luaur?rev=2bb4838d45b3dd3fe01dc45c0ad229a6c110ecd1#2bb4838d45b3dd3fe01dc45c0ad229a6c110ecd1"
 dependencies = [
  "futures-util",
  "luaur-analysis",
@@ -994,8 +987,7 @@ dependencies = [
 [[package]]
 name = "luaur-vm"
 version = "0.1.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "945d6993538f99bc25a424b7a7a55b9db953d609f7fc869e6d80495326e46ae2"
+source = "git+https://github.com/vi2q/luaur?rev=2bb4838d45b3dd3fe01dc45c0ad229a6c110ecd1#2bb4838d45b3dd3fe01dc45c0ad229a6c110ecd1"
 dependencies = [
  "luaur-common",
 ]

@@ -6,7 +6,14 @@ version = "0.84.3"
 commit = "56700d42ed65a94a80af7376adb19a9298065164"
 repository = "https://github.com/earendil-works/pi"
 
+# luaur is the *fork*: pillar's cooperative host-call protocol runs tool
+# coroutines from Rust, and the released 0.1.8 VM aborts the process when an
+# errored coroutine's register window is moved to the parent
+# (`Thread::finish_resume`). The fork carries that fix (and the earlier
+# self-improvements); `Cargo.toml` patches every luaur crate to this revision.
 [luaur]
 version = "0.1.8"
-commit = "c2ed1091fbe9b1fcf07cbbb5a252a875ba37f796"
-repository = "https://github.com/pjankiewicz/luaur"
+commit = "2bb4838d45b3dd3fe01dc45c0ad229a6c110ecd1"
+branch = "azparam/custom"
+repository = "https://github.com/vi2q/luaur"
+upstream = "https://github.com/pjankiewicz/luaur"

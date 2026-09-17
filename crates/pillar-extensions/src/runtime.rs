@@ -97,7 +97,10 @@ impl HostCallRequest {
                     .unwrap_or_default();
                 let options = ExecOptions {
                     signal,
-                    timeout_ms: self.json.get("timeout_ms").and_then(serde_json::Value::as_u64),
+                    timeout_ms: self
+                        .json
+                        .get("timeout_ms")
+                        .and_then(serde_json::Value::as_u64),
                     cwd: self
                         .json
                         .get("cwd")
@@ -142,7 +145,17 @@ impl HostCallRequest {
                     None => Err(format!("pillar.fs.{op}: the fs host is not installed")),
                 };
                 Ok(match answer {
-                    Ok(value) => serde_json::json!({ "protocol": "fs", "ok": true, "value": value }),
+                    // A missing path answers JSON `null`, which the Lua side
+                    // cannot tell from a value (luaur's serde null is a sentinel
+                    // object, not `nil`), so say it explicitly.
+                    Ok(value) => {
+                        serde_json::json!({
+                            "protocol": "fs",
+                            "ok": true,
+                            "missing": value.is_null(),
+                            "value": value,
+                        })
+                    }
                     Err(error) => {
                         serde_json::json!({ "protocol": "fs", "ok": false, "error": error })
                     }
@@ -2823,8 +2836,6 @@ fn options_to_json(
 /// the host callback, so path resolution and the trust model stay host-side.
 /// Missing files answer `nil` / `false` instead of raising.
 fn install_fs_module(lua: &Lua, module: &luaur_rt::Table, host_api: &Arc<Mutex<HostApi>>) {
-    let fs = lua.create_table();
-
     let call = |host_api: &Arc<Mutex<HostApi>>,
                 op: &str,
                 path: &str,
@@ -2842,9 +2853,11 @@ fn install_fs_module(lua: &Lua, module: &luaur_rt::Table, host_api: &Arc<Mutex<H
         }
     };
 
-    // pillar.fs.read(path) -> string? (nil when the file is missing)
+    // The synchronous fallbacks the wrappers use when there is nothing to
+    // suspend (setup code, event handlers); they are not exposed to extensions.
+    let sync = lua.create_table();
     let read_api = Arc::clone(host_api);
-    fs.set(
+    sync.set(
         "read",
         lua.create_function(move |calling: &Lua, path: String| {
             let result = call(&read_api, "read", &path, None).map_err(luaur_rt::Error::external)?;
@@ -2855,22 +2868,19 @@ fn install_fs_module(lua: &Lua, module: &luaur_rt::Table, host_api: &Arc<Mutex<H
         })
         .expect("build pillar.fs.read"),
     )
-    .expect("set pillar.fs.read");
-
-    // pillar.fs.write(path, content) -> boolean
+    .expect("set the fs sync read");
     let write_api = Arc::clone(host_api);
-    fs.set(
+    sync.set(
         "write",
-        Function::wrap(move |path: String, content: String| {
+        lua.create_function(move |_calling: &Lua, (path, content): (String, String)| {
             call(&write_api, "write", &path, Some(&content)).map_err(luaur_rt::Error::external)?;
             Ok::<bool, luaur_rt::Error>(true)
-        }),
+        })
+        .expect("build pillar.fs.write"),
     )
-    .expect("set pillar.fs.write");
-
-    // pillar.fs.list(path) -> { string } (sorted names)
+    .expect("set the fs sync write");
     let list_api = Arc::clone(host_api);
-    fs.set(
+    sync.set(
         "list",
         lua.create_function(move |calling: &Lua, path: String| {
             let result = call(&list_api, "list", &path, None).map_err(luaur_rt::Error::external)?;
@@ -2879,11 +2889,9 @@ fn install_fs_module(lua: &Lua, module: &luaur_rt::Table, host_api: &Arc<Mutex<H
         })
         .expect("build pillar.fs.list"),
     )
-    .expect("set pillar.fs.list");
-
-    // pillar.fs.stat(path) -> { type, size, modified_ms }? (nil when missing)
+    .expect("set the fs sync list");
     let stat_api = Arc::clone(host_api);
-    fs.set(
+    sync.set(
         "stat",
         lua.create_function(move |calling: &Lua, path: String| {
             let result = call(&stat_api, "stat", &path, None).map_err(luaur_rt::Error::external)?;
@@ -2894,21 +2902,51 @@ fn install_fs_module(lua: &Lua, module: &luaur_rt::Table, host_api: &Arc<Mutex<H
         })
         .expect("build pillar.fs.stat"),
     )
-    .expect("set pillar.fs.stat");
-
-    // pillar.fs.exists(path) -> boolean
+    .expect("set the fs sync stat");
     let exists_api = Arc::clone(host_api);
-    fs.set(
+    sync.set(
         "exists",
-        Function::wrap(move |path: String| {
+        lua.create_function(move |_calling: &Lua, path: String| {
             let result =
                 call(&exists_api, "exists", &path, None).map_err(luaur_rt::Error::external)?;
             Ok::<bool, luaur_rt::Error>(matches!(result, Some(serde_json::Value::Bool(true))))
-        }),
+        })
+        .expect("build pillar.fs.exists"),
     )
-    .expect("set pillar.fs.exists");
+    .expect("set the fs sync exists");
 
-    module.set("fs", fs).expect("set pillar.fs");
+    // Inside a tool call the call *suspends* like `pillar.exec`: the request
+    // travels out as a yield and the host's answer comes back as its return
+    // value (the bridge runs it without the runtime lock).
+    let fs_table: luaur_rt::Table = lua
+        .load(
+            r#"
+            local sync = ...
+            local fs = {}
+            local function request(op, path, content)
+                if not coroutine.isyieldable() then
+                    if op == "write" then return sync.write(path, content or "") end
+                    return sync[op](path)
+                end
+                local answer = coroutine.yield({ kind = "fs", op = op, path = path, content = content })
+                if type(answer) == "table" and answer.protocol == "fs" then
+                    if answer.ok == false then error(answer.error) end
+                    if answer.missing then return nil end
+                    return answer.value
+                end
+                return answer
+            end
+            fs.read = function(path) return request("read", path) end
+            fs.write = function(path, content) return request("write", path, content) end
+            fs.list = function(path) return request("list", path) end
+            fs.stat = function(path) return request("stat", path) end
+            fs.exists = function(path) return request("exists", path) end
+            return fs
+            "#,
+        )
+        .call::<luaur_rt::Table>(sync)
+        .expect("build pillar.fs");
+    module.set("fs", fs_table).expect("set pillar.fs");
 }
 
 /// Install `pillar.schema` (upstream the typebox builders): each builder

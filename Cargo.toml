@@ -30,3 +30,21 @@ libc = "0.2"
 [profile.release]
 lto = "fat"
 codegen-units = 1
+
+# luaur is the *fork* (github.com/vi2q/luaur, branch `azparam/custom`), pinned to
+# a revision like every other upstream (docs/rules/06-upstream-sync.md). Its
+# fixes are required, not optional: running a tool call in a coroutine (the
+# cooperative host-call protocol) aborts the process in the released 0.1.8 VM
+# (`Thread::finish_resume` moved an errored coroutine's whole register window to
+# the parent, tripping `lua_xmove`'s frame check — SIGTRAP).
+#
+# For luaur development, replace these with `path = "../luaur-fork/crates/…"`.
+[patch.crates-io]
+luaur-analysis = { git = "https://github.com/vi2q/luaur", rev = "2bb4838d45b3dd3fe01dc45c0ad229a6c110ecd1" }
+luaur-ast = { git = "https://github.com/vi2q/luaur", rev = "2bb4838d45b3dd3fe01dc45c0ad229a6c110ecd1" }
+luaur-bytecode = { git = "https://github.com/vi2q/luaur", rev = "2bb4838d45b3dd3fe01dc45c0ad229a6c110ecd1" }
+luaur-common = { git = "https://github.com/vi2q/luaur", rev = "2bb4838d45b3dd3fe01dc45c0ad229a6c110ecd1" }
+luaur-compiler = { git = "https://github.com/vi2q/luaur", rev = "2bb4838d45b3dd3fe01dc45c0ad229a6c110ecd1" }
+luaur-config = { git = "https://github.com/vi2q/luaur", rev = "2bb4838d45b3dd3fe01dc45c0ad229a6c110ecd1" }
+luaur-rt = { git = "https://github.com/vi2q/luaur", rev = "2bb4838d45b3dd3fe01dc45c0ad229a6c110ecd1" }
+luaur-vm = { git = "https://github.com/vi2q/luaur", rev = "2bb4838d45b3dd3fe01dc45c0ad229a6c110ecd1" }
