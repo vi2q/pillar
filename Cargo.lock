@@ -1071,6 +1071,7 @@ dependencies = [
  "globset",
  "pillar-ai",
  "pillar-telemetry",
+ "regex",
  "serde",
  "serde_json",
  "thiserror",

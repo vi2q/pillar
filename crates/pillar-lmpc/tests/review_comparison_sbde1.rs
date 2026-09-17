@@ -1,5 +1,10 @@
-//! Temporary review probes: passing means the suspected limitation was observed,
-//! NOT that the desired product contract is satisfied. Removed after one run.
+//! Review probes for `docs/PI-COMPARISON-sbde1.md`: the cases that reproduce a
+//! suspected limitation assert the *limitation* (a "characterization" — passing
+//! means the suspicion is confirmed, not that the product contract is good);
+//! the cases that have since been fixed assert the *desired contract* instead,
+//! so this file stays green and keeps them pinned. The headers below say which
+//! is which. The fuller C1/C3 coverage lives in
+//! `crates/pillar-agent/tests/tool_contract_parity.rs`.
 use pillar_agent::{AgentTool, AgentToolResult, ToolExecutionMode};
 use pillar_ai::types::{Content, Tool};
 use pillar_lmpc::{FrameHost, HostModelSession, HostModelState};
@@ -75,7 +80,9 @@ fn finish(session: &mut HostModelSession) {
     panic!("turn never finished");
 }
 #[test]
-fn observes_missing_required_argument_reaching_execute() {
+fn rejects_a_missing_required_argument_before_execute() {
+    // C1, fixed: the declared schema is enforced by the shared loop, so
+    // `execute` is never reached (this used to run the tool).
     let calls = Arc::new(AtomicUsize::new(0));
     let host = FrameHost::new();
     let mut session = HostModelSession::start(
@@ -93,8 +100,8 @@ fn observes_missing_required_argument_reaching_execute() {
     finish(&mut session);
     assert_eq!(
         calls.load(Ordering::SeqCst),
-        1,
-        "characterization: invalid args were executed"
+        0,
+        "invalid arguments must not execute"
     );
 }
 #[test]
@@ -134,7 +141,9 @@ fn observes_progress_only_after_tool_settlement() {
     );
 }
 #[test]
-fn observes_immediate_failure_reordering_tool_results() {
+fn keeps_the_assistant_source_order_in_the_history() {
+    // C3, fixed: results keep the positions of the assistant's tool calls
+    // (this used to report the immediate failure first: [bad, good]).
     let host = FrameHost::new();
     let mut session = HostModelSession::start(
         &host,
@@ -158,8 +167,8 @@ fn observes_immediate_failure_reordering_tool_results() {
         .collect();
     assert_eq!(
         ids,
-        ["bad", "good"],
-        "characterization: source order was good,bad"
+        ["good", "bad"],
+        "the history keeps the assistant's call order"
     );
 }
 fn chain(host: Arc<FrameHost>, count: Arc<AtomicUsize>, remaining: usize) {

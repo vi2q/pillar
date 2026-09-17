@@ -31,6 +31,8 @@ thiserror.workspace = true
 pillar-ai = { path = "../pillar-ai", default-features = false }
 pillar-telemetry = { path = "../pillar-telemetry" }
 globset = { version = "0.4.19", optional = true }
+# JSON-Schema `pattern` (already in the workspace graph via pillar-ai).
+regex = "1.12"
 
 # Native-only: tokio's fs/process features pull in `net`, which mio does not
 # support on wasm32-unknown-unknown. Filesystem and shell execution are

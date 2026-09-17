@@ -18,6 +18,7 @@ pub mod proxy;
 pub mod search;
 pub mod spawn;
 pub mod stream_fn;
+pub mod tool_schema;
 pub mod types;
 
 pub use abort::AbortSignal;

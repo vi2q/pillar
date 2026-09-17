@@ -661,12 +661,14 @@ async fn execute_tool_calls_sequential(
                 is_error,
             },
             Preparation::Prepared { tool, args } => {
+                let executed_args = args.clone();
                 let executed =
                     execute_prepared_tool_call(&tool_call, &tool, args, signal.clone(), emit).await;
                 finalize_executed_tool_call(
                     current_context,
                     assistant_message,
                     &tool_call,
+                    &executed_args,
                     executed,
                     config,
                     signal.clone(),
@@ -702,9 +704,16 @@ async fn execute_tool_calls_parallel(
 ) -> ExecutedToolCallBatch {
     // Phase 1: prepare sequentially, emitting start events in source order.
     // Immediate outcomes are finalized (end event emitted) inline like
-    // upstream; prepared calls continue as concurrent futures.
-    let mut pending: Vec<(AgentToolCall, Preparation)> = Vec::new();
-    let mut immediate_ends: Vec<FinalizedToolCall> = Vec::new();
+    // upstream, which keeps them in the same source-ordered array as the
+    // pending calls (`agent-loop.ts` `executeToolCallsParallel`).
+    //
+    // `slots` is that array: a position is the assistant's tool-call index, and
+    // the result reported for a call is the one that fills its own slot.
+    // Reporting immediate failures first would reorder the history (and with it
+    // replay and the model's view of what happened in what order).
+    let mut slots: Vec<Option<FinalizedToolCall>> = Vec::new();
+    let mut pending: Vec<(usize, AgentToolCall, crate::types::AgentTool, serde_json::Value)> =
+        Vec::new();
     for tool_call in tool_calls {
         emit.emit(AgentEvent::ToolExecutionStart {
             tool_call_id: tool_call.id.clone(),
@@ -729,10 +738,12 @@ async fn execute_tool_calls_parallel(
                     is_error,
                 };
                 emit_tool_execution_end(&finalized, emit).await;
-                immediate_ends.push(finalized);
+                slots.push(Some(finalized));
             }
             Preparation::Prepared { tool, args } => {
-                pending.push((tool_call, Preparation::Prepared { tool, args }));
+                let index = slots.len();
+                slots.push(None);
+                pending.push((index, tool_call, tool, args));
             }
         }
         if signal.as_ref().map(|s| s.is_aborted()).unwrap_or(false) {
@@ -741,39 +752,37 @@ async fn execute_tool_calls_parallel(
     }
 
     // Phase 2: execute concurrently. Each future emits its own
-    // `tool_execution_end` on completion (upstream: the awaited per-tool
-    // async entry emits end in completion order).
+    // `tool_execution_end` on completion (upstream: the awaited per-tool async
+    // entry emits end in completion order), then fills its source slot.
     let mut futures = Vec::new();
-    for (tool_call, preparation) in pending {
-        let Preparation::Prepared { tool, args } = preparation else {
-            unreachable!("pending entries are always prepared");
-        };
+    for (index, tool_call, tool, args) in pending {
         let assistant_message = assistant_message.clone();
         let config = config.clone();
         let current_context = current_context.clone();
         let signal = signal.clone();
         let emit = emit.clone();
         futures.push(async move {
+            let executed_args = args.clone();
             let executed =
                 execute_prepared_tool_call(&tool_call, &tool, args, signal.clone(), &emit).await;
             let finalized = finalize_executed_tool_call(
                 &current_context,
                 &assistant_message,
                 &tool_call,
+                &executed_args,
                 executed,
                 &config,
                 signal,
             )
             .await;
             emit_tool_execution_end(&finalized, &emit).await;
-            finalized
+            (index, finalized)
         });
     }
-    let mut ordered: Vec<FinalizedToolCall> = immediate_ends;
-    let completed = futures::future::join_all(futures).await;
-    // Report results in assistant source order; end events already fired in
-    // completion order inside each future.
-    ordered.extend(completed);
+    for (index, finalized) in futures::future::join_all(futures).await {
+        slots[index] = Some(finalized);
+    }
+    let ordered: Vec<FinalizedToolCall> = slots.into_iter().flatten().collect();
 
     let mut messages: Vec<ToolResultMessage> = Vec::new();
     for finalized in &ordered {
@@ -819,21 +828,26 @@ async fn prepare_tool_call(
         };
     };
 
-    // Argument preparation shim, then JSON-Schema validation.
+    // Argument preparation shim, then JSON-Schema validation (fail-closed: a
+    // schema the validator cannot interpret is refused, not ignored).
     let prepared_args = match &tool.prepare_arguments {
         Some(prepare) => prepare(&tool_call.arguments),
         None => tool_call.arguments.clone(),
     };
-    let validated_args = match validate_tool_arguments(&tool.tool, &prepared_args, &tool_call.name)
-    {
-        Ok(args) => args,
-        Err(message) => {
-            return Preparation::Immediate {
-                result: create_error_tool_result(message),
-                is_error: true,
-            };
-        }
-    };
+    let validated_args =
+        match crate::tool_schema::validate_tool_arguments(&tool.tool.parameters, &prepared_args) {
+            Ok(args) => args,
+            Err(errors) => {
+                return Preparation::Immediate {
+                    result: create_error_tool_result(format!(
+                        "Validation failed for tool \"{}\":\n{errors}\n\nReceived arguments:\n{}",
+                        tool_call.name,
+                        serde_json::to_string_pretty(&tool_call.arguments).unwrap_or_default()
+                    )),
+                    is_error: true,
+                };
+            }
+        };
 
     if let Some(before) = &config.before_tool_call {
         let hook_args = Arc::new(std::sync::Mutex::new(validated_args.clone()));
@@ -889,26 +903,6 @@ async fn prepare_tool_call(
         tool: tool.clone(),
         args: validated_args,
     }
-}
-
-/// Validation outcome: coerced arguments or an error message.
-fn validate_tool_arguments(
-    tool: &pillar_ai::types::Tool,
-    arguments: &serde_json::Value,
-    tool_name: &str,
-) -> Result<serde_json::Value, String> {
-    // JSON-Schema validation over the raw arguments. Typebox coercion maps
-    // to the jsonschema crate's meta-schema check here; a mismatch produces
-    // the same error-text shape as upstream.
-    let schema_ok = arguments.is_object() || arguments.is_null();
-    let _ = tool;
-    if schema_ok {
-        return Ok(arguments.clone());
-    }
-    Err(format!(
-        "Validation failed for tool \"{tool_name}\":\n  - root: arguments must be an object\n\nReceived arguments:\n{}",
-        serde_json::to_string_pretty(arguments).unwrap_or_default()
-    ))
 }
 
 async fn execute_prepared_tool_call(
@@ -983,9 +977,10 @@ async fn finalize_executed_tool_call(
     _current_context: &AgentContext,
     _assistant_message: &AssistantMessage,
     tool_call: &AgentToolCall,
+    executed_args: &serde_json::Value,
     executed: FinalizedToolCall,
     config: &AgentLoopConfig,
-    _signal: Option<AbortSignal>,
+    signal: Option<AbortSignal>,
 ) -> FinalizedToolCall {
     let mut result = executed.result;
     let mut is_error = executed.is_error;
@@ -995,11 +990,14 @@ async fn finalize_executed_tool_call(
             crate::types::AfterToolCallContext {
                 assistant_message: _assistant_message.clone(),
                 tool_call: tool_call.clone(),
-                args: result.details.clone(),
+                // Upstream passes the arguments the tool actually ran with
+                // (`args: prepared.args`), not the result's details, and hands
+                // the hook the same signal the call received.
+                args: executed_args.clone(),
                 result: result.clone(),
                 is_error,
             },
-            None,
+            signal,
         )
         .await
         {
