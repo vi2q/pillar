@@ -551,6 +551,9 @@ fn drive_session(session: &mut HostModelSession) -> Result<(), String> {
 pub use pillar_agent::{
     AbortSignal, AgentEvent, AgentMessage, AgentToolUpdateCallback, SpawnFn as HostSpawnFn,
 };
+/// The host clock a frame loop installs (see [`FrameHost`]): an embedder waits
+/// and timestamps through these instead of reaching for a platform clock.
+pub use pillar_ai::{now_millis, set_default_sleep, sleep};
 pub use pillar_ai::types::{Content as HostContent, ToolChoice as HostToolChoice};
 
 // ============================================================================
@@ -573,10 +576,55 @@ pub use pillar_ai::types::{Content as HostContent, ToolChoice as HostToolChoice}
 /// (no wall clock, no thread scheduling), which is what makes its trace
 /// comparable with a Wasm host's (§5-7).
 pub struct FrameHost {
+    id: usize,
     tasks: Mutex<Vec<pillar_agent::spawn::Spawned>>,
     sleeps: Mutex<Vec<Arc<SleepSlot>>>,
     now: Mutex<Duration>,
     spawns: AtomicUsize,
+    /// A weak handle to this host, so the timer dispatcher can name the host a
+    /// task belongs to without keeping it alive.
+    self_weak: std::sync::OnceLock<std::sync::Weak<FrameHost>>,
+}
+
+// The host whose pump is polling the current thread.
+//
+// The runtime's timer and wall clock are process-wide, so with more than one
+// host in a process "the host that installed last" would steal the others'
+// timers (policy review sb39f R7): a task of host A creating a timer after host
+// B installed had it registered on B, and only B's pump could resolve it. The
+// dispatcher routes by this thread-local instead, and falls back to the host
+// that installed last (the case of a single host, or a poll that happens
+// outside a pump).
+thread_local! {
+    static CURRENT_FRAME_HOST: std::cell::RefCell<Option<std::sync::Weak<FrameHost>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The hosts that installed their services, newest last.
+static INSTALLED_HOSTS: Mutex<Vec<std::sync::Weak<FrameHost>>> = Mutex::new(Vec::new());
+
+/// Route a timer or a timestamp to the host that is polling, or to the one
+/// installed last when nothing is polling.
+fn current_frame_host() -> Option<Arc<FrameHost>> {
+    CURRENT_FRAME_HOST
+        .with(|cell| cell.borrow().as_ref().and_then(std::sync::Weak::upgrade))
+        .or_else(|| {
+            let hosts = INSTALLED_HOSTS.lock().expect("installed hosts lock");
+            hosts.iter().rev().find_map(std::sync::Weak::upgrade)
+        })
+}
+
+/// The guard [`FrameHost::enter`] returns: the previous host is restored on
+/// drop, so nesting (a pump inside a pump's task) is safe.
+pub struct FrameHostScope {
+    previous: Option<std::sync::Weak<FrameHost>>,
+}
+
+impl Drop for FrameHostScope {
+    fn drop(&mut self) {
+        CURRENT_FRAME_HOST
+            .with(|cell| *cell.borrow_mut() = self.previous.take());
+    }
 }
 
 struct SleepSlot {
@@ -608,25 +656,68 @@ impl std::future::Future for SleepFuture {
 impl FrameHost {
     /// A host with an empty queue and a clock at zero.
     pub fn new() -> Arc<Self> {
-        Arc::new(Self {
+        static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
+        let host = Arc::new(Self {
+            id: NEXT_ID.fetch_add(1, Ordering::SeqCst),
             tasks: Mutex::new(Vec::new()),
             sleeps: Mutex::new(Vec::new()),
             now: Mutex::new(Duration::ZERO),
             spawns: AtomicUsize::new(0),
-        })
+            self_weak: std::sync::OnceLock::new(),
+        });
+        let _ = host.self_weak.set(Arc::downgrade(&host));
+        host
+    }
+
+    /// A host's identity (two hosts in one process are distinguishable).
+    pub fn id(&self) -> usize {
+        self.id
+    }
+
+    /// Route timers and timestamps to *this* host until the guard is dropped:
+    /// the pump does this around every poll, and a caller that drives a future
+    /// by hand does it around that poll.
+    pub fn enter(self: &Arc<Self>) -> FrameHostScope {
+        self.enter_current()
+    }
+
+    /// [`FrameHost::enter`] from a `&self` (the pump has no `Arc`).
+    fn enter_current(&self) -> FrameHostScope {
+        let weak = self.self_weak.get().cloned();
+        let previous: Option<std::sync::Weak<FrameHost>> = CURRENT_FRAME_HOST
+            .with(|cell| std::mem::replace(&mut *cell.borrow_mut(), weak));
+        FrameHostScope { previous }
     }
 
     /// Point the runtime's host services at this host.
     pub fn install(self: &Arc<Self>) {
         let spawn_host = Arc::clone(self);
         let spawn: SpawnFn = Arc::new(move |body| spawn_host.spawn(body));
-        let sleep_host = Arc::clone(self);
-        let sleep: pillar_ai::SleepFn = Arc::new(move |duration| sleep_host.sleep(duration));
-        install_host_services(spawn, Some(sleep));
+        // The timer and the wall clock are installed as *dispatchers*, not as
+        // this host's own: a second host installing must not take over the
+        // first one's timers. The dispatcher resolves the host being polled.
+        install_host_services(
+            spawn,
+            Some(Arc::new(|duration| {
+                current_frame_host()
+                    .map(|host| host.sleep(duration))
+                    .unwrap_or_else(|| {
+                        // No frame host: the wait cannot be resolved by any
+                        // pump, so it never resolves (the host was dropped).
+                        Box::pin(std::future::pending())
+                    })
+            })),
+        );
         // The frame clock is also the wall clock: a Wasm host has no system
         // clock, and a frame time makes timestamps deterministic.
-        let now_host = Arc::clone(self);
-        pillar_ai::set_default_now(Some(Arc::new(move || now_host.now().as_millis() as i64)));
+        pillar_ai::set_default_now(Some(Arc::new(|| {
+            current_frame_host()
+                .map(|host| host.now().as_millis() as i64)
+                .unwrap_or(0)
+        })));
+        let mut hosts = INSTALLED_HOSTS.lock().expect("installed hosts lock");
+        hosts.retain(|host| host.upgrade().is_some());
+        hosts.push(Arc::downgrade(self));
     }
 
     fn spawn(&self, body: pillar_agent::spawn::Spawned) {
@@ -691,12 +782,21 @@ impl FrameHost {
                 std::mem::take(&mut *tasks)
             };
             for mut task in queued {
+                // Timers and timestamps a task creates belong to *this* host,
+                // even when another host installed after it.
+                let _scope = self.enter_current();
                 match task.as_mut().poll(&mut context) {
                     std::task::Poll::Ready(()) => progressed = true,
                     std::task::Poll::Pending => pending.push(task),
                 }
             }
-            *self.tasks.lock().expect("frame tasks lock") = pending;
+            // Merge instead of replacing: a task that enqueued a child while it
+            // was polled would otherwise be dropped by this assignment and never
+            // run (policy review sb39f R8).
+            self.tasks
+                .lock()
+                .expect("frame tasks lock")
+                .extend(pending);
             if !progressed {
                 break;
             }
@@ -718,10 +818,15 @@ impl FrameHost {
 impl Default for FrameHost {
     fn default() -> Self {
         Self {
+            id: 0,
             tasks: Mutex::new(Vec::new()),
             sleeps: Mutex::new(Vec::new()),
             now: Mutex::new(Duration::ZERO),
             spawns: AtomicUsize::new(0),
+            // No weak handle: a host built through `Default` cannot be named by
+            // the dispatcher, so its timers use the fallback (the last host that
+            // called `install`). `FrameHost::new` is the normal constructor.
+            self_weak: std::sync::OnceLock::new(),
         }
     }
 }
@@ -787,7 +892,10 @@ pub fn demo_turn_on(
             let mut slot = run.lock().expect("run lock");
             if let Some(future) = slot.as_mut() {
                 let mut context = std::task::Context::from_waker(futures::task::noop_waker_ref());
-                if let std::task::Poll::Ready(result) = future.as_mut().poll(&mut context) {
+                let scope = host.enter();
+                let polled = future.as_mut().poll(&mut context);
+                drop(scope);
+                if let std::task::Poll::Ready(result) = polled {
                     result.map_err(|error| error.to_string())?;
                     *slot = None;
                 }

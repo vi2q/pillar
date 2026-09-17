@@ -444,6 +444,9 @@ impl HostModelSession {
         // the request that is being built.
         self.started = true;
         let mut context = std::task::Context::from_waker(futures::task::noop_waker_ref());
+        // The turn's timers and timestamps belong to *this* host, even when
+        // another frame host installed after it (policy review sb39f R7).
+        let scope = self.host.enter();
         if let Some(run) = self.run.as_mut()
             && let std::task::Poll::Ready(result) = run.as_mut().poll(&mut context)
         {
@@ -464,6 +467,7 @@ impl HostModelSession {
                 }
             }
         }
+        drop(scope);
         self.host.pump(frame);
         if matches!(self.state, HostModelState::Done | HostModelState::Failed) {
             return self.state;
