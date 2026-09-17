@@ -660,6 +660,10 @@ pub struct AgentLoopConfig {
     pub on_response: Option<pillar_ai::api::OnResponseFn>,
     /// Preferred transport forwarded through stream call options.
     pub transport: Option<pillar_ai::types::Transport>,
+    /// How the run body is started. `None` = the platform default
+    /// (`tokio::spawn` on native; a Wasm host must supply one, see
+    /// [`crate::spawn`]).
+    pub spawn: Option<crate::spawn::SpawnFn>,
 }
 
 pub type TransformFuture = std::pin::Pin<Box<dyn Future<Output = Vec<AgentMessage>> + Send>>;
@@ -694,6 +698,7 @@ impl Default for AgentLoopConfig {
             on_payload: None,
             on_response: None,
             transport: None,
+            spawn: None,
         }
     }
 }

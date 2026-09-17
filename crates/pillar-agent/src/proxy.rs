@@ -166,8 +166,10 @@ pub fn stream_proxy(
     let options = options.clone();
 
     // Drive the proxy request on a background task, pushing events into the
-    // stream (upstream runs the same logic in an async IIFE).
-    tokio::spawn(async move {
+    // stream (upstream runs the same logic in an async IIFE). The proxy path
+    // is a native HTTP provider, so it takes the platform default spawner
+    // (docs/DEVELOPMENT-STRATEGY.md §5-2: Wasm hosts use injected transports).
+    crate::spawn::spawn_background(None, async move {
         // Initialize the partial message built up from events.
         let mut partial = AssistantMessage {
             content: Vec::new(),

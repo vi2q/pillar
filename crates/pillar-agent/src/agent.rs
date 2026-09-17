@@ -106,6 +106,9 @@ pub struct AgentOptions {
     pub thinking_budgets: Option<pillar_ai::types::ThinkingBudgets>,
     pub max_retry_delay_ms: Option<u64>,
     pub tool_execution: Option<ToolExecutionMode>,
+    /// How the loop's background body is started (see [`crate::spawn`]).
+    /// `None` = the platform default; a Wasm host supplies its own executor.
+    pub spawn: Option<crate::spawn::SpawnFn>,
 }
 
 impl AgentOptions {
@@ -136,6 +139,7 @@ impl AgentOptions {
             thinking_budgets: None,
             max_retry_delay_ms: None,
             tool_execution: None,
+            spawn: None,
         }
     }
 }
@@ -240,6 +244,8 @@ pub struct Agent {
     steering_queue: Arc<Mutex<PendingMessageQueue>>,
     follow_up_queue: Arc<Mutex<PendingMessageQueue>>,
     active_run: Arc<Mutex<Option<ActiveRun>>>,
+    /// How the loop's background body is started (see [`crate::spawn`]).
+    spawn: Option<crate::spawn::SpawnFn>,
 
     pub convert_to_llm: Arc<ConvertToLlmFn>,
     pub transform_context: Option<Arc<TransformContextFn>>,
@@ -356,6 +362,7 @@ impl Agent {
             thinking_budgets: options.thinking_budgets,
             max_retry_delay_ms: options.max_retry_delay_ms,
             tool_execution: options.tool_execution.unwrap_or_default(),
+            spawn: options.spawn,
         }
     }
 
@@ -756,6 +763,7 @@ impl Agent {
         });
 
         AgentLoopConfig {
+            spawn: self.spawn.clone(),
             model: Some(state.model.clone()),
             reasoning: state.thinking_level.to_thinking_level(),
             thinking_budgets: self.thinking_budgets,

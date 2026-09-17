@@ -343,6 +343,93 @@ async fn should_apply_transform_context_before_convert_to_llm() {
     // 2 messages; the loop itself enforces transform-before-convert order.
 }
 
+/// The loop's background body goes through the injected spawner, so a host
+/// without a tokio reactor (a Wasm frame loop, a `spawn_local` queue, a test
+/// harness) can drive it (docs/DEVELOPMENT-STRATEGY.md §5-2). The spawner here
+/// runs the body on its own thread; the point is that `tokio::spawn` is not
+/// reached when a spawner is supplied.
+/// `Agent` forwards its spawner into the loop config, so a host sets it once
+/// on the agent (upstream the async IIFE has no such knob; the port needs one
+/// for the Wasm profiles).
+#[tokio::test]
+async fn the_agent_forwards_its_spawner_to_the_loop() {
+    let spawned = Arc::new(Mutex::new(0usize));
+    let sink = Arc::clone(&spawned);
+    let spawner: pillar_agent::SpawnFn = Arc::new(move |body| {
+        *sink.lock().unwrap() += 1;
+        std::thread::spawn(move || futures::executor::block_on(body));
+    });
+
+    let responses = Arc::new(Mutex::new(vec![create_assistant_message(
+        vec![Content::text("via the agent")],
+        StopReason::Stop,
+    )]));
+    let stream_fn = scripted_stream_fn(responses);
+    let agent = pillar_agent::Agent::new(pillar_agent::AgentOptions {
+        initial_state: Some(pillar_agent::AgentState {
+            system_prompt: String::new(),
+            model: create_model(),
+            tools: Vec::new(),
+            ..Default::default()
+        }),
+        stream_fn: Some(stream_fn),
+        spawn: Some(spawner),
+        ..pillar_agent::AgentOptions::new(pillar_agent::StreamFn::new(|_, _| async {
+            unreachable!("the agent takes its stream fn explicitly")
+        }))
+    });
+
+    agent.prompt("hello").await.expect("prompt");
+
+    assert_eq!(*spawned.lock().unwrap(), 1, "the agent's spawner ran the run");
+    let state = agent.state();
+    assert_eq!(state.messages.len(), 2);
+    assert!(!state.is_streaming);
+}
+
+#[tokio::test]
+async fn the_loop_runs_on_a_host_supplied_spawner() {
+    let spawned = Arc::new(Mutex::new(Vec::<String>::new()));
+    let sink = Arc::clone(&spawned);
+    let spawner: pillar_agent::SpawnFn = Arc::new(move |body| {
+        sink.lock().unwrap().push("host".to_string());
+        std::thread::spawn(move || futures::executor::block_on(body));
+    });
+
+    let responses = Arc::new(Mutex::new(vec![create_assistant_message(
+        vec![Content::text("from the host spawner")],
+        StopReason::Stop,
+    )]));
+    let stream_fn = scripted_stream_fn(Arc::clone(&responses));
+    let config = AgentLoopConfig {
+        model: Some(create_model()),
+        spawn: Some(spawner),
+        ..Default::default()
+    };
+
+    let stream = agent_loop(
+        vec![create_user_message("hello")],
+        AgentContext {
+            system_prompt: String::new(),
+            messages: Vec::new(),
+            tools: Vec::new(),
+        },
+        config,
+        None,
+        Some(stream_fn),
+    );
+    let events = drain(&stream).await;
+    let messages = stream.result().await;
+
+    assert_eq!(*spawned.lock().unwrap(), vec!["host".to_string()]);
+    assert!(
+        events.iter().any(|event| event.kind() == "agent_end"),
+        "the run reached its end event"
+    );
+    assert_eq!(messages.len(), 2, "user + assistant");
+    assert!(messages[1].role_name() == "assistant");
+}
+
 #[tokio::test]
 async fn should_handle_tool_calls_and_results() {
     let executed = Arc::new(Mutex::new(Vec::<String>::new()));

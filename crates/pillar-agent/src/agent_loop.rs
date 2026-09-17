@@ -92,7 +92,8 @@ pub fn agent_loop(
             stream.push(event);
         })
     });
-    tokio::spawn(async move {
+    let spawner = config.spawn.clone();
+    crate::spawn::spawn_background(spawner.as_ref(), async move {
         let messages = run_agent_loop(prompts, context, config, sink, signal, stream_fn).await;
         stream_for_run.end(Some(messages));
     });
@@ -133,7 +134,8 @@ pub fn agent_loop_continue(
             stream.push(event);
         })
     });
-    tokio::spawn(async move {
+    let spawner = config.spawn.clone();
+    crate::spawn::spawn_background(spawner.as_ref(), async move {
         let messages = run_agent_loop_continue(context, config, sink, signal, stream_fn).await;
         stream_for_run.end(Some(messages));
     });

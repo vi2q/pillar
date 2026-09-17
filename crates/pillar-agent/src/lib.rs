@@ -14,6 +14,7 @@ pub mod agent_loop;
 pub mod harness;
 pub mod proxy;
 pub mod search;
+pub mod spawn;
 pub mod stream_fn;
 pub mod types;
 
@@ -32,6 +33,7 @@ pub use search::{
     ScanningSessionSearchOptions, SearchError, SessionSearch, SessionSearchHit,
     SessionSearchOptions,
 };
+pub use spawn::{SpawnFn, spawn_background};
 pub use stream_fn::{get_default_stream_fn, set_default_stream_fn};
 pub use types::thinking::AgentThinkingLevel;
 pub use types::{
