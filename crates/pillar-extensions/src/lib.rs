@@ -15,4 +15,7 @@ pub mod bridge;
 pub mod loader;
 pub mod runtime;
 
-pub use runtime::{ExtensionLoadError, ExtensionRuntime, LoadedExtension};
+pub use runtime::{
+    ExtensionLoadError, ExtensionRuntime, HostCallRequest, LoadedExtension, ToolCall, ToolStep,
+    VmBudget,
+};

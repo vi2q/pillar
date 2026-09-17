@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use luaur_rt::Function;
 use pillar_agent::abort::AbortSignal;
-use pillar_extensions::runtime::{ExtensionRuntime, HostApi, VmBudget};
+use pillar_extensions::runtime::{ExtensionRuntime, HostApi, ToolStep, VmBudget};
 use pillar_extensions_contract::{
     ExecOptions, ExecResult, ExtensionContextFacts, ExtensionCustomSurface, ExtensionMode,
 };
@@ -384,7 +384,7 @@ fn an_endless_registration_loop_is_refused() {
 /// state (`Lua::create_function`), which this pins against the real runtime.
 #[test]
 fn the_runtimes_host_functions_survive_a_coroutine() {
-    let mut runtime = runtime_with_exec(Arc::new(Mutex::new(Vec::new())));
+    let runtime = runtime_with_exec(Arc::new(Mutex::new(Vec::new())));
     runtime.set_host_api(HostApi {
         fs: Some(Arc::new(|op: &str, _path: &str, _content: Option<&str>| {
             Ok(match op {
@@ -428,4 +428,90 @@ fn the_runtimes_host_functions_survive_a_coroutine() {
         .call(())
         .expect("the call runs");
     assert_eq!(out, expected);
+}
+
+/// The cooperative protocol from the host's side: a tool that waits can be
+/// driven step by step, with the runtime lock released while the host does the
+/// work (TASKS: 非同期 host 呼出, step 2). This is what lets a long build stop
+/// blocking the extension runtime.
+const BUILD_TOOL: &str = r#"
+    --!strict
+    local pillar = require("@pillar")
+
+    pillar.register_tool({
+        name = "build",
+        description = "runs the build through the host",
+        parameters = pillar.schema.object({ target = pillar.schema.string() }),
+        execute = function(tool_call_id, params, signal, on_update, ctx)
+            local result = pillar.exec("make", { params.target })
+            return {
+                content = { { type = "text", text = "built " .. tostring(result.stdout) } },
+                details = { code = result.code, id = tool_call_id },
+            }
+        end,
+    })
+
+    return nil
+"#;
+
+#[test]
+fn a_host_can_drive_a_tool_call_step_by_step() {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let runtime = Arc::new(Mutex::new(runtime_with_exec(Arc::clone(&log))));
+    runtime
+        .lock()
+        .unwrap()
+        .load_extension("/ext/build.luau", BUILD_TOOL)
+        .expect("the extension loads");
+
+    // Step 1: start the call. It suspends on `pillar.exec` and reports the
+    // request instead of running anything.
+    let (mut call, request) = {
+        let mut guard = runtime.lock().unwrap();
+        let (call, step) = guard
+            .start_tool_call(
+                "build",
+                "call-1",
+                serde_json::json!({ "target": "story" }),
+                None,
+                None,
+            )
+            .expect("the call starts");
+        let request = match step {
+            ToolStep::HostCall(request) => request,
+            ToolStep::Done(result) => panic!("the tool should be waiting: {result:?}"),
+        };
+        (call, request)
+    };
+    assert_eq!(request.kind, "exec");
+    assert_eq!(request.json["command"], "make");
+    assert_eq!(request.json["args"], serde_json::json!(["story"]));
+    assert_eq!(call.tool_name(), "build");
+
+    // While the call is suspended the runtime is free: another thread can use
+    // it (this is the property the state machine exists for).
+    let other = Arc::clone(&runtime);
+    let borrowed = std::thread::spawn(move || {
+        let guard = other.lock().unwrap();
+        guard.registry().tools.len()
+    })
+    .join()
+    .expect("the runtime was not held by the waiting call");
+    assert_eq!(borrowed, 1, "the other thread saw the registered tool");
+
+    // Step 2: the host answers (its own work, no lock held), and the tool
+    // continues to its result.
+    let result = {
+        let mut guard = runtime.lock().unwrap();
+        match guard
+            .step_tool_call(&mut call, serde_json::json!({ "stdout": "story.bin", "code": 0 }))
+            .expect("the call resumes")
+        {
+            ToolStep::Done(result) => result.expect("the tool returned a result"),
+            ToolStep::HostCall(repeat) => panic!("the tool asked again: {repeat:?}"),
+        }
+    };
+    assert_eq!(result["content"][0]["text"], "built story.bin");
+    assert_eq!(result["details"]["code"], 0);
+    assert_eq!(result["details"]["id"], "call-1");
 }

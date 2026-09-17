@@ -30,6 +30,34 @@ pub struct Registration<T> {
 /// Owner of registrations made outside an extension's setup (the host itself).
 pub const HOST_OWNER: &str = "<host>";
 
+/// A host call a suspended tool asked for: what the tool wants done, and the
+/// signal that belongs to its call.
+///
+/// This is the cooperative protocol (probe: `tests/vm_resume_probe.rs`): the
+/// tool runs in its own coroutine, `pillar.exec` yields this request, the host
+/// does the work **with no runtime lock held**, and the answer becomes the
+/// yield's return value. `pillar.exec` on the main state (an extension's setup
+/// code cannot yield) still runs through the host inline.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HostCallRequest {
+    /// `"exec"` (the kinds that can suspend grow as the wrappers follow).
+    pub kind: String,
+    /// The request as JSON: `{"command":…,"args":[…],"timeout_ms":…,"cwd":…}`.
+    pub json: serde_json::Value,
+    /// The id of the tool call's live `AbortSignal` (the host resolves it to
+    /// pass the signal into the work it does).
+    pub signal_id: Option<u64>,
+}
+
+/// Where a tool call is after one step.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ToolStep {
+    /// The tool is suspended, waiting for this host call.
+    HostCall(HostCallRequest),
+    /// The tool finished (`Ok` is the JSON result the agent's tool expects).
+    Done(Result<serde_json::Value, String>),
+}
+
 /// How many registrations the host accepts in total unless it says otherwise
 /// (upstream has no cap; the host must not be sized by an extension — the VM's
 /// own memory ceiling cannot bound host-side vectors).
@@ -735,6 +763,28 @@ pub struct ExtensionRuntime {
     vm_limit: Arc<VmLimit>,
 }
 
+/// One tool call running in its own Luau coroutine.
+///
+/// A tool that never waits behaves exactly as before (it finishes on the first
+/// step); one that calls a waiting host call suspends instead of blocking the
+/// extension's thread, and the caller resumes it with the host's answer — with
+/// the runtime lock dropped in between (the reason the state machine exists).
+pub struct ToolCall {
+    thread: luaur_rt::Thread,
+    tool_name: String,
+    tool_call_id: String,
+    /// The live signal id of this call, removed when the call is finished.
+    signal_id: Option<u64>,
+    finished: bool,
+}
+
+impl ToolCall {
+    /// The tool this call belongs to.
+    pub fn tool_name(&self) -> &str {
+        &self.tool_name
+    }
+}
+
 /// Result of dispatching one event to a handler (upstream the
 /// handler return value semantics).
 #[derive(Debug, Clone, PartialEq)]
@@ -1005,22 +1055,34 @@ impl ExtensionRuntime {
         signal: Option<pillar_agent::abort::AbortSignal>,
         on_update: Option<pillar_agent::types::AgentToolUpdateCallback>,
     ) -> Result<serde_json::Value, String> {
-        // The call runs under the VM budget and its abort signal: a pure-Lua
-        // loop is stopped at a safepoint instead of occupying the VM.
-        self.vm_limit.begin(self.vm_budget, signal.clone());
-        let outcome = self.call_tool_inner(name, tool_call_id, params, signal, on_update);
-        self.vm_limit.end();
-        outcome
+        // The synchronous driver: the same state machine a host can drive by
+        // hand, with each host call run through the installed exec host inline.
+        // A host that wants to release the runtime lock while a command runs
+        // drives [`ExtensionRuntime::start_tool_call`] itself.
+        let (mut call, mut step) =
+            self.start_tool_call(name, tool_call_id, params, signal, on_update)?;
+        loop {
+            match step {
+                ToolStep::HostCall(request) => {
+                    let answer = self.run_host_call(request)?;
+                    step = self.step_tool_call(&mut call, answer)?;
+                }
+                ToolStep::Done(result) => return result,
+            }
+        }
     }
 
-    fn call_tool_inner(
+    /// Start a tool call: it runs in its own coroutine and hands back the first
+    /// step — the host call it is waiting for, or its result when it never
+    /// waits.
+    pub fn start_tool_call(
         &mut self,
         name: &str,
         tool_call_id: &str,
         params: serde_json::Value,
         signal: Option<pillar_agent::abort::AbortSignal>,
         on_update: Option<pillar_agent::types::AgentToolUpdateCallback>,
-    ) -> Result<serde_json::Value, String> {
+    ) -> Result<(ToolCall, ToolStep), String> {
         let params_lua = self
             .lua
             .to_value(&params)
@@ -1032,39 +1094,192 @@ impl ExtensionRuntime {
             .map_err(|error| format!("{name}: {error}"))?;
         let (signal_lua, signal_id) = self.tool_signal_value(signal, name)?;
         let on_update_lua = self.tool_update_value(on_update, name)?;
-        let result: Result<Value, String> = self
+        // The ready-to-call function (upstream the registered tool's execute
+        // closure); it stays in the VM, keyed by tool name.
+        let function: Value = self
             .lua
             .load(
                 r#"
-                local name, tool_call_id, params, signal, on_update, ctx = ...
+                local name = ...
                 local registered = __pillar_tool_execute
-                local execute = registered and registered[name]
-                if execute == nil then return nil end
-                return execute(tool_call_id, params, signal, on_update, ctx)
+                return registered and registered[name]
             "#,
             )
-            .call((
-                name,
+            .call((name,))
+            .map_err(|error| format!("{name}: {error}"))?;
+        let Value::Function(execute) = function else {
+            if let Some(id) = signal_id {
+                self.remove_live_signal(id);
+            }
+            return Err(format!("tool {name} is not registered"));
+        };
+        // The coroutine the call runs in: a waiting host call suspends *this*
+        // thread instead of blocking the extension's.
+        let thread = self
+            .lua
+            .create_thread(execute)
+            .map_err(|error| format!("{name}: {error}"))?;
+        let mut call = ToolCall {
+            thread,
+            tool_name: name.to_string(),
+            tool_call_id: tool_call_id.to_string(),
+            signal_id,
+            finished: false,
+        };
+        // Hand the tool its arguments and run it to its first suspension (or to
+        // its end). Each resume runs under the VM budget and the call's signal.
+        let outcome = {
+            let signal = self.live_signal(call.signal_id);
+            self.vm_limit.begin(self.vm_budget, signal);
+            let outcome = call.thread.resume::<Value>((
                 tool_call_id,
                 params_lua,
                 signal_lua,
                 on_update_lua,
                 context,
-            ))
-            .map_err(|error| format!("{name}: {error}"));
-        if let Some(id) = signal_id {
-            self.live_signals
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .remove(&id);
+            ));
+            self.vm_limit.end();
+            outcome
+        };
+        let step = self.interpret_step(&mut call, outcome)?;
+        Ok((call, step))
+    }
+
+    /// Advance a tool call with the host's answer to the host call the previous
+    /// step reported: the answer becomes the suspended `coroutine.yield`'s
+    /// return value, so the tool continues where it stopped.
+    pub fn step_tool_call(
+        &mut self,
+        call: &mut ToolCall,
+        answer: serde_json::Value,
+    ) -> Result<ToolStep, String> {
+        if call.finished {
+            return Err(format!("tool {} has already finished", call.tool_name));
         }
-        let result = result?;
-        match result {
-            Value::Nil => Err(format!("tool {name} returned no result")),
-            other => self
-                .lua
-                .from_value::<serde_json::Value>(other)
-                .map_err(|error| format!("{name}: {error}")),
+        let answer = self
+            .lua
+            .to_value(&answer)
+            .map_err(|error| format!("{}: {error}", call.tool_name))?;
+        let outcome = {
+            let signal = self.live_signal(call.signal_id);
+            self.vm_limit.begin(self.vm_budget, signal);
+            let outcome = call.thread.resume::<Value>(answer);
+            self.vm_limit.end();
+            outcome
+        };
+        self.interpret_step(call, outcome)
+    }
+
+    /// One resume's outcome as a step: a yielded request table carries `kind`,
+    /// anything else is the tool's result (or its error).
+    fn interpret_step(
+        &mut self,
+        call: &mut ToolCall,
+        outcome: Result<Value, luaur_rt::Error>,
+    ) -> Result<ToolStep, String> {
+        let name = call.tool_name.clone();
+        let finished = |call: &mut ToolCall, runtime: &Self| {
+            call.finished = true;
+            if let Some(id) = call.signal_id.take() {
+                runtime.remove_live_signal(id);
+            }
+        };
+        let value = match outcome {
+            Ok(value) => value,
+            Err(error) => {
+                finished(call, self);
+                return Ok(ToolStep::Done(Err(format!("{name}: {error}"))));
+            }
+        };
+        if matches!(value, Value::Nil) {
+            finished(call, self);
+            return Ok(ToolStep::Done(Err(format!(
+                "tool {name} returned no result"
+            ))));
+        }
+        let json = match self.lua.from_value::<serde_json::Value>(value) {
+            Ok(json) => json,
+            Err(error) => {
+                finished(call, self);
+                return Ok(ToolStep::Done(Err(format!("{name}: {error}"))));
+            }
+        };
+        if let Some(kind) = json.get("kind").and_then(serde_json::Value::as_str) {
+            return Ok(ToolStep::HostCall(HostCallRequest {
+                kind: kind.to_string(),
+                signal_id: call.signal_id,
+                json,
+            }));
+        }
+        finished(call, self);
+        Ok(ToolStep::Done(Ok(json)))
+    }
+
+    /// The live signal of a tool call, if it still has one.
+    fn live_signal(&self, id: Option<u64>) -> Option<pillar_agent::abort::AbortSignal> {
+        let id = id?;
+        self.live_signals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&id)
+            .cloned()
+    }
+
+    /// Remove a tool call's live signal (the call is done with it).
+    fn remove_live_signal(&self, id: u64) {
+        self.live_signals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&id);
+    }
+
+    /// Run one host call the tool asked for, synchronously (the sync driver).
+    fn run_host_call(&mut self, request: HostCallRequest) -> Result<serde_json::Value, String> {
+        match request.kind.as_str() {
+            "exec" => {
+                let command = request
+                    .json
+                    .get("command")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let args: Vec<String> = request
+                    .json
+                    .get("args")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|values| {
+                        values
+                            .iter()
+                            .filter_map(serde_json::Value::as_str)
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let options = ExecOptions {
+                    signal: self.live_signal(request.signal_id),
+                    timeout_ms: request
+                        .json
+                        .get("timeout_ms")
+                        .and_then(serde_json::Value::as_u64),
+                    cwd: request
+                        .json
+                        .get("cwd")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string),
+                };
+                let result = {
+                    let guard = self
+                        .exec_host
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    match guard.as_ref() {
+                        Some(exec) => exec(&command, &args, &options),
+                        None => ExecResult::spawn_failure("exec host not installed"),
+                    }
+                };
+                serde_json::to_value(&result).map_err(|error| format!("exec result: {error}"))
+            }
+            other => Err(format!("unknown host call {other}")),
         }
     }
 
@@ -1332,9 +1547,7 @@ impl ExtensionRuntime {
                     Some(callback) => callback(),
                     None => serde_json::Value::Array(Vec::new()),
                 };
-                calling
-                    .to_value(&value)
-                    .map_err(luaur_rt::Error::external)
+                calling.to_value(&value).map_err(luaur_rt::Error::external)
             })
             .map_err(|error| ExtensionLoadError::Setup(error.to_string()))?;
         // `ctx.ui.confirm/select/input/editor` (upstream the awaited
@@ -1362,9 +1575,7 @@ impl ExtensionRuntime {
                 if answer.is_null() {
                     return Ok(Value::Nil);
                 }
-                calling
-                    .to_value(&answer)
-                    .map_err(luaur_rt::Error::external)
+                calling.to_value(&answer).map_err(luaur_rt::Error::external)
             })
             .map_err(|error| ExtensionLoadError::Setup(error.to_string()))?;
 
@@ -1438,7 +1649,8 @@ impl ExtensionRuntime {
                             Ok(event) => break Ok(event),
                             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break Err(()),
                             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                                if next_limit.stopped() || started.elapsed() >= CUSTOM_WAIT_TIMEOUT {
+                                if next_limit.stopped() || started.elapsed() >= CUSTOM_WAIT_TIMEOUT
+                                {
                                     break Err(());
                                 }
                             }
@@ -1770,10 +1982,8 @@ fn install_pillar_api(
     // working directory.
     let exec_slot = Arc::clone(exec_host);
     let exec_signals = Arc::clone(live_signals);
-    module
-        .set(
-            "exec",
-            lua.create_function(
+    let exec_sync = lua
+        .create_function(
                 move |calling: &Lua, (command, args, options): (String, Option<Vec<String>>, Option<Value>)| {
                     let args = args.unwrap_or_default();
                     // Read the fields individually: the table holds the signal
@@ -1817,9 +2027,32 @@ fn install_pillar_api(
                         .map_err(luaur_rt::Error::external)
                 },
             )
-            .expect("build pillar.exec"),
+        .expect("build pillar.exec");
+    // Inside a tool call (which runs in its own coroutine) the call *suspends*
+    // and hands the host a request; the host does the work and resumes with the
+    // result (TASKS: 非同期 host 呼出). On the main state — an extension's setup
+    // code, an event handler — there is nothing to suspend, so the installed
+    // host runs it inline.
+    let exec_wrapper: Function = lua
+        .load(
+            r#"
+            local sync = ...
+            return function(command, args, opts)
+                local request = { kind = "exec", command = command, args = args or {} }
+                if type(opts) == "table" then
+                    request.timeout_ms = opts.timeout
+                    request.cwd = opts.cwd
+                end
+                if not coroutine.isyieldable() then
+                    return sync(command, args, opts)
+                end
+                return coroutine.yield(request)
+            end
+            "#,
         )
-        .expect("set pillar.exec");
+        .call(exec_sync)
+        .expect("build pillar.exec");
+    module.set("exec", exec_wrapper).expect("set pillar.exec");
 
     // pillar.on(event, handler): handlers live inside the VM in a
     // host-managed table (luaur Values stay on the VM side).
@@ -2185,9 +2418,7 @@ fn install_pillar_api(
                     let json = callback
                         .map(|callback| callback())
                         .unwrap_or_else(|| serde_json::json!([]));
-                    calling
-                        .to_value(&json)
-                        .map_err(luaur_rt::Error::external)
+                    calling.to_value(&json).map_err(luaur_rt::Error::external)
                 })
                 .expect("build pillar tool/command getter"),
             )
@@ -2289,9 +2520,7 @@ fn install_pillar_api(
                     guard.get_flag.as_ref().and_then(|get_flag| get_flag(&name))
                 };
                 match value {
-                    Some(value) => calling
-                        .to_value(&value)
-                        .map_err(luaur_rt::Error::external),
+                    Some(value) => calling.to_value(&value).map_err(luaur_rt::Error::external),
                     None => Ok(Value::Nil),
                 }
             })
