@@ -226,7 +226,9 @@ Return directions follow the same table. Handler return values that pi types as 
 3. host が結果で resume すると、それが `coroutine.yield` の戻り値になり wrapper が呼び出し元へ返す。
 4. abort は `resume_error` で待ちをエラーとして畳む。
 
-制約: **yield は coroutine の中でしか起きない**ため、tool `execute` / event handler を main state ではなく `Thread` で走らせる必要がある（現状は main state で直接 call している）。VM 予算は resume をまたいで残り step を持ち越す。`spawn_blocking` だけで VM の永久ループを強制停止できるとはみなさない（interrupt hook が実際の停止点）。
+制約: **yield は coroutine の中でしか起きない**ため、tool `execute` / event handler を main state ではなく `Thread` で走らせる必要がある（現状は main state で直接 call している）。VM 予算は resume をまたいで残り step を持ち越す。
+
+**いま止まっている理由（luaur 0.1.8）**: coroutine の中で呼ばれた Rust の host 関数の戻り値が Lua に届かない（第1引数が返る。`crates/pillar-extensions/tests/vm_quirk_probe.rs` に最小再現、`bool` を返す関数だけは届く）。tool を coroutine で走らせると `ctx.ui.*` / `pillar.fs.*` が壊れるため、実装は `wip/luau-async-state-machine` ブランチに保留し、main は tool を main state で実行する（待つ呼出は inline、停止は VM 予算・abort・`pillar.exec` の kill・待ちのスライスで有界）。`spawn_blocking` だけで VM の永久ループを強制停止できるとはみなさない（interrupt hook が実際の停止点）。
 
 ## Session persistence & custom entries
 
