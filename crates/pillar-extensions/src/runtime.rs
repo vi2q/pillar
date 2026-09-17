@@ -1205,6 +1205,34 @@ impl ExtensionRuntime {
         signal: Option<pillar_agent::abort::AbortSignal>,
         on_update: Option<pillar_agent::types::AgentToolUpdateCallback>,
     ) -> Result<(ToolCall, ToolStep), String> {
+        // The tool's declared argument schema is enforced *here* as well as in
+        // the agent loop: a host that drives a tool call directly (the LMPC /
+        // CLI path, and the tests) must not reach `execute` with arguments the
+        // tool's own schema rejects. One registration, one contract — the same
+        // gate the loop uses (docs/DEVELOPMENT-STRATEGY.md §3).
+        let parameters = {
+            let registry = self
+                .registry
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            registry
+                .tools
+                .iter()
+                .find(|registration| registration.value["name"] == name)
+                .map(|registration| registration.value["parameters"].clone())
+        };
+        let Some(parameters) = parameters else {
+            return Err(format!("tool {name} is not registered"));
+        };
+        if !parameters.is_null()
+            && let Err(errors) =
+                pillar_agent::tool_schema::validate_tool_arguments(&parameters, &params)
+        {
+            return Err(format!(
+                "Validation failed for tool \"{name}\":\n{errors}\n\nReceived arguments:\n{}",
+                serde_json::to_string_pretty(&params).unwrap_or_default()
+            ));
+        }
         let params_lua = self
             .lua
             .to_value(&params)

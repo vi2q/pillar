@@ -173,7 +173,9 @@ fn the_capability_ledger_matches_the_code() {
             for test in row[key].as_array().cloned().unwrap_or_default() {
                 let test = test.as_str().unwrap_or_default();
                 if !functions.contains(test) {
-                    problems.push(format!("{id}: `{key}` names `{test}`, which is not defined"));
+                    problems.push(format!(
+                        "{id}: `{key}` names `{test}`, which is not defined"
+                    ));
                 }
             }
         }
@@ -205,9 +207,10 @@ fn the_capability_ledger_matches_the_code() {
             let capability = capability.as_str().unwrap_or_default();
             // A scenario may lean on a published capability or on a gap: a
             // missing path is exactly the reason the gap is listed.
-            let known = apis.iter().chain(gaps.iter()).any(|entry| {
-                entry["id"].as_str() == Some(capability)
-            });
+            let known = apis
+                .iter()
+                .chain(gaps.iter())
+                .any(|entry| entry["id"].as_str() == Some(capability));
             if !known {
                 problems.push(format!(
                     "{id}: names `{capability}`, which is neither a capability nor a gap"
@@ -219,12 +222,16 @@ fn the_capability_ledger_matches_the_code() {
             problems.push(format!("{id}: unknown scenario state `{state}`"));
         }
         if state == "running" && row["tests"].as_array().is_none_or(Vec::is_empty) {
-            problems.push(format!("{id}: a running scenario needs a test that drives it"));
+            problems.push(format!(
+                "{id}: a running scenario needs a test that drives it"
+            ));
         }
         for test in row["tests"].as_array().cloned().unwrap_or_default() {
             let test = test.as_str().unwrap_or_default();
             if !functions.contains(test) {
-                problems.push(format!("{id}: `tests` names `{test}`, which is not defined"));
+                problems.push(format!(
+                    "{id}: `tests` names `{test}`, which is not defined"
+                ));
             }
         }
     }

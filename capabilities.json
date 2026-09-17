@@ -19,12 +19,15 @@
       "adapter": "crates/pillar-extensions/src/runtime.rs",
       "permission": "process:exec",
       "state": "verified",
-      "what": "Run a host command (the extension's process capability), suspending the tool call while the host runs it.",
+      "what": "Run a host command (the extension's process capability), suspending the tool call while the host runs it. The call's abort signal reaches the host, which kills the process; the killed result is reported as `interrupted`, never as success.",
       "tests": [
         "a_host_can_drive_a_tool_call_step_by_step",
         "an_async_host_call_suspends_the_tool_until_the_host_answers"
       ],
-      "interrupt_tests": ["an_aborted_tool_call_sees_its_signal"]
+      "interrupt_tests": [
+        "an_aborted_tool_call_sees_its_signal",
+        "an_interrupted_build_kills_the_process_and_reports_what_ran"
+      ]
     },
     {
       "id": "luau.fs.read",
@@ -116,8 +119,12 @@
       "adapter": "crates/pillar-extensions/src/runtime.rs",
       "permission": "tools:register",
       "state": "verified",
-      "what": "Register a tool with the agent; its arguments go through the same schema validation, authorization, progress, cancellation and result limits as a built-in.",
-      "tests": ["a_real_extension_tool_runs_headless", "tools_surface_in_the_runner_tool_set"]
+      "what": "Register a tool with the agent; its arguments go through the same schema validation, authorization, progress, cancellation and result limits as a built-in — enforced both in the agent loop and on the direct host path (ExtensionRuntime::start_tool_call), so a host cannot reach execute with arguments the tool's own schema rejects.",
+      "tests": [
+        "a_real_extension_tool_runs_headless",
+        "tools_surface_in_the_runner_tool_set",
+        "the_plan_is_validated_before_anything_runs"
+      ]
     },
     {
       "id": "luau.register_command",
@@ -572,12 +579,31 @@
       ]
     },
     {
+      "id": "build-with-progress-interrupt-resume",
+      "state": "running",
+      "what": "The bundled extensions/build.luau runs a plan of real commands: one on_update per step while the build runs, a structured per-step result for the caller to match (never success-shaped on failure), a real process killed when the call is aborted, the combined log written even then, and `resume = true` skipping the steps whose artifact is already on disk.",
+      "capabilities": [
+        "luau.exec",
+        "luau.fs.exists",
+        "luau.fs.write",
+        "luau.register_tool"
+      ],
+      "tests": [
+        "a_build_reports_progress_and_a_result_to_match",
+        "a_failing_step_stops_the_build_and_is_not_success",
+        "a_resumed_build_skips_the_steps_whose_artifact_exists",
+        "an_interrupted_build_kills_the_process_and_reports_what_ran",
+        "a_build_after_an_interrupt_resumes_from_the_artifacts",
+        "the_plan_is_validated_before_anything_runs"
+      ]
+    },
+    {
       "id": "investigate-edit-build-observe",
       "state": "missing",
       "what": "The production path the policy review asks for: with a real azparam host, investigate a scene/script, apply a change, run build/preview, observe the result, match it against the change, and interrupt/resume mid-build — with the capabilities involved pinned in this ledger as they become real.",
       "capabilities": ["azparam.scene.query", "azparam.scene.update", "azparam.preview.observe", "luau.exec"],
       "tests": [],
-      "blocked_by": "azparam.scene.query (no azparam host contract yet); the build half exists through luau.exec, the observation half does not"
+      "blocked_by": "azparam.scene.query and azparam.preview.observe (no azparam host contract yet). The *build* half is no longer the blocker: scenario build-with-progress-interrupt-resume runs it end to end against real processes."
     }
   ]
 }
