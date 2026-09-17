@@ -63,6 +63,19 @@ else
     say "tests (skipped: --quick)"
 fi
 
+# The Wasm host direction (docs/DEVELOPMENT-STRATEGY.md §5-2/§5-6): the runtime
+# core and the Luau VM must at least compile for the embedding target. This is
+# a compile gate only — running a turn on a real Wasm host is still unverified
+# (TASKS), and tokio / `std` availability at *runtime* is not proven by it.
+if [ "$quick" -eq 0 ]; then
+    if rustup target list --installed 2>/dev/null | grep -qx "wasm32-unknown-unknown"; then
+        say "wasm32-unknown-unknown (LMPC minimal + Luau)"
+        cargo check --locked -p pillar-agent -p pillar-extensions --target wasm32-unknown-unknown
+    else
+        say "wasm32-unknown-unknown (skipped: run 'rustup target add wasm32-unknown-unknown')"
+    fi
+fi
+
 # The smoke assertions run against both feature sets: the build axis of
 # docs/DEVELOPMENT-STRATEGY.md §5-3 is only met if the binary also *runs*
 # without the VM (it binds an empty runner and needs no extension file).
