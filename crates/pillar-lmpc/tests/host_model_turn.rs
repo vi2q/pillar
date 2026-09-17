@@ -180,7 +180,11 @@ fn the_host_can_cancel_a_turn() {
             break;
         }
     }
-    assert_eq!(state, HostModelState::Cancelled, "the cancel ended the turn");
+    assert_eq!(
+        state,
+        HostModelState::Cancelled,
+        "the cancel ended the turn"
+    );
 
     // The trace shows how far the turn got: the prompt, and no model answer
     // (the guest stops instead of waiting for a reply that will not come).
@@ -194,9 +198,69 @@ fn the_host_can_cancel_a_turn() {
         .messages
         .iter()
         .any(|(role, text)| role == "assistant" && !text.is_empty());
-    assert!(!answered, "no model answer was recorded: {:?}", trace.messages);
+    assert!(
+        !answered,
+        "no model answer was recorded: {:?}",
+        trace.messages
+    );
     assert!(
         !session.needs_model(),
         "the guest stopped rather than waiting for a reply"
     );
+}
+
+/// A session spans several turns: the agent keeps its state, so the second
+/// turn's model request carries the first turn's messages (an NPC remembers).
+#[test]
+fn a_session_spans_several_turns() {
+    use std::time::Duration;
+
+    let host = Arc::new(pillar_lmpc::FrameHost::new());
+    let mut session = pillar_lmpc::HostModelSession::start(&host, "my name is Ada", Vec::new());
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+
+    let answer = |session: &mut pillar_lmpc::HostModelSession,
+                      seen: &std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+                      text: &str| {
+        for _ in 0..1000 {
+            match session.poll(Duration::from_millis(1)) {
+                HostModelState::NeedsModel => {
+                    let request = session.request_json().expect("a pending request");
+                    seen.lock().unwrap().push(request);
+                    let reply = format!("[{{\"type\":\"text\",\"text\":\"{text}\"}}]");
+                    session.reply(&reply).expect("the host answers");
+                    // Keep polling until the turn ends.
+                }
+                HostModelState::Running => {}
+                HostModelState::Done => return,
+                other => panic!("unexpected state {other:?}"),
+            }
+        }
+        panic!("the turn did not finish");
+    };
+
+    answer(&mut session, &seen, "hello Ada");
+    let first = session.trace();
+    assert_eq!(first.messages.len(), 2, "{:?}", first.messages);
+
+    session.say("what is my name?").expect("a second turn");
+    answer(&mut session, &seen, "Ada");
+
+    let requests = seen.lock().unwrap().clone();
+    assert_eq!(requests.len(), 2, "one model request per turn");
+    assert!(
+        requests[1].contains("my name is Ada") && requests[1].contains("hello Ada"),
+        "the second request carries the first turn: {}",
+        requests[1]
+    );
+
+    let trace = session.trace();
+    let roles: Vec<&str> = trace.messages.iter().map(|(role, _)| role.as_str()).collect();
+    assert_eq!(
+        roles,
+        ["user", "assistant", "user", "assistant"],
+        "{:?}",
+        trace.messages
+    );
+    assert_eq!(trace.messages[3].1, "Ada");
 }

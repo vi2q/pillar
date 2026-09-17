@@ -103,6 +103,19 @@ if [ "$quick" -eq 0 ]; then
                 echo "check: the Wasm host-model trace differs from the native one" >&2
                 exit 1
             fi
+            # A session spans turns: the second turn must see the first one (the
+            # NPC keeps its state), and the trace must still match native.
+            say "wasm multi-turn session matches native"
+            native_turns=$(cargo run --locked -q -p pillar-lmpc -- --host-model \\
+                "my name is Ada" "what is my name?")
+            wasm_turns=$(node "$root/scripts/wasm_host_model.mjs" \\
+                "$root/target/wasm32-unknown-unknown/debug/pillar_lmpc.wasm" \\
+                "my name is Ada" "what is my name?")
+            if [ "$native_turns" != "$wasm_turns" ]; then
+                printf 'native:\\n%s\\nwasm:\\n%s\\n' "$native_turns" "$wasm_turns" >&2
+                echo "check: the Wasm multi-turn trace differs from the native one" >&2
+                exit 1
+            fi
             # Host-driven cancellation: the guest must stop instead of waiting
             # for a model answer it will never get.
             say "wasm host cancel"

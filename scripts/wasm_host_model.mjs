@@ -20,9 +20,12 @@ import { readFile } from "node:fs/promises";
 
 const path = process.argv[2];
 const cancel = process.argv.includes("--cancel");
-const prompt =
-  process.argv.slice(3).find((argument) => !argument.startsWith("--")) ??
-  "remember something";
+// Every positional argument is one turn on the same session (an NPC keeps its
+// state), which is what the native `--host-model <p1> <p2>` does.
+const prompts = process.argv
+  .slice(3)
+  .filter((argument) => !argument.startsWith("--"));
+if (prompts.length === 0) prompts.push("remember something");
 if (!path) {
   console.error(
     "usage: node scripts/wasm_host_model.mjs <module.wasm> [prompt]",
@@ -53,13 +56,18 @@ const writeInput = (text) => {
 const read = (pointer, length) =>
   decoder.decode(memory().subarray(pointer, pointer + length));
 
-// The host's scripted model: call the `remember` tool, then answer with it.
-const replies = [
-  '[{"type":"toolCall","id":"remember-1","name":"remember","arguments":{"value":"the answer is 42"}}]',
-  '[{"type":"text","text":"the answer is 42"}]',
-];
+// The host's scripted model, mirroring `host_model_scripted_reply` in
+// crates/pillar-lmpc/src/lib.rs: call the `remember` tool, then answer with it.
+const replyFor = (requestIndex) => {
+  if (requestIndex === 0) {
+    return '[{"type":"toolCall","id":"remember-1","name":"remember","arguments":{"value":"the answer is 42"}}]';
+  }
+  if (requestIndex === 1) return '[{"type":"text","text":"the answer is 42"}]';
+  return '[{"type":"text","text":"42 again"}]';
+};
 
-let state = exports.lmpc_host_turn_start(writeInput(prompt));
+let turn = 0;
+let state = exports.lmpc_host_turn_start(writeInput(prompts[turn]));
 let repliesSent = 0;
 let cancelled = false;
 for (let frame = 0; frame < 100_000; frame += 1) {
@@ -73,22 +81,34 @@ for (let frame = 0; frame < 100_000; frame += 1) {
   if (state === 1 && !cancelled) {
     const requestLength = exports.lmpc_host_request_len();
     const request = read(exports.lmpc_host_request_ptr(), requestLength);
-    if (!request.includes(prompt)) {
+    if (!request.includes(prompts[turn])) {
       console.error(
         `host_model: the request does not carry the prompt: ${request}`,
       );
       process.exit(1);
     }
-    const reply = replies[Math.min(repliesSent, replies.length - 1)];
+    const reply = replyFor(repliesSent);
     repliesSent += 1;
     if (exports.lmpc_host_reply(writeInput(reply)) !== 0) {
       console.error("host_model: the guest rejected the reply");
       process.exit(1);
     }
   }
-  if (state === 2 || state === 4) {
-    // 2 = the turn finished, 4 = the host cancelled it: either way the trace
-    // shows what the module produced.
+  if (state === 2) {
+    // The turn finished: send the next prompt as another turn on the same
+    // session, or print the trace when there is none left.
+    turn += 1;
+    if (turn >= prompts.length) {
+      process.stdout.write(
+        read(exports.lmpc_trace_ptr(), exports.lmpc_trace_len()),
+      );
+      process.exit(0);
+    }
+    state = exports.lmpc_host_say(writeInput(prompts[turn]));
+    continue;
+  }
+  if (state === 4) {
+    // The host cancelled the turn: the trace shows how far it got.
     process.stdout.write(
       read(exports.lmpc_trace_ptr(), exports.lmpc_trace_len()),
     );

@@ -10,11 +10,18 @@ fn main() -> Result<(), String> {
     if host_model {
         let _ = args.next();
     }
-    let prompt = args.next().unwrap_or_else(|| "remember something".to_string());
-    let trace = if host_model {
-        pillar_lmpc::host_model_demo_turn(&prompt)?
+    let prompts: Vec<String> = args.collect();
+    let prompts = if prompts.is_empty() {
+        vec!["remember something".to_string()]
     } else {
-        pillar_lmpc::demo_turn(&prompt)?
+        prompts
+    };
+    let trace = if host_model {
+        // Several prompts mean several turns on one session (the NPC keeps its
+        // state), which is what the Wasm host does too.
+        pillar_lmpc::host_model_demo_turns(&prompts)?
+    } else {
+        pillar_lmpc::demo_turn(&prompts[0])?
     };
     print!("{}", pillar_lmpc::trace_text(&trace));
     Ok(())

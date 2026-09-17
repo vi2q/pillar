@@ -178,25 +178,46 @@ impl HostModelSession {
             Box::pin(async {})
         });
 
-        let agent_for_run = Arc::clone(&agent);
-        let prompt = prompt.to_string();
-        let run = Box::pin(async move {
-            agent_for_run
-                .prompt(prompt)
-                .await
-                .map_err(|error| error.to_string())
-        });
-
-        Self {
+        let mut session = Self {
             agent,
             host: Arc::clone(host),
             slot,
             events,
-            run: Some(run),
+            run: None,
             state: HostModelState::Running,
             error: None,
             cancelled: false,
+        };
+        session.start_run(prompt);
+        session
+    }
+
+    /// Start another turn on the same session: the agent keeps its state, so an
+    /// NPC remembers the conversation (the trace then holds every turn so far).
+    pub fn say(&mut self, prompt: &str) -> Result<(), String> {
+        if self.run.is_some() {
+            return Err("the previous turn is still running".to_string());
         }
+        {
+            let mut slot = self.slot.lock().expect("model slot lock");
+            slot.cancelled = false;
+            slot.request = None;
+            slot.reply = None;
+        }
+        self.cancelled = false;
+        self.error = None;
+        self.start_run(prompt);
+        Ok(())
+    }
+
+    /// Queue the prompt future for one turn.
+    fn start_run(&mut self, prompt: &str) {
+        let agent = Arc::clone(&self.agent);
+        let prompt = prompt.to_string();
+        self.run = Some(Box::pin(async move {
+            agent.prompt(prompt).await.map_err(|error| error.to_string())
+        }));
+        self.state = HostModelState::Running;
     }
 
     /// Advance one frame. Returns the state the host should act on.

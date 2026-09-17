@@ -140,6 +140,23 @@ pub extern "C" fn lmpc_host_turn_start(length: u32) -> i32 {
     state
 }
 
+/// Start another turn on the running session (the guest keeps its state, so an
+/// NPC remembers); the prompt is `length` bytes of the input buffer.
+#[unsafe(no_mangle)]
+pub extern "C" fn lmpc_host_say(length: u32) -> i32 {
+    let Some(prompt) = read_input(length) else {
+        return 3;
+    };
+    let mut guard = SESSION.lock().expect("session lock");
+    let Some(session) = guard.as_mut() else {
+        return 3;
+    };
+    match session.say(&prompt) {
+        Ok(()) => state_code(session.poll(std::time::Duration::from_millis(1))),
+        Err(_) => 3,
+    }
+}
+
 /// Advance one frame of the host-model turn.
 #[unsafe(no_mangle)]
 pub extern "C" fn lmpc_host_poll() -> i32 {

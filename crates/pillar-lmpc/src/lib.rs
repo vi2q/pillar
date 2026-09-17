@@ -334,22 +334,52 @@ fn text_of(message: &pillar_agent::AgentMessage) -> String {
 /// [`HostModelSession`] with the same replies, so their traces must match
 /// (§5-7) and a real host has a worked example of the protocol.
 pub fn host_model_demo_turn(prompt: &str) -> Result<TurnTrace, String> {
+    host_model_demo_turns(&[prompt.to_string()])
+}
+
+/// The scripted host answers, shared with `scripts/wasm_host_model.mjs` (the
+/// first request calls the `remember` tool, the rest answer with it).
+///
+/// Keeping one script for both hosts is what makes their traces comparable
+/// (§5-7); a real host replaces it with its own model.
+pub fn host_model_scripted_reply(request_index: usize) -> &'static str {
+    match request_index {
+        0 => {
+            r#"[{"type":"toolCall","id":"remember-1","name":"remember","arguments":{"value":"the answer is 42"}}]"#
+        }
+        1 => r#"[{"type":"text","text":"the answer is 42"}]"#,
+        _ => r#"[{"type":"text","text":"42 again"}]"#,
+    }
+}
+
+/// [`host_model_demo_turn`] over several prompts: the session keeps its state,
+/// so the later turns see the earlier ones (the trace covers every turn).
+pub fn host_model_demo_turns(prompts: &[String]) -> Result<TurnTrace, String> {
     let host = FrameHost::new();
-    let mut session = HostModelSession::start(&host, prompt, demo_tools());
+    let mut session = HostModelSession::start(
+        &host,
+        prompts
+            .first()
+            .map(String::as_str)
+            .unwrap_or("remember something"),
+        demo_tools(),
+    );
     let mut requests = 0usize;
-    for _ in 0..10_000 {
+    let mut turn = 0usize;
+    for _ in 0..100_000 {
         match session.poll(Duration::from_millis(1)) {
             HostModelState::NeedsModel => {
-                let reply = if requests == 0 {
-                    r#"[{"type":"toolCall","id":"remember-1","name":"remember","arguments":{"value":"the answer is 42"}}]"#
-                } else {
-                    r#"[{"type":"text","text":"the answer is 42"}]"#
-                };
-                session.reply(reply)?;
+                session.reply(host_model_scripted_reply(requests))?;
                 requests += 1;
             }
             HostModelState::Running => {}
-            HostModelState::Done => return Ok(session.trace()),
+            HostModelState::Done => {
+                turn += 1;
+                match prompts.get(turn) {
+                    Some(next) => session.say(next)?,
+                    None => return Ok(session.trace()),
+                }
+            }
             HostModelState::Cancelled => {
                 return Err("the host model turn was cancelled".to_string());
             }
