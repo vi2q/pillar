@@ -12,7 +12,9 @@ static TESTS: Mutex<()> = Mutex::new(());
 
 #[test]
 fn a_turn_runs_with_host_services() {
-    let _guard = TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _guard = TESTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let trace = pillar_lmpc::demo_turn("remember something").expect("the demo turn runs");
 
     // The loop reached its end and the host saw the tool round trip.
@@ -51,42 +53,42 @@ fn a_turn_runs_with_host_services() {
     );
 }
 
-/// The host can install its own clock and spawner; the demo uses them for the
-/// waits and the loop body. This records both to prove the wiring.
+/// A frame-driven host runs the same turn: no threads, no tokio, and a virtual
+/// clock — the shape the embedding target (a game frame, a browser animation
+/// frame) can actually provide. The trace must match the thread-driven one,
+/// which is the §5-7 comparison in miniature.
 #[test]
-fn host_services_are_used_but_replaceable() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
-    use std::time::Duration;
-
+fn a_frame_driven_host_runs_the_same_turn() {
     let _guard = TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
 
-    let spawns = Arc::new(AtomicUsize::new(0));
-    let seen_spawns = Arc::clone(&spawns);
-    let waits: Arc<Mutex<Vec<Duration>>> = Arc::new(Mutex::new(Vec::new()));
-    let seen_waits = Arc::clone(&waits);
+    // The thread-driven run first (it installs the native defaults), then the
+    // frame-driven one (which points the services at its own queue).
+    let threaded = pillar_lmpc::demo_turn("remember something").expect("the thread-driven turn runs");
 
-    pillar_lmpc::install_host_services(
-        Arc::new(move |body| {
-            seen_spawns.fetch_add(1, Ordering::SeqCst);
-            std::thread::spawn(move || futures::executor::block_on(body));
-        }),
-        Some(Arc::new(move |duration| {
-            seen_waits.lock().unwrap().push(duration);
-            Box::pin(async {})
-        })),
+    let host = pillar_lmpc::FrameHost::new();
+    let trace = pillar_lmpc::demo_turn_on(
+        &host,
+        "remember something",
+        std::time::Duration::from_millis(1),
+    )
+    .expect("the frame-driven turn runs");
+
+    assert_eq!(
+        trace.messages, threaded.messages,
+        "the host model produced a different transcript on the frame-driven host"
+    );
+    assert_eq!(
+        trace.events, threaded.events,
+        "the host model produced a different event trace on the frame-driven host"
     );
 
-    let trace = pillar_lmpc::demo_turn("hello").expect("the demo turn runs");
+    // The host's own services were the ones used: it started the body, its
+    // virtual clock advanced past the model's wait, and its queue drained.
+    assert!(host.spawns() >= 1, "the host's spawner ran the loop body");
     assert!(
-        spawns.load(Ordering::SeqCst) >= 1,
-        "the host spawner ran the loop"
+        host.now() >= std::time::Duration::from_millis(1),
+        "the virtual clock advanced: {:?}",
+        host.now()
     );
-    assert!(
-        !waits.lock().unwrap().is_empty(),
-        "the host clock served the model's wait"
-    );
-    assert_eq!(trace.messages[3].1, "the answer is 42");
-
-    pillar_ai::set_default_sleep(None);
+    assert!(host.is_idle(), "the turn left nothing queued");
 }

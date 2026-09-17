@@ -25,9 +25,7 @@ use pillar_agent::{
     ToolExecutionMode,
 };
 use pillar_ai::event_stream::assistant_message_event_stream;
-use pillar_ai::types::{
-    AssistantMessageEvent, Content, StopReason, Tool, Usage, UsageCost,
-};
+use pillar_ai::types::{AssistantMessageEvent, Content, StopReason, Tool, Usage, UsageCost};
 
 /// What one demo turn produced: the events the host observed and the final
 /// transcript. The host decides what to do with them (a game reads the answer;
@@ -54,6 +52,18 @@ pub fn install_host_services(spawn: SpawnFn, sleep: Option<pillar_ai::SleepFn>) 
 }
 
 static HOST_SPAWN: std::sync::RwLock<Option<SpawnFn>> = std::sync::RwLock::new(None);
+
+/// The native default host services: run each body on its own thread with a
+/// plain futures executor and resolve waits immediately. A host that has a
+/// frame loop uses [`FrameHost`] instead.
+pub fn thread_host_services() -> (SpawnFn, pillar_ai::SleepFn) {
+    (
+        Arc::new(|body| {
+            std::thread::spawn(move || futures::executor::block_on(body));
+        }),
+        Arc::new(|_| Box::pin(async {})),
+    )
+}
 
 fn host_spawn() -> SpawnFn {
     HOST_SPAWN
@@ -223,11 +233,11 @@ fn remember_tool(model: Arc<DemoModel>) -> AgentTool {
 /// the loop body and the clock serves the model's wait, so this works where
 /// tokio's reactor and timer driver do not exist.
 pub fn demo_turn(prompt: &str) -> Result<TurnTrace, String> {
-    // A host installs its own clock; the demo resolves waits immediately so the
-    // artifact runs stand-alone (a real host's clock is the frame timer).
-    if pillar_ai::get_default_sleep().is_none() {
-        pillar_ai::set_default_sleep(Some(Arc::new(|_| Box::pin(async {}))));
-    }
+    // The demo drives itself: install the native defaults so the artifact runs
+    // stand-alone regardless of what a previous call installed (a host with a
+    // frame loop uses `demo_turn_on` or builds its own agent).
+    let (spawn, sleep) = thread_host_services();
+    install_host_services(spawn, Some(sleep));
     let model = DemoModel::new();
     let events = Arc::new(Mutex::new(Vec::<String>::new()));
     let recorded = Arc::clone(&events);
@@ -304,3 +314,255 @@ pub use pillar_agent::{
     AbortSignal, AgentEvent, AgentMessage, AgentToolUpdateCallback, SpawnFn as HostSpawnFn,
 };
 pub use pillar_ai::types::{Content as HostContent, ToolChoice as HostToolChoice};
+
+// ============================================================================
+// A frame-driven host (no threads, no tokio)
+// ============================================================================
+
+/// A host that drives the runtime from its own loop — a game frame, a browser
+/// animation frame, a test pump.
+///
+/// The embedding targets have no threads and no timer driver, so this host
+/// keeps the loop bodies and the timers in its own queue:
+/// - [`install`](FrameHost::install) points the runtime's `SpawnFn` and the
+///   provider clock at this host,
+/// - [`pump`](FrameHost::pump) advances its (virtual) clock and polls what it
+///   has queued.
+///
+/// It is a deliberate "poll everything each frame" executor: no waker has to
+/// cross a thread or a JavaScript boundary, which is what makes it usable from
+/// a Wasm host. Native hosts use it too — a frame-driven turn is deterministic
+/// (no wall clock, no thread scheduling), which is what makes its trace
+/// comparable with a Wasm host's (§5-7).
+pub struct FrameHost {
+    tasks: Mutex<Vec<pillar_agent::spawn::Spawned>>,
+    sleeps: Mutex<Vec<Arc<SleepSlot>>>,
+    now: Mutex<Duration>,
+    spawns: AtomicUsize,
+}
+
+struct SleepSlot {
+    deadline: Duration,
+    done: std::sync::atomic::AtomicBool,
+}
+
+struct SleepFuture {
+    slot: Arc<SleepSlot>,
+}
+
+impl std::future::Future for SleepFuture {
+    type Output = ();
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        _context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<()> {
+        // No waker: `pump` re-polls every queued task each frame, and it flips
+        // `done` before that poll.
+        if self.slot.done.load(Ordering::SeqCst) {
+            std::task::Poll::Ready(())
+        } else {
+            std::task::Poll::Pending
+        }
+    }
+}
+
+impl FrameHost {
+    /// A host with an empty queue and a clock at zero.
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            tasks: Mutex::new(Vec::new()),
+            sleeps: Mutex::new(Vec::new()),
+            now: Mutex::new(Duration::ZERO),
+            spawns: AtomicUsize::new(0),
+        })
+    }
+
+    /// Point the runtime's host services at this host.
+    pub fn install(self: &Arc<Self>) {
+        let spawn_host = Arc::clone(self);
+        let spawn: SpawnFn = Arc::new(move |body| spawn_host.spawn(body));
+        let sleep_host = Arc::clone(self);
+        let sleep: pillar_ai::SleepFn = Arc::new(move |duration| sleep_host.sleep(duration));
+        install_host_services(spawn, Some(sleep));
+    }
+
+    fn spawn(&self, body: pillar_agent::spawn::Spawned) {
+        self.spawns.fetch_add(1, Ordering::SeqCst);
+        self.tasks.lock().expect("frame tasks lock").push(body);
+    }
+
+    /// How many backgrounds bodies this host started (a host-side check that
+    /// the runtime really went through it).
+    pub fn spawns(&self) -> usize {
+        self.spawns.load(Ordering::SeqCst)
+    }
+
+    fn sleep(&self, duration: Duration) -> pillar_ai::clock::SleepFuture {
+        let deadline = *self.now.lock().expect("frame clock lock") + duration;
+        self.sleeps
+            .lock()
+            .expect("frame sleeps lock")
+            .push(Arc::new(SleepSlot {
+                deadline,
+                done: std::sync::atomic::AtomicBool::new(false),
+            }));
+        let slot = Arc::clone(
+            self.sleeps
+                .lock()
+                .expect("frame sleeps lock")
+                .last()
+                .expect("just pushed"),
+        );
+        Box::pin(SleepFuture { slot })
+    }
+
+    /// Advance the clock by `elapsed`, resolve the timers that came due, and
+    /// poll everything that can progress.
+    pub fn pump(&self, elapsed: Duration) {
+        {
+            let mut now = self.now.lock().expect("frame clock lock");
+            *now += elapsed;
+            let now = *now;
+            let mut sleeps = self.sleeps.lock().expect("frame sleeps lock");
+            for slot in sleeps.iter() {
+                if slot.deadline <= now {
+                    slot.done.store(true, Ordering::SeqCst);
+                }
+            }
+            sleeps.retain(|slot| !slot.done.load(Ordering::SeqCst));
+        }
+        // Poll each queued task once; repeat while a task made progress (a
+        // finished await may have unblocked another task in the same frame).
+        let mut context = std::task::Context::from_waker(futures::task::noop_waker_ref());
+        loop {
+            let mut progressed = false;
+            let mut pending = Vec::new();
+            let queued: Vec<pillar_agent::spawn::Spawned> = {
+                let mut tasks = self.tasks.lock().expect("frame tasks lock");
+                std::mem::take(&mut *tasks)
+            };
+            for mut task in queued {
+                match task.as_mut().poll(&mut context) {
+                    std::task::Poll::Ready(()) => progressed = true,
+                    std::task::Poll::Pending => pending.push(task),
+                }
+            }
+            *self.tasks.lock().expect("frame tasks lock") = pending;
+            if !progressed {
+                break;
+            }
+        }
+    }
+
+    /// Whether the host still has work queued (a body or a timer).
+    pub fn is_idle(&self) -> bool {
+        self.tasks.lock().expect("frame tasks lock").is_empty()
+            && self.sleeps.lock().expect("frame sleeps lock").is_empty()
+    }
+
+    /// The host's virtual clock.
+    pub fn now(&self) -> Duration {
+        *self.now.lock().expect("frame clock lock")
+    }
+}
+
+impl Default for FrameHost {
+    fn default() -> Self {
+        Self {
+            tasks: Mutex::new(Vec::new()),
+            sleeps: Mutex::new(Vec::new()),
+            now: Mutex::new(Duration::ZERO),
+            spawns: AtomicUsize::new(0),
+        }
+    }
+}
+
+/// [`demo_turn`] on a caller-owned host: install `host`, run the turn, and let
+/// the caller pump frames until it finishes.
+///
+/// The returned future completes when the turn does; the caller decides how
+/// much time each frame advances.
+pub fn demo_turn_on(
+    host: &Arc<FrameHost>,
+    prompt: &str,
+    frame: Duration,
+) -> Result<TurnTrace, String> {
+    host.install();
+    let model = DemoModel::new();
+    let events = Arc::new(Mutex::new(Vec::<String>::new()));
+    let recorded = Arc::clone(&events);
+    let agent = Agent::new(AgentOptions {
+        initial_state: Some(AgentState {
+            system_prompt: "You are an NPC with a memory.".to_string(),
+            model: pillar_agent::FauxModelRef {
+                id: "host".into(),
+                name: "host".into(),
+                api: "host".into(),
+                provider: "host".into(),
+                base_url: "local".into(),
+                reasoning: false,
+                input: vec!["text".into()],
+                cost: UsageCost::default(),
+                context_window: 8192,
+                max_tokens: 2048,
+            },
+            tools: vec![remember_tool(Arc::clone(&model))],
+            ..Default::default()
+        }),
+        stream_fn: Some(model.stream_fn()),
+        spawn: Some(
+            HOST_SPAWN
+                .read()
+                .expect("host spawn lock")
+                .clone()
+                .ok_or_else(|| "install_host_services was not called".to_string())?,
+        ),
+        ..AgentOptions::new(StreamFn::new(|_, _| async {
+            unreachable!("the host model is installed explicitly")
+        }))
+    });
+    let _subscription = agent.subscribe(move |event, _signal| {
+        recorded
+            .lock()
+            .expect("trace lock")
+            .push(event.kind().to_string());
+        Box::pin(async {})
+    });
+
+    // Drive the turn frame by frame: the prompt future is polled by hand so the
+    // host's queue is what makes progress.
+    let run = std::sync::Arc::new(std::sync::Mutex::new(Some(Box::pin(agent.prompt(prompt)))));
+    let mut frames = 0usize;
+    loop {
+        {
+            let mut slot = run.lock().expect("run lock");
+            if let Some(future) = slot.as_mut() {
+                let mut context = std::task::Context::from_waker(futures::task::noop_waker_ref());
+                if let std::task::Poll::Ready(result) = future.as_mut().poll(&mut context)
+                {
+                    result.map_err(|error| error.to_string())?;
+                    *slot = None;
+                }
+            } else {
+                break;
+            }
+        }
+        host.pump(frame);
+        frames += 1;
+        if frames > 100_000 {
+            return Err("the turn did not finish in 100000 frames".to_string());
+        }
+    }
+
+    let state = agent.state();
+    let messages = state
+        .messages
+        .iter()
+        .map(|message| (message.role_name().to_string(), text_of(message)))
+        .collect();
+    Ok(TurnTrace {
+        events: events.lock().expect("trace lock").clone(),
+        messages,
+    })
+}
