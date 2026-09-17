@@ -122,6 +122,7 @@ fn state_code(state: crate::host_model::HostModelState) -> i32 {
         crate::host_model::HostModelState::NeedsModel => 1,
         crate::host_model::HostModelState::Done => 2,
         crate::host_model::HostModelState::Failed => 3,
+        crate::host_model::HostModelState::Cancelled => 4,
     }
 }
 
@@ -157,6 +158,10 @@ pub extern "C" fn lmpc_host_poll() -> i32 {
                 "error: {}",
                 session.error().unwrap_or("the host model turn failed")
             );
+        }
+        crate::host_model::HostModelState::Cancelled => {
+            let trace = crate::trace_text(&session.trace());
+            *TRACE.lock().expect("trace lock") = trace;
         }
         _ => {}
     }
@@ -199,5 +204,13 @@ pub extern "C" fn lmpc_host_reply(length: u32) -> i32 {
     match session.reply(&reply) {
         Ok(()) => 0,
         Err(_) => 3,
+    }
+}
+
+/// Cancel the running turn (state 4 afterwards; the trace shows how far it got).
+#[unsafe(no_mangle)]
+pub extern "C" fn lmpc_host_cancel() {
+    if let Some(session) = SESSION.lock().expect("session lock").as_mut() {
+        session.cancel();
     }
 }

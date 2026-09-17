@@ -350,6 +350,9 @@ pub fn host_model_demo_turn(prompt: &str) -> Result<TurnTrace, String> {
             }
             HostModelState::Running => {}
             HostModelState::Done => return Ok(session.trace()),
+            HostModelState::Cancelled => {
+                return Err("the host model turn was cancelled".to_string());
+            }
             HostModelState::Failed => {
                 return Err(session.error().unwrap_or("the host model turn failed").to_string());
             }

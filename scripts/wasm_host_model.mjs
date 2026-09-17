@@ -19,9 +19,14 @@
 import { readFile } from "node:fs/promises";
 
 const path = process.argv[2];
-const prompt = process.argv[3] ?? "remember something";
+const cancel = process.argv.includes("--cancel");
+const prompt =
+  process.argv.slice(3).find((argument) => !argument.startsWith("--")) ??
+  "remember something";
 if (!path) {
-  console.error("usage: node scripts/wasm_host_model.mjs <module.wasm> [prompt]");
+  console.error(
+    "usage: node scripts/wasm_host_model.mjs <module.wasm> [prompt]",
+  );
   process.exit(2);
 }
 
@@ -45,7 +50,8 @@ const writeInput = (text) => {
   memory().set(bytes, pointer);
   return bytes.length;
 };
-const read = (pointer, length) => decoder.decode(memory().subarray(pointer, pointer + length));
+const read = (pointer, length) =>
+  decoder.decode(memory().subarray(pointer, pointer + length));
 
 // The host's scripted model: call the `remember` tool, then answer with it.
 const replies = [
@@ -55,12 +61,22 @@ const replies = [
 
 let state = exports.lmpc_host_turn_start(writeInput(prompt));
 let repliesSent = 0;
+let cancelled = false;
 for (let frame = 0; frame < 100_000; frame += 1) {
-  if (state === 1) {
+  if (state === 1 && cancel && !cancelled) {
+    // A game cancels an NPC's turn when the scene changes: stop instead of
+    // answering, and print how far the turn got (state 4 = cancelled). The
+    // guest needs a frame or two to drain, so stop answering from here on.
+    cancelled = true;
+    exports.lmpc_host_cancel();
+  }
+  if (state === 1 && !cancelled) {
     const requestLength = exports.lmpc_host_request_len();
     const request = read(exports.lmpc_host_request_ptr(), requestLength);
     if (!request.includes(prompt)) {
-      console.error(`host_model: the request does not carry the prompt: ${request}`);
+      console.error(
+        `host_model: the request does not carry the prompt: ${request}`,
+      );
       process.exit(1);
     }
     const reply = replies[Math.min(repliesSent, replies.length - 1)];
@@ -70,12 +86,18 @@ for (let frame = 0; frame < 100_000; frame += 1) {
       process.exit(1);
     }
   }
-  if (state === 2) {
-    process.stdout.write(read(exports.lmpc_trace_ptr(), exports.lmpc_trace_len()));
+  if (state === 2 || state === 4) {
+    // 2 = the turn finished, 4 = the host cancelled it: either way the trace
+    // shows what the module produced.
+    process.stdout.write(
+      read(exports.lmpc_trace_ptr(), exports.lmpc_trace_len()),
+    );
     process.exit(0);
   }
   if (state === 3) {
-    console.error(`host_model: the turn failed: ${read(exports.lmpc_trace_ptr(), exports.lmpc_trace_len())}`);
+    console.error(
+      `host_model: the turn failed: ${read(exports.lmpc_trace_ptr(), exports.lmpc_trace_len())}`,
+    );
     process.exit(1);
   }
   state = exports.lmpc_host_poll();

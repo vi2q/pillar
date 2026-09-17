@@ -17,15 +17,12 @@
 //! [`crate::wasm`] exposes exactly this over the C ABI, and
 //! `scripts/wasm_host_model.mjs` is a JavaScript host that speaks it.
 
-
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use pillar_agent::{Agent, AgentOptions, AgentState, SpawnFn, StreamFn};
 use pillar_ai::event_stream::assistant_message_event_stream;
-use pillar_ai::types::{
-    AssistantMessageEvent, Content, StopReason, Usage, UsageCost,
-};
+use pillar_ai::types::{AssistantMessageEvent, Content, StopReason, Usage, UsageCost};
 
 use crate::{FrameHost, TurnTrace, text_of};
 
@@ -40,6 +37,8 @@ pub enum HostModelState {
     Done,
     /// The turn failed; [`HostModelSession::trace`] holds the reason.
     Failed,
+    /// The host cancelled the turn; the trace shows how far it got.
+    Cancelled,
 }
 
 /// One guest-side model request the host has to answer.
@@ -55,6 +54,8 @@ struct ModelSlot {
     request: Option<HostModelRequest>,
     /// The answer the host supplied.
     reply: Option<Vec<Content>>,
+    /// The host cancelled the turn: the guest stops waiting for an answer.
+    cancelled: bool,
 }
 
 struct HostModelFuture {
@@ -69,13 +70,22 @@ impl std::future::Future for HostModelFuture {
         _context: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Vec<Content>> {
         // No waker: the frame host re-polls each frame, which is when the host
-        // will have answered.
-        match self.slot.lock().expect("model slot lock").reply.take() {
-            Some(content) => std::task::Poll::Ready(content),
-            None => std::task::Poll::Pending,
+        // will have answered (or cancelled).
+        let mut slot = self.slot.lock().expect("model slot lock");
+        if let Some(content) = slot.reply.take() {
+            return std::task::Poll::Ready(content);
         }
+        if slot.cancelled {
+            // An empty answer: the run then observes the aborted signal and
+            // stops instead of waiting for a model that will not answer.
+            return std::task::Poll::Ready(Vec::new());
+        }
+        std::task::Poll::Pending
     }
 }
+
+/// The turn's prompt future, driven by the host's frames.
+type RunFuture = std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
 
 /// A turn whose model answers come from the host.
 pub struct HostModelSession {
@@ -83,9 +93,10 @@ pub struct HostModelSession {
     host: Arc<FrameHost>,
     slot: Arc<Mutex<ModelSlot>>,
     events: Arc<Mutex<Vec<String>>>,
-    run: Option<std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>>,
+    run: Option<RunFuture>,
     state: HostModelState,
     error: Option<String>,
+    cancelled: bool,
 }
 
 impl HostModelSession {
@@ -184,12 +195,16 @@ impl HostModelSession {
             run: Some(run),
             state: HostModelState::Running,
             error: None,
+            cancelled: false,
         }
     }
 
     /// Advance one frame. Returns the state the host should act on.
     pub fn poll(&mut self, frame: Duration) -> HostModelState {
-        if matches!(self.state, HostModelState::Done | HostModelState::Failed) {
+        if matches!(
+            self.state,
+            HostModelState::Done | HostModelState::Failed | HostModelState::Cancelled
+        ) {
             return self.state;
         }
         // Drive the prompt future once, then let the guest's queue run.
@@ -199,7 +214,15 @@ impl HostModelSession {
         {
             self.run = None;
             match result {
-                Ok(()) => self.state = HostModelState::Done,
+                // A cancelled run ends cleanly (the abort is not an error), but
+                // the host asked to stop, so report that.
+                Ok(()) => {
+                    self.state = if self.cancelled {
+                        HostModelState::Cancelled
+                    } else {
+                        HostModelState::Done
+                    }
+                }
                 Err(error) => {
                     self.state = HostModelState::Failed;
                     self.error = Some(error);
@@ -210,13 +233,18 @@ impl HostModelSession {
         if matches!(self.state, HostModelState::Done | HostModelState::Failed) {
             return self.state;
         }
+        if self.cancelled {
+            // The host asked to stop; the run reports the cancellation once it
+            // has drained (the trace is final then).
+            self.state = if self.run.is_none() {
+                HostModelState::Cancelled
+            } else {
+                HostModelState::Running
+            };
+            return self.state;
+        }
         // A pending request means the guest is waiting on the host.
-        let waiting = self
-            .slot
-            .lock()
-            .expect("model slot lock")
-            .request
-            .is_some();
+        let waiting = self.slot.lock().expect("model slot lock").request.is_some();
         self.state = if waiting {
             HostModelState::NeedsModel
         } else {
@@ -253,11 +281,35 @@ impl HostModelSession {
 
     /// Whether the guest is waiting for the host.
     pub fn needs_model(&self) -> bool {
-        self.slot
-            .lock()
-            .expect("model slot lock")
-            .request
-            .is_some()
+        self.slot.lock().expect("model slot lock").request.is_some()
+    }
+
+    /// Cancel the running turn: stop at the next await instead of waiting for
+    /// another model answer (a game cancels an NPC's turn when the scene
+    /// changes). The session then reports [`HostModelState::Cancelled`].
+    ///
+    /// A model request that was already published is voided: the guest is no
+    /// longer waiting, so [`HostModelSession::request_json`] goes back to
+    /// `None` and the host should not answer.
+    pub fn cancel(&mut self) {
+        if matches!(
+            self.state,
+            HostModelState::Done | HostModelState::Failed | HostModelState::Cancelled
+        ) {
+            return;
+        }
+        self.agent.abort();
+        {
+            let mut slot = self.slot.lock().expect("model slot lock");
+            slot.cancelled = true;
+            slot.request = None;
+        }
+        self.cancelled = true;
+    }
+
+    /// Whether the host cancelled this session.
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled
     }
 
     /// The finished turn's trace (empty until [`HostModelState::Done`]).

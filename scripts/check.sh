@@ -103,6 +103,20 @@ if [ "$quick" -eq 0 ]; then
                 echo "check: the Wasm host-model trace differs from the native one" >&2
                 exit 1
             fi
+            # Host-driven cancellation: the guest must stop instead of waiting
+            # for a model answer it will never get.
+            say "wasm host cancel"
+            wasm_cancel=$(node "$root/scripts/wasm_host_model.mjs" \\
+                "$root/target/wasm32-unknown-unknown/debug/pillar_lmpc.wasm" \\
+                "remember something" --cancel)
+            printf '%s' "$wasm_cancel" | grep -q "user: remember something" || {
+                echo "check: the cancelled turn lost its prompt: $wasm_cancel" >&2
+                exit 1
+            }
+            if printf '%s' "$wasm_cancel" | grep -q "the answer is 42"; then
+                echo "check: the cancelled turn still produced a model answer: $wasm_cancel" >&2
+                exit 1
+            fi
         else
             say "wasm trace comparison (skipped: node is not installed)"
         fi

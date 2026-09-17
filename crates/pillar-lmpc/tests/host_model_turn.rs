@@ -27,6 +27,7 @@ fn drive(
             HostModelState::Running => {}
             HostModelState::Done => return requests,
             HostModelState::Failed => panic!("the turn failed: {:?}", session.error()),
+            HostModelState::Cancelled => panic!("the turn was cancelled"),
         }
     }
     panic!("the session never finished");
@@ -53,7 +54,11 @@ fn the_host_answers_the_model_requests() {
         "{:?}",
         trace.events
     );
-    let roles: Vec<&str> = trace.messages.iter().map(|(role, _)| role.as_str()).collect();
+    let roles: Vec<&str> = trace
+        .messages
+        .iter()
+        .map(|(role, _)| role.as_str())
+        .collect();
     assert_eq!(roles, ["user", "assistant"], "{:?}", trace.messages);
     assert_eq!(trace.messages[1].1, "I am the host's NPC.");
     assert!(host.is_idle(), "the session left nothing queued");
@@ -94,11 +99,8 @@ fn the_host_can_drive_a_tool_call() {
         }),
         execution_mode: Some(pillar_agent::ToolExecutionMode::Parallel),
     };
-    let mut session = pillar_lmpc::HostModelSession::start(
-        &host,
-        "what is the answer?",
-        vec![host_tool],
-    );
+    let mut session =
+        pillar_lmpc::HostModelSession::start(&host, "what is the answer?", vec![host_tool]);
 
     let requests = drive(&mut session, |index, _request| {
         if index == 0 {
@@ -109,10 +111,17 @@ fn the_host_can_drive_a_tool_call() {
             r#"[{"type":"text","text":"the host says 42"}]"#.to_string()
         }
     });
-    assert_eq!(requests, 2, "the tool call needed a second model round trip");
+    assert_eq!(
+        requests, 2,
+        "the tool call needed a second model round trip"
+    );
 
     let trace = session.trace();
-    let roles: Vec<&str> = trace.messages.iter().map(|(role, _)| role.as_str()).collect();
+    let roles: Vec<&str> = trace
+        .messages
+        .iter()
+        .map(|(role, _)| role.as_str())
+        .collect();
     assert_eq!(
         roles,
         ["user", "assistant", "toolResult", "assistant"],
@@ -132,11 +141,62 @@ fn a_host_reply_must_be_json() {
         session.poll(Duration::from_millis(1)),
         HostModelState::NeedsModel
     );
-    let error = session.reply("not json").expect_err("the reply is rejected");
+    let error = session
+        .reply("not json")
+        .expect_err("the reply is rejected");
     assert!(error.contains("bad reply JSON"), "{error}");
     // The request stays pending, so the host can try again.
     assert!(session.needs_model());
     session
         .reply(r#"[{"type":"text","text":"ok"}]"#)
         .expect("a valid reply is accepted");
+}
+
+/// The host can cancel a running turn (a game cancels an NPC's turn when the
+/// scene changes): the guest stops without waiting for another model answer.
+#[test]
+fn the_host_can_cancel_a_turn() {
+    use std::time::Duration;
+
+    let host = Arc::new(pillar_lmpc::FrameHost::new());
+    let mut session = pillar_lmpc::HostModelSession::start(&host, "who are you?", Vec::new());
+
+    // Wait until the guest asks for a model answer, then cancel instead of
+    // answering.
+    assert_eq!(
+        session.poll(Duration::from_millis(1)),
+        HostModelState::NeedsModel
+    );
+    session.cancel();
+    assert!(session.is_cancelled());
+
+    let mut state = HostModelState::Running;
+    for _ in 0..1000 {
+        state = session.poll(Duration::from_millis(1));
+        if matches!(
+            state,
+            HostModelState::Cancelled | HostModelState::Done | HostModelState::Failed
+        ) {
+            break;
+        }
+    }
+    assert_eq!(state, HostModelState::Cancelled, "the cancel ended the turn");
+
+    // The trace shows how far the turn got: the prompt, and no model answer
+    // (the guest stops instead of waiting for a reply that will not come).
+    let trace = session.trace();
+    assert_eq!(
+        trace.messages[0].0, "user",
+        "the prompt is there: {:?}",
+        trace.messages
+    );
+    let answered = trace
+        .messages
+        .iter()
+        .any(|(role, text)| role == "assistant" && !text.is_empty());
+    assert!(!answered, "no model answer was recorded: {:?}", trace.messages);
+    assert!(
+        !session.needs_model(),
+        "the guest stopped rather than waiting for a reply"
+    );
 }
