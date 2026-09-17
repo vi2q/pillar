@@ -17,10 +17,15 @@ license.workspace = true
 pillar-agent = { path = "../pillar-agent", default-features = false }
 pillar-extensions-contract = { path = "../pillar-extensions-contract" }
 pillar-ai = { path = "../pillar-ai", default-features = false }
-luaur-rt = { version = "0.1.8", features = ["serde", "typecheck", "send"] }
+# `async`: waiting host calls (pillar.exec, ctx.ui.*) suspend the Lua coroutine
+# and resume when the host's future is ready, so the wait does not block the
+# extension's thread (TASKS: 非同期 host 呼出). The executor stays the host's —
+# luaur-rt is executor-agnostic like mlua.
+luaur-rt = { version = "0.1.8", features = ["serde", "typecheck", "send", "async"] }
 serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+futures = "0.3.31"
 tempfile = "3"
 tokio = { version = "1.47", features = ["rt", "macros", "time"] }

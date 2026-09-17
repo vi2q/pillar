@@ -217,7 +217,9 @@ Return directions follow the same table. Handler return values that pi types as 
 
 保持量は **VM メモリ**（`VmBudget.memory_bytes`、既定 256 MiB、safepoint に到達しない単一の巨大確保も `MemoryError` で止まる）と **host 側 registry の登録数**（`HostRegistry::max_registrations`、既定 10,000）で有界。`pillar.exec` の出力 buffer も 4 MiB/stream で切る（`ExecResult.truncated`）。
 
-未完成として残るのは **coroutine 再開による完全な非同期化**（待ちの間 runtime lock を保持しない）。方式は probe（`crates/pillar-extensions/tests/vm_resume_probe.rs`）で確認済みで、協調プロトコルを採る:
+未完成として残るのは **coroutine 再開による完全な非同期化**（待ちの間 runtime lock を保持しない）。方式は 2 つの probe で確認済み。**採用するのは luaur の `async` feature**（mlua 互換の `create_async_function` / `Function::call_async`）で、host の実行器（CLI は tokio、engine はそのフレームループ）が待つ。エラーの制約: async future が `Err` を返すと luaur 0.1.8 は coroutine を park したままにするので、**結果テーブルにエラーを載せて Lua wrapper が `error(...)` を上げる**。
+
+手書きの協調プロトコル（`vm_resume_probe.rs`、`pillar.exec` を async にできない host 向けの代替）:
 
 1. 待つ呼出の Luau wrapper が `coroutine.yield(request)` する（request は Lua table）。
 2. host が coroutine を resume して request を受け取り、**何も保持せずに**処理する（別スレッドでコマンドを走らせてもよい）。

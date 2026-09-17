@@ -980,6 +980,7 @@ version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2f75240c12ca15167dae8542d7d477d28a58491e33a752c4e160f424dc6e588"
 dependencies = [
+ "futures-util",
  "luaur-analysis",
  "luaur-ast",
  "luaur-bytecode",
@@ -1149,6 +1150,7 @@ dependencies = [
 name = "pillar-extensions"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "luaur-rt",
  "pillar-agent",
  "pillar-ai",
