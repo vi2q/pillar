@@ -1,0 +1,23 @@
+[package]
+name = "pillar-lmpc"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "The LMPC minimum: the pillar runtime core with host-provided services (no provider catalog, no terminal, no VM)."
+
+[[bin]]
+name = "lmpc-minimal"
+path = "src/main.rs"
+
+[dependencies]
+# The core takes the provider-free form: the host supplies the model.
+pillar-ai = { path = "../pillar-ai", default-features = false }
+pillar-agent = { path = "../pillar-agent", default-features = false }
+futures = "0.3.31"
+serde_json.workspace = true
+
+[dev-dependencies]
+futures = "0.3.31"
+# The tests reset the injected clock; the crate itself only ever reads it.
+pillar-ai = { path = "../pillar-ai", default-features = false }

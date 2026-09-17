@@ -17,8 +17,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::process::Command;
 
-/// The runtime core (a game host embeds this without a terminal).
-const LMPC_MINIMAL: [&str; 2] = ["pillar-agent", "pillar-ai"];
+/// The runtime core and its embedding artifact (a game host embeds this
+/// without a terminal or a provider catalog).
+const LMPC_MINIMAL: [&str; 3] = ["pillar-agent", "pillar-ai", "pillar-lmpc"];
 /// The minimal profile plus the Luau runtime and its contract.
 const LMPC_LUAU: [&str; 4] = [
     "pillar-agent",
@@ -589,7 +590,7 @@ fn provider_waiting_goes_through_the_host_timer() {
 /// (TASKS records the wart).
 #[test]
 fn the_lmpc_minimum_has_no_provider_catalog() {
-    let minimal = tree_names("pillar-agent", true);
+    let minimal = tree_names("pillar-lmpc", true);
     let forbidden = [
         "reqwest",
         "tokio-tungstenite",

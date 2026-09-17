@@ -8,6 +8,7 @@
 pub mod auth;
 pub mod commands;
 pub mod effects;
+#[cfg(feature = "luau")]
 pub mod extension_sources;
 pub mod runner;
 pub mod trust;

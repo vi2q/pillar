@@ -40,6 +40,9 @@ const ALLOWED: &[(&str, &[&str])] = &[
     // The contract is a leaf: the VM and the coding agent both take it, and
     // it takes neither.
     ("pillar-extensions-contract", &["pillar-agent"]),
+    // The LMPC minimum: the core with host-provided services, nothing else
+    // (docs/DEVELOPMENT-STRATEGY.md §4).
+    ("pillar-lmpc", &["pillar-agent", "pillar-ai"]),
     ("pillar-protocol", &[]),
     (
         "pillar-server",

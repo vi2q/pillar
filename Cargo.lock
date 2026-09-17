@@ -1169,6 +1169,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pillar-lmpc"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "pillar-agent",
+ "pillar-ai",
+ "serde_json",
+]
+
+[[package]]
 name = "pillar-protocol"
 version = "0.1.0"
 dependencies = [

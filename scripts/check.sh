@@ -75,6 +75,8 @@ if [ "$quick" -eq 0 ]; then
         # coding agent's tools / execution environment, the file session
         # backend, the native search scanner): it must still compile, natively
         # and for the embedding target.
+        say "LMPC minimum artifact (host services only)"
+        cargo check --locked -p pillar-lmpc --target wasm32-unknown-unknown
         say "LMPC minimal without the OS-bound features"
         cargo check --locked -p pillar-agent --no-default-features
         cargo check --locked -p pillar-agent --no-default-features --target wasm32-unknown-unknown
@@ -138,6 +140,15 @@ export PILLAR_OFFLINE=1
 export HTTPS_PROXY=http://127.0.0.1:9
 export HTTP_PROXY="$HTTPS_PROXY"
 export ALL_PROXY="$HTTPS_PROXY"
+
+# The LMPC artifact runs one turn on host services (no provider catalog, no
+# terminal, no VM): its trace is the profile's smoke.
+say "smoke: LMPC minimum artifact"
+lmpc=$(env HOME="$real_home" cargo run --locked -q -p pillar-lmpc -- "remember something")
+printf '%s' "$lmpc" | grep -q "toolResult: remembered: the answer is 42" || {
+    echo "smoke: the LMPC turn did not complete: $lmpc" >&2
+    exit 1
+}
 
 # `target/debug/pillar` currently holds the no-Luau build.
 smoke "no Luau" "$binary"

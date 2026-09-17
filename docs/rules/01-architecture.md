@@ -17,6 +17,7 @@ crates/
 ├── pillar-server/       # pi-server port: experimental remote server
 ├── pillar-telemetry/    # pi-telemetry port: telemetry contracts
 ├── pillar-session-store/ # pi session-backends/sqlite-node port: sqlite session backend
+├── pillar-lmpc/         # NEW: the LMPC minimum (core + host services; no provider catalog, no terminal, no VM)
 ├── pillar-extensions-contract/ # NEW: the extension shapes the VM and the coding agent share
 ├── pillar-extensions/   # NEW (no pi counterpart): Luau extension runtime on luaur-rt
 └── pillar-cli/          # NEW (no pi counterpart): the `pillar` binary; joins coding-agent and the Luau runtime
@@ -34,6 +35,7 @@ pillar-ai          (leaf among pillars; providers + catalog)
 pillar-agent       → ai, telemetry
 pillar-session-store → agent, ai (standalone backend; no crate wires it in yet)
 pillar-client      → protocol
+pillar-lmpc         → agent, ai
 pillar-extensions-contract → agent
 pillar-extensions  → extensions-contract, agent, ai (plus luaur-rt / luaur-analysis / luaur-config)
 pillar-coding-agent → agent, ai, tui, protocol, extensions-contract
@@ -61,6 +63,7 @@ Rules:
 - No crate may depend on a `*-cli` or test-support crate.
 - `pillar-ai`'s waiting goes through `clock` (`SleepFn`): retry backoff, provider timeouts, and `AbortSignal::timeout` call `pillar_ai::clock::sleep` / `timeout`, whose default is `tokio::time` natively and a host-supplied timer elsewhere. The codex provider's WebSocket transport (`tokio::net`) stays native-only (TASKS).
 - `pillar-extensions` owns the VM, not the filesystem: extension sources arrive through the contract's `SourceReader` and command execution through the injected `ExecHost`, so the crate has no `std::fs` / `std::process` (asserted by `dependency_profiles::the_embedding_core_keeps_os_capabilities_behind_features`, which walks both embedding profiles). Discovery and the per-file load loop belong to the host (`pillar-coding-agent::core::extensions_luau::discover_luau_paths` + `build_luau_runner`).
+- `pillar-lmpc` is the LMPC minimum as a crate: `pillar-agent` + `pillar-ai` with `default-features = false`, plus the host-service wiring (a `SpawnFn` and a clock) and a demo model, so a game host has one dependency to take. `cargo check -p pillar-lmpc --target wasm32-unknown-unknown` and `tests/minimal_turn.rs` keep it runnable without a tokio runtime.
 - `pillar-ai`'s provider catalog is behind the default-on `providers` feature (per-API adapters, the HTTP transport, the model registry, provider auth): with `--no-default-features` the crate is the core a host drives through an injected `StreamFn`, and `reqwest` / `rustls` / `tokio-tungstenite` / `zstd` leave the dependency graph.
 - `pillar-agent`'s OS-bound and scaffold surface is behind default-on features: `harness-tools` (the coding agent's file/shell tools, the `std`/`tokio` execution environment, the session runtime, compaction and skills — it enables `pillar-ai/providers` because the scaffold drives the model registry), `proxy`, `session-files` (the durable JSONL file backend), `search` (the native session-search scanner). `cargo check -p pillar-agent --no-default-features` is the LMPC-minimum shape and compiles natively and for `wasm32-unknown-unknown`; `dependency_profiles::the_embedding_core_keeps_os_capabilities_behind_features` fails if any *other* core source reaches `std::process` / `std::fs` / `std::net`.
 - The Luau runtime is an optional dependency of `pillar-cli` behind the default-on `luau` feature: `cargo build -p pillar-cli --no-default-features` produces a binary with no VM, no `luaur`, and no extension loading (`runner::none` implements the same wiring API; `tests/dependency_profiles.rs::the_luau_feature_gates_the_vm_dependency` gates the resolved graph and `scripts/check.sh` builds it).
