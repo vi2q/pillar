@@ -89,9 +89,50 @@ pub extern "C" fn lmpc_trace_ptr() -> *const u8 {
 //         Done:       read the trace (lmpc_trace_ptr()/len())
 //         Failed:     read the reason (same buffer)
 //
+// Storing and resuming a conversation is symmetric: `lmpc_session_export`
+// refuses (returns -1) a state past `lmpc_session_state_cap`, and import takes
+// anything up to that cap — through the input buffer when it fits, and through
+// `lmpc_session_import_begin` / `…_write` / `…_commit` in chunks when it does
+// not. A `len` past the buffer it is read into is refused rather than clamped
+// (negative return, see `refusal`).
+//
 // States: 0 = running, 1 = needs model, 2 = done, 3 = failed.
 
 const INPUT_CAPACITY: usize = 64 * 1024;
+
+/// The largest stored conversation the ABI will hand over and take back.
+///
+/// It is a *policy* value the host can read ([`lmpc_session_state_cap`]): the
+/// point is not the number but that export and import agree on it, so anything
+/// [`lmpc_session_export`] hands out can be put back with
+/// [`lmpc_session_import_begin`] / `…_write` / `…_commit`. A conversation past
+/// this size is refused *explicitly* (export answers `-1`) instead of being
+/// truncated on the way in.
+const STATE_CAPACITY: usize = 4 * 1024 * 1024;
+
+/// The ABI's refusals for host-supplied bytes. State codes are non-negative, so
+/// a negative return is always "the argument was refused, and why".
+mod refusal {
+    /// More bytes than the destination holds.
+    pub const TOO_LONG: i32 = -1;
+    /// The bytes are not valid UTF-8.
+    pub const NOT_UTF8: i32 = -2;
+    /// `offset`/`length` fall outside the announced transfer.
+    pub const RANGE: i32 = -3;
+    /// There is no import in progress.
+    pub const NO_IMPORT: i32 = -4;
+}
+use refusal::{NOT_UTF8, NO_IMPORT, RANGE, TOO_LONG};
+
+/// The state a chunked import is assembling. `covered` is how many leading
+/// bytes the host has handed over: writes must be sequential, so a gap or an
+/// overlap is refused (and a commit of an unfinished transfer is refused too).
+struct PendingImport {
+    buffer: Vec<u8>,
+    covered: usize,
+}
+
+static PENDING_IMPORT: Mutex<Option<PendingImport>> = Mutex::new(None);
 
 /// The scratch buffer the host writes prompts and replies into.
 static INPUT: Mutex<Vec<u8>> = Mutex::new(Vec::new());
@@ -151,17 +192,33 @@ fn ensure_input() {
     }
 }
 
+/// The first `length` bytes of the input buffer, uninterpreted (the chunked
+/// import moves bytes; the state is validated where it is restored).
+fn read_input_bytes(length: u32) -> Result<Vec<u8>, i32> {
+    ensure_input();
+    if length as usize > INPUT_CAPACITY {
+        return Err(TOO_LONG);
+    }
+    let guard = INPUT.lock().expect("input lock");
+    Ok(guard[..length as usize].to_vec())
+}
+
 /// The first `length` bytes of the input buffer as text.
 ///
 /// The host writes straight into the buffer, so the guest reads it by the
-/// length the host passes rather than by the buffer's own length.
-fn read_input(length: u32) -> Option<String> {
+/// length the host passes rather than by the buffer's own length. A `length`
+/// past the buffer, or bytes that are not UTF-8, is refused with the reason
+/// ([`TOO_LONG`] / [`NOT_UTF8`]) rather than silently truncated: a host that
+/// sends more than the buffer holds has a bug the boundary should report.
+fn read_input(length: u32) -> Result<String, i32> {
     ensure_input();
+    if length as usize > INPUT_CAPACITY {
+        return Err(TOO_LONG);
+    }
     let guard = INPUT.lock().expect("input lock");
-    let count = (length as usize).min(INPUT_CAPACITY);
-    std::str::from_utf8(&guard[..count])
-        .ok()
+    std::str::from_utf8(&guard[..length as usize])
         .map(str::to_string)
+        .map_err(|_| NOT_UTF8)
 }
 
 /// The address of the input buffer (`new Uint8Array(memory.buffer, ptr, cap)`).
@@ -205,8 +262,9 @@ pub extern "C" fn lmpc_session_create(host_tools: u32) -> i32 {
 /// between. Returns 0, or 3 when the input is not valid UTF-8.
 #[unsafe(no_mangle)]
 pub extern "C" fn lmpc_host_turn_start(length: u32) -> i32 {
-    let Some(prompt) = read_input(length) else {
-        return 3;
+    let prompt = match read_input(length) {
+        Ok(prompt) => prompt,
+        Err(refusal) => return refusal,
     };
     if SESSION.lock().expect("session lock").is_none() {
         install_session(false);
@@ -227,8 +285,9 @@ pub extern "C" fn lmpc_host_turn_start(length: u32) -> i32 {
 /// as `message_update` events); the text is `length` bytes of the input buffer.
 #[unsafe(no_mangle)]
 pub extern "C" fn lmpc_host_stream(ticket: u64, length: u32) -> i32 {
-    let Some(delta) = read_input(length) else {
-        return 3;
+    let delta = match read_input(length) {
+        Ok(delta) => delta,
+        Err(refusal) => return refusal,
     };
     let guard = SESSION.lock().expect("session lock");
     let Some(abi) = guard.as_ref() else {
@@ -247,8 +306,9 @@ pub extern "C" fn lmpc_host_stream(ticket: u64, length: u32) -> i32 {
 /// NPC remembers); the prompt is `length` bytes of the input buffer.
 #[unsafe(no_mangle)]
 pub extern "C" fn lmpc_host_say(length: u32) -> i32 {
-    let Some(prompt) = read_input(length) else {
-        return 3;
+    let prompt = match read_input(length) {
+        Ok(prompt) => prompt,
+        Err(refusal) => return refusal,
     };
     let mut guard = SESSION.lock().expect("session lock");
     let Some(abi) = guard.as_mut() else {
@@ -332,8 +392,9 @@ pub extern "C" fn lmpc_host_tool_ticket() -> u64 {
 /// or from a previous session — is rejected.
 #[unsafe(no_mangle)]
 pub extern "C" fn lmpc_host_tool_result(ticket: u64, length: u32) -> i32 {
-    let Some(result) = read_input(length) else {
-        return 3;
+    let result = match read_input(length) {
+        Ok(result) => result,
+        Err(refusal) => return refusal,
     };
     let guard = SESSION.lock().expect("session lock");
     let Some(abi) = guard.as_ref() else {
@@ -391,8 +452,9 @@ pub extern "C" fn lmpc_host_request_ticket() -> u64 {
 /// pending now.
 #[unsafe(no_mangle)]
 pub extern "C" fn lmpc_host_reply(ticket: u64, length: u32) -> i32 {
-    let Some(reply) = read_input(length) else {
-        return 3;
+    let reply = match read_input(length) {
+        Ok(reply) => reply,
+        Err(refusal) => return refusal,
     };
     let guard = SESSION.lock().expect("session lock");
     let Some(abi) = guard.as_ref() else {
@@ -407,30 +469,54 @@ pub extern "C" fn lmpc_host_reply(ticket: u64, length: u32) -> i32 {
     }
 }
 
-/// The conversation so far (JSON) for the host to store; also its length.
+/// The conversation so far (JSON) for the host to store, and its length.
+///
+/// Returns the length (the host copies that many bytes from
+/// [`lmpc_host_request_ptr`]), `0` when there is no session or nothing to
+/// store, and `-1` when the conversation is larger than
+/// [`lmpc_session_state_cap`].
+///
+/// The `-1` is the point of the cap: a host must not be able to export a
+/// conversation it cannot put back. Import is capped at the same number, so a
+/// successful export is always restorable — see [`lmpc_session_import_begin`]
+/// for states larger than the 64 KiB input buffer.
 #[unsafe(no_mangle)]
-pub extern "C" fn lmpc_session_export() -> u32 {
+pub extern "C" fn lmpc_session_export() -> i32 {
     let guard = SESSION.lock().expect("session lock");
     let Some(abi) = guard.as_ref() else {
         return 0;
     };
     match abi.session.messages_json() {
+        Ok(json) if json.len() > STATE_CAPACITY => TOO_LONG,
         Ok(json) => {
             let length = json.len() as u32;
             *REQUEST.lock().expect("request lock") = json;
-            length
+            length as i32
         }
         Err(_) => 0,
     }
 }
 
+/// The largest conversation [`lmpc_session_export`] hands out and
+/// [`lmpc_session_import_*`](lmpc_session_import_begin) takes back, in bytes.
+#[unsafe(no_mangle)]
+pub extern "C" fn lmpc_session_state_cap() -> u32 {
+    STATE_CAPACITY as u32
+}
+
 /// Resume a stored conversation (`length` bytes of the input buffer) in the
 /// current session; returns how many messages were restored, or 0 when the
-/// conversation was refused (invalid JSON, or the turn has already been polled —
-/// import before driving it).
+/// conversation was refused (invalid JSON, a `length` past the input buffer or
+/// the state cap, or a turn that has already been polled — import before
+/// driving it).
+///
+/// This single-shot form goes through the 64 KiB input buffer, so a larger
+/// conversation needs the chunked transfer:
+/// [`lmpc_session_import_begin`] → [`lmpc_session_import_write`] (repeatedly) →
+/// [`lmpc_session_import_commit`].
 #[unsafe(no_mangle)]
 pub extern "C" fn lmpc_session_import(length: u32) -> u32 {
-    let Some(json) = read_input(length) else {
+    let Ok(json) = read_input(length) else {
         return 0;
     };
     let guard = SESSION.lock().expect("session lock");
@@ -438,6 +524,89 @@ pub extern "C" fn lmpc_session_import(length: u32) -> u32 {
         return 0;
     };
     abi.session.restore(&json).unwrap_or(0) as u32
+}
+
+/// Begin a chunked import of `total` bytes. Returns 0, or `-1` when `total` is
+/// past [`lmpc_session_state_cap`].
+///
+/// Beginning again supersedes an unfinished transfer (an interrupted one leaves
+/// nothing behind), and the announced size is what every
+/// [`lmpc_session_import_write`] is checked against, so a short or long
+/// transfer cannot be committed as if it were complete.
+#[unsafe(no_mangle)]
+pub extern "C" fn lmpc_session_import_begin(total: u32) -> i32 {
+    if total as usize > STATE_CAPACITY {
+        return TOO_LONG;
+    }
+    let mut pending = PENDING_IMPORT.lock().expect("import lock");
+    let mut buffer = Vec::new();
+    buffer.resize(total as usize, 0);
+    *pending = Some(PendingImport {
+        buffer,
+        covered: 0,
+    });
+    0
+}
+
+/// Copy `length` bytes of the input buffer into the pending import at `offset`,
+/// which must be where the previous write ended (the transfer is sequential).
+///
+/// The bytes are *not* interpreted here: a chunk boundary may fall inside a
+/// multi-byte character, so the JSON is validated at
+/// [`lmpc_session_import_commit`] where the whole state is known. Returns 0,
+/// `-1` when `length` is past the input buffer, `-3` when the write does not
+/// continue the transfer exactly, or `-4` when there is no transfer in
+/// progress.
+#[unsafe(no_mangle)]
+pub extern "C" fn lmpc_session_import_write(offset: u32, length: u32) -> i32 {
+    let bytes = match read_input_bytes(length) {
+        Ok(bytes) => bytes,
+        Err(refusal) => return refusal,
+    };
+    let mut pending = PENDING_IMPORT.lock().expect("import lock");
+    let Some(import) = pending.as_mut() else {
+        return NO_IMPORT;
+    };
+    if offset as usize != import.covered {
+        return RANGE;
+    }
+    let end = import.covered + bytes.len();
+    if end > import.buffer.len() {
+        return RANGE;
+    }
+    import.buffer[import.covered..end].copy_from_slice(&bytes);
+    import.covered = end;
+    0
+}
+
+/// Restore the conversation assembled by the chunked import; returns how many
+/// messages were restored, or 0 when it was refused (the bytes are not UTF-8, not
+/// a valid conversation, the transfer is incomplete, or the turn has already
+/// been polled). The pending transfer is dropped either way.
+#[unsafe(no_mangle)]
+pub extern "C" fn lmpc_session_import_commit() -> u32 {
+    let Some(import) = PENDING_IMPORT.lock().expect("import lock").take() else {
+        return 0;
+    };
+    if import.covered != import.buffer.len() {
+        // An unfinished transfer is refused, not restored as far as it got.
+        return 0;
+    }
+    let Ok(json) = String::from_utf8(import.buffer) else {
+        return 0;
+    };
+    let guard = SESSION.lock().expect("session lock");
+    let Some(abi) = guard.as_ref() else {
+        return 0;
+    };
+    abi.session.restore(&json).unwrap_or(0) as u32
+}
+
+/// Drop an unfinished chunked import. Returns 0 (also when there was none).
+#[unsafe(no_mangle)]
+pub extern "C" fn lmpc_session_import_abort() -> i32 {
+    *PENDING_IMPORT.lock().expect("import lock") = None;
+    0
 }
 
 /// Cancel the running turn (state 4 afterwards; the trace shows how far it got).

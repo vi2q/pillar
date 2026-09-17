@@ -9,7 +9,7 @@
 // Protocol (see crates/pillar-lmpc/src/abi.rs):
 //   write prompt -> input buffer
 //   lmpc_session_create(host_tools)          -> a fresh session
-//   lmpc_session_import(len)                 -> before the first poll
+//   lmpc_session_import_begin/_write/_commit -> before the first poll
 //   lmpc_host_turn_start(len)                -> 0 running (the first poll
 //                                               publishes the first request)
 //   loop: lmpc_host_poll()
@@ -67,9 +67,38 @@ const readRequest = (length) => read(exports.lmpc_host_request_ptr(), length);
 
 /// Read a guest-owned buffer: ask for its length first (that call stores the
 /// content), then for its address — the address taken before may dangle.
+/// A negative length is the guest refusing (see `refusal` in
+/// crates/pillar-lmpc/src/abi.rs), which the host must not read as "empty".
 const readGuestBuffer = (lenExport, ptrExport) => {
   const length = lenExport();
+  if (length < 0) {
+    console.error(`host_model: the guest refused (${length})`);
+    process.exit(1);
+  }
   return length === 0 ? "" : read(ptrExport(), length);
+};
+
+/// Hand a stored conversation back through the chunked import: the state can be
+/// larger than the input buffer, so it goes in 64 KiB at a time.
+const importState = (stored) => {
+  const bytes = encoder.encode(stored);
+  if (exports.lmpc_session_import_begin(bytes.length) !== 0) {
+    console.error("host_model: the guest refused the state size");
+    process.exit(1);
+  }
+  const capacity = exports.lmpc_input_cap();
+  for (let offset = 0; offset < bytes.length; offset += capacity) {
+    const chunk = bytes.subarray(offset, Math.min(offset + capacity, bytes.length));
+    // The chunk is bytes, not text: a boundary may fall inside a multi-byte
+    // character, so it is copied straight into the input buffer.
+    const pointer = exports.lmpc_input_ptr();
+    memory().set(chunk, pointer);
+    if (exports.lmpc_session_import_write(offset, chunk.length) !== 0) {
+      console.error("host_model: the guest refused an import chunk");
+      process.exit(1);
+    }
+  }
+  return exports.lmpc_session_import_commit();
 };
 
 /// The host's scripted action, mirroring `scripted_host_action` in
@@ -189,7 +218,7 @@ if (resume && prompts.length > 1) {
   // the model with an empty history.
   repliesSent = 0;
   exports.lmpc_session_create(hostTools ? 1 : 0);
-  if (exports.lmpc_session_import(writeInput(stored)) === 0) {
+  if (importState(stored) === 0) {
     console.error("host_model: the conversation was not restored");
     process.exit(1);
   }

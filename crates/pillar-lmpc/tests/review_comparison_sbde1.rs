@@ -201,15 +201,19 @@ fn put_prefix(text: &str) {
     }
 }
 #[test]
-fn observes_abi_export_larger_than_import_capacity() {
+fn a_state_larger_than_the_input_buffer_round_trips() {
+    // C4, fixed: a length past the input buffer is refused (not clamped), and a
+    // state larger than the buffer goes in through the chunked transfer, so
+    // whatever export hands out can be imported again.
     let capacity = pillar_lmpc::lmpc_input_cap() as usize;
     pillar_lmpc::lmpc_session_create(0);
     put_prefix(&"x".repeat(capacity));
     assert_eq!(
         pillar_lmpc::lmpc_host_turn_start((capacity + 1) as u32),
-        0,
-        "characterization: oversized length is silently clamped"
+        -1,
+        "an oversized prompt is refused, not clamped"
     );
+    assert_eq!(pillar_lmpc::lmpc_host_turn_start(capacity as u32), 0);
     for _ in 0..100 {
         let state = pillar_lmpc::lmpc_host_poll();
         if state == 1 {
@@ -221,19 +225,41 @@ fn observes_abi_export_larger_than_import_capacity() {
             break;
         }
     }
-    let length = pillar_lmpc::lmpc_session_export();
-    assert!(length as usize > capacity);
+    let exported = pillar_lmpc::lmpc_session_export();
+    assert!(exported > 0, "the session exported its conversation");
+    assert!(exported as usize > capacity);
     let stored = unsafe {
-        std::slice::from_raw_parts(pillar_lmpc::lmpc_host_request_ptr(), length as usize)
+        std::slice::from_raw_parts(pillar_lmpc::lmpc_host_request_ptr(), exported as usize)
     }
     .to_vec();
     let stored = String::from_utf8(stored).unwrap();
     serde_json::from_str::<serde_json::Value>(&stored).unwrap();
+
     pillar_lmpc::lmpc_session_create(0);
-    put_prefix(&stored);
     assert_eq!(
-        pillar_lmpc::lmpc_session_import(length),
+        pillar_lmpc::lmpc_session_import(exported as u32),
         0,
-        "characterization: the exported valid conversation cannot be reimported"
+        "the single-shot import refuses a state past the input buffer"
+    );
+    assert_eq!(
+        pillar_lmpc::lmpc_session_import_begin(exported as u32),
+        0
+    );
+    let mut offset = 0usize;
+    while offset < stored.len() {
+        let chunk = (stored.len() - offset).min(capacity);
+        let piece = &stored.as_bytes()[offset..offset + chunk];
+        unsafe {
+            std::ptr::copy_nonoverlapping(piece.as_ptr(), pillar_lmpc::lmpc_input_ptr(), chunk);
+        }
+        assert_eq!(
+            pillar_lmpc::lmpc_session_import_write(offset as u32, chunk as u32),
+            0
+        );
+        offset += chunk;
+    }
+    assert!(
+        pillar_lmpc::lmpc_session_import_commit() > 0,
+        "the exported conversation imports through the chunked transfer"
     );
 }
