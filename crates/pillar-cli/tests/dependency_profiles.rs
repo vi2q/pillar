@@ -541,3 +541,40 @@ fn the_host_driven_core_is_free_of_timers_sockets_and_raw_spawning() {
         "the host-driven core gained a runtime dependency: {offenders:?}"
     );
 }
+
+/// §5-2: provider waiting goes through the host's timer (`pillar_ai::clock`:
+/// retry backoff, HTTP timeouts, the faux provider, `AbortSignal::timeout`).
+/// Only `clock.rs` may name tokio's timer — it holds the native default a host
+/// replaces — so a new `tokio::time` call deep in a provider fails here.
+#[test]
+fn provider_waiting_goes_through_the_host_timer() {
+    let root = repo_root();
+    let mut files = Vec::new();
+    rust_sources(&root.join("crates/pillar-ai/src"), &mut files);
+    let mut offenders: Vec<String> = Vec::new();
+    for file in files {
+        let relative = file
+            .strip_prefix(&root)
+            .expect("a path under the repo root")
+            .to_string_lossy()
+            .replace('\\', "/");
+        if relative.ends_with("/clock.rs") {
+            continue;
+        }
+        let source = std::fs::read_to_string(&file).expect("read a source file");
+        let production = strip_test_blocks(&source);
+        for (number, line) in production.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") || trimmed.starts_with('*') || trimmed.starts_with("/*") {
+                continue;
+            }
+            if line.contains("tokio::time") {
+                offenders.push(format!("{relative}:{}: tokio::time", number + 1));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "waiting must go through `crate::clock` so an embedding host can drive it: {offenders:?}"
+    );
+}

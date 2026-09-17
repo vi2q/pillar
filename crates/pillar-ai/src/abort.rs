@@ -98,7 +98,7 @@ impl AbortSignal {
         let signal = AbortSignal::new();
         let task_signal = signal.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(duration).await;
+            crate::clock::sleep(duration).await;
             task_signal.abort(Some(AbortReason::Custom("TimeoutError".to_string())));
         });
         signal

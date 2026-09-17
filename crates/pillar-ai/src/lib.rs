@@ -13,6 +13,7 @@ pub mod api_dispatch;
 pub mod auth_context;
 pub mod auth_resolve;
 pub mod auth_types;
+pub mod clock;
 pub mod constrained_sampling;
 pub mod credential_store;
 pub mod deferred_tools;
@@ -43,6 +44,7 @@ pub mod types;
 pub mod uuid;
 
 pub use abort::{AbortReason, AbortSignal, operation_signal};
+pub use clock::{Elapsed, SleepFn, get_default_sleep, set_default_sleep, sleep, timeout};
 pub use auth_resolve::{ModelsError, resolve_provider_auth};
 pub use auth_types::{
     ApiKeyAuth, ApiKeyCredential, AuthCheck, AuthContext, AuthEvent, AuthOperationOptions,

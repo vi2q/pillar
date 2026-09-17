@@ -582,7 +582,7 @@ async fn read_guarded(
 
     match timeout_ms {
         Some(ms) => {
-            match tokio::time::timeout(std::time::Duration::from_millis(ms), &mut raced).await {
+            match crate::clock::timeout(std::time::Duration::from_millis(ms), &mut raced).await {
                 Ok(result) => result,
                 Err(_) => Err("Mistral request timed out".to_string()),
             }

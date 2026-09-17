@@ -542,7 +542,7 @@ async fn sleep(ms: u64, signal: Option<&crate::AbortSignal>) -> Result<(), Codex
     if signal.is_some_and(|signal| signal.is_aborted()) {
         return Err(CodexStreamError::Aborted);
     }
-    tokio::time::sleep(Duration::from_millis(ms)).await;
+    crate::clock::sleep(Duration::from_millis(ms)).await;
     if signal.is_some_and(|signal| signal.is_aborted()) {
         return Err(CodexStreamError::Aborted);
     }
@@ -928,7 +928,7 @@ async fn fetch_sse_once(
     };
 
     if let Some(timeout_ms) = timeout_ms.filter(|timeout| *timeout > 0) {
-        let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
+        let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
         tokio::select! {
             result = &mut fetch_future => {
                 match result {
@@ -940,7 +940,7 @@ async fn fetch_sse_once(
                     }),
                 }
             }
-            _ = tokio::time::sleep_until(deadline) => {
+            _ = crate::clock::sleep(deadline.saturating_duration_since(std::time::Instant::now())) => {
                 if caller_aborted() {
                     Err(CodexStreamError::Aborted)
                 } else {
@@ -2061,10 +2061,10 @@ async fn connect_websocket(
     };
     let connect = factory.connect(url, headers, signal, connect_timeout_ms);
     tokio::pin!(connect);
-    let deadline = tokio::time::Instant::now() + Duration::from_millis(connect_timeout_ms);
+    let deadline = std::time::Instant::now() + Duration::from_millis(connect_timeout_ms);
     tokio::select! {
         result = &mut connect => result.map_err(CodexStreamError::Plain),
-        _ = tokio::time::sleep_until(deadline) => {
+        _ = crate::clock::sleep(deadline.saturating_duration_since(std::time::Instant::now())) => {
             if signal.is_some_and(|signal| signal.is_aborted()) {
                 Err(CodexStreamError::Aborted)
             } else {
@@ -2280,7 +2280,7 @@ impl futures::Stream for WebSocketEventStream {
                 if let Some(idle_timeout_ms) = idle_timeout_ms.filter(|timeout| *timeout > 0) {
                     let recv = socket.recv();
                     tokio::pin!(recv);
-                    match tokio::time::timeout(Duration::from_millis(idle_timeout_ms), &mut recv)
+                    match crate::clock::timeout(Duration::from_millis(idle_timeout_ms), &mut recv)
                         .await
                     {
                         Ok(message) => message,

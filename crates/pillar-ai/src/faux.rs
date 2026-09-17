@@ -498,7 +498,7 @@ async fn schedule_chunk(chunk: &str, tokens_per_second: Option<f64>) {
     match tokens_per_second {
         Some(rate) if rate > 0.0 => {
             let delay_ms = (estimate_tokens(chunk) as f64 / rate) * 1000.0;
-            tokio::time::sleep(std::time::Duration::from_millis(delay_ms as u64)).await;
+            crate::clock::sleep(std::time::Duration::from_millis(delay_ms as u64)).await;
         }
         _ => {
             // queueMicrotask parity: yield once.

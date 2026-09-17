@@ -152,11 +152,11 @@ async fn abortable_sleep(
             tokio::select! {
                 biased;
                 _ = signal.aborted_or_pending() => Err(aborted_error()),
-                _ = tokio::time::sleep(std::time::Duration::from_millis(ms)) => Ok(()),
+                _ = crate::clock::sleep(std::time::Duration::from_millis(ms)) => Ok(()),
             }
         }
         None => {
-            tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+            crate::clock::sleep(std::time::Duration::from_millis(ms)).await;
             Ok(())
         }
     }

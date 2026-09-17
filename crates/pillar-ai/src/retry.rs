@@ -205,7 +205,7 @@ where
         // The upstream abortable backoff sleep maps to a plain sleep here;
         // cancellation surfaces through the produce call in the Rust port.
         if delay_ms > 0 {
-            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            crate::clock::sleep(std::time::Duration::from_millis(delay_ms)).await;
         }
         if let Some(callbacks) = callbacks.as_ref() {
             if let Some(on_start) = &callbacks.on_retry_attempt_start {

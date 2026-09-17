@@ -293,7 +293,7 @@ pub(crate) async fn fetch_json_stream(
     let response = match timeout_ms {
         Some(timeout_ms) => {
             let duration = std::time::Duration::from_millis(timeout_ms);
-            tokio::time::timeout(duration, raced)
+            crate::clock::timeout(duration, raced)
                 .await
                 .map_err(|_| ProviderRequestError::transport("Request timed out".to_string()))?
         }
