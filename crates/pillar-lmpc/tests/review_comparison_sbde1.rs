@@ -105,7 +105,9 @@ fn rejects_a_missing_required_argument_before_execute() {
     );
 }
 #[test]
-fn observes_progress_only_after_tool_settlement() {
+fn delivers_progress_before_the_tool_settles() {
+    // C2, fixed: an update emitted while the tool waits reaches the subscriber
+    // during the run (this used to be withheld until the call settled).
     let calls = Arc::new(AtomicUsize::new(0));
     let release = Arc::new(AtomicBool::new(false));
     let host = FrameHost::new();
@@ -123,12 +125,12 @@ fn observes_progress_only_after_tool_settlement() {
     }
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert!(
-        !session
+        session
             .trace()
             .events
             .iter()
             .any(|event| event == "tool_execution_update"),
-        "characterization: progress is withheld while tool waits"
+        "progress must be visible while the tool is still running"
     );
     release.store(true, Ordering::SeqCst);
     finish(&mut session);

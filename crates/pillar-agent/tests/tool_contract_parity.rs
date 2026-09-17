@@ -5,7 +5,7 @@
 //! *declared* (`docs/PI-COMPARISON-sbde1.md` C1/C3, probes in
 //! `crates/pillar-lmpc/tests/review_comparison_sbde1.rs`).
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use pillar_agent::{
@@ -13,9 +13,7 @@ use pillar_agent::{
     AgentToolResult, StreamFn, ToolExecutionMode, agent_loop,
 };
 use pillar_ai::event_stream::assistant_message_event_stream;
-use pillar_ai::types::{
-    AssistantMessage, Content, Message, StopReason, Tool, Usage, UsageCost,
-};
+use pillar_ai::types::{AssistantMessage, Content, Message, StopReason, Tool, Usage, UsageCost};
 
 /// The tool schema under test: a required string plus facets that no coercion
 /// can rescue (a numeric minimum, an enum, and a nested required property).
@@ -212,7 +210,11 @@ async fn a_missing_required_argument_never_reaches_execute() {
     let calls = Arc::new(AtomicUsize::new(0));
     let (_, messages) = run_turn(
         counting_case(Arc::clone(&calls)),
-        vec![Content::tool_call("call-1", "checked", serde_json::json!({}))],
+        vec![Content::tool_call(
+            "call-1",
+            "checked",
+            serde_json::json!({}),
+        )],
         AgentLoopConfig::default(),
     )
     .await;
@@ -437,5 +439,117 @@ async fn the_signal_is_handed_to_after_tool_call_when_the_loop_has_one() {
         observed.lock().unwrap().as_slice(),
         &[true],
         "upstream passes the call's signal to the hook"
+    );
+}
+
+/// C2: an update emitted while the tool runs must reach a subscriber *before*
+/// the call settles (upstream starts the emission inside the callback). The
+/// tool below holds its own call open until the subscriber has actually
+/// received the update, so withheld progress turns into the test's timeout
+/// rather than a silent pass.
+#[tokio::test]
+async fn progress_reaches_a_subscriber_before_the_tool_settles() {
+    let seen = Arc::new(AtomicBool::new(false));
+    let tool = {
+        let seen = Arc::clone(&seen);
+        AgentTool {
+            tool: Tool {
+                name: "slow".into(),
+                description: "reports progress, then waits".into(),
+                parameters: serde_json::json!({"type": "object"}),
+                constrained_sampling: None,
+            },
+            label: "slow".into(),
+            prepare_arguments: None,
+            execution_mode: None,
+            execute: Arc::new(move |_id, _args, _signal, update| {
+                let seen = Arc::clone(&seen);
+                Box::pin(async move {
+                    if let Some(update) = update {
+                        update(AgentToolResult {
+                            content: vec![Content::text("halfway")],
+                            details: serde_json::json!({"step": 1}),
+                            usage: None,
+                            added_tool_names: None,
+                            terminate: false,
+                        });
+                    }
+                    // Wait for the subscriber's acknowledgement, bounded so a
+                    // regression fails the assertion instead of hanging.
+                    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+                    while !seen.load(Ordering::SeqCst) && tokio::time::Instant::now() < deadline {
+                        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                    }
+                    let observed = seen.load(Ordering::SeqCst);
+                    Ok(AgentToolResult {
+                        content: vec![Content::text(format!("subscriber_saw_update={observed}"))],
+                        details: serde_json::json!({}),
+                        usage: None,
+                        added_tool_names: None,
+                        terminate: false,
+                    })
+                })
+            }),
+        }
+    };
+
+    let context = AgentContext {
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: vec![tool],
+    };
+    let stream = agent_loop(
+        vec![user_message("go")],
+        context,
+        AgentLoopConfig::default(),
+        None,
+        Some(scripted_stream_fn(vec![
+            assistant_message(
+                vec![Content::tool_call(
+                    "call-1",
+                    "slow",
+                    serde_json::json!({}),
+                )],
+                StopReason::ToolUse,
+            ),
+            assistant_message(vec![Content::text("done")], StopReason::Stop),
+        ])),
+    );
+
+    let mut kinds: Vec<String> = Vec::new();
+    let drive = async {
+        let mut iter = stream.iter();
+        while let Some(event) = futures::StreamExt::next(&mut iter).await {
+            if let AgentEvent::ToolExecutionUpdate { partial_result, .. } = &event {
+                assert_eq!(
+                    partial_result["content"][0]["text"], "halfway",
+                    "the update carries the tool's partial result"
+                );
+                seen.store(true, Ordering::SeqCst);
+            }
+            kinds.push(event.kind().to_string());
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(20), drive)
+        .await
+        .expect("the run must finish: withheld progress would stall the tool");
+    let messages = stream.result().await;
+
+    let update_index = kinds
+        .iter()
+        .position(|kind| kind == "tool_execution_update")
+        .expect("the update reached the subscriber");
+    let end_index = kinds
+        .iter()
+        .position(|kind| kind == "tool_execution_end")
+        .expect("the call ended");
+    assert!(
+        update_index < end_index,
+        "progress is delivered before the call settles: {kinds:?}"
+    );
+    assert!(
+        tool_result_texts(&messages)[0].contains("subscriber_saw_update=true"),
+        "{}",
+        tool_result_texts(&messages)[0]
     );
 }

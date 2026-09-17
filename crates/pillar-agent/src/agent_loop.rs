@@ -12,6 +12,8 @@
 
 use std::sync::Arc;
 
+use futures::FutureExt;
+
 use pillar_ai::event_stream::{EventStream, assistant_message_event_stream};
 use pillar_ai::types::{
     AssistantMessage, AssistantMessageEvent, Content, Context, StopReason, ToolResultMessage,
@@ -712,8 +714,12 @@ async fn execute_tool_calls_parallel(
     // Reporting immediate failures first would reorder the history (and with it
     // replay and the model's view of what happened in what order).
     let mut slots: Vec<Option<FinalizedToolCall>> = Vec::new();
-    let mut pending: Vec<(usize, AgentToolCall, crate::types::AgentTool, serde_json::Value)> =
-        Vec::new();
+    let mut pending: Vec<(
+        usize,
+        AgentToolCall,
+        crate::types::AgentTool,
+        serde_json::Value,
+    )> = Vec::new();
     for tool_call in tool_calls {
         emit.emit(AgentEvent::ToolExecutionStart {
             tool_call_id: tool_call.id.clone(),
@@ -912,50 +918,72 @@ async fn execute_prepared_tool_call(
     signal: Option<AbortSignal>,
     emit: &AgentEventSink,
 ) -> FinalizedToolCall {
-    // Upstream buffers `tool_execution_update` emissions while the tool runs
-    // and awaits them after it settles; calls after that are ignored
-    // (`acceptingUpdates`). Mirror that with a sync buffer + post-settlement
-    // drain so updates are ordered and never lost mid-run.
+    // Upstream starts the emission *inside* the update callback and only
+    // awaits the returned promises once the tool settles
+    // (`agent-loop.ts` `executePreparedToolCall`), so a subscriber sees
+    // progress while a long tool runs. A Rust callback cannot await, so it
+    // hands the event to a channel that this future drains concurrently with
+    // the tool: the same guarantee (an update reaches the subscriber before
+    // the call settles), without needing a spawn handle.
+    //
+    // Only updates emitted before the tool settles are accepted
+    // (upstream `acceptingUpdates`).
+    //
+    // divergence: the port awaits each emission here, so a slow subscriber
+    // delays the tool's own progress; upstream lets the tool run on while the
+    // emission promise is pending. Ordering and mid-run visibility are the
+    // same, the overlap is not.
     let accepting = Arc::new(std::sync::atomic::AtomicBool::new(true));
-    let buffered: Arc<std::sync::Mutex<Vec<AgentEvent>>> =
-        Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
     let update_sink: crate::types::AgentToolUpdateCallback = {
         let tool_call = tool_call.clone();
-        let buffered = Arc::clone(&buffered);
         let accepting = Arc::clone(&accepting);
         Arc::new(move |partial_result| {
             if !accepting.load(std::sync::atomic::Ordering::SeqCst) {
                 return;
             }
-            buffered
-                .lock()
-                .expect("update buffer lock")
-                .push(AgentEvent::ToolExecutionUpdate {
-                    tool_call_id: tool_call.id.clone(),
-                    tool_name: tool_call.name.clone(),
-                    args: tool_call.arguments.clone(),
-                    partial_result: serde_json::json!({
-                        "content": partial_result.content,
-                        "details": partial_result.details,
-                    }),
-                });
+            // A closed receiver only means the call already finished.
+            let _ = sender.send(AgentEvent::ToolExecutionUpdate {
+                tool_call_id: tool_call.id.clone(),
+                tool_name: tool_call.name.clone(),
+                args: tool_call.arguments.clone(),
+                partial_result: serde_json::json!({
+                    "content": partial_result.content,
+                    "details": partial_result.details,
+                }),
+            });
         })
     };
 
-    let outcome = (tool.execute)(
+    let execution = (tool.execute)(
         tool_call.id.clone(),
         args.clone(),
         signal,
         Some(update_sink),
-    )
-    .await;
+    );
+    futures::pin_mut!(execution);
+    let mut execution = execution.fuse();
+
+    // Drive the tool and the update delivery together. `updates_done` records
+    // that the tool dropped its sink (nothing more can arrive), after which
+    // there is nothing left to race against.
+    let mut updates_done = false;
+    let outcome = loop {
+        if updates_done {
+            break execution.await;
+        }
+        futures::select! {
+            outcome = execution => break outcome,
+            event = receiver.recv().fuse() => match event {
+                Some(event) => emit.emit(event).await,
+                None => updates_done = true,
+            },
+        }
+    };
     accepting.store(false, std::sync::atomic::Ordering::SeqCst);
-    // Drain buffered updates (upstream `await Promise.all(updateEvents)`).
-    // Drop the guard before awaiting each emission: a held MutexGuard across
-    // await makes the future non-Send.
-    let pending_updates: Vec<AgentEvent> =
-        std::mem::take(&mut *buffered.lock().expect("update buffer lock"));
-    for event in pending_updates {
+    // Anything the tool produced on its way out (upstream
+    // `await Promise.all(updateEvents)`).
+    while let Ok(event) = receiver.try_recv() {
         emit.emit(event).await;
     }
 

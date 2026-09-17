@@ -103,9 +103,10 @@ impl JsonType {
 }
 
 /// What `items` says about an array's elements.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 enum Items {
     /// No `items` (or a bare `true`): any element is acceptable.
+    #[default]
     Any,
     /// One schema for every element.
     Each(Arc<Compiled>),
@@ -113,27 +114,16 @@ enum Items {
     Positional(Vec<Arc<Compiled>>),
 }
 
-impl Default for Items {
-    fn default() -> Self {
-        Self::Any
-    }
-}
-
 /// What `additionalProperties` says about undeclared keys.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 enum Additional {
     /// Unset, or `true`.
+    #[default]
     Allowed,
     /// `false`: an undeclared key is a validation failure.
     Forbidden,
     /// A schema every undeclared value must satisfy.
     Schema(Arc<Compiled>),
-}
-
-impl Default for Additional {
-    fn default() -> Self {
-        Self::Allowed
-    }
 }
 
 /// A parsed, ready-to-run schema.
@@ -215,8 +205,9 @@ fn compile_object(object: &Map<String, Value>) -> Result<Arc<Compiled>, String> 
                     .as_str()
                     .ok_or("`pattern` must be a string")?
                     .to_owned();
-                let regex = regex::Regex::new(&source)
-                    .map_err(|error| format!("`pattern` is not a usable regular expression: {error}"))?;
+                let regex = regex::Regex::new(&source).map_err(|error| {
+                    format!("`pattern` is not a usable regular expression: {error}")
+                })?;
                 compiled.pattern = Some(regex);
                 compiled.pattern_source = Some(source);
             }
@@ -224,21 +215,16 @@ fn compile_object(object: &Map<String, Value>) -> Result<Arc<Compiled>, String> 
             "maxItems" => compiled.max_items = Some(count(keyword, value)?),
             "items" => {
                 compiled.items = match value {
-                    Value::Array(items) => Items::Positional(
-                        items
-                            .iter()
-                            .map(compile)
-                            .collect::<Result<Vec<_>, _>>()?,
-                    ),
+                    Value::Array(items) => {
+                        Items::Positional(items.iter().map(compile).collect::<Result<Vec<_>, _>>()?)
+                    }
                     other => Items::Each(compile(other)?),
                 };
             }
             "properties" => {
                 let properties = value.as_object().ok_or("`properties` must be an object")?;
                 for (name, property) in properties {
-                    compiled
-                        .properties
-                        .insert(name.clone(), compile(property)?);
+                    compiled.properties.insert(name.clone(), compile(property)?);
                 }
             }
             "required" => {
@@ -357,7 +343,9 @@ fn compiled(schema: &Value) -> Result<Arc<Compiled>, String> {
     static CACHE: OnceLock<Mutex<HashMap<String, Result<Arc<Compiled>, String>>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let key = serde_json::to_string(schema).unwrap_or_else(|_| format!("{schema:?}"));
-    let mut cache = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut cache = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(cached) = cache.get(&key) {
         return cached.clone();
     }
@@ -439,7 +427,8 @@ fn coerce(value: Value, schema: &Compiled) -> Value {
     }
 
     if let Some(types) = &schema.types {
-        let declared_matches = types.len() > 1 && types.iter().any(|declared| declared.matches(&value));
+        let declared_matches =
+            types.len() > 1 && types.iter().any(|declared| declared.matches(&value));
         if !types.iter().any(|declared| declared.matches(&value)) && !declared_matches {
             for declared in types {
                 let candidate = coerce_primitive(&value, *declared);
@@ -477,7 +466,10 @@ fn coerce(value: Value, schema: &Compiled) -> Value {
         let mut values = values;
         match &schema.items {
             Items::Each(item) => {
-                values = values.into_iter().map(|value| coerce(value, item)).collect();
+                values = values
+                    .into_iter()
+                    .map(|value| coerce(value, item))
+                    .collect();
             }
             Items::Positional(items) => {
                 for (index, item) in items.iter().enumerate() {
@@ -571,12 +563,7 @@ fn check(value: &Value, schema: &Compiled, path: &str, errors: &mut Vec<String>,
         check(value, nested, path, errors, nested);
     }
 
-    if !schema.any_of.is_empty()
-        && !schema
-            .any_of
-            .iter()
-            .any(|variant| is_valid(value, variant))
-    {
+    if !schema.any_of.is_empty() && !schema.any_of.iter().any(|variant| is_valid(value, variant)) {
         errors.push(format!(
             "{}: must match at least one of the {} allowed schemas",
             shown(),
@@ -661,12 +648,18 @@ fn check(value: &Value, schema: &Compiled, path: &str, errors: &mut Vec<String>,
         if let Some(minimum) = schema.min_length
             && text.chars().count() < minimum
         {
-            errors.push(format!("{}: must NOT have fewer than {minimum} characters", shown()));
+            errors.push(format!(
+                "{}: must NOT have fewer than {minimum} characters",
+                shown()
+            ));
         }
         if let Some(maximum) = schema.max_length
             && text.chars().count() > maximum
         {
-            errors.push(format!("{}: must NOT have more than {maximum} characters", shown()));
+            errors.push(format!(
+                "{}: must NOT have more than {maximum} characters",
+                shown()
+            ));
         }
         if let Some(pattern) = &schema.pattern
             && !pattern.is_match(text)
@@ -683,12 +676,18 @@ fn check(value: &Value, schema: &Compiled, path: &str, errors: &mut Vec<String>,
         if let Some(minimum) = schema.min_items
             && values.len() < minimum
         {
-            errors.push(format!("{}: must NOT have fewer than {minimum} items", shown()));
+            errors.push(format!(
+                "{}: must NOT have fewer than {minimum} items",
+                shown()
+            ));
         }
         if let Some(maximum) = schema.max_items
             && values.len() > maximum
         {
-            errors.push(format!("{}: must NOT have more than {maximum} items", shown()));
+            errors.push(format!(
+                "{}: must NOT have more than {maximum} items",
+                shown()
+            ));
         }
         match &schema.items {
             Items::Each(item) => {
@@ -858,7 +857,10 @@ mod tests {
             "patternProperties": {"^x": {"type": "string"}}
         });
         let error = validate(unsupported, json!({"name": "x"})).unwrap_err();
-        assert!(error.contains("`patternProperties` is not implemented"), "{error}");
+        assert!(
+            error.contains("`patternProperties` is not implemented"),
+            "{error}"
+        );
 
         let malformed = json!({"type": "objct"});
         let error = validate(malformed, json!({})).unwrap_err();
