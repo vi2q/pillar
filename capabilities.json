@@ -1,0 +1,583 @@
+{
+  "schema_version": 1,
+  "note": [
+    "The capability ledger for pillar (docs/DEVELOPMENT-STRATEGY.md §2-3).",
+    "",
+    "`api` rows are what a host, a tool, or an extension can call *today*, with the strongest claim we can back: `wired` = published and handled by the named adapter; `verified` = additionally pinned by the tests listed. A `verified` row without tests is a lie the gate (crates/pillar-extensions/tests/capability_ledger.rs) refuses, and for `surface = \"luau\"` the gate compares the rows against the live `pillar.*` table walked in the VM, in both directions: publishing a function without a row fails, and a row with nothing behind it fails.",
+    "",
+    "`gap` rows are needed capabilities that are *not* published. They carry no name on purpose — the surface check is what keeps a gap from quietly becoming an API without a decision.",
+    "",
+    "`scenario` rows are production paths, not unit paths: the steps a developer's work actually takes (docs/DEVELOPMENT-STRATEGY.md §2). `running` means a test drives it today; `missing` means the work is not done, and the row says which capability is the reason.",
+    "",
+    "Not yet mechanically checked: `ctx.*` is built per dispatch, so those rows are checked only for their adapter and tests; tool names and the C ABI are checked the same way (see docs/TASKS.md)."
+  ],
+  "api": [
+    {
+      "id": "luau.exec",
+      "surface": "luau",
+      "name": "pillar.exec",
+      "adapter": "crates/pillar-extensions/src/runtime.rs",
+      "permission": "process:exec",
+      "state": "verified",
+      "what": "Run a host command (the extension's process capability), suspending the tool call while the host runs it.",
+      "tests": [
+        "a_host_can_drive_a_tool_call_step_by_step",
+        "an_async_host_call_suspends_the_tool_until_the_host_answers"
+      ],
+      "interrupt_tests": ["an_aborted_tool_call_sees_its_signal"]
+    },
+    {
+      "id": "luau.fs.read",
+      "surface": "luau",
+      "name": "pillar.fs.read",
+      "adapter": "crates/pillar-extensions/src/runtime.rs",
+      "permission": "fs:read",
+      "state": "verified",
+      "what": "Read a workspace file; a missing path answers nil (explicit `missing`, not a sentinel).",
+      "tests": [
+        "a_tools_fs_read_returns_the_string_through_the_sync_driver",
+        "tasks_tidy_normalizes_without_reordering"
+      ]
+    },
+    {
+      "id": "luau.fs.write",
+      "surface": "luau",
+      "name": "pillar.fs.write",
+      "adapter": "crates/pillar-extensions/src/runtime.rs",
+      "permission": "fs:write",
+      "state": "verified",
+      "what": "Write a workspace file through the host's fs capability.",
+      "tests": ["tasks_tidy_normalizes_without_reordering"]
+    },
+    {
+      "id": "luau.fs.list",
+      "surface": "luau",
+      "name": "pillar.fs.list",
+      "adapter": "crates/pillar-extensions/src/runtime.rs",
+      "permission": "fs:read",
+      "state": "verified",
+      "what": "List a directory through the host's fs capability.",
+      "tests": ["the_runtimes_host_functions_survive_a_coroutine"]
+    },
+    {
+      "id": "luau.fs.stat",
+      "surface": "luau",
+      "name": "pillar.fs.stat",
+      "adapter": "crates/pillar-extensions/src/runtime.rs",
+      "permission": "fs:read",
+      "state": "verified",
+      "what": "Type/size/mtime of a path (the change-detection input).",
+      "tests": ["tasks_tidy_normalizes_without_reordering"]
+    },
+    {
+      "id": "luau.fs.exists",
+      "surface": "luau",
+      "name": "pillar.fs.exists",
+      "adapter": "crates/pillar-extensions/src/runtime.rs",
+      "permission": "fs:read",
+      "state": "verified",
+      "what": "Whether a path exists.",
+      "tests": ["tasks_tidy_normalizes_without_reordering"]
+    },
+    {
+      "id": "luau.on",
+      "surface": "luau",
+      "name": "pillar.on",
+      "adapter": "crates/pillar-extensions/src/runtime.rs",
+      "permission": "events:subscribe",
+      "state": "verified",
+      "what": "Register a handler for a named event; the handler is owned by the registering generation.",
+      "tests": ["session_start_injects_the_pointer_once", "a_real_extension_tool_runs_headless"]
+    },
+    {
+      "id": "luau.events.on",
+      "surface": "luau",
+      "name": "pillar.events.on",
+      "adapter": "crates/pillar-extensions/src/runtime.rs",
+      "permission": "events:subscribe",
+      "state": "verified",
+      "what": "Subscribe to an extension-local event channel; returns an unsubscribe handle.",
+      "tests": ["events_deliver_in_order_and_unsubscribe", "events_type_checks"]
+    },
+    {
+      "id": "luau.events.emit",
+      "surface": "luau",
+      "name": "pillar.events.emit",
+      "adapter": "crates/pillar-extensions/src/runtime.rs",
+      "permission": "events:subscribe",
+      "state": "verified",
+      "what": "Emit on an extension-local event channel (handler errors are caught, not propagated).",
+      "tests": ["events_deliver_in_order_and_unsubscribe", "events_handler_errors_are_caught"]
+    },
+    {
+      "id": "luau.register_tool",
+      "surface": "luau",
+      "name": "pillar.register_tool",
+      "adapter": "crates/pillar-extensions/src/runtime.rs",
+      "permission": "tools:register",
+      "state": "verified",
+      "what": "Register a tool with the agent; its arguments go through the same schema validation, authorization, progress, cancellation and result limits as a built-in.",
+      "tests": ["a_real_extension_tool_runs_headless", "tools_surface_in_the_runner_tool_set"]
+    },
+    {
+      "id": "luau.register_command",
+      "surface": "luau",
+      "name": "pillar.register_command",
+      "adapter": "crates/pillar-extensions/src/bridge.rs",
+      "permission": "commands:register",
+      "state": "verified",
+      "what": "Register a slash command; the handler receives ctx.",
+      "tests": ["commands_surface_as_runner_commands", "commands_execute_with_ctx"]
+    },
+    {
+      "id": "luau.register_flag",
+      "surface": "luau",
+      "name": "pillar.register_flag",
+      "adapter": "crates/pillar-extensions/src/bridge.rs",
+      "permission": "flags:register",
+      "state": "verified",
+      "what": "Register a CLI flag the host reports back through pillar.get_flag.",
+      "tests": ["flags_and_shortcuts_surface_in_the_runner"]
+    },
+    {
+      "id": "luau.register_shortcut",
+      "surface": "luau",
+      "name": "pillar.register_shortcut",
+      "adapter": "crates/pillar-extensions/src/bridge.rs",
+      "permission": "shortcuts:register",
+      "state": "verified",
+      "what": "Register a terminal keybinding handled by the presentation adapter.",
+      "tests": ["flags_and_shortcuts_surface_in_the_runner"]
+    },
+    {
+      "id": "luau.register_message_renderer",
+      "surface": "luau",
+      "name": "pillar.register_message_renderer",
+      "adapter": "crates/pillar-extensions/src/bridge.rs",
+      "permission": "ui:render",
+      "state": "verified",
+      "what": "Render a message of a custom type; a failing renderer becomes the failure notice.",
+      "tests": ["message_renderer_bridges_into_the_runner", "renderer_errors_become_the_failure_notice"]
+    },
+    {
+      "id": "luau.register_entry_renderer",
+      "surface": "luau",
+      "name": "pillar.register_entry_renderer",
+      "adapter": "crates/pillar-extensions/src/bridge.rs",
+      "permission": "ui:render",
+      "state": "verified",
+      "what": "Render a custom session entry.",
+      "tests": ["entry_renderer_bridges_into_the_runner"]
+    },
+    {
+      "id": "luau.register_markdown_transformer",
+      "surface": "luau",
+      "name": "pillar.register_markdown_transformer",
+      "adapter": "crates/pillar-extensions/src/bridge.rs",
+      "permission": "ui:render",
+      "state": "verified",
+      "what": "Transform markdown on its way to the presentation layer.",
+      "tests": ["markdown_transformer_bridges_into_the_runner"]
+    },
+    {
+      "id": "luau.schema.string",
+      "surface": "luau",
+      "name": "pillar.schema.string",
+      "adapter": "crates/pillar-extensions/src/runtime.rs",
+      "permission": "schema:build",
+      "state": "verified",
+      "what": "Build a JSON-Schema fragment for a tool's arguments (the loop enforces what the builder declares).",
+      "tests": ["schema_builders_emit_json_schema", "the_runtimes_host_functions_survive_a_coroutine"]
+    },
+    {
+      "id": "luau.schema.number",
+      "surface": "luau",
+      "name": "pillar.schema.number",
+      "adapter": "crates/pillar-extensions/src/runtime.rs",
+      "permission": "schema:build",
+      "state": "verified",
+      "what": "Build a JSON-Schema fragment for a tool's arguments.",
+      "tests": ["schema_builders_emit_json_schema"]
+    },
+    {
+      "id": "luau.schema.boolean",
+      "surface": "luau",
+      "name": "pillar.schema.boolean",
+      "adapter": "crates/pillar-extensions/src/runtime.rs",
+      "permission": "schema:build",
+      "state": "verified",
+      "what": "Build a JSON-Schema fragment for a tool's arguments.",
+      "tests": ["schema_builders_emit_json_schema"]
+    },
+    {
+      "id": "luau.schema.array",
+      "surface": "luau",
+      "name": "pillar.schema.array",
+      "adapter": "crates/pillar-extensions/src/runtime.rs",
+      "permission": "schema:build",
+      "state": "verified",
+      "what": "Build a JSON-Schema fragment for a tool's arguments.",
+      "tests": ["schema_builders_emit_json_schema"]
+    },
+    {
+      "id": "luau.schema.enum",
+      "surface": "luau",
+      "name": "pillar.schema.enum",
+      "adapter": "crates/pillar-extensions/src/runtime.rs",
+      "permission": "schema:build",
+      "state": "verified",
+      "what": "Build a JSON-Schema fragment for a tool's arguments.",
+      "tests": ["schema_builders_emit_json_schema"]
+    },
+    {
+      "id": "luau.schema.object",
+      "surface": "luau",
+      "name": "pillar.schema.object",
+      "adapter": "crates/pillar-extensions/src/runtime.rs",
+      "permission": "schema:build",
+      "state": "verified",
+      "what": "Build a JSON-Schema fragment for a tool's arguments.",
+      "tests": ["schema_builders_emit_json_schema", "the_runtimes_host_functions_survive_a_coroutine"]
+    },
+    {
+      "id": "luau.get_flag",
+      "surface": "luau",
+      "name": "pillar.get_flag",
+      "adapter": "crates/pillar-extensions/src/runtime.rs",
+      "permission": "flags:read",
+      "state": "verified",
+      "what": "Read a CLI flag's value; without a host it answers nil.",
+      "tests": ["the_runtimes_host_functions_survive_a_coroutine", "get_flag_without_a_host_answers_nil"]
+    },
+    {
+      "id": "luau.get_commands",
+      "surface": "luau",
+      "name": "pillar.get_commands",
+      "adapter": "crates/pillar-extensions/src/runtime.rs",
+      "permission": "commands:read",
+      "state": "verified",
+      "what": "List the registered commands.",
+      "tests": ["the_runtimes_host_functions_survive_a_coroutine"]
+    },
+    {
+      "id": "luau.send_message",
+      "surface": "luau",
+      "name": "pillar.send_message",
+      "adapter": "crates/pillar-extensions/src/runtime.rs",
+      "permission": "session:append",
+      "state": "verified",
+      "what": "Append a message to the session (the pointer injection path of the bundled extension).",
+      "tests": ["session_start_injects_the_pointer_once"]
+    },
+    {
+      "id": "luau.send_user_message",
+      "surface": "luau",
+      "name": "pillar.send_user_message",
+      "adapter": "crates/pillar-extensions/src/runtime.rs",
+      "permission": "session:append",
+      "state": "verified",
+      "what": "Send a user message into the session (the post-compact re-injection path).",
+      "tests": ["session_compact_reinjects_the_pointer"]
+    },
+    {
+      "id": "luau.append_entry",
+      "surface": "luau",
+      "name": "pillar.append_entry",
+      "adapter": "crates/pillar-extensions/src/runtime.rs",
+      "permission": "session:append",
+      "state": "wired",
+      "what": "Append a custom session entry (the entry is rendered by the registered entry renderer).",
+      "tests": []
+    },
+    {
+      "id": "luau.set_label",
+      "surface": "luau",
+      "name": "pillar.set_label",
+      "adapter": "crates/pillar-extensions/src/runtime.rs",
+      "permission": "session:write",
+      "state": "wired",
+      "what": "Set an entry's label.",
+      "tests": []
+    },
+    {
+      "id": "luau.set_model",
+      "surface": "luau",
+      "name": "pillar.set_model",
+      "adapter": "crates/pillar-extensions/src/runtime.rs",
+      "permission": "session:model",
+      "state": "wired",
+      "what": "Switch the session's model.",
+      "tests": []
+    },
+    {
+      "id": "luau.get_session_name",
+      "surface": "luau",
+      "name": "pillar.get_session_name",
+      "adapter": "crates/pillar-extensions/src/runtime.rs",
+      "permission": "session:read",
+      "state": "wired",
+      "what": "Read the session's name.",
+      "tests": []
+    },
+    {
+      "id": "luau.set_session_name",
+      "surface": "luau",
+      "name": "pillar.set_session_name",
+      "adapter": "crates/pillar-extensions/src/runtime.rs",
+      "permission": "session:write",
+      "state": "wired",
+      "what": "Rename the session.",
+      "tests": []
+    },
+    {
+      "id": "luau.get_thinking_level",
+      "surface": "luau",
+      "name": "pillar.get_thinking_level",
+      "adapter": "crates/pillar-extensions/src/runtime.rs",
+      "permission": "session:read",
+      "state": "wired",
+      "what": "Read the thinking level.",
+      "tests": []
+    },
+    {
+      "id": "luau.set_thinking_level",
+      "surface": "luau",
+      "name": "pillar.set_thinking_level",
+      "adapter": "crates/pillar-extensions/src/runtime.rs",
+      "permission": "session:model",
+      "state": "wired",
+      "what": "Set the thinking level.",
+      "tests": []
+    },
+    {
+      "id": "luau.get_all_tools",
+      "surface": "luau",
+      "name": "pillar.get_all_tools",
+      "adapter": "crates/pillar-extensions/src/runtime.rs",
+      "permission": "tools:read",
+      "state": "wired",
+      "what": "List every tool the session has.",
+      "tests": []
+    },
+    {
+      "id": "luau.get_active_tools",
+      "surface": "luau",
+      "name": "pillar.get_active_tools",
+      "adapter": "crates/pillar-extensions/src/runtime.rs",
+      "permission": "tools:read",
+      "state": "wired",
+      "what": "List the active tools.",
+      "tests": []
+    },
+    {
+      "id": "luau.set_active_tools",
+      "surface": "luau",
+      "name": "pillar.set_active_tools",
+      "adapter": "crates/pillar-extensions/src/runtime.rs",
+      "permission": "tools:write",
+      "state": "wired",
+      "what": "Set which tools are active for the session.",
+      "tests": []
+    },
+
+    {
+      "id": "ctx.ui.custom",
+      "surface": "luau-ctx",
+      "name": "ctx.ui.custom",
+      "adapter": "crates/pillar-extensions/src/runtime.rs",
+      "permission": "ui:interactive",
+      "state": "verified",
+      "what": "Run an interactive component; a wait is sliced so abort/deadline end it within one slice.",
+      "tests": ["an_abort_ends_a_waiting_ui_component"]
+    },
+    {
+      "id": "ctx.ui.confirm",
+      "surface": "luau-ctx",
+      "name": "ctx.ui.confirm",
+      "adapter": "crates/pillar-extensions/src/runtime.rs",
+      "permission": "ui:interactive",
+      "state": "wired",
+      "what": "Ask the user to approve; the answer is a host callback, so the request/answer split is the host's.",
+      "tests": []
+    },
+    {
+      "id": "ctx.ui.select",
+      "surface": "luau-ctx",
+      "name": "ctx.ui.select",
+      "adapter": "crates/pillar-extensions/src/runtime.rs",
+      "permission": "ui:interactive",
+      "state": "wired",
+      "what": "Pick one of a list.",
+      "tests": []
+    },
+    {
+      "id": "ctx.ui.input",
+      "surface": "luau-ctx",
+      "name": "ctx.ui.input",
+      "adapter": "crates/pillar-extensions/src/runtime.rs",
+      "permission": "ui:interactive",
+      "state": "wired",
+      "what": "Ask for a line of text.",
+      "tests": []
+    },
+    {
+      "id": "ctx.ui.editor",
+      "surface": "luau-ctx",
+      "name": "ctx.ui.editor",
+      "adapter": "crates/pillar-extensions/src/runtime.rs",
+      "permission": "ui:interactive",
+      "state": "wired",
+      "what": "Edit a longer text.",
+      "tests": []
+    },
+    {
+      "id": "ctx.sessionManager.getEntries",
+      "surface": "luau-ctx",
+      "name": "ctx.sessionManager.getEntries",
+      "adapter": "crates/pillar-extensions/src/runtime.rs",
+      "permission": "session:read",
+      "state": "verified",
+      "what": "Read the session entries a handler needs (read through the host, per call).",
+      "tests": ["context_is_passed_to_handlers"]
+    },
+    {
+      "id": "ctx.facts",
+      "surface": "luau-ctx",
+      "name": "ctx",
+      "adapter": "crates/pillar-extensions-contract/src/lib.rs",
+      "permission": "session:read",
+      "state": "verified",
+      "what": "The per-dispatch facts (session id, cwd, mode, entries) handed to handlers and commands.",
+      "tests": ["context_is_passed_to_handlers", "commands_execute_with_ctx"]
+    },
+
+    {
+      "id": "tool.luau",
+      "surface": "tool",
+      "name": "an extension-registered tool",
+      "adapter": "crates/pillar-extensions/src/bridge.rs",
+      "permission": "tools:register",
+      "state": "verified",
+      "what": "A tool registered from Luau is bridged into the agent's tool set with the same contract as a built-in.",
+      "tests": ["a_real_extension_tool_runs_headless", "tools_surface_in_the_runner_tool_set"]
+    },
+    {
+      "id": "tool.builtin",
+      "surface": "tool",
+      "name": "read/write/edit/bash/glob/grep",
+      "adapter": "crates/pillar-agent/src/harness/tools/bash.rs",
+      "permission": "fs:read,fs:write,process:exec",
+      "state": "verified",
+      "what": "The built-in coding tools; their arguments are validated by the same schema gate as an extension's.",
+      "tests": ["a_missing_required_argument_never_reaches_execute", "a_facet_violation_never_reaches_execute"]
+    },
+    {
+      "id": "abi.session_state",
+      "surface": "abi",
+      "name": "lmpc_session_export/lmpc_session_import",
+      "adapter": "crates/pillar-lmpc/src/abi.rs",
+      "permission": "session:store",
+      "state": "verified",
+      "what": "Store and resume a conversation across the C ABI, symmetric on both ends (export refuses what import could not take, chunked beyond the input buffer).",
+      "tests": ["a_state_larger_than_the_input_buffer_round_trips", "the_abi_restores_a_conversation_before_the_first_poll"],
+      "interrupt_tests": []
+    }
+  ],
+  "gap": [
+    {
+      "id": "azparam.scene.query",
+      "needed_by": "docs/DEVELOPMENT-STRATEGY.md §2 (azparam制作操作)",
+      "name": "",
+      "state": "unimplemented",
+      "note": "Object selection and scene/entity/component inspection against a real azparam host. Nothing is published: the engine contract is not settled yet, and the ledger's job is to keep an unpublished requirement visible rather than to grow the Luau surface first."
+    },
+    {
+      "id": "azparam.scene.update",
+      "needed_by": "docs/DEVELOPMENT-STRATEGY.md §2 (azparam制作操作)",
+      "name": "",
+      "state": "unimplemented",
+      "note": "Applying a change with the host re-checking permission/entity generation/world revision immediately before it lands, and a tick-boundary commit."
+    },
+    {
+      "id": "azparam.preview.observe",
+      "needed_by": "docs/DEVELOPMENT-STRATEGY.md §2 (azparam制作操作)",
+      "name": "",
+      "state": "unimplemented",
+      "note": "Preview plus log/image observation, so a change can be checked against the result instead of assumed."
+    },
+    {
+      "id": "asset.reference",
+      "needed_by": "docs/DEVELOPMENT-STRATEGY.md §2 (資産・画像・音声)",
+      "name": "",
+      "state": "unimplemented",
+      "note": "Assets stay host-managed references with range reads/thumbnails/summaries instead of being pushed through the conversation JSON."
+    },
+    {
+      "id": "host.action",
+      "needed_by": "docs/DEVELOPMENT-STRATEGY.md §2 (azparam制作操作)",
+      "name": "",
+      "state": "unimplemented",
+      "note": "The engine-action path exists as an LMPC demo (`host_action`) but is not a published extension capability: its admission/applied/refused/unknown distinction and idempotency key are the open contract."
+    },
+    {
+      "id": "luau.ctx.enumeration",
+      "needed_by": "crates/pillar-extensions/tests/capability_ledger.rs",
+      "name": "",
+      "state": "unimplemented",
+      "note": "`ctx.*` is built per dispatch, so the gate checks those rows by adapter and tests only. Enumerate the live ctx table from a dispatched handler and fold it into the same surface equality."
+    }
+  ],
+  "scenario": [
+    {
+      "id": "instructions-extension-round-trip",
+      "state": "running",
+      "what": "The bundled extensions/instructions.luau does its real work headless: inject the pointer, tidy docs/TASKS.md through pillar.fs (read/stat/write) with an untouched-when-equal guarantee, and re-inject after a compact.",
+      "capabilities": [
+        "luau.fs.read",
+        "luau.fs.write",
+        "luau.fs.stat",
+        "luau.fs.exists",
+        "luau.on",
+        "luau.register_tool",
+        "luau.send_message",
+        "luau.send_user_message"
+      ],
+      "tests": [
+        "tasks_tidy_normalizes_without_reordering",
+        "session_start_injects_the_pointer_once",
+        "session_compact_reinjects_the_pointer",
+        "pointer_and_per_turn_tag_track_file_state"
+      ]
+    },
+    {
+      "id": "luau-tool-call-end-to-end",
+      "state": "running",
+      "what": "An extension-registered tool runs through the real agent loop: the host answers its exec/fs host calls while holding no runtime lock, progress reaches a subscriber mid-run, cancellation is honored, and invalid arguments never reach execute.",
+      "capabilities": ["luau.exec", "luau.fs.read", "luau.register_tool", "tool.luau"],
+      "tests": [
+        "a_real_extension_tool_runs_headless",
+        "a_tools_fs_calls_run_through_the_host_call_runner",
+        "progress_reaches_a_subscriber_before_the_tool_settles",
+        "a_missing_required_argument_never_reaches_execute"
+      ]
+    },
+    {
+      "id": "wasm-host-turn-and-resume",
+      "state": "running",
+      "what": "The C ABI driven exactly as an engine host drives it: create, import a stored conversation before the first poll, run a turn with host tools, cancel, then export and resume; the native and Wasm traces are compared byte for byte by scripts/wasm_compare.sh.",
+      "capabilities": ["abi.session_state"],
+      "tests": [
+        "the_abi_restores_a_conversation_before_the_first_poll",
+        "a_state_larger_than_the_input_buffer_round_trips"
+      ]
+    },
+    {
+      "id": "investigate-edit-build-observe",
+      "state": "missing",
+      "what": "The production path the policy review asks for: with a real azparam host, investigate a scene/script, apply a change, run build/preview, observe the result, match it against the change, and interrupt/resume mid-build — with the capabilities involved pinned in this ledger as they become real.",
+      "capabilities": ["azparam.scene.query", "azparam.scene.update", "azparam.preview.observe", "luau.exec"],
+      "tests": [],
+      "blocked_by": "azparam.scene.query (no azparam host contract yet); the build half exists through luau.exec, the observation half does not"
+    }
+  ]
+}

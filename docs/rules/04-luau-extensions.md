@@ -327,3 +327,7 @@ Why it exists: a pure-Lua loop never calls back into the host, so no host timer
 or abort can stop it from the outside — without the guard a `while true do end`
 in an extension occupies the runtime's VM forever. A host that trusts its
 extensions can pass `VmBudget::unlimited()`.
+
+## 公開面を足したら台帳に行を足す
+
+Luau へ新しい関数・テーブル・`ctx` の項目を公開したら、`capabilities.json` に `api` 行を足す（id / surface / 公開名 / adapter / 必要権限 / state / テスト）。**`crates/pillar-extensions/tests/capability_ledger.rs` が `pillar.*` の公開面を VM で実際に歩いて行と突き合わせる**ので、行の無い公開はテストが落ちる。`state = "verified"` は実在するテスト名を要求する（名前だけの主張を通さない）。実装していない必要能力は `gap` 行として残し、公開名を持たせない（黙って公開面を増やさない）。

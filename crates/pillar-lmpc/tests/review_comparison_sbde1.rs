@@ -241,10 +241,7 @@ fn a_state_larger_than_the_input_buffer_round_trips() {
         0,
         "the single-shot import refuses a state past the input buffer"
     );
-    assert_eq!(
-        pillar_lmpc::lmpc_session_import_begin(exported as u32),
-        0
-    );
+    assert_eq!(pillar_lmpc::lmpc_session_import_begin(exported as u32), 0);
     let mut offset = 0usize;
     while offset < stored.len() {
         let chunk = (stored.len() - offset).min(capacity);

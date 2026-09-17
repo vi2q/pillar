@@ -122,7 +122,7 @@ mod refusal {
     /// There is no import in progress.
     pub const NO_IMPORT: i32 = -4;
 }
-use refusal::{NOT_UTF8, NO_IMPORT, RANGE, TOO_LONG};
+use refusal::{NO_IMPORT, NOT_UTF8, RANGE, TOO_LONG};
 
 /// The state a chunked import is assembling. `covered` is how many leading
 /// bytes the host has handed over: writes must be sequential, so a gap or an
@@ -539,12 +539,8 @@ pub extern "C" fn lmpc_session_import_begin(total: u32) -> i32 {
         return TOO_LONG;
     }
     let mut pending = PENDING_IMPORT.lock().expect("import lock");
-    let mut buffer = Vec::new();
-    buffer.resize(total as usize, 0);
-    *pending = Some(PendingImport {
-        buffer,
-        covered: 0,
-    });
+    let mut buffer = vec![0; total as usize];
+    *pending = Some(PendingImport { buffer, covered: 0 });
     0
 }
 

@@ -505,11 +505,7 @@ async fn progress_reaches_a_subscriber_before_the_tool_settles() {
         None,
         Some(scripted_stream_fn(vec![
             assistant_message(
-                vec![Content::tool_call(
-                    "call-1",
-                    "slow",
-                    serde_json::json!({}),
-                )],
+                vec![Content::tool_call("call-1", "slow", serde_json::json!({}))],
                 StopReason::ToolUse,
             ),
             assistant_message(vec![Content::text("done")], StopReason::Stop),
