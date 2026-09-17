@@ -30,6 +30,11 @@ pub struct Registration<T> {
 /// Owner of registrations made outside an extension's setup (the host itself).
 pub const HOST_OWNER: &str = "<host>";
 
+/// How many registrations the host accepts in total unless it says otherwise
+/// (upstream has no cap; the host must not be sized by an extension — the VM's
+/// own memory ceiling cannot bound host-side vectors).
+pub const MAX_REGISTRATIONS: usize = 10_000;
+
 /// Registration records captured from `pillar.*` API calls (upstream
 /// the ExtensionAPI's internal registries).
 #[derive(Debug, Clone, PartialEq)]
@@ -62,6 +67,9 @@ pub struct HostRegistry {
     pub markdown_transformers: Vec<Registration<String>>,
     /// The extension whose setup is running: stamped onto every registration.
     pub current_owner: Option<String>,
+    /// How many registrations are accepted in total ([`MAX_REGISTRATIONS`]
+    /// unless the host changed it).
+    pub max_registrations: usize,
 }
 
 impl Default for HostRegistry {
@@ -89,7 +97,32 @@ impl HostRegistry {
             entry_renderers: Vec::new(),
             markdown_transformers: Vec::new(),
             current_owner: None,
+            max_registrations: MAX_REGISTRATIONS,
         }
+    }
+
+    /// Every registration this registry holds.
+    pub fn registration_count(&self) -> usize {
+        self.event_handlers.len()
+            + self.tools.len()
+            + self.commands.len()
+            + self.shortcuts.len()
+            + self.flags.len()
+            + self.message_renderers.len()
+            + self.entry_renderers.len()
+            + self.markdown_transformers.len()
+    }
+
+    /// Refuse registrations past [`HostRegistry::max_registrations`]: the VM's
+    /// step and memory budgets bound the VM, not the host's own vectors.
+    fn ensure_capacity(&self) -> Result<(), String> {
+        if self.registration_count() >= self.max_registrations {
+            return Err(format!(
+                "the extension registered more than {} entries; the host refuses more",
+                self.max_registrations
+            ));
+        }
+        Ok(())
     }
 
     /// Handlers registered for an event, in registration order
@@ -506,16 +539,25 @@ pub struct VmBudget {
     pub steps: u64,
     /// Wall-clock limit for one operation, when the host wants one.
     pub deadline_ms: Option<u64>,
+    /// The VM's memory ceiling in bytes (`0` = unlimited). The step budget
+    /// stops a loop, but a single allocation that never reaches a safepoint (a
+    /// huge `string.rep`, a table that doubles) needs this: past it the VM
+    /// raises `MemoryError` instead of growing the host's heap.
+    pub memory_bytes: usize,
 }
 
 impl VmBudget {
     /// The default: finite, but far beyond what a real extension needs.
     pub const DEFAULT_STEPS: u64 = 50_000_000;
-    /// A step budget (no wall-clock limit).
+    /// The default memory ceiling: generous for an extension, small for a host
+    /// that embeds the VM in a game.
+    pub const DEFAULT_MEMORY_BYTES: usize = 256 * 1024 * 1024;
+    /// A step budget (no wall-clock limit, the default memory ceiling).
     pub fn steps(steps: u64) -> Self {
         Self {
             steps,
             deadline_ms: None,
+            memory_bytes: Self::DEFAULT_MEMORY_BYTES,
         }
     }
     /// No guard at all (a host that trusts its extensions).
@@ -523,6 +565,7 @@ impl VmBudget {
         Self {
             steps: u64::MAX,
             deadline_ms: None,
+            memory_bytes: 0,
         }
     }
 }
@@ -532,6 +575,7 @@ impl Default for VmBudget {
         Self {
             steps: Self::DEFAULT_STEPS,
             deadline_ms: None,
+            memory_bytes: Self::DEFAULT_MEMORY_BYTES,
         }
     }
 }
@@ -723,6 +767,7 @@ impl ExtensionRuntime {
         let vm_budget = VmBudget::default();
         let vm_limit = Arc::new(VmLimit::new(vm_budget));
         install_vm_limit(&lua, Arc::clone(&vm_limit));
+        let _ = lua.set_memory_limit(vm_budget.memory_bytes);
         install_pillar_api(&lua, &registry, &exec_host, &host_api, &live_signals);
         Self {
             lua,
@@ -744,11 +789,26 @@ impl ExtensionRuntime {
         self.vm_budget = budget;
         self.vm_limit.begin(budget, None);
         self.vm_limit.end();
+        self.apply_memory_limit();
+    }
+
+    /// Apply the budget's memory ceiling to the VM (`0` = unlimited).
+    fn apply_memory_limit(&self) {
+        let _ = self.lua.set_memory_limit(self.vm_budget.memory_bytes);
     }
 
     /// The budget in effect.
     pub fn vm_budget(&self) -> VmBudget {
         self.vm_budget
+    }
+
+    /// How many registrations the host accepts in total before a registration
+    /// raises (`MAX_REGISTRATIONS` by default).
+    pub fn set_max_registrations(&self, limit: usize) {
+        self.registry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .max_registrations = limit;
     }
 
     /// Install the host callbacks the read-only API reads (upstream the
@@ -1783,6 +1843,9 @@ fn install_pillar_api(
                     let mut registry = registry_sink
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    registry
+                        .ensure_capacity()
+                        .map_err(luaur_rt::Error::external)?;
                     let owner = registry.owner();
                     registry.event_handlers.push(Registration {
                         owner,
@@ -1833,6 +1896,9 @@ fn install_pillar_api(
                     let mut registry = tools
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    registry
+                        .ensure_capacity()
+                        .map_err(luaur_rt::Error::external)?;
                     let owner = registry.owner();
                     registry.tools.push(Registration { owner, value: json });
                 }
@@ -1886,6 +1952,9 @@ fn install_pillar_api(
                     let mut registry = commands
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    registry
+                        .ensure_capacity()
+                        .map_err(luaur_rt::Error::external)?;
                     let owner = registry.owner();
                     registry.commands.push(Registration {
                         owner,
@@ -1909,6 +1978,9 @@ fn install_pillar_api(
                     let mut registry = shortcuts
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    registry
+                        .ensure_capacity()
+                        .map_err(luaur_rt::Error::external)?;
                     let owner = registry.owner();
                     registry.shortcuts.push(Registration {
                         owner,
@@ -1932,6 +2004,9 @@ fn install_pillar_api(
                     let mut registry = flags
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    registry
+                        .ensure_capacity()
+                        .map_err(luaur_rt::Error::external)?;
                     let owner = registry.owner();
                     registry.flags.push(Registration {
                         owner,
@@ -2242,6 +2317,9 @@ fn install_pillar_api(
                     let mut registry = messages_sink
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    registry
+                        .ensure_capacity()
+                        .map_err(luaur_rt::Error::external)?;
                     let owner = registry.owner();
                     registry.message_renderers.push(Registration {
                         owner,
@@ -2274,6 +2352,9 @@ fn install_pillar_api(
                     let mut registry = entries_sink
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    registry
+                        .ensure_capacity()
+                        .map_err(luaur_rt::Error::external)?;
                     let owner = registry.owner();
                     registry.entry_renderers.push(Registration {
                         owner,
@@ -2309,6 +2390,9 @@ fn install_pillar_api(
                     let mut registry = transformers_sink
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    registry
+                        .ensure_capacity()
+                        .map_err(luaur_rt::Error::external)?;
                     let owner = registry.owner();
                     registry.markdown_transformers.push(Registration {
                         owner,

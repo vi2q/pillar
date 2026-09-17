@@ -215,7 +215,9 @@ Return directions follow the same table. Handler return values that pi types as 
 - **待ちの分割**: `ctx.ui.custom` のループはイベント待ちを 25 ms スライスに区切り、各スライスで abort / deadline を確認する（全体の上限は 600 秒だが、abort は 1 スライス以内で待ちを終える）。
 - **同期 host 呼出**: `pillar.exec` は同期だが、abort / timeout で子プロセスを SIGTERM→SIGKILL できる。`pillar.fs` は短い処理として扱う。
 
-未完成として残るのは **coroutine 再開による完全な非同期化**（`pillar.exec` / `pillar.fs` の待ちで extension のスレッドが runtime lock を保持する時間を無くすこと）と、操作別の保持量ゲート（VM メモリ・登録数・出力 buffer）。実装方式は luaur と azparam の実 host 条件で検証して決める。`spawn_blocking` だけで VM の永久ループを強制停止できるとはみなさない（interrupt hook が実際の停止点）。
+保持量は **VM メモリ**（`VmBudget.memory_bytes`、既定 256 MiB、safepoint に到達しない単一の巨大確保も `MemoryError` で止まる）と **host 側 registry の登録数**（`HostRegistry::max_registrations`、既定 10,000）で有界。`pillar.exec` の出力 buffer も 4 MiB/stream で切る（`ExecResult.truncated`）。
+
+未完成として残るのは **coroutine 再開による完全な非同期化**（`pillar.exec` / `pillar.fs` の待ちで extension のスレッドが runtime lock を保持する時間を無くすこと）。実装方式は luaur と azparam の実 host 条件で検証して決める。`spawn_blocking` だけで VM の永久ループを強制停止できるとはみなさない（interrupt hook が実際の停止点）。
 
 ## Session persistence & custom entries
 

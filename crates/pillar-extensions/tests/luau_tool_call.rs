@@ -286,3 +286,93 @@ fn an_abort_ends_a_waiting_ui_component() {
         "the host still holds the mounted surface"
     );
 }
+
+/// The memory ceiling: the step budget stops a *loop*, but a single allocation
+/// that never reaches a safepoint (here one `string.rep`) is what the VM's
+/// memory limit is for — the host must not be sized by an extension.
+const MEMORY_BOMB: &str = r#"
+    --!strict
+    local pillar = require("@pillar")
+
+    pillar.register_tool({
+        name = "allocate",
+        description = "allocates far past the ceiling",
+        parameters = pillar.schema.object({}),
+        execute = function(tool_call_id, params, signal, on_update, ctx)
+            local huge = string.rep("x", 64 * 1024 * 1024)
+            return { content = { { type = "text", text = tostring(#huge) } } }
+        end,
+    })
+
+    pillar.register_tool({
+        name = "small",
+        description = "a normal tool, to show the runtime still works",
+        parameters = pillar.schema.object({}),
+        execute = function(tool_call_id, params, signal, on_update, ctx)
+            return { content = { { type = "text", text = "small ok" } } }
+        end,
+    })
+
+    return nil
+"#;
+
+#[test]
+fn a_single_huge_allocation_is_refused() {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut runtime = runtime_with_exec(log);
+    runtime.set_vm_budget(VmBudget {
+        memory_bytes: 16 * 1024 * 1024,
+        ..VmBudget::steps(50_000_000)
+    });
+    runtime
+        .load_extension("/ext/bomb.luau", MEMORY_BOMB)
+        .unwrap();
+
+    let error = runtime
+        .call_tool("allocate", "call-1", serde_json::json!({}), None, None)
+        .expect_err("the allocation is refused");
+    assert!(
+        error.to_lowercase().contains("memory"),
+        "the failure names memory: {error}"
+    );
+
+    // The runtime is still usable: the guard bounds what one call may allocate,
+    // it does not poison the VM.
+    let result = runtime
+        .call_tool("small", "call-2", serde_json::json!({}), None, None)
+        .expect("a normal tool still runs");
+    assert_eq!(result["content"][0]["text"], "small ok");
+    assert_eq!(runtime.registry().tools.len(), 2);
+}
+
+/// The host-side registry cap: the VM's budgets bound the VM, not the host's
+/// own vectors, so a setup that registers without end must be refused.
+#[test]
+fn an_endless_registration_loop_is_refused() {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut runtime = runtime_with_exec(log);
+    runtime.set_max_registrations(25);
+    let error = runtime
+        .load_extension(
+            "/ext/greedy.luau",
+            r#"
+            --!strict
+            local pillar = require("@pillar")
+            for index = 1, 100 do
+                pillar.on("tool_call", function() end)
+            end
+            return nil
+            "#,
+        )
+        .expect_err("the registration loop is refused");
+    assert!(
+        error.to_string().contains("more than 25"),
+        "the failure names the cap: {error}"
+    );
+    // The failed load was rolled back: nothing of it stays registered.
+    assert_eq!(
+        runtime.registry().event_handlers.len(),
+        0,
+        "the failed setup left nothing behind"
+    );
+}
