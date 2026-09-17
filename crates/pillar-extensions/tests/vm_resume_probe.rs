@@ -161,3 +161,50 @@ fn a_sequence_of_host_values_can_drive_one_waiting_call() {
     assert_eq!(finished, "1,2,3");
     assert_eq!(thread.status(), ThreadStatus::Finished);
 }
+
+/// How many yield/resume cycles one coroutine can take before the VM gives up?
+///
+/// This is the probe for the assertion we hit when a tool's host calls suspend:
+/// a tool doing several host calls tripped `LUAU_ASSERT ... lua_xmove.rs:17`. A
+/// single cycle works; the question is where it breaks.
+#[test]
+fn a_coroutine_can_be_resumed_many_times() {
+    let lua = Lua::new();
+    let body: Function = lua
+        .load(
+            r#"
+            return function()
+                local total = 0
+                for index = 1, 20 do
+                    local answer = coroutine.yield({ kind = "next", index = index })
+                    total = total + (answer.value or 0)
+                end
+                return total
+            end
+            "#,
+        )
+        .eval()
+        .expect("the body compiles");
+    let thread = lua.create_thread(body).expect("the thread is created");
+
+    let mut yielded = from_lua(&lua, thread.resume(()).expect("the first yield"));
+    let mut total = 0i64;
+    let mut finished = None;
+    for index in 1..=20 {
+        assert_eq!(yielded["index"], index, "cycle {index}");
+        total += index;
+        let value = from_lua(
+            &lua,
+            thread
+                .resume::<Value>(to_lua(&lua, &serde_json::json!({ "value": index })))
+                .expect("the coroutine is resumable"),
+        );
+        if let Some(done) = value.as_i64() {
+            finished = Some(done);
+            break;
+        }
+        yielded = value;
+    }
+    assert_eq!(finished, Some(total), "the coroutine ran all {total} cycles");
+    assert_eq!(thread.status(), ThreadStatus::Finished);
+}

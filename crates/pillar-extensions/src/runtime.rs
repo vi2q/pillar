@@ -49,6 +49,19 @@ pub struct HostCallRequest {
     pub signal_id: Option<u64>,
 }
 
+/// The host-side services a host call runs against.
+///
+/// A host that runs host calls itself (a [`HostCallRunner`]
+/// (crate::bridge::HostCallRunner), the CLI's runner) clones this out of the
+/// runtime **under the lock** and then runs the request with the lock released.
+#[derive(Clone)]
+pub struct HostServices {
+    /// The process layer `pillar.exec` uses (the host installs it).
+    pub exec: Option<ExecHost>,
+    /// The host callbacks (`pillar.fs.*`, the getters, the UI bridge).
+    pub api: Arc<Mutex<HostApi>>,
+}
+
 impl HostCallRequest {
     /// Run this request through the host's process layer. `signal` is the tool
     /// call's abort signal (the host resolves it from [`signal_id`]
@@ -59,7 +72,7 @@ impl HostCallRequest {
     /// while the command runs.
     pub fn run_with(
         &self,
-        exec: &ExecHost,
+        services: &HostServices,
         signal: Option<pillar_agent::abort::AbortSignal>,
     ) -> Result<serde_json::Value, String> {
         match self.kind.as_str() {
@@ -91,8 +104,49 @@ impl HostCallRequest {
                         .and_then(serde_json::Value::as_str)
                         .map(str::to_string),
                 };
-                let result = exec(&command, &args, &options);
+                let exec = services.exec.clone();
+                let result = match exec {
+                    Some(exec) => exec(&command, &args, &options),
+                    None => ExecResult::spawn_failure("exec host not installed"),
+                };
                 serde_json::to_value(&result).map_err(|error| format!("exec result: {error}"))
+            }
+            // `pillar.fs.*`: the bounded file API. The host resolves paths and
+            // applies its trust model, so the request carries the operation and
+            // the path, nothing else.
+            "fs" => {
+                let op = self
+                    .json
+                    .get("op")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default();
+                let path = self
+                    .json
+                    .get("path")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default();
+                let content = self.json.get("content").and_then(serde_json::Value::as_str);
+                let callback = {
+                    let guard = services
+                        .api
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    guard.fs.clone()
+                };
+                // The answer is a *result* (`{ protocol, ok, value | error }`),
+                // not an `Err`: the Lua wrapper raises the error, so an
+                // extension can catch it with `pcall` — exactly what the
+                // synchronous path did. `Err` stays for a broken host call.
+                let answer = match callback {
+                    Some(callback) => callback(op, path, content),
+                    None => Err(format!("pillar.fs.{op}: the fs host is not installed")),
+                };
+                Ok(match answer {
+                    Ok(value) => serde_json::json!({ "protocol": "fs", "ok": true, "value": value }),
+                    Err(error) => {
+                        serde_json::json!({ "protocol": "fs", "ok": false, "error": error })
+                    }
+                })
             }
             other => Err(format!("unknown host call {other}")),
         }
@@ -1303,16 +1357,21 @@ impl ExtensionRuntime {
     /// [`HostCallRunner`](crate::bridge::HostCallRunner)).
     pub fn run_host_call(&mut self, request: HostCallRequest) -> Result<serde_json::Value, String> {
         let signal = self.live_signal(request.signal_id);
-        let exec = self
-            .exec_host
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone();
-        let missing: ExecHost =
-            Arc::new(|_command: &str, _args: &[String], _options: &ExecOptions| {
-                ExecResult::spawn_failure("exec host not installed")
-            });
-        request.run_with(exec.as_ref().unwrap_or(&missing), signal)
+        let services = self.host_services();
+        request.run_with(&services, signal)
+    }
+
+    /// The host services a request runs against: a host that wants to run host
+    /// calls itself clones them here (under the lock) and works outside it.
+    pub fn host_services(&self) -> HostServices {
+        HostServices {
+            exec: self
+                .exec_host
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone(),
+            api: Arc::clone(&self.host_api),
+        }
     }
 
     /// The Lua `signal` table for one tool call: `aborted()` plus the id

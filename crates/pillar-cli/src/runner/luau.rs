@@ -678,22 +678,24 @@ impl ExtensionWiring {
     /// **without the runtime lock**, and the rest of the extension runtime stays
     /// usable while a build runs (TASKS: 非同期 host 呼出).
     pub fn custom_tools(&self) -> Vec<AgentTool> {
-        let broker = Arc::clone(&self.rebuild.slots.broker);
-        let cwd = self.rebuild.cwd.clone();
+        // The services a host call runs against come from the runtime (the
+        // process layer it installed and the host callbacks), so the runner
+        // needs no lock of its own: it clones them once, here.
+        let services = self
+            .runtime
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .host_services();
         let runner: pillar_extensions::bridge::HostCallRunner =
             Arc::new(move |request, abort| {
-                let exec: pillar_extensions::runtime::ExecHost = {
-                    let broker = Arc::clone(&broker);
-                    let cwd = cwd.clone();
-                    Arc::new(move |command, args, options| broker.exec(&cwd, command, args, options))
-                };
+                let services = services.clone();
                 Box::pin(async move {
                     // Outside a tokio context (a host driving the runner itself)
-                    // the process layer runs inline instead of panicking.
+                    // the work runs inline instead of panicking.
                     if tokio::runtime::Handle::try_current().is_err() {
-                        return request.run_with(&exec, abort);
+                        return request.run_with(&services, abort);
                     }
-                    tokio::task::spawn_blocking(move || request.run_with(&exec, abort))
+                    tokio::task::spawn_blocking(move || request.run_with(&services, abort))
                         .await
                         .map_err(|error| format!("the host call task failed: {error}"))?
                 })

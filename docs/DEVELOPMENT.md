@@ -12,8 +12,38 @@ This document preserves the repository guidance formerly kept in `AGENTS.md`. Th
 `-D warnings`, the locked test sweep (which includes the dependency-direction
 check), and a sandboxed smoke run of the binary with an isolated `HOME`/cwd,
 `PILLAR_OFFLINE=1` and a dead proxy. `--quick` skips the test sweep for a local
-loop. Wire it into CI as-is; the turn-level rule is one targeted test per change
-(docs/RULES.md).
+loop. The turn-level rule is one targeted test per change (docs/RULES.md).
+
+`scripts/ci.sh` is the CI entry point and differs from it in three ways:
+
+- `CARGO_NET_OFFLINE=true`: the build and the tests cannot reach the network, so
+  a dependency the local cache lacks fails instead of being downloaded.
+- `PILLAR_REQUIRE_WASM_COMPARE=1`: `scripts/wasm_compare.sh` must actually run.
+  A gate that can skip itself (no node, no wasm32 target) is not a gate, so in
+  CI the same conditions are failures; the local run still degrades to a skip.
+- the missing target / host is reported before the long build.
+
+`.github/workflows/ci.yml` pins the toolchain (1.91.1, the version the recorded
+baselines used) and installs `wasm32-unknown-unknown`; it adds nothing else to
+the run.
+
+What the verification does **not** prove: `PILLAR_OFFLINE` and the dead proxy are
+smoke aids, and the source-string lints are heuristics — none of them is an
+isolation proof. The isolation claims that are checked mechanically are the empty
+Wasm import list (`scripts/wasm_imports.mjs`, run by the comparison gate) and the
+resolved dependency profiles (`cargo test -p pillar-cli --test dependency_profiles`).
+CI environment pinning, not prose, is what keeps the comparison meaningful: a
+different toolchain or a missing target changes the artifact, so the CI job fixes
+both.
+
+## CI
+
+| Job step | What it must catch |
+| --- | --- |
+| `rustup target add wasm32-unknown-unknown` | a host/artifact mismatch or a target the comparison silently skipped |
+| `scripts/ci.sh` → `check.sh` | build, clippy `-D warnings`, the locked test sweep (dependency direction + profiles), the sandboxed smoke |
+| `check.sh` → `wasm_compare.sh` (required) | a native/Wasm trace divergence in any of the six recorded cases |
+| `wasm_imports.mjs` | the artifact starting to ask the host for an import (the embedding claim) |
 
 ## Project
 

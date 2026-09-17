@@ -232,7 +232,9 @@ host 側の駆動（実装済み）: bridge は tool の execute future で **st
 
 制約: **yield は coroutine の中でしか起きない**ため、tool `execute` / event handler を main state ではなく `Thread` で走らせる必要がある（現状は main state で直接 call している）。VM 予算は resume をまたいで残り step を持ち越す。
 
-**host 関数を coroutine で呼ぶときの必須条件**: 値を組み立てる host 関数は **呼び出し元の state** で作らなければならない。`Function::wrap` の closure は state を受け取れず captured した `Lua`（main state）を使うため、coroutine 内では別スタックに push され **VM が引数を返してしまう**（probe: `crates/pillar-extensions/tests/vm_quirk_probe.rs`）。`Lua::create_function` は closure に呼び出し元の `&Lua` を渡すので coroutine でも正しく返る。値を組み立てる host 関数は `create_function` へ移設済み（`pillar.exec` の同期版 / `pillar.fs.read|list|stat` / `sessionManager.getEntries` / `ctx.ui.confirm|select|input|editor` / `custom.next` / `pillar.get_flag` / `get_commands|get_active_tools|get_all_tools` / `pillar.schema.*`）。値を作らない関数（`signal.aborted()` など）は `Function::wrap` のままで問題ない。`spawn_blocking` だけで VM の永久ループを強制停止できるとはみなさない（interrupt hook が実際の停止点）。
+**host 関数を coroutine で呼ぶときの必須条件**: 値を組み立てる host 関数は **呼び出し元の state** で作らなければならない。`Function::wrap` の closure は state を受け取れず captured した `Lua`（main state）を使うため、coroutine 内では別スタックに push され **VM が引数を返してしまう**（probe: `crates/pillar-extensions/tests/vm_quirk_probe.rs`）。`Lua::create_function` は closure に呼び出し元の `&Lua` を渡すので coroutine でも正しく返る。**未解決**: `pillar.fs.*` を yield 化（`pillar.exec` と同じ協調プロトコル）すると、実拡張で `lua_xmove.rs:17` の `LUAU_ASSERT` に当たる（`docs/TASKS.md` の (c) 参照）。単純な yield/resume の繰り返し（20 回）では再現しないので、入れ子呼出の frame 深さが条件。回避ではなく fork 側の VM 修正で解く方針。fs は現状**同期**のまま（tool からは host 呼出が inline に走る）。
+
+値を組み立てる host 関数は `create_function` へ移設済み（`pillar.exec` の同期版 / `pillar.fs.read|list|stat` / `sessionManager.getEntries` / `ctx.ui.confirm|select|input|editor` / `custom.next` / `pillar.get_flag` / `get_commands|get_active_tools|get_all_tools` / `pillar.schema.*`）。値を作らない関数（`signal.aborted()` など）は `Function::wrap` のままで問題ない。`spawn_blocking` だけで VM の永久ループを強制停止できるとはみなさない（interrupt hook が実際の停止点）。
 
 ## Session persistence & custom entries
 

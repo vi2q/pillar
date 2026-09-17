@@ -18,13 +18,40 @@ artifact="$root/target/wasm32-unknown-unknown/debug/pillar_lmpc.wasm"
 
 say() { printf '\n== %s\n' "$*"; }
 
+# CI must not be able to skip this gate silently: with
+# `PILLAR_REQUIRE_WASM_COMPARE=1` a missing host or target is a failure, not a
+# skip. `scripts/ci.sh` sets it (docs/DEVELOPMENT.md § verification).
+required=${PILLAR_REQUIRE_WASM_COMPARE:-0}
+require() {
+    if [ "$required" = "1" ]; then
+        echo "wasm_compare: $* (required in CI)" >&2
+        exit 1
+    fi
+}
+
 if ! command -v node >/dev/null 2>&1; then
+    require "node is not installed"
     say "wasm trace comparison (skipped: node is not installed)"
+    exit 0
+fi
+if ! rustup target list --installed 2>/dev/null | grep -qx "wasm32-unknown-unknown"; then
+    require "the wasm32-unknown-unknown target is not installed"
+    say "wasm trace comparison (skipped: the wasm32 target is not installed)"
     exit 0
 fi
 
 # The comparison needs the artifact that the host runs.
-cargo build --locked -q -p pillar-lmpc --target wasm32-unknown-unknown
+if ! cargo build --locked -q -p pillar-lmpc --target wasm32-unknown-unknown; then
+    echo "wasm_compare: the LMPC artifact does not build for wasm32" >&2
+    exit 1
+fi
+
+# The artifact must import nothing: the host gives it only a memory. That is the
+# isolation claim the embedding profile makes, and it is checkable here rather
+# than asserted in prose (`PILLAR_REQUIRE_WASM_COMPARE=1` makes the check
+# mandatory in CI too).
+say "the LMPC artifact imports nothing"
+node "$root/scripts/wasm_imports.mjs" "$artifact"
 
 host_model() {
     node "$root/scripts/wasm_host_model.mjs" "$artifact" "$@"

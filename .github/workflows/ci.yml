@@ -1,0 +1,41 @@
+# The CI gate (docs/DEVELOPMENT.md § CI): the same script a developer runs, with
+# the toolchain pinned so the Wasm artifact and the baselines stay comparable.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The toolchain is pinned: the recorded baselines used 1.91.1, and a
+      # different compiler changes the artifact the comparison gate runs.
+      - uses: dtolnay/rust-toolchain@1.91.1
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy, rustfmt
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "25"
+
+      # Everything the run needs is already in the lockfile; `scripts/ci.sh`
+      # sets CARGO_NET_OFFLINE, so a missing cached dependency fails here rather
+      # than downloading quietly.
+      - name: cache (cargo)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+
+      - name: gate
+        run: bash scripts/ci.sh
