@@ -254,9 +254,7 @@ fn an_abort_ends_a_waiting_ui_component() {
         })),
         ..Default::default()
     });
-    runtime
-        .load_extension("/ext/stuck.luau", STUCK_UI)
-        .unwrap();
+    runtime.load_extension("/ext/stuck.luau", STUCK_UI).unwrap();
 
     let signal = AbortSignal::new();
     let killer = signal.clone();
@@ -268,7 +266,13 @@ fn an_abort_ends_a_waiting_ui_component() {
     // The component never answers, so this would previously wait the whole
     // timeout (600 s): the abort ends the wait within one slice, and the tool
     // then finishes with whatever the closed component returned.
-    match runtime.call_tool("stuck_ui", "call-3", serde_json::json!({}), Some(signal), None) {
+    match runtime.call_tool(
+        "stuck_ui",
+        "call-3",
+        serde_json::json!({}),
+        Some(signal),
+        None,
+    ) {
         Ok(value) => assert_eq!(
             value["content"][0]["text"], "nil",
             "the closed component returned nothing: {value}"
@@ -418,7 +422,10 @@ fn the_runtimes_host_functions_survive_a_coroutine() {
     let body: Function = lua.load(script).eval().expect("the body compiles");
     let thread = lua.create_thread(body).expect("the thread is created");
     let out: String = thread.resume(()).expect("the call runs");
-    assert_eq!(out, expected, "the host functions answer inside a coroutine");
+    assert_eq!(
+        out, expected,
+        "the host functions answer inside a coroutine"
+    );
 
     // …and on the main state, unchanged.
     let out: String = lua
@@ -504,7 +511,10 @@ fn a_host_can_drive_a_tool_call_step_by_step() {
     let result = {
         let mut guard = runtime.lock().unwrap();
         match guard
-            .step_tool_call(&mut call, serde_json::json!({ "stdout": "story.bin", "code": 0 }))
+            .step_tool_call(
+                &mut call,
+                serde_json::json!({ "stdout": "story.bin", "code": 0 }),
+            )
             .expect("the call resumes")
         {
             ToolStep::Done(result) => result.expect("the tool returned a result"),

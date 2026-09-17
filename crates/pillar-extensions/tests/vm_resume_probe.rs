@@ -66,7 +66,10 @@ fn a_host_request_can_be_suspended_and_resumed_with_its_result() {
     // The host is free here (no Lua frame on the stack, no lock held): it would
     // run the command on its own thread. The result is handed back by resuming.
     let result: String = thread
-        .resume(to_lua(&lua, &serde_json::json!({ "stdout": "ok", "code": 0 })))
+        .resume(to_lua(
+            &lua,
+            &serde_json::json!({ "stdout": "ok", "code": 0 }),
+        ))
         .expect("the coroutine finishes with the host's result");
     assert_eq!(result, "built: ok");
     assert_eq!(thread.status(), ThreadStatus::Finished);
@@ -89,7 +92,10 @@ fn an_abort_resumes_the_waiting_call_with_an_error() {
         "the error reaches the caller: {error}"
     );
     assert!(
-        matches!(thread.status(), ThreadStatus::Error | ThreadStatus::Finished),
+        matches!(
+            thread.status(),
+            ThreadStatus::Error | ThreadStatus::Finished
+        ),
         "the coroutine is no longer waiting: {:?}",
         thread.status()
     );
@@ -205,6 +211,10 @@ fn a_coroutine_can_be_resumed_many_times() {
         }
         yielded = value;
     }
-    assert_eq!(finished, Some(total), "the coroutine ran all {total} cycles");
+    assert_eq!(
+        finished,
+        Some(total),
+        "the coroutine ran all {total} cycles"
+    );
     assert_eq!(thread.status(), ThreadStatus::Finished);
 }

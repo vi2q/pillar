@@ -22,7 +22,9 @@ if (imports.length !== 0) {
   for (const entry of imports) {
     console.error(`  imports ${entry.module}.${entry.name} (${entry.kind})`);
   }
-  console.error(`wasm_imports: the module asks the host for ${imports.length} import(s)`);
+  console.error(
+    `wasm_imports: the module asks the host for ${imports.length} import(s)`,
+  );
   process.exit(1);
 }
 console.log("wasm_imports: the module imports nothing");
