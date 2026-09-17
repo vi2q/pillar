@@ -116,6 +116,7 @@ mod tests {
                     stderr: String::new(),
                     code: 0,
                     killed: false,
+                    truncated: false,
                 }
             },
         )));

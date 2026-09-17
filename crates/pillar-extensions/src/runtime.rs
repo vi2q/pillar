@@ -780,9 +780,10 @@ impl ExtensionRuntime {
         signal: Option<pillar_agent::abort::AbortSignal>,
         name: &str,
     ) -> Result<(Value, Option<u64>), String> {
-        let Some(signal) = signal else {
-            return Ok((Value::Nil, None));
-        };
+        // Upstream always hands the tool an AbortSignal; a host that has none
+        // gets a detached one, so `signal.aborted()` in the extension is always
+        // callable (a nil there would fail the tool with a runtime error).
+        let signal = signal.unwrap_or_else(pillar_agent::abort::AbortSignal::new);
         let id = self
             .next_signal_id
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -3928,6 +3929,7 @@ mod exec_tests {
                 stderr: String::new(),
                 code: 0,
                 killed: false,
+                truncated: false,
             }
         }));
         let result: serde_json::Value = runtime
@@ -3977,6 +3979,7 @@ mod exec_tests {
                 stderr: String::new(),
                 code: args.len() as i32,
                 killed: false,
+                truncated: false,
             }
         }));
         let result: serde_json::Value = runtime

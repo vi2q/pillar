@@ -303,6 +303,13 @@ pub struct ExecResult {
     pub stderr: String,
     pub code: i32,
     pub killed: bool,
+    /// Whether the captured output hit the host's budget: the command ran to the
+    /// end (its output was still drained), but only the first
+    /// `MAX_CAPTURED_BYTES` of each stream are here. This is the port's own
+    /// guard — a command cannot make the host allocate without bound — so it is
+    /// additive to upstream's shape.
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 impl ExecResult {
@@ -313,6 +320,7 @@ impl ExecResult {
             stderr: error.to_string(),
             code: -1,
             killed: false,
+            truncated: false,
         }
     }
 }

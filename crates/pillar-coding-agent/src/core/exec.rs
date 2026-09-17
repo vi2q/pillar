@@ -9,6 +9,10 @@
 //!   so a detached descendant holding the pipes open cannot hang the call.
 //! - the SIGTERM → SIGKILL escalation matches upstream on unix; elsewhere the
 //!   child is killed outright (no SIGTERM).
+//! - captured output is bounded by [`MAX_CAPTURED_BYTES`] per stream: past it
+//!   the readers keep draining the pipe (a full pipe would block the child) but
+//!   stop storing, and the result says `truncated`. Upstream accumulates
+//!   without a bound; the port must not let a command size the host's heap.
 
 use std::io::Read;
 use std::process::{Child, Command, Stdio};
@@ -23,6 +27,11 @@ const TERM_GRACE: Duration = Duration::from_secs(5);
 /// How long the pipe readers get after the child exited (upstream keeps
 /// whatever arrived by then).
 const DRAIN_GRACE: Duration = Duration::from_millis(100);
+/// How much of each stream a run keeps. Beyond it the pipe is still drained
+/// (the child must not block on a full pipe) but nothing more is stored, so a
+/// command that prints without end costs the host a bounded amount of memory
+/// and reports `truncated` (upstream accumulates without a bound).
+pub const MAX_CAPTURED_BYTES: usize = 4 * 1024 * 1024;
 
 // The `ExecOptions` / `ExecResult` shapes live in the contract crate (the VM's
 // exec host callback names them); the spawn implementation stays here.
@@ -51,8 +60,8 @@ pub fn exec_command(
     // The readers append as data arrives (upstream's `data` handlers): the
     // wait ends on the child's exit, so buffering until EOF would lose
     // everything an orphaned descendant keeps the pipe for.
-    let stdout = Arc::new(Mutex::new(Vec::new()));
-    let stderr = Arc::new(Mutex::new(Vec::new()));
+    let stdout = Arc::new(Mutex::new(Captured::default()));
+    let stderr = Arc::new(Mutex::new(Captured::default()));
     if let Some(pipe) = child.stdout.take() {
         spawn_reader(pipe, Arc::clone(&stdout));
     }
@@ -104,38 +113,63 @@ pub fn exec_command(
 /// The output that arrived by the time the child exited (upstream keeps the
 /// accumulated buffer; [`DRAIN_GRACE`] lets the last in-flight read land).
 fn collect_output(
-    stdout: &Arc<Mutex<Vec<u8>>>,
-    stderr: &Arc<Mutex<Vec<u8>>>,
+    stdout: &Arc<Mutex<Captured>>,
+    stderr: &Arc<Mutex<Captured>>,
     code: i32,
 ) -> ExecResult {
     std::thread::sleep(DRAIN_GRACE);
-    let text = |buffer: &Arc<Mutex<Vec<u8>>>| {
-        let bytes = buffer
+    let read = |buffer: &Arc<Mutex<Captured>>| {
+        let captured = buffer
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        String::from_utf8_lossy(&bytes).into_owned()
+        (
+            String::from_utf8_lossy(&captured.bytes).into_owned(),
+            captured.truncated,
+        )
     };
+    let (stdout_text, stdout_truncated) = read(stdout);
+    let (stderr_text, stderr_truncated) = read(stderr);
     ExecResult {
-        stdout: text(stdout),
-        stderr: text(stderr),
+        stdout: stdout_text,
+        stderr: stderr_text,
         code,
         killed: false,
+        truncated: stdout_truncated || stderr_truncated,
     }
+}
+
+/// What one pipe reader keeps: the bytes so far and whether it had to drop any.
+#[derive(Default)]
+struct Captured {
+    bytes: Vec<u8>,
+    truncated: bool,
 }
 
 /// Read one pipe into the shared buffer as data arrives. The thread ends at
 /// EOF; a descendant holding the pipe open only delays that (the result does
-/// not wait for it).
-fn spawn_reader(mut pipe: impl Read + Send + 'static, buffer: Arc<Mutex<Vec<u8>>>) {
+/// not wait for it). Past [`MAX_CAPTURED_BYTES`] the data is *dropped* rather
+/// than stored — the read continues, so the writer never blocks on a full pipe.
+fn spawn_reader(mut pipe: impl Read + Send + 'static, buffer: Arc<Mutex<Captured>>) {
     std::thread::spawn(move || {
         let mut chunk = [0u8; 8192];
         loop {
             match pipe.read(&mut chunk) {
                 Ok(0) | Err(_) => break,
-                Ok(count) => buffer
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .extend_from_slice(&chunk[..count]),
+                Ok(count) => {
+                    let mut captured = buffer
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let room = MAX_CAPTURED_BYTES.saturating_sub(captured.bytes.len());
+                    if room == 0 {
+                        captured.truncated = true;
+                        continue;
+                    }
+                    let keep = room.min(count);
+                    captured.bytes.extend_from_slice(&chunk[..keep]);
+                    if keep < count {
+                        captured.truncated = true;
+                    }
+                }
             }
         }
     });
@@ -178,6 +212,38 @@ mod tests {
         assert_eq!(result.stderr, "err");
         assert_eq!(result.code, 3);
         assert!(!result.killed);
+    }
+
+    #[test]
+    fn an_endless_command_costs_a_bounded_amount_of_memory() {
+        // ~12 MB of output against a 4 MB budget: the extra is drained (the
+        // writer must not block on a full pipe) but not stored, and the result
+        // says so. Before the budget the host accumulated every byte.
+        let result = exec_command(
+            "sh",
+            &args(&[
+                "-c",
+                "i=0; while [ $i -lt 3000 ]; do printf '%5000d' 0; i=$((i+1)); done; printf done",
+            ]),
+            "/tmp",
+            &ExecOptions::default(),
+        );
+        assert_eq!(
+            result.code, 0,
+            "the command ran to the end: {}",
+            result.stderr
+        );
+        assert!(result.truncated, "the budget was reported");
+        assert!(
+            result.stdout.len() <= MAX_CAPTURED_BYTES,
+            "the captured output stays within the budget: {} bytes",
+            result.stdout.len()
+        );
+        assert!(
+            result.stdout.len() > MAX_CAPTURED_BYTES / 2,
+            "the budget is actually used: {} bytes",
+            result.stdout.len()
+        );
     }
 
     #[test]
