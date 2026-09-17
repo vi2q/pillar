@@ -13,8 +13,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use pillar_agent::abort::AbortSignal;
-use pillar_extensions::runtime::{ExtensionRuntime, VmBudget};
-use pillar_extensions_contract::{ExecOptions, ExecResult};
+use pillar_extensions::runtime::{ExtensionRuntime, HostApi, VmBudget};
+use pillar_extensions_contract::{
+    ExecOptions, ExecResult, ExtensionContextFacts, ExtensionCustomSurface, ExtensionMode,
+};
 
 /// A headless host: no filesystem, no session, no UI — just the exec callback
 /// the extension's tool uses.
@@ -205,5 +207,82 @@ fn an_aborted_lua_loop_stops_without_touching_the_host() {
         started.elapsed() < Duration::from_secs(10),
         "the abort was noticed at a safepoint: {:?}",
         started.elapsed()
+    );
+}
+
+/// A component that never calls `done` (and a pump that never answers it) must
+/// not pin the runtime for the whole wait timeout: the wait is sliced, so the
+/// tool call's abort ends it within a slice and the call returns promptly (the
+/// VM guard then stops the Lua at its next safepoint).
+const STUCK_UI: &str = r#"
+    --!strict
+    local pillar = require("@pillar")
+
+    pillar.register_tool({
+        name = "stuck_ui",
+        description = "opens a component that never finishes",
+        parameters = pillar.schema.object({}),
+        execute = function(tool_call_id, params, signal, on_update, ctx)
+            local result = ctx.ui.custom(function(tui, theme, keybindings, done)
+                return { render = function(width) return { "waiting" } end }
+            end)
+            return { content = { { type = "text", text = tostring(result) } } }
+        end,
+    })
+
+    return nil
+"#;
+
+#[test]
+fn an_abort_ends_a_waiting_ui_component() {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut runtime = runtime_with_exec(Arc::clone(&log));
+    // The host mounts the surface — and *keeps* it, so the pump's event channel
+    // stays open — and never sends an event to it.
+    let mounted: Arc<Mutex<Option<ExtensionCustomSurface>>> = Arc::new(Mutex::new(None));
+    let slot = Arc::clone(&mounted);
+    runtime.set_host_api(HostApi {
+        context: Some(Arc::new(|| ExtensionContextFacts {
+            cwd: "/tmp".to_string(),
+            mode: ExtensionMode::Tui,
+            has_ui: true,
+        })),
+        ui_custom: Some(Arc::new(move |surface: ExtensionCustomSurface| {
+            *slot.lock().unwrap() = Some(surface);
+            Ok(())
+        })),
+        ..Default::default()
+    });
+    runtime
+        .load_extension("/ext/stuck.luau", STUCK_UI)
+        .unwrap();
+
+    let signal = AbortSignal::new();
+    let killer = signal.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(50));
+        killer.abort();
+    });
+    let started = Instant::now();
+    // The component never answers, so this would previously wait the whole
+    // timeout (600 s): the abort ends the wait within one slice, and the tool
+    // then finishes with whatever the closed component returned.
+    match runtime.call_tool("stuck_ui", "call-3", serde_json::json!({}), Some(signal), None) {
+        Ok(value) => assert_eq!(
+            value["content"][0]["text"], "nil",
+            "the closed component returned nothing: {value}"
+        ),
+        // A longer run reaches a safepoint with the signal set first, in which
+        // case the guard ends the call.
+        Err(error) => assert!(error.contains("aborted"), "{error}"),
+    }
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "the abort ended the wait promptly: {:?}",
+        started.elapsed()
+    );
+    assert!(
+        mounted.lock().unwrap().is_some(),
+        "the host still holds the mounted surface"
     );
 }

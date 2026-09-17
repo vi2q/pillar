@@ -376,15 +376,7 @@ declare pillar: {
 /// Host command executor (upstream `pi.exec` backed by the process
 /// layer): the host injects the real executor; the extension receives
 /// `{ stdout, stderr, code, killed }`.
-pub type ExecHost = Arc<
-    dyn Fn(
-            &str,
-            &[String],
-            &ExecOptions,
-        ) -> ExecResult
-        + Send
-        + Sync,
->;
+pub type ExecHost = Arc<dyn Fn(&str, &[String], &ExecOptions) -> ExecResult + Send + Sync>;
 
 /// Host callback for `keybindings.matches(data, name)` (upstream the live
 /// `KeybindingsManager` the `ctx.ui.custom` factory receives).
@@ -548,6 +540,17 @@ impl Default for VmBudget {
 /// atomic, the boundary needs a lock, so it is read only this often).
 const VM_SLOW_CHECK_EVERY: u64 = 4096;
 
+/// How long `ctx.ui.custom`'s loop waits for one pump event before it looks at
+/// the abort signal and the operation's deadline again: the extension's thread
+/// holds the runtime while its component is open, so a UI that never answers
+/// must not pin it for the whole timeout.
+const CUSTOM_WAIT_SLICE: std::time::Duration = std::time::Duration::from_millis(25);
+
+/// How long that loop waits for the pump at all. A component awaited before the
+/// interactive run loop starts cannot be answered (the port's startup
+/// ordering), so the loop gives up instead of hanging forever.
+const CUSTOM_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
 /// The live guard [`install_vm_limit`] consults.
 struct VmLimit {
     remaining: std::sync::atomic::AtomicU64,
@@ -594,6 +597,23 @@ impl VmLimit {
         boundary.depth += 1;
     }
 
+    /// Whether the current operation was aborted or ran out of its wall clock.
+    /// A host callback that waits (the `ctx.ui.custom` loop) polls this so its
+    /// wait ends when the operation it belongs to ends.
+    fn stopped(&self) -> bool {
+        let boundary = self
+            .boundary
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        boundary
+            .signal
+            .as_ref()
+            .is_some_and(|signal| signal.is_aborted())
+            || boundary
+                .deadline
+                .is_some_and(|deadline| std::time::Instant::now() >= deadline)
+    }
+
     fn end(&self) {
         let mut boundary = self
             .boundary
@@ -621,7 +641,9 @@ fn install_vm_limit(lua: &Lua, limit: Arc<VmLimit>) {
         }
         limit.remaining.store(remaining - 1, Ordering::Relaxed);
         if limit.countdown.fetch_sub(1, Ordering::Relaxed) == 1 {
-            limit.countdown.store(VM_SLOW_CHECK_EVERY, Ordering::Relaxed);
+            limit
+                .countdown
+                .store(VM_SLOW_CHECK_EVERY, Ordering::Relaxed);
             let boundary = limit
                 .boundary
                 .lock()
@@ -1309,9 +1331,7 @@ impl ExtensionRuntime {
                 lines: Arc::clone(&lines),
                 revision: Arc::clone(&revision),
                 closed: Arc::clone(&closed),
-                events: pillar_extensions_contract::ExtensionCustomEvents::new(
-                    sender,
-                ),
+                events: pillar_extensions_contract::ExtensionCustomEvents::new(sender),
             };
             installer(surface).map_err(luaur_rt::Error::external)?;
             open_sessions
@@ -1330,6 +1350,7 @@ impl ExtensionRuntime {
         });
         let next_sessions = Arc::clone(&custom_sessions);
         let next_lua = self.lua.clone();
+        let next_limit = Arc::clone(&self.vm_limit);
         let custom_next = Function::wrap(move |id: f64| {
             let event = {
                 let guard = next_sessions
@@ -1340,12 +1361,22 @@ impl ExtensionRuntime {
                         .to_value(&serde_json::json!({ "kind": "close" }))
                         .map_err(luaur_rt::Error::external);
                 };
-                // Bounded like the dialog asks: a component awaited before the
-                // interactive run loop starts cannot be answered (the port's
-                // startup ordering), so the loop gives up instead of hanging.
-                session
-                    .receiver
-                    .recv_timeout(std::time::Duration::from_secs(600))
+                // Wait in slices so the loop ends when the operation behind the
+                // component ends: an abort (or the operation's wall clock) stops
+                // the wait within one slice instead of after the whole timeout,
+                // and the runtime lock this thread holds is released with it.
+                let started = std::time::Instant::now();
+                loop {
+                    match session.receiver.recv_timeout(CUSTOM_WAIT_SLICE) {
+                        Ok(event) => break Ok(event),
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break Err(()),
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                            if next_limit.stopped() || started.elapsed() >= CUSTOM_WAIT_TIMEOUT {
+                                break Err(());
+                            }
+                        }
+                    }
+                }
             };
             let payload = match event {
                 Ok(ExtensionCustomEvent::Resize(width)) => {
@@ -1624,11 +1655,10 @@ impl ExtensionRuntime {
         // and invoke it with the @pillar table (upstream retains the
         // export; the port's per-file VM re-evaluation is equivalent
         // because each file is independent).
-        let setup: Value = self
-            .lua
-            .load(&extension.source)
-            .call(())
-            .map_err(|error| ExtensionLoadError::Setup(format!("{}: {error}", extension.path)))?;
+        let setup: Value =
+            self.lua.load(&extension.source).call(()).map_err(|error| {
+                ExtensionLoadError::Setup(format!("{}: {error}", extension.path))
+            })?;
         let function = match setup {
             Value::Function(function) => function,
             _ => return Ok(()),
@@ -1637,8 +1667,6 @@ impl ExtensionRuntime {
             .call(())
             .map_err(|error| ExtensionLoadError::Setup(format!("{}: {error}", extension.path)))
     }
-
-
 }
 
 /// The `@ext/<name>` module name for an extension path: the file stem, or
@@ -1714,9 +1742,7 @@ fn install_pillar_api(
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
                     let result = match guard.as_ref() {
                         Some(exec) => exec(&command, &args, &exec_options),
-                        None => ExecResult::spawn_failure(
-                            "exec host not installed",
-                        ),
+                        None => ExecResult::spawn_failure("exec host not installed"),
                     };
                     drop(guard);
                     exec_error_lua

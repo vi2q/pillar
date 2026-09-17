@@ -209,9 +209,13 @@ Return directions follow the same table. Handler return values that pi types as 
 
 ## 実行・非同期の現在地と目標
 
-現在のhost bridgeには同期callbackがあり、`ctx.ui.custom`はイベントを`recv_timeout`で待つ。tool `execute`の`signal` / `on_update`は接続済みだが、host呼出（`pillar.exec` / `pillar.fs`）は同期で、Luaコード自体をVM側から横取りしない。したがって停止は「次のhost呼出で観測される」保証であり、coroutine再開・VM実行予算・無制限Luaループの停止は未完成として扱う。
+現在のhost bridgeには同期callbackがある。停止の保証は次の3段で成り立っている。
 
-目標は、既存Luau機能を保ったまま、host要求のrequest/replyと取消・deadlineを接続し、待機がUIや実行核を止めないこと。実装方式はluaurとazparamの実host条件で検証して決める。`spawn_blocking`だけでVMの永久ループを強制停止できるとはみなさない。
+- **VM 実行予算**: `ExtensionRuntime::set_vm_budget`（既定 `VmBudget::DEFAULT_STEPS`）が interrupt hook を入れ、safepoint ごとに step 数・deadline・**実行中 tool call の abort signal** を見る。host に一切戻らない `while true do end` もここで止まる。
+- **待ちの分割**: `ctx.ui.custom` のループはイベント待ちを 25 ms スライスに区切り、各スライスで abort / deadline を確認する（全体の上限は 600 秒だが、abort は 1 スライス以内で待ちを終える）。
+- **同期 host 呼出**: `pillar.exec` は同期だが、abort / timeout で子プロセスを SIGTERM→SIGKILL できる。`pillar.fs` は短い処理として扱う。
+
+未完成として残るのは **coroutine 再開による完全な非同期化**（`pillar.exec` / `pillar.fs` の待ちで extension のスレッドが runtime lock を保持する時間を無くすこと）と、操作別の保持量ゲート（VM メモリ・登録数・出力 buffer）。実装方式は luaur と azparam の実 host 条件で検証して決める。`spawn_blocking` だけで VM の永久ループを強制停止できるとはみなさない（interrupt hook が実際の停止点）。
 
 ## Session persistence & custom entries
 
