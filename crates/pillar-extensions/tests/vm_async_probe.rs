@@ -23,7 +23,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 
-use luaur_rt::{Function, Lua, LuaSerdeExt, Value};
+use luaur_rt::{Function, Lua, LuaSerdeExt};
 
 /// A one-shot slot the host fills when its work is done. The waker is what makes
 /// the host's executor (not a thread parked in the VM) do the waiting.

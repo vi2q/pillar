@@ -219,6 +219,8 @@ Return directions follow the same table. Handler return values that pi types as 
 
 未完成として残るのは **coroutine 再開による完全な非同期化**（待ちの間 runtime lock を保持しない）。方式は 2 つの probe で確認済み。**採用するのは luaur の `async` feature**（mlua 互換の `create_async_function` / `Function::call_async`）で、host の実行器（CLI は tokio、engine はそのフレームループ）が待つ。エラーの制約: async future が `Err` を返すと luaur 0.1.8 は coroutine を park したままにするので、**結果テーブルにエラーを載せて Lua wrapper が `error(...)` を上げる**。
 
+host 側の駆動（実装済み）: bridge は tool の execute future で **step ごとに runtime lock を取り**、待つ host 呼出は `HostCallRunner`（`bridge_to_agent_tools_with` の第2引数）に渡す。runner は lock を保持せずに自分の executor で実行する（CLI は `EffectBroker` の exec を `spawn_blocking`）。runner を渡さない既定は lock 下で inline 実行（state machine 以前と同じ挙動）。
+
 採用した協調プロトコル（実装済み）: tool call は**専用 coroutine**で走り、`pillar.exec` は coroutine 内で `coroutine.yield(request)` する。host は `ExtensionRuntime::start_tool_call` が返す `ToolStep::HostCall` を見て（runtime lock を解放したまま）作業し、`step_tool_call(answer)` で再開する。同期 API の `call_tool` は同じ状態機械を inline で回すだけなので、既存の呼び出し側は変わらない。main state（setup / handler）では yield できないため `pillar.exec` は inline 実行になる。
 
 参考: 手書きプロトコルの probe（`vm_resume_probe.rs`）:

@@ -672,8 +672,33 @@ impl ExtensionWiring {
     /// The callable agent tools the loaded extensions registered (upstream
     /// the runner adding the extension tools to the session's tool set).
     /// Built from the runtime, so it must be called after the setup pass.
+    ///
+    /// The tools run their host calls (a Luau tool's `pillar.exec`) through a
+    /// runner: the process layer is blocking, so it runs on a blocking thread
+    /// **without the runtime lock**, and the rest of the extension runtime stays
+    /// usable while a build runs (TASKS: 非同期 host 呼出).
     pub fn custom_tools(&self) -> Vec<AgentTool> {
-        pillar_extensions::bridge::bridge_to_agent_tools(&self.runtime)
+        let broker = Arc::clone(&self.rebuild.slots.broker);
+        let cwd = self.rebuild.cwd.clone();
+        let runner: pillar_extensions::bridge::HostCallRunner =
+            Arc::new(move |request, abort| {
+                let exec: pillar_extensions::runtime::ExecHost = {
+                    let broker = Arc::clone(&broker);
+                    let cwd = cwd.clone();
+                    Arc::new(move |command, args, options| broker.exec(&cwd, command, args, options))
+                };
+                Box::pin(async move {
+                    // Outside a tokio context (a host driving the runner itself)
+                    // the process layer runs inline instead of panicking.
+                    if tokio::runtime::Handle::try_current().is_err() {
+                        return request.run_with(&exec, abort);
+                    }
+                    tokio::task::spawn_blocking(move || request.run_with(&exec, abort))
+                        .await
+                        .map_err(|error| format!("the host call task failed: {error}"))?
+                })
+            });
+        pillar_extensions::bridge::bridge_to_agent_tools_with(&self.runtime, Some(runner))
     }
 
     /// Bind the live session the `@pillar` host callbacks resolve (upstream

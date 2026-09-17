@@ -49,6 +49,56 @@ pub struct HostCallRequest {
     pub signal_id: Option<u64>,
 }
 
+impl HostCallRequest {
+    /// Run this request through the host's process layer. `signal` is the tool
+    /// call's abort signal (the host resolves it from [`signal_id`]
+    /// (Self::signal_id) once, under the lock, and passes it here).
+    ///
+    /// A host that runs host calls itself — the CLI's runner, an engine's frame
+    /// loop — calls this from its own executor, so the runtime lock is not held
+    /// while the command runs.
+    pub fn run_with(
+        &self,
+        exec: &ExecHost,
+        signal: Option<pillar_agent::abort::AbortSignal>,
+    ) -> Result<serde_json::Value, String> {
+        match self.kind.as_str() {
+            "exec" => {
+                let command = self
+                    .json
+                    .get("command")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let args: Vec<String> = self
+                    .json
+                    .get("args")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|values| {
+                        values
+                            .iter()
+                            .filter_map(serde_json::Value::as_str)
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let options = ExecOptions {
+                    signal,
+                    timeout_ms: self.json.get("timeout_ms").and_then(serde_json::Value::as_u64),
+                    cwd: self
+                        .json
+                        .get("cwd")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string),
+                };
+                let result = exec(&command, &args, &options);
+                serde_json::to_value(&result).map_err(|error| format!("exec result: {error}"))
+            }
+            other => Err(format!("unknown host call {other}")),
+        }
+    }
+}
+
 /// Where a tool call is after one step.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ToolStep {
@@ -783,6 +833,11 @@ impl ToolCall {
     pub fn tool_name(&self) -> &str {
         &self.tool_name
     }
+
+    /// The tool call id the agent gave this call.
+    pub fn tool_call_id(&self) -> &str {
+        &self.tool_call_id
+    }
 }
 
 /// Result of dispatching one event to a handler (upstream the
@@ -1215,6 +1270,13 @@ impl ExtensionRuntime {
         Ok(ToolStep::Done(Ok(json)))
     }
 
+    /// The live `AbortSignal` behind a tool call's id: a host that runs a host
+    /// call outside the runtime lock resolves the signal once, under the lock,
+    /// and passes it to its own work.
+    pub fn signal_for(&self, id: Option<u64>) -> Option<pillar_agent::abort::AbortSignal> {
+        self.live_signal(id)
+    }
+
     /// The live signal of a tool call, if it still has one.
     fn live_signal(&self, id: Option<u64>) -> Option<pillar_agent::abort::AbortSignal> {
         let id = id?;
@@ -1233,54 +1295,24 @@ impl ExtensionRuntime {
             .remove(&id);
     }
 
-    /// Run one host call the tool asked for, synchronously (the sync driver).
-    fn run_host_call(&mut self, request: HostCallRequest) -> Result<serde_json::Value, String> {
-        match request.kind.as_str() {
-            "exec" => {
-                let command = request
-                    .json
-                    .get("command")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default()
-                    .to_string();
-                let args: Vec<String> = request
-                    .json
-                    .get("args")
-                    .and_then(serde_json::Value::as_array)
-                    .map(|values| {
-                        values
-                            .iter()
-                            .filter_map(serde_json::Value::as_str)
-                            .map(str::to_string)
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let options = ExecOptions {
-                    signal: self.live_signal(request.signal_id),
-                    timeout_ms: request
-                        .json
-                        .get("timeout_ms")
-                        .and_then(serde_json::Value::as_u64),
-                    cwd: request
-                        .json
-                        .get("cwd")
-                        .and_then(serde_json::Value::as_str)
-                        .map(str::to_string),
-                };
-                let result = {
-                    let guard = self
-                        .exec_host
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner());
-                    match guard.as_ref() {
-                        Some(exec) => exec(&command, &args, &options),
-                        None => ExecResult::spawn_failure("exec host not installed"),
-                    }
-                };
-                serde_json::to_value(&result).map_err(|error| format!("exec result: {error}"))
-            }
-            other => Err(format!("unknown host call {other}")),
-        }
+    /// Run one host call the tool asked for, synchronously.
+    ///
+    /// The bridge calls this for a host that has no runner of its own; a host
+    /// that can do the work concurrently runs the request itself, outside the
+    /// runtime lock (see [`HostCallRequest::run_with`] and
+    /// [`HostCallRunner`](crate::bridge::HostCallRunner)).
+    pub fn run_host_call(&mut self, request: HostCallRequest) -> Result<serde_json::Value, String> {
+        let signal = self.live_signal(request.signal_id);
+        let exec = self
+            .exec_host
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let missing: ExecHost =
+            Arc::new(|_command: &str, _args: &[String], _options: &ExecOptions| {
+                ExecResult::spawn_failure("exec host not installed")
+            });
+        request.run_with(exec.as_ref().unwrap_or(&missing), signal)
     }
 
     /// The Lua `signal` table for one tool call: `aborted()` plus the id

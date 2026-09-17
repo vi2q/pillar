@@ -24,7 +24,14 @@ use pillar_extensions_contract::{
     RegisteredCommand,
 };
 
-use crate::runtime::{ExtensionLoadError, ExtensionRuntime};
+use crate::runtime::{ExtensionLoadError, ExtensionRuntime, HostCallRequest, ToolStep};
+
+/// Take the runtime lock (poisoning is not a reason to lose the extension VM).
+fn lock(runtime: &Arc<Mutex<ExtensionRuntime>>) -> std::sync::MutexGuard<'_, ExtensionRuntime> {
+    runtime
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 /// Errors bridging the Luau runtime into runner handlers.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -369,12 +376,40 @@ fn declarative_segment(style: &dyn ThemeStyle, segment: &serde_json::Value) -> S
 /// Build the callable agent tools for every tool an extension registered
 /// (upstream the runner adding the extension's tools to the session tool
 /// set). The returned tools dispatch into the shared Luau runtime.
+/// The callable agent tools the loaded extensions registered, run inline (no
+/// host-call runner): see [`bridge_to_agent_tools_with`].
 pub fn bridge_to_agent_tools(runtime: &Arc<Mutex<ExtensionRuntime>>) -> Vec<AgentTool> {
+    bridge_to_agent_tools_with(runtime, None)
+}
+
+/// The future a [`HostCallRunner`] returns.
+pub type HostCallFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send>>;
+
+/// How the host runs one host call a suspended tool asked for.
+///
+/// The bridge calls a runner **without holding the runtime lock**, so a long
+/// command does not block the rest of the extension runtime (another tool call,
+/// a handler, the UI). A host that can run the work concurrently returns a
+/// future that resolves on its own executor (the CLI wraps its process layer in
+/// `spawn_blocking`); the signal travels with the request so the work can be
+/// aborted. Without a runner the bridge runs the call inline, under the lock —
+/// the behaviour before the state machine existed.
+pub type HostCallRunner = Arc<
+    dyn Fn(HostCallRequest, Option<pillar_agent::abort::AbortSignal>) -> HostCallFuture + Send + Sync,
+>;
+
+/// [`bridge_to_agent_tools`] with a host-call runner (see [`HostCallRunner`]).
+pub fn bridge_to_agent_tools_with(
+    runtime: &Arc<Mutex<ExtensionRuntime>>,
+    runner: Option<HostCallRunner>,
+) -> Vec<AgentTool> {
     let definitions = runtime
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .registry()
         .tools;
+    let runner = runner.clone();
     definitions
         .into_iter()
         .map(|registration| registration.value)
@@ -402,6 +437,7 @@ pub fn bridge_to_agent_tools(runtime: &Arc<Mutex<ExtensionRuntime>>) -> Vec<Agen
                 .unwrap_or_else(|| serde_json::json!({ "type": "object", "properties": {} }));
 
             let runtime = Arc::clone(runtime);
+            let runner = runner.clone();
             let execute_name = name.clone();
             let execute: Arc<ToolExecuteFn> = Arc::new(
                 move |tool_call_id: String,
@@ -409,15 +445,45 @@ pub fn bridge_to_agent_tools(runtime: &Arc<Mutex<ExtensionRuntime>>) -> Vec<Agen
                       signal: Option<pillar_agent::abort::AbortSignal>,
                       on_update: Option<pillar_agent::types::AgentToolUpdateCallback>| {
                     let runtime = Arc::clone(&runtime);
+                    let runner = runner.clone();
                     let name = execute_name.clone();
                     Box::pin(async move {
-                        let result = runtime
-                            .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner())
-                            .call_tool(&name, &tool_call_id, arguments, signal, on_update);
-                        match result {
-                            Ok(json) => Ok(tool_result_from_json(json)),
-                            Err(message) => Err(ToolExecuteError(message)),
+                        // Start the call: a tool that waits for a host call
+                        // suspends here instead of blocking. The lock is taken
+                        // per step, never across the host's work.
+                        let (mut call, mut step) = {
+                            let mut ext = lock(&runtime);
+                            ext.start_tool_call(&name, &tool_call_id, arguments, signal, on_update)
+                                .map_err(ToolExecuteError)?
+                        };
+                        loop {
+                            match step {
+                                ToolStep::Done(result) => {
+                                    return result
+                                        .map(tool_result_from_json)
+                                        .map_err(ToolExecuteError);
+                                }
+                                ToolStep::HostCall(request) => {
+                                    let abort = {
+                                        let ext = lock(&runtime);
+                                        ext.signal_for(request.signal_id)
+                                    };
+                                    let answer = match runner.as_ref() {
+                                        Some(run) => run(request, abort).await.map_err(
+                                            ToolExecuteError,
+                                        )?,
+                                        // No runner: the call runs inline under
+                                        // the lock (the pre-state-machine
+                                        // behaviour).
+                                        None => lock(&runtime)
+                                            .run_host_call(request)
+                                            .map_err(ToolExecuteError)?,
+                                    };
+                                    step = lock(&runtime)
+                                        .step_tool_call(&mut call, answer)
+                                        .map_err(ToolExecuteError)?;
+                                }
+                            }
                         }
                     })
                 },
@@ -967,5 +1033,114 @@ mod tests {
             ..context.clone()
         };
         assert_eq!(transformers[0]("hello", &assistant), None);
+    }
+}
+
+#[cfg(test)]
+mod host_call_runner_tests {
+    use super::*;
+    use crate::runtime::{ExtensionRuntime, HostCallRequest};
+    use std::sync::Arc;
+
+    /// A tool that waits for a host call (`pillar.exec` suspends it).
+    const BUILD: &str = r#"
+        local pillar = require("@pillar")
+        pillar.register_tool({
+            name = "build",
+            description = "builds",
+            parameters = pillar.schema.object({}),
+            execute = function(tool_call_id, params, signal, on_update, ctx)
+                local result = pillar.exec("make", { "story" })
+                return { content = { { type = "text", text = "built " .. tostring(result.stdout) } } }
+            end,
+        })
+        return nil
+    "#;
+
+    /// With a runner, the host's work happens **without the runtime lock**: the
+    /// runner can take it (here `try_lock` proves nobody holds it) while the
+    /// tool waits, and the answer completes the call.
+    #[test]
+    fn a_runner_runs_the_host_call_without_the_lock() {
+        let runtime = Arc::new(Mutex::new(ExtensionRuntime::new()));
+        runtime
+            .lock()
+            .unwrap()
+            .load_extension("/ext/build.luau", BUILD)
+            .expect("the extension loads");
+
+        let seen: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
+        let runner_runtime = Arc::clone(&runtime);
+        let runner_seen = Arc::clone(&seen);
+        let runner: HostCallRunner = Arc::new(move |request: HostCallRequest, _abort| {
+            let runtime = Arc::clone(&runner_runtime);
+            let seen = Arc::clone(&runner_seen);
+            Box::pin(async move {
+                assert!(
+                    runtime.try_lock().is_ok(),
+                    "the bridge must not hold the runtime lock while the host works"
+                );
+                seen.lock().unwrap().push(request.json.clone());
+                Ok(serde_json::json!({ "stdout": "story.bin", "code": 0 }))
+            })
+        });
+
+        let tools = bridge_to_agent_tools_with(&runtime, Some(runner));
+        let tool = tools.first().expect("the tool is bridged");
+        let result = futures::executor::block_on((tool.execute)(
+            "call-1".to_string(),
+            serde_json::json!({}),
+            None,
+            None,
+        ))
+        .expect("the tool finishes");
+        let text = match &result.content[0] {
+            Content::Text { text, .. } => text.clone(),
+            other => panic!("unexpected content {other:?}"),
+        };
+        assert_eq!(text, "built story.bin");
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            &[serde_json::json!({ "kind": "exec", "command": "make", "args": ["story"] })]
+        );
+    }
+
+    /// Without a runner the call still completes (it runs inline, under the
+    /// lock) — the behaviour before the state machine.
+    #[test]
+    fn the_default_path_runs_the_host_call_inline() {
+        let runtime = Arc::new(Mutex::new(ExtensionRuntime::new()));
+        runtime
+            .lock()
+            .unwrap()
+            .set_exec_host(Arc::new(|command, args, _options| {
+                pillar_extensions_contract::ExecResult {
+                    stdout: format!("{command} {}", args.join(" ")),
+                    stderr: String::new(),
+                    code: 0,
+                    killed: false,
+                    truncated: false,
+                }
+            }));
+        runtime
+            .lock()
+            .unwrap()
+            .load_extension("/ext/build.luau", BUILD)
+            .expect("the extension loads");
+
+        let tools = bridge_to_agent_tools(&runtime);
+        let tool = tools.first().expect("the tool is bridged");
+        let result = futures::executor::block_on((tool.execute)(
+            "call-1".to_string(),
+            serde_json::json!({}),
+            None,
+            None,
+        ))
+        .expect("the tool finishes");
+        let text = match &result.content[0] {
+            Content::Text { text, .. } => text.clone(),
+            other => panic!("unexpected content {other:?}"),
+        };
+        assert_eq!(text, "built make story");
     }
 }
