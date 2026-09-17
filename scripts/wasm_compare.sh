@@ -77,6 +77,12 @@ printf '%s' "$wasm_stream" | grep -q "message_update" || {
     echo "check: the streamed turn produced no message_update events" >&2
     exit 1
 }
+# The partials must be relayed while the host is still producing them, not all
+# at once after the final answer: the deltas arrive before that message ends.
+printf '%s' "$wasm_stream" | grep -q "message_update,message_update,message_update,message_end" || {
+    echo "check: the partial text was not relayed before the message ended: $wasm_stream" >&2
+    exit 1
+}
 
 # Storing and resuming a conversation: the host exports the conversation, starts
 # a new session, imports it, and continues.

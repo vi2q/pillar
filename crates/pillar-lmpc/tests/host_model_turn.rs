@@ -310,6 +310,68 @@ fn the_host_can_stream_partial_text() {
     assert_eq!(trace.messages[1].1, "the answer is 42");
 }
 
+/// Partial text reaches the agent *while the host is still producing it*: the
+/// request's stream is handed to the loop as soon as it is published, so each
+/// delta is relayed as a `message_update` before any final answer exists
+/// (policy review sb39f R6 — the `StreamFn` future used to wait for the reply,
+/// so every partial arrived at once at the end, and a turn that was never
+/// answered showed nothing at all).
+#[test]
+fn partial_text_reaches_the_agent_before_the_answer() {
+    let host = Arc::new(pillar_lmpc::FrameHost::new());
+    let mut session = pillar_lmpc::HostModelSession::start(&host, "tell me", Vec::new());
+
+    assert_eq!(
+        session.poll(Duration::from_millis(1)),
+        HostModelState::NeedsModel
+    );
+    let ticket = session.request_ticket().expect("a published request");
+    session
+        .stream_delta_to(ticket, "the ")
+        .expect("the first delta");
+
+    // No answer yet: only frames go by.
+    for _ in 0..10 {
+        assert_ne!(
+            session.poll(Duration::from_millis(1)),
+            HostModelState::Done,
+            "the host has not answered"
+        );
+    }
+    let events = session.trace().events;
+    assert!(
+        events.iter().any(|event| event == "message_update"),
+        "the first delta reached the agent before the answer: {events:?}"
+    );
+
+    session
+        .stream_delta_to(ticket, "answer")
+        .expect("the second delta");
+    for _ in 0..10 {
+        session.poll(Duration::from_millis(1));
+    }
+    let updates = session
+        .trace()
+        .events
+        .iter()
+        .filter(|event| event.as_str() == "message_update")
+        .count();
+    assert_eq!(updates, 2, "still one update per delta, before any answer");
+
+    session
+        .reply_to(ticket, r#"[{"type":"text","text":"the answer"}]"#)
+        .expect("the final answer");
+    let mut done = false;
+    for _ in 0..100 {
+        if session.poll(Duration::from_millis(1)) == HostModelState::Done {
+            done = true;
+            break;
+        }
+    }
+    assert!(done, "the turn finished");
+    assert_eq!(session.trace().messages[1].1, "the answer");
+}
+
 /// A host can store the conversation and resume it later: the restored session
 /// carries the old context into the next model request (an NPC that survives a
 /// restart).

@@ -84,8 +84,6 @@ struct ModelSlot {
     last_ticket: Ticket,
     /// The request waiting for an answer, with the ticket it was published as.
     request: Option<(Ticket, HostModelRequest)>,
-    /// The answer the host supplied, for the request with that ticket.
-    reply: Option<(Ticket, Vec<Content>)>,
     /// The host cancelled the turn: the guest stops waiting for an answer.
     cancelled: bool,
     /// The tool calls waiting for the host, by ticket: one assistant message can
@@ -122,19 +120,12 @@ impl ModelSlot {
     /// Forget every pending request (a cancel, or the next turn).
     fn clear_pending(&mut self) {
         self.request = None;
-        self.reply = None;
         self.tool_requests.clear();
         self.tool_order.clear();
         self.tool_results.clear();
         self.stream = None;
         self.partial = None;
     }
-}
-
-struct HostModelFuture {
-    slot: Arc<Mutex<ModelSlot>>,
-    /// The request this future answers: it only takes its own reply.
-    ticket: Ticket,
 }
 
 /// Waits for the host to run a tool the guest called.
@@ -244,33 +235,6 @@ fn host_action_tool(slot: &Arc<Mutex<ModelSlot>>) -> pillar_agent::AgentTool {
 /// The name a host tool call uses in the demo scripts.
 pub const HOST_ACTION_TOOL: &str = "host_action";
 
-impl std::future::Future for HostModelFuture {
-    type Output = Vec<Content>;
-
-    fn poll(
-        self: std::pin::Pin<&mut Self>,
-        _context: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Vec<Content>> {
-        // No waker: the frame host re-polls each frame, which is when the host
-        // will have answered (or cancelled).
-        let mut slot = self.slot.lock().expect("model slot lock");
-        let ticket = self.ticket;
-        if let Some((answered, content)) = slot.reply.take() {
-            if answered == ticket {
-                return std::task::Poll::Ready(content);
-            }
-            // Not this future's answer: put it back for the request it names.
-            slot.reply = Some((answered, content));
-        }
-        if slot.cancelled {
-            // An empty answer: the run then observes the aborted signal and
-            // stops instead of waiting for a model that will not answer.
-            return std::task::Poll::Ready(Vec::new());
-        }
-        std::task::Poll::Pending
-    }
-}
-
 /// The turn's prompt future, driven by the host's frames.
 type RunFuture = std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
 
@@ -354,32 +318,18 @@ impl HostModelSession {
                     partial: assistant(Vec::new(), StopReason::Pending),
                 });
                 let context_json = serde_json::to_string(&context).unwrap_or_else(|_| "{}".into());
-                let ticket = {
+                {
                     let mut guard = slot.lock().expect("model slot lock");
                     let ticket = guard.ticket();
                     guard.request = Some((ticket, HostModelRequest { context_json }));
-                    guard.reply = None;
                     guard.stream = Some(stream.clone_stream());
                     guard.partial = None;
-                    ticket
-                };
-                let content = HostModelFuture {
-                    slot: Arc::clone(&slot),
-                    ticket,
                 }
-                .await;
-                let stop_reason = if content
-                    .iter()
-                    .any(|part| matches!(part, Content::ToolCall { .. }))
-                {
-                    StopReason::ToolUse
-                } else {
-                    StopReason::Stop
-                };
-                stream.push(AssistantMessageEvent::Done {
-                    reason: stop_reason,
-                    message: assistant(content, stop_reason),
-                });
+                // The stream is returned *now*; the host answers into it (from
+                // its own thread natively, or through the C ABI). Waiting for
+                // the final answer here instead would hold the whole stream back
+                // until the end, so the loop could not relay partial text while
+                // the host produces it (policy review sb39f R6).
                 stream
             }
         });
@@ -715,9 +665,25 @@ impl HostModelSession {
             None => return Err("no model request is pending".to_string()),
         }
         slot.request = None;
-        slot.reply = Some((ticket, content));
-        slot.stream = None;
         slot.partial = None;
+        // The answer is the terminal event of the request's stream: the loop is
+        // reading that stream, and the partial deltas the host sent earlier
+        // (`stream_delta_to`) have already reached it as `message_update`.
+        let Some(stream) = slot.stream.take() else {
+            return Err("the request has no stream".to_string());
+        };
+        let stop_reason = if content
+            .iter()
+            .any(|part| matches!(part, Content::ToolCall { .. }))
+        {
+            StopReason::ToolUse
+        } else {
+            StopReason::Stop
+        };
+        stream.push(AssistantMessageEvent::Done {
+            reason: stop_reason,
+            message: assistant(content, stop_reason),
+        });
         Ok(())
     }
 
@@ -781,6 +747,15 @@ impl HostModelSession {
         {
             let mut slot = self.slot.lock().expect("model slot lock");
             slot.cancelled = true;
+            // The loop is reading the pending request's stream, so end it with an
+            // empty answer: the loop then observes the abort instead of waiting
+            // for a model that will not answer.
+            if let Some(stream) = slot.stream.take() {
+                stream.push(AssistantMessageEvent::Done {
+                    reason: StopReason::Stop,
+                    message: assistant(Vec::new(), StopReason::Stop),
+                });
+            }
             // Void every published request: the host must not answer them, and
             // an answer that arrives anyway names a ticket that is gone.
             slot.clear_pending();
