@@ -5,6 +5,8 @@
 //! (unit part) and google-raw-stop-reason (mocked-transport part).
 //! One Rust test per upstream test case, same names in comments.
 
+#![cfg(feature = "providers")]
+
 use pillar_ai::api::google_shared::{
     GeminiContent, GeminiPart, ResolvedGoogleThinkingLevel, convert_messages, convert_tools,
     is_thinking_part, map_stop_reason_string, requires_tool_call_id,

@@ -2,6 +2,8 @@
 //! that are mockable: builtin provider registration, catalog shape, ambient
 //! auth resolution, and the dynamic Radius provider placeholder.
 
+#![cfg(feature = "providers")]
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 

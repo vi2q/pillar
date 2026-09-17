@@ -1,5 +1,7 @@
 //! Port of packages/agent/test/proxy.test.ts (pi v0.84.3).
 
+#![cfg(feature = "proxy")]
+
 use std::sync::Arc;
 
 use pillar_agent::proxy::{

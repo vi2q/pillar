@@ -4,6 +4,8 @@
 //! anthropic-cache-write-1h-cost, and the thinking-disable payload cases
 //! (via build_params directly; the SDK client is not ported).
 
+#![cfg(feature = "providers")]
+
 use serde_json::{Value, json};
 
 use pillar_ai::api::anthropic_messages::{

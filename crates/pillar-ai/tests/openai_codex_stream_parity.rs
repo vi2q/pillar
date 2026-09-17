@@ -8,6 +8,8 @@
 //! inspects captured `FetchRequest`s and WebSocket frames instead. Live
 //! cases (oauth, cache-affinity e2e) are not portable.
 
+#![cfg(feature = "providers")]
+
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

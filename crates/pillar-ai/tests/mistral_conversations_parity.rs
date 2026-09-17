@@ -3,6 +3,8 @@
 //! reasoning-mode, mistral-tool-schema.
 //! One Rust test per upstream test case, same names in comments.
 
+#![cfg(feature = "providers")]
+
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;

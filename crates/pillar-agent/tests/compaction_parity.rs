@@ -4,6 +4,8 @@
 //! use the faux provider's response queue; upstream cases that stub the
 //! models object map to the same queue semantics.
 
+#![cfg(feature = "harness-tools")]
+
 use pillar_ai::faux::{
     FauxCore, FauxModel, FauxResponseStep, RegisterFauxProviderOptions, faux_assistant_message,
 };

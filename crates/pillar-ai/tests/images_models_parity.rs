@@ -3,6 +3,8 @@
 //! for unknown providers, dynamic refresh with in-flight dedupe, and
 //! builtin openrouter provider registration.
 
+#![cfg(feature = "providers")]
+
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};

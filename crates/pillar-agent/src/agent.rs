@@ -94,8 +94,8 @@ pub struct AgentOptions {
     pub transform_context: Option<Arc<TransformContextFn>>,
     pub stream_fn: Option<StreamFn>,
     pub get_api_key: Option<Arc<GetApiKeyFn>>,
-    pub on_payload: Option<pillar_ai::api::OnPayloadFn>,
-    pub on_response: Option<pillar_ai::api::OnResponseFn>,
+    pub on_payload: Option<pillar_ai::types::OnPayloadFn>,
+    pub on_response: Option<pillar_ai::types::OnResponseFn>,
     pub before_tool_call: Option<Arc<BeforeToolFn>>,
     pub after_tool_call: Option<Arc<AfterToolFn>>,
     pub should_stop_after_turn: Option<Arc<ShouldStopWithSignalFn>>,
@@ -251,8 +251,8 @@ pub struct Agent {
     pub transform_context: Option<Arc<TransformContextFn>>,
     pub stream_function: Option<StreamFn>,
     pub get_api_key: Option<Arc<GetApiKeyFn>>,
-    pub on_payload: Option<pillar_ai::api::OnPayloadFn>,
-    pub on_response: Option<pillar_ai::api::OnResponseFn>,
+    pub on_payload: Option<pillar_ai::types::OnPayloadFn>,
+    pub on_response: Option<pillar_ai::types::OnResponseFn>,
     /// Tool interception hooks, interior-mutable so session runtimes can
     /// install extension interception after construction (upstream
     /// assignment on the agent instance).

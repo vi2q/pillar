@@ -7,56 +7,83 @@
 
 #![forbid(unsafe_code)]
 
+// The built-in provider catalog: the per-API adapters, the HTTP transport, the
+// model registry, and provider auth. An embedding host that brings its own
+// `StreamFn` (the LMPC minimum does) turns this off; the pure helpers the core
+// uses stay available.
 pub mod abort;
+#[cfg(feature = "providers")]
 pub mod api;
+#[cfg(feature = "providers")]
 pub mod api_dispatch;
+#[cfg(feature = "providers")]
 pub mod auth_context;
+#[cfg(feature = "providers")]
 pub mod auth_resolve;
+#[cfg(feature = "providers")]
 pub mod auth_types;
 pub mod clock;
+#[cfg(feature = "providers")]
 pub mod constrained_sampling;
+#[cfg(feature = "providers")]
 pub mod credential_store;
+#[cfg(feature = "providers")]
 pub mod deferred_tools;
 pub mod diagnostics;
 pub mod error;
+#[cfg(feature = "providers")]
 pub mod error_body;
 pub mod estimate;
 pub mod event_stream;
 pub mod faux;
 pub mod hash;
+#[cfg(feature = "providers")]
 pub mod headers;
+#[cfg(feature = "providers")]
 pub mod images_models;
 pub mod json_parse;
+#[cfg(feature = "providers")]
 pub mod models;
+#[cfg(feature = "providers")]
 pub mod models_catalog;
+#[cfg(feature = "providers")]
 pub mod models_generated;
+#[cfg(feature = "providers")]
 pub mod models_store;
 pub mod overflow;
+#[cfg(feature = "providers")]
 pub mod provider_env;
+#[cfg(feature = "providers")]
 pub mod provider_retry;
+#[cfg(feature = "providers")]
 pub mod providers_all;
 pub mod retry;
 pub mod simple_options;
 pub mod text;
 pub mod transform_messages;
+#[cfg(feature = "providers")]
 pub mod transport;
 pub mod types;
 pub mod uuid;
 
 pub use abort::{AbortReason, AbortSignal, operation_signal};
 pub use clock::{Elapsed, SleepFn, get_default_sleep, set_default_sleep, sleep, timeout};
+#[cfg(feature = "providers")]
 pub use auth_resolve::{ModelsError, resolve_provider_auth};
+#[cfg(feature = "providers")]
 pub use auth_types::{
     ApiKeyAuth, ApiKeyCredential, AuthCheck, AuthContext, AuthEvent, AuthOperationOptions,
     AuthPrompt, AuthResult, AuthType, Credential, CredentialInfo, CredentialStore, ModelAuth,
     OAuthAuth, OAuthCredential, ProviderAuth,
 };
+#[cfg(feature = "providers")]
 pub use constrained_sampling::{
     GrammarConstrainedSampling, GrammarToolInputJsonBuffer, UnsupportedStrictJsonSchemaError,
     append_grammar_tool_input_json_delta, create_grammar_tool_input_properties,
     get_grammar_tool_input, get_json_schema_tool_parameters, make_strict_json_schema,
     resolve_grammar_constrained_sampling, resolve_json_schema_strict_sampling,
 };
+#[cfg(feature = "providers")]
 pub use error_body::{
     MAX_PROVIDER_ERROR_BODY_CHARS, NormalizedProviderError, format_provider_error,
     normalize_provider_error, safe_json_stringify, truncate_error_text,
@@ -65,21 +92,26 @@ pub use estimate::{ContextUsageEstimate, calculate_context_tokens, estimate_cont
 pub use event_stream::{
     AssistantMessageEventStream, EventStream, assistant_message_event_stream, collect_events,
 };
+#[cfg(feature = "providers")]
 pub use models::{
     AuthTarget, CreateModelsOptions, CreateProviderOptions, Models, ModelsRefreshOptions,
     ModelsRefreshResult, ModelsStreamOptions, Provider, ProviderStreams, RefreshModelsContext,
     calculate_cost, clamp_thinking_level, create_provider, get_supported_thinking_levels, has_api,
     models_are_equal,
 };
+#[cfg(feature = "providers")]
 pub use models_store::{
     InMemoryModelsStore, ModelsStore, ModelsStoreEntry, ModelsStoreOperationOptions,
 };
 pub use overflow::{get_overflow_patterns, is_context_overflow, is_recoverable_length};
+#[cfg(feature = "providers")]
 pub use provider_env::get_provider_env_value;
+#[cfg(feature = "providers")]
 pub use provider_retry::{ProviderRequestError, ProviderRetryOptions, retry_provider_request};
 pub use retry::{RetryCallbacks, RetryPolicy, is_retryable_assistant_error, retry_assistant_call};
 pub use text::{content_text, sanitize_surrogates};
 pub use transform_messages::{NormalizeToolCallId, transform_messages};
+#[cfg(feature = "providers")]
 pub use transport::{
     FetchFn, FetchRequest, FetchResponse, ReqwestFetch, SharedFetchFn, headers_to_record,
 };

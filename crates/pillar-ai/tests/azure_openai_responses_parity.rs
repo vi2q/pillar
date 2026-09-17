@@ -7,6 +7,8 @@
 //! the Rust port injects a `FetchFn` fake and inspects captured
 //! `FetchRequest`s (URL, headers, JSON body) instead.
 
+#![cfg(feature = "providers")]
+
 use std::sync::{Arc, Mutex};
 
 use pillar_ai::api::azure_openai_responses::{

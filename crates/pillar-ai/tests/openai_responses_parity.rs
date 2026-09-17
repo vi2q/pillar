@@ -4,6 +4,8 @@
 //! json-cleanup, and openai-responses-terminal-event (module-level cases).
 //! One Rust test per upstream test case, same names in comments.
 
+#![cfg(feature = "providers")]
+
 use std::collections::BTreeSet;
 
 use serde_json::{Value, json};

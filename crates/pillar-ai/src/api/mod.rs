@@ -20,13 +20,9 @@ pub mod openai_responses_shared;
 pub mod openrouter_images;
 pub mod pi_messages;
 
-use std::sync::Arc;
-
 use crate::abort::AbortSignal;
-use crate::auth_types::BoxFuture;
 use crate::provider_retry::ProviderRequestError;
 use crate::transport::{FetchResponse, SharedFetchFn};
-use crate::types::{CacheRetention, Model, ProviderEnv, ProviderHeaders, Transport, Usage};
 
 /// Shared conversion from collection-level request options to the common
 /// adapter-option core (upstream spreads `StreamOptions` into each adapter's
@@ -53,26 +49,13 @@ macro_rules! impl_from_request_options {
 }
 pub(crate) use impl_from_request_options;
 
-/// Upstream `ProviderResponse` — HTTP response metadata handed to
-/// `onResponse`.
-#[derive(Debug, Clone)]
-pub struct ProviderResponseInfo {
-    pub status: u16,
-    /// Header name/value pairs (lowercased names).
-    pub headers: Vec<(String, String)>,
-}
-
-/// Upstream `onPayload`: inspect or replace the provider request payload
-/// before sending. Returning `None` keeps the payload unchanged.
-pub type OnPayloadFn = Arc<
-    dyn Fn(&Model, serde_json::Value) -> BoxFuture<'static, Option<serde_json::Value>>
-        + Send
-        + Sync,
->;
-
-/// Upstream `onResponse`: invoked after an HTTP response is received.
-pub type OnResponseFn =
-    Arc<dyn Fn(ProviderResponseInfo, &Model) -> BoxFuture<'static, ()> + Send + Sync>;
+// The callback types are shared with the core (the loop config carries them),
+// so they live in `types` and are re-exported here for the adapters.
+/// Re-exported for the adapters, which import them through `crate::api`.
+pub use crate::types::{
+    OnPayloadFn, OnResponseFn, ProviderEnv, ProviderHeaders, ProviderResponseInfo,
+};
+pub use crate::types::{CacheRetention, Transport, Usage};
 
 /// Base options shared by all provider stream calls (upstream
 /// `ProviderRequestOptions` + `StreamOptions`).

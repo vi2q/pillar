@@ -6,6 +6,8 @@
 //! `FetchFn` fake and inspects captured `FetchRequest`s. Live E2E
 //! (images.test.ts, requires OPENROUTER_API_KEY) is not portable.
 
+#![cfg(feature = "providers")]
+
 use std::sync::{Arc, Mutex};
 
 use pillar_ai::api::openrouter_images::{

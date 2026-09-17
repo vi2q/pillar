@@ -20,7 +20,7 @@ tokio = { version = "1.47", features = ["sync", "time", "macros", "rt"] }
 # tokio fs/process, and tokio-tungstenite are native-only. On wasm the HTTP and
 # websocket transports are host-injected (see `transport::FetchFn`).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-reqwest = { version = "0.12", default-features = false, features = [
+reqwest = { version = "0.12", optional = true, default-features = false, features = [
     "rustls-tls",
     "gzip",
     "http2",
@@ -29,10 +29,19 @@ reqwest = { version = "0.12", default-features = false, features = [
     "blocking",
 ] }
 tokio = { version = "1.47", features = ["rt-multi-thread", "fs"] }
-tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake", "rustls-tls-webpki-roots"] }
-zstd = "0.13"
+tokio-tungstenite = { version = "0.30", optional = true, default-features = false, features = [
+    "connect",
+    "handshake",
+    "rustls-tls-webpki-roots",
+] }
+zstd = { version = "0.13", optional = true }
 
 [features]
+default = ["providers"]
+# The built-in provider catalog (per-API adapters, HTTP transport, the model
+# registry, provider auth). Without it the crate is the core an embedding host
+# drives with its own `StreamFn` (docs/DEVELOPMENT-STRATEGY.md §4).
+providers = ["dep:reqwest", "dep:tokio-tungstenite", "dep:zstd"]
 # The live model-catalog generator needs a native blocking HTTP client and
 # filesystem access; it is opt-in so wasm and ordinary builds skip it.
 generate-models = []

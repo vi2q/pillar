@@ -5,9 +5,10 @@
 
 use pillar_ai::faux::{FauxContent, FauxMessageOptions, faux_assistant_message};
 use pillar_ai::types::{Content, Context, Message, StopReason, Usage, UsageCost};
+use pillar_ai::retry::{RetryCallbacks, RetryPolicy};
 use pillar_ai::{
-    RetryCallbacks, RetryPolicy, estimate_context_tokens, is_context_overflow,
-    is_recoverable_length, is_retryable_assistant_error, retry_assistant_call,
+    estimate_context_tokens, is_context_overflow, is_recoverable_length,
+    is_retryable_assistant_error, retry_assistant_call,
 };
 use std::sync::{Arc, Mutex};
 

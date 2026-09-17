@@ -13,7 +13,11 @@
 //! concrete enum variants on `crate::types::AgentMessage` (see
 //! `messages.rs`).
 
+// The coding-agent scaffold (the session runtime and compaction) drives the
+// model registry, so it belongs to the same capability as the tools.
+#[cfg(feature = "harness-tools")]
 pub mod agent_harness;
+#[cfg(feature = "harness-tools")]
 pub mod compaction;
 // Native-only: the std/tokio filesystem and process execution environment.
 // wasm32 hosts provide the `FileSystem`/`Shell` traits instead, and an
@@ -27,6 +31,9 @@ pub mod prompt_templates;
 pub mod reducer;
 pub mod result;
 pub mod session;
+// Skills are loaded from the filesystem (glob matching over root-relative
+// paths), so they belong to the scaffold capability.
+#[cfg(feature = "harness-tools")]
 pub mod skills;
 pub mod system_prompt;
 pub mod telemetry;

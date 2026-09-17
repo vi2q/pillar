@@ -44,9 +44,9 @@ pub struct StreamCallOptions {
     pub simple: SimpleStreamOptionsLike,
     pub abort: Option<crate::abort::AbortSignal>,
     /// Upstream `onPayload`, forwarded to the provider layer.
-    pub on_payload: Option<pillar_ai::api::OnPayloadFn>,
+    pub on_payload: Option<pillar_ai::types::OnPayloadFn>,
     /// Upstream `onResponse`, forwarded to the provider layer.
-    pub on_response: Option<pillar_ai::api::OnResponseFn>,
+    pub on_response: Option<pillar_ai::types::OnResponseFn>,
     /// Preferred transport for providers that support multiple transports.
     pub transport: Option<pillar_ai::types::Transport>,
     /// Custom per-level thinking token budgets.
@@ -655,9 +655,9 @@ pub struct AgentLoopConfig {
     /// Base stream options forwarded with each request.
     pub stream_options: SimpleStreamOptionsLike,
     /// Upstream `onPayload`, forwarded through stream call options.
-    pub on_payload: Option<pillar_ai::api::OnPayloadFn>,
+    pub on_payload: Option<pillar_ai::types::OnPayloadFn>,
     /// Upstream `onResponse`, forwarded through stream call options.
-    pub on_response: Option<pillar_ai::api::OnResponseFn>,
+    pub on_response: Option<pillar_ai::types::OnResponseFn>,
     /// Preferred transport forwarded through stream call options.
     pub transport: Option<pillar_ai::types::Transport>,
     /// How the run body is started. `None` = the platform default

@@ -4,6 +4,8 @@
 //! module-level cases of constrained-sampling.test.ts. One Rust test per
 //! upstream test case, same names in comments.
 
+#![cfg(feature = "providers")]
+
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 

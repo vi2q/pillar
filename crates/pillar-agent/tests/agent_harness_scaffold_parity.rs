@@ -3,6 +3,8 @@
 //! explicit rejection of unfinished operations, and closed-harness
 //! reporting.
 
+#![cfg(feature = "harness-tools")]
+
 use pillar_agent::harness::agent_harness::{
     AgentHarness, AgentHarnessOptions, HARNESS_CLOSED_NAME, HARNESS_NOT_IMPLEMENTED_NAME,
     HarnessError, Resources,

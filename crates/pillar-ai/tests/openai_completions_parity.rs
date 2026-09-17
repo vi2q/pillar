@@ -6,6 +6,8 @@
 //! pipe tool-call ID normalizer. Live-API test files (responseid, xhigh,
 //! tool-call-without-result, tool-call-id-normalization e2e) are not ported.
 
+#![cfg(feature = "providers")]
+
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 

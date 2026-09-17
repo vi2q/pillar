@@ -578,3 +578,51 @@ fn provider_waiting_goes_through_the_host_timer() {
         "waiting must go through `crate::clock` so an embedding host can drive it: {offenders:?}"
     );
 }
+
+/// §4/§5-6: the LMPC minimum is the runtime core without the provider catalog —
+/// a game host brings its own model (`StreamFn`). `cargo tree` resolves the
+/// feature set, so this fails if `pillar-ai`'s `providers` feature (or
+/// `pillar-agent`'s scaffold features) leak back into the minimum.
+///
+/// `mio` is not asserted on: the native target table enables tokio's
+/// `fs`/`process` features for the scaffold, which the wasm side does not build
+/// (TASKS records the wart).
+#[test]
+fn the_lmpc_minimum_has_no_provider_catalog() {
+    let minimal = tree_names("pillar-agent", true);
+    let forbidden = [
+        "reqwest",
+        "tokio-tungstenite",
+        "zstd",
+        "hyper",
+        "globset",
+        "crossterm",
+        "fd-lock",
+        "portable-pty",
+    ];
+    let leaked: Vec<&String> = minimal
+        .iter()
+        .filter(|name| {
+            forbidden.contains(&name.as_str())
+                || name.starts_with("rustls")
+                || name.starts_with("hyper-")
+        })
+        .collect();
+    assert!(
+        leaked.is_empty(),
+        "the LMPC minimum resolves {leaked:?}; the provider catalog and the \
+         terminal layer belong to the development profiles"
+    );
+    // Positive control: the core itself is there (a broken manifest would
+    // otherwise make the assertion above vacuous).
+    assert!(
+        minimal.contains("pillar-ai") && minimal.contains("pillar-agent"),
+        "the minimum must contain the runtime core: {minimal:?}"
+    );
+
+    let with_catalog = tree_names("pillar-agent", false);
+    assert!(
+        with_catalog.contains("reqwest") && with_catalog.contains("globset"),
+        "the default build must contain the provider catalog (otherwise this gate is vacuous)"
+    );
+}

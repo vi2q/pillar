@@ -17,9 +17,7 @@ use pillar_agent::{
     ToolExecutionMode,
 };
 use pillar_ai::event_stream::assistant_message_event_stream;
-use pillar_ai::types::{
-    AssistantMessageEvent, Content, StopReason, Usage, UsageCost,
-};
+use pillar_ai::types::{AssistantMessageEvent, Content, StopReason, Usage, UsageCost};
 
 fn usage() -> Usage {
     Usage {
@@ -55,9 +53,7 @@ fn assistant(content: Vec<Content>, stop_reason: StopReason) -> pillar_ai::Assis
 
 /// A scripted stream function that *waits* before answering: the wait has to go
 /// through the host clock (the default would need a tokio timer).
-fn scripted_stream_fn(
-    answers: Arc<Mutex<Vec<Vec<Content>>>>,
-) -> StreamFn {
+fn scripted_stream_fn(answers: Arc<Mutex<Vec<Vec<Content>>>>) -> StreamFn {
     StreamFn::new(move |_context, _options| {
         let answers = Arc::clone(&answers);
         async move {
@@ -145,7 +141,9 @@ fn a_turn_runs_on_host_services_only() {
         seen_handles
             .lock()
             .unwrap()
-            .push(std::thread::spawn(move || futures::executor::block_on(body)));
+            .push(std::thread::spawn(move || {
+                futures::executor::block_on(body)
+            }));
     });
 
     let tool_calls = Arc::new(Mutex::new(Vec::new()));
@@ -189,8 +187,15 @@ fn a_turn_runs_on_host_services_only() {
         handle.join().expect("the host's run body finished");
     }
 
-    assert_eq!(spawns.load(Ordering::SeqCst), 1, "the host drove the run body");
-    assert!(!waits.lock().unwrap().is_empty(), "waiting used the host clock");
+    assert_eq!(
+        spawns.load(Ordering::SeqCst),
+        1,
+        "the host drove the run body"
+    );
+    assert!(
+        !waits.lock().unwrap().is_empty(),
+        "waiting used the host clock"
+    );
     assert_eq!(
         tool_calls.lock().unwrap().as_slice(),
         ["hello"],

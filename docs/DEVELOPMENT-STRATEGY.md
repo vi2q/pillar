@@ -130,7 +130,8 @@ composition roots
 Cargo featureはビルド内容の選択であり、セキュリティ境界ではない。独立profileの依存解決を検査し、workspace全体のfeature unionやリンク時dead-code除去だけで「外せた」と判定しない。
 
 現状の実装: 実行核のOS能力とLuauがfeatureになっている。
-- `pillar-agent`: `harness-tools`（coding-agent向けfile/shell toolとstd/tokio実行環境）、`session-files`（JSONL file backend）、`search`（native検索scanner）が既定on。`--no-default-features`でLMPC最小の形になり、nativeでもwasm32でもコンパイルできる（`scripts/check.sh`のゲート）。
+- `pillar-ai`: `providers`（per-API adapter・HTTP transport・model registry・provider auth）が既定on。off にすると `reqwest` / `rustls` / `tokio-tungstenite` / `zstd` が依存graphから消え、host が `StreamFn` を注入するLMPC最小の形になる。
+- `pillar-agent`: `harness-tools`（coding-agent向けfile/shell tool・std/tokio実行環境・session runtime・compaction・skills）、`proxy`、`session-files`（JSONL file backend）、`search`（native検索scanner）が既定on。`pillar-ai` への依存は `default-features = false` で、scaffold feature が `pillar-ai/providers` を有効化する。`--no-default-features` がLMPC最小の形（40 crates、provider catalog・terminal層なし）で、nativeでもwasm32でもコンパイルできる（`scripts/check.sh` と `dependency_profiles::the_lmpc_minimum_has_no_provider_catalog`）。
 - `pillar-cli`: `luau` feature（既定on）でVM・`luaur`を外せる。
 - ゲート: `crates/pillar-cli/tests/dependency_profiles.rs`が解決済みgraph（profile別）と、coreのsources（`std::process` / `std::fs` / `std::net`がgated moduleの外に無いこと）を検査する。
 未着手: terminal層を外す軸（azparam/LMPC向けのUI adapter分離）、LMPC最小の実際のartifact（Wasm package/最小ハーネス）、feature unionに依存しない独立解決の検証。

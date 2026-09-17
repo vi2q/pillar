@@ -6,6 +6,8 @@
 //! divergence: upstream spins up a local node:http server; the Rust port
 //! injects a `FetchFn` fake and inspects captured `FetchRequest`s.
 
+#![cfg(feature = "providers")]
+
 use std::sync::{Arc, Mutex};
 
 use pillar_ai::api::pi_messages::{PiMessagesOptions, SimpleStreamOptions, stream};

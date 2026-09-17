@@ -11,6 +11,8 @@
 //! the SDK client config / command input. The client-config priority rules
 //! are additionally asserted directly through `buildClientConfig`.
 
+#![cfg(feature = "providers")]
+
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;

@@ -12,6 +12,7 @@ pub mod abort;
 pub mod agent;
 pub mod agent_loop;
 pub mod harness;
+#[cfg(feature = "proxy")]
 pub mod proxy;
 #[cfg(feature = "search")]
 pub mod search;
