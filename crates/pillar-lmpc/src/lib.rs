@@ -355,6 +355,15 @@ pub fn host_model_scripted_reply(request_index: usize) -> &'static str {
 /// [`host_model_demo_turn`] over several prompts: the session keeps its state,
 /// so the later turns see the earlier ones (the trace covers every turn).
 pub fn host_model_demo_turns(prompts: &[String]) -> Result<TurnTrace, String> {
+    host_model_demo_turns_with(prompts, false)
+}
+
+/// [`host_model_demo_turns`] with optional streaming: the scripted host sends
+/// the answer in deltas before its final reply (the `--stream` flag).
+pub fn host_model_demo_turns_with(
+    prompts: &[String],
+    stream: bool,
+) -> Result<TurnTrace, String> {
     let host = FrameHost::new();
     let mut session = HostModelSession::start(
         &host,
@@ -369,6 +378,11 @@ pub fn host_model_demo_turns(prompts: &[String]) -> Result<TurnTrace, String> {
     for _ in 0..100_000 {
         match session.poll(Duration::from_millis(1)) {
             HostModelState::NeedsModel => {
+                if stream {
+                    for delta in ["the ", "answer ", "is 42"] {
+                        session.stream_delta(delta)?;
+                    }
+                }
                 session.reply(host_model_scripted_reply(requests))?;
                 requests += 1;
             }

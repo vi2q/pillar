@@ -220,8 +220,8 @@ fn a_session_spans_several_turns() {
     let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
 
     let answer = |session: &mut pillar_lmpc::HostModelSession,
-                      seen: &std::sync::Arc<std::sync::Mutex<Vec<String>>>,
-                      text: &str| {
+                  seen: &std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+                  text: &str| {
         for _ in 0..1000 {
             match session.poll(Duration::from_millis(1)) {
                 HostModelState::NeedsModel => {
@@ -255,7 +255,11 @@ fn a_session_spans_several_turns() {
     );
 
     let trace = session.trace();
-    let roles: Vec<&str> = trace.messages.iter().map(|(role, _)| role.as_str()).collect();
+    let roles: Vec<&str> = trace
+        .messages
+        .iter()
+        .map(|(role, _)| role.as_str())
+        .collect();
     assert_eq!(
         roles,
         ["user", "assistant", "user", "assistant"],
@@ -263,4 +267,44 @@ fn a_session_spans_several_turns() {
         trace.messages
     );
     assert_eq!(trace.messages[3].1, "Ada");
+}
+
+/// The host can stream partial text before its final answer: the guest forwards
+/// each delta as a `message_update` event (a game shows text as it arrives).
+#[test]
+fn the_host_can_stream_partial_text() {
+    use std::time::Duration;
+
+    let host = Arc::new(pillar_lmpc::FrameHost::new());
+    let mut session = pillar_lmpc::HostModelSession::start(&host, "tell me", Vec::new());
+
+    let mut done = false;
+    for _ in 0..1000 {
+        match session.poll(Duration::from_millis(1)) {
+            HostModelState::NeedsModel => {
+                for delta in ["the ", "answer ", "is 42"] {
+                    session.stream_delta(delta).expect("a delta");
+                }
+                session
+                    .reply(r#"[{"type":"text","text":"the answer is 42"}]"#)
+                    .expect("the final answer");
+            }
+            HostModelState::Running => {}
+            HostModelState::Done => {
+                done = true;
+                break;
+            }
+            other => panic!("unexpected state {other:?}"),
+        }
+    }
+    assert!(done, "the turn finished");
+
+    let trace = session.trace();
+    let updates = trace
+        .events
+        .iter()
+        .filter(|event| event.as_str() == "message_update")
+        .count();
+    assert_eq!(updates, 3, "one update per delta: {:?}", trace.events);
+    assert_eq!(trace.messages[1].1, "the answer is 42");
 }

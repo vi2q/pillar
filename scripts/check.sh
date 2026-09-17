@@ -116,6 +116,22 @@ if [ "$quick" -eq 0 ]; then
                 echo "check: the Wasm multi-turn trace differs from the native one" >&2
                 exit 1
             fi
+            # Streaming: the host sends partial text before its final answer,
+            # and the guest must forward each delta as a message_update.
+            say "wasm streaming updates match native"
+            native_stream=$(cargo run --locked -q -p pillar-lmpc -- --host-model --stream "tell me")
+            wasm_stream=$(node "$root/scripts/wasm_host_model.mjs" \\
+                "$root/target/wasm32-unknown-unknown/debug/pillar_lmpc.wasm" \\
+                --stream "tell me")
+            if [ "$native_stream" != "$wasm_stream" ]; then
+                printf 'native:\\n%s\\nwasm:\\n%s\\n' "$native_stream" "$wasm_stream" >&2
+                echo "check: the Wasm streaming trace differs from the native one" >&2
+                exit 1
+            fi
+            printf '%s' "$wasm_stream" | grep -q "message_update" || {
+                echo "check: the streamed turn produced no message_update events" >&2
+                exit 1
+            }
             # Host-driven cancellation: the guest must stop instead of waiting
             # for a model answer it will never get.
             say "wasm host cancel"

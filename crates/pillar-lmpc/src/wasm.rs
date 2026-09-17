@@ -140,6 +140,23 @@ pub extern "C" fn lmpc_host_turn_start(length: u32) -> i32 {
     state
 }
 
+/// Stream a partial answer for the pending request (the guest forwards it as
+/// `message_update` events); the text is `length` bytes of the input buffer.
+#[unsafe(no_mangle)]
+pub extern "C" fn lmpc_host_stream(length: u32) -> i32 {
+    let Some(delta) = read_input(length) else {
+        return 3;
+    };
+    let guard = SESSION.lock().expect("session lock");
+    let Some(session) = guard.as_ref() else {
+        return 3;
+    };
+    match session.stream_delta(&delta) {
+        Ok(()) => 0,
+        Err(_) => 3,
+    }
+}
+
 /// Start another turn on the running session (the guest keeps its state, so an
 /// NPC remembers); the prompt is `length` bytes of the input buffer.
 #[unsafe(no_mangle)]

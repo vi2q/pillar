@@ -20,6 +20,7 @@ import { readFile } from "node:fs/promises";
 
 const path = process.argv[2];
 const cancel = process.argv.includes("--cancel");
+const stream = process.argv.includes("--stream");
 // Every positional argument is one turn on the same session (an NPC keeps its
 // state), which is what the native `--host-model <p1> <p2>` does.
 const prompts = process.argv
@@ -86,6 +87,16 @@ for (let frame = 0; frame < 100_000; frame += 1) {
         `host_model: the request does not carry the prompt: ${request}`,
       );
       process.exit(1);
+    }
+    if (stream) {
+      // A real host streams as its model produces text; the guest forwards each
+      // delta as a message_update event.
+      for (const delta of ["the ", "answer ", "is 42"]) {
+        if (exports.lmpc_host_stream(writeInput(delta)) !== 0) {
+          console.error("host_model: the guest rejected a delta");
+          process.exit(1);
+        }
+      }
     }
     const reply = replyFor(repliesSent);
     repliesSent += 1;

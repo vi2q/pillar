@@ -56,6 +56,12 @@ struct ModelSlot {
     reply: Option<Vec<Content>>,
     /// The host cancelled the turn: the guest stops waiting for an answer.
     cancelled: bool,
+    /// The stream the published request answers into, so the host can stream
+    /// partial text before its final reply.
+    stream: Option<pillar_ai::event_stream::AssistantMessageEventStream>,
+    /// The partial message the streamed deltas build up (upstream's
+    /// `partial`).
+    partial: Option<pillar_ai::AssistantMessage>,
 }
 
 struct HostModelFuture {
@@ -110,11 +116,19 @@ impl HostModelSession {
             let slot = Arc::clone(&model_slot);
             async move {
                 let stream = assistant_message_event_stream();
+                // A real provider opens the message before streaming into it;
+                // the loop only relays partials after a `Start` (upstream the
+                // same order).
+                stream.push(AssistantMessageEvent::Start {
+                    partial: assistant(Vec::new(), StopReason::Pending),
+                });
                 let context_json = serde_json::to_string(&context).unwrap_or_else(|_| "{}".into());
                 {
                     let mut guard = slot.lock().expect("model slot lock");
                     guard.request = Some(HostModelRequest { context_json });
                     guard.reply = None;
+                    guard.stream = Some(stream.clone_stream());
+                    guard.partial = None;
                 }
                 let content = HostModelFuture {
                     slot: Arc::clone(&slot),
@@ -203,6 +217,8 @@ impl HostModelSession {
             slot.cancelled = false;
             slot.request = None;
             slot.reply = None;
+            slot.stream = None;
+            slot.partial = None;
         }
         self.cancelled = false;
         self.error = None;
@@ -285,6 +301,38 @@ impl HostModelSession {
             .map(|request| request.context_json.clone())
     }
 
+    /// Stream a partial answer for the pending request: the guest forwards it
+    /// as `message_update` events, so a host can show text as it arrives and
+    /// send the final message with [`HostModelSession::reply`].
+    pub fn stream_delta(&self, delta: &str) -> Result<(), String> {
+        let mut slot = self.slot.lock().expect("model slot lock");
+        if slot.request.is_none() {
+            return Err("no model request is pending".to_string());
+        }
+        let Some(stream) = slot.stream.as_ref().map(|stream| stream.clone_stream()) else {
+            return Err("the model request has no stream".to_string());
+        };
+        let mut partial = slot.partial.take().unwrap_or_else(|| {
+            let mut message = assistant(Vec::new(), StopReason::Pending);
+            message.content.push(Content::Text {
+                text: String::new(),
+                text_signature: None,
+            });
+            message
+        });
+        let index = partial.content.len().saturating_sub(1);
+        if let Some(Content::Text { text, .. }) = partial.content.get_mut(index) {
+            text.push_str(delta);
+        }
+        stream.push(AssistantMessageEvent::TextDelta {
+            content_index: index,
+            delta: delta.to_string(),
+            partial: partial.clone(),
+        });
+        slot.partial = Some(partial);
+        Ok(())
+    }
+
     /// Answer the pending request with an assistant message JSON:
     /// `{"content":[{"type":"text","text":"…"}], "stopReason":"stop"}`. The
     /// content parts are [`pillar_ai::types::Content`] values.
@@ -297,6 +345,8 @@ impl HostModelSession {
         }
         slot.request = None;
         slot.reply = Some(content);
+        slot.stream = None;
+        slot.partial = None;
         Ok(())
     }
 
@@ -324,6 +374,8 @@ impl HostModelSession {
             let mut slot = self.slot.lock().expect("model slot lock");
             slot.cancelled = true;
             slot.request = None;
+            slot.stream = None;
+            slot.partial = None;
         }
         self.cancelled = true;
     }

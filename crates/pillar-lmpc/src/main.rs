@@ -10,6 +10,11 @@ fn main() -> Result<(), String> {
     if host_model {
         let _ = args.next();
     }
+    // `--stream`: the scripted host streams its answer in deltas first.
+    let stream = args.peek().map(String::as_str) == Some("--stream");
+    if stream {
+        let _ = args.next();
+    }
     let prompts: Vec<String> = args.collect();
     let prompts = if prompts.is_empty() {
         vec!["remember something".to_string()]
@@ -19,7 +24,7 @@ fn main() -> Result<(), String> {
     let trace = if host_model {
         // Several prompts mean several turns on one session (the NPC keeps its
         // state), which is what the Wasm host does too.
-        pillar_lmpc::host_model_demo_turns(&prompts)?
+        pillar_lmpc::host_model_demo_turns_with(&prompts, stream)?
     } else {
         pillar_lmpc::demo_turn(&prompts[0])?
     };
