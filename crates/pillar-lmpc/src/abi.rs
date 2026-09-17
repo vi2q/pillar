@@ -1,13 +1,28 @@
-//! The Wasm host's entry point: a thin C ABI over one demo turn.
+//! The host's entry point: a thin C ABI over the embedding protocol.
 //!
-//! A Wasm host (a browser page, an engine's script sandbox, a `node` script)
-//! instantiates the module, calls [`lmpc_demo_turn`], and reads the trace from
-//! [`lmpc_trace_ptr`] / the returned length. The turn itself runs on a
-//! [`FrameHost`](crate::FrameHost) — no threads, no tokio, virtual time — which
-//! is the only host shape this target can provide.
+//! A host (a browser page, an engine's script sandbox, a `node` script — and the
+//! tests here, which call these functions directly on the native target) calls
+//! [`lmpc_session_create`], optionally [`lmpc_session_import`], then
+//! [`lmpc_host_turn_start`] and drives the turn with [`lmpc_host_poll`]. The turn
+//! runs on a [`FrameHost`](crate::FrameHost) — no threads, no tokio, virtual
+//! time — which is the only host shape the embedding target can provide.
 //!
 //! The trace text is byte-identical to the native binary's (`lmpc-minimal`),
 //! which is what makes the §5-7 comparison a string equality.
+//!
+//! # Identity at the boundary
+//!
+//! Every request the host has to answer (a model request, a tool call) is
+//! published with a **ticket**, and an answer must name the ticket it answers:
+//! `lmpc_host_reply(ticket, len)`, `lmpc_host_stream(ticket, len)`,
+//! `lmpc_host_tool_result(ticket, len)`. A ticket that is not the pending one —
+//! an answer that arrives after a cancel, after the next turn started, or for a
+//! *different* parallel tool call — is rejected (the call returns non-zero)
+//! instead of being applied to whatever happens to be pending. Tickets pack the
+//! session epoch in the high 32 bits, so replacing the session (a resume) also
+//! invalidates the old session's tickets.
+//!
+//! This is the fix for policy review sb39f R2/R4.
 
 use std::sync::Mutex;
 
@@ -80,7 +95,51 @@ const INPUT_CAPACITY: usize = 64 * 1024;
 
 /// The scratch buffer the host writes prompts and replies into.
 static INPUT: Mutex<Vec<u8>> = Mutex::new(Vec::new());
-static SESSION: Mutex<Option<crate::host_model::HostModelSession>> = Mutex::new(None);
+static SESSION: Mutex<Option<AbiSession>> = Mutex::new(None);
+/// Bumped whenever the session is replaced, so the tickets of the old session
+/// cannot name anything in the new one.
+static NEXT_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A session as the ABI holds it, with the epoch its tickets carry.
+struct AbiSession {
+    session: crate::host_model::HostModelSession,
+    epoch: u64,
+}
+
+impl AbiSession {
+    /// The ticket the host sees (the epoch goes in the high 32 bits).
+    fn ticket(&self, local: crate::host_model::Ticket) -> u64 {
+        (self.epoch << 32) | (local & 0xffff_ffff)
+    }
+
+    /// The local ticket an answer names, when it belongs to this session
+    /// (a stale session's ticket has another epoch).
+    fn local_ticket(&self, public: u64) -> Option<crate::host_model::Ticket> {
+        if public >> 32 != self.epoch {
+            return None;
+        }
+        Some(public & 0xffff_ffff)
+    }
+}
+
+/// Replace the session with a fresh one. `host_tools` != 0 also hands the
+/// guest's tool calls to the host (engine actions).
+///
+/// The lifecycle is explicit so a host can restore a stored conversation *before*
+/// the first request is published: create → import → start (policy review sb39f
+/// R3, where the import happened after the first poll and the model still saw an
+/// empty history).
+fn install_session(host_tools: bool) -> u64 {
+    let host = crate::FrameHost::new();
+    let session = if host_tools {
+        crate::host_model::HostModelSession::prepare(&host, Vec::new(), true)
+    } else {
+        crate::host_model::HostModelSession::prepare(&host, crate::demo_tools(), false)
+    };
+    let epoch = NEXT_EPOCH.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    *SESSION.lock().expect("session lock") = Some(AbiSession { session, epoch });
+    epoch
+}
 static REQUEST: Mutex<String> = Mutex::new(String::new());
 
 /// Make sure the buffer has its full length. Growing it once (never again) is
@@ -127,37 +186,56 @@ fn state_code(state: crate::host_model::HostModelState) -> i32 {
     }
 }
 
-/// Start a host-model turn; the prompt is `length` bytes of the input buffer.
-/// `host_tools` != 0 also hands the guest's tool calls to the host (engine
-/// actions).
+/// Create a fresh session (the host then imports a stored conversation, if it
+/// has one, and starts a turn). Returns 0.
 #[unsafe(no_mangle)]
-pub extern "C" fn lmpc_host_turn_start(length: u32, host_tools: u32) -> i32 {
+pub extern "C" fn lmpc_session_create(host_tools: u32) -> i32 {
+    install_session(host_tools != 0);
+    0
+}
+
+/// Start a host-model turn on the current session (creating a default one when
+/// the host did not call [`lmpc_session_create`] first); the prompt is `length`
+/// bytes of the input buffer.
+///
+/// This does **not** poll: the first request is published by the first
+/// [`lmpc_host_poll`], so a host may still import a stored conversation in
+/// between. Returns 0, or 3 when the input is not valid UTF-8.
+#[unsafe(no_mangle)]
+pub extern "C" fn lmpc_host_turn_start(length: u32) -> i32 {
     let Some(prompt) = read_input(length) else {
         return 3;
     };
-    let host = crate::FrameHost::new();
-    let mut session = if host_tools == 0 {
-        crate::host_model::HostModelSession::start(&host, &prompt, crate::demo_tools())
-    } else {
-        crate::host_model::HostModelSession::start_with_host_tools(&host, &prompt, Vec::new())
+    if SESSION.lock().expect("session lock").is_none() {
+        install_session(false);
+    }
+    let mut guard = SESSION.lock().expect("session lock");
+    let Some(session) = guard.as_mut() else {
+        return 3;
     };
-    let state = state_code(session.poll(std::time::Duration::from_millis(1)));
-    *SESSION.lock().expect("session lock") = Some(session);
-    state
+    match session.session.begin_turn(&prompt) {
+        // A session that is idle starts a turn; a running one is reported to the
+        // host instead of silently queueing a second prompt.
+        Ok(()) => 0,
+        Err(_) => 3,
+    }
 }
 
-/// Stream a partial answer for the pending request (the guest forwards it as
-/// `message_update` events); the text is `length` bytes of the input buffer.
+/// Stream a partial answer for the request `ticket` names (the guest forwards it
+/// as `message_update` events); the text is `length` bytes of the input buffer.
 #[unsafe(no_mangle)]
-pub extern "C" fn lmpc_host_stream(length: u32) -> i32 {
+pub extern "C" fn lmpc_host_stream(ticket: u64, length: u32) -> i32 {
     let Some(delta) = read_input(length) else {
         return 3;
     };
     let guard = SESSION.lock().expect("session lock");
-    let Some(session) = guard.as_ref() else {
+    let Some(abi) = guard.as_ref() else {
         return 3;
     };
-    match session.stream_delta(&delta) {
+    let Some(local) = abi.local_ticket(ticket) else {
+        return 3;
+    };
+    match abi.session.stream_delta_to(local, &delta) {
         Ok(()) => 0,
         Err(_) => 3,
     }
@@ -171,11 +249,12 @@ pub extern "C" fn lmpc_host_say(length: u32) -> i32 {
         return 3;
     };
     let mut guard = SESSION.lock().expect("session lock");
-    let Some(session) = guard.as_mut() else {
+    let Some(abi) = guard.as_mut() else {
         return 3;
     };
-    match session.say(&prompt) {
-        Ok(()) => state_code(session.poll(std::time::Duration::from_millis(1))),
+    match abi.session.begin_turn(&prompt) {
+        // As with `turn_start`, the first request comes from the next poll.
+        Ok(()) => 0,
         Err(_) => 3,
     }
 }
@@ -184,9 +263,10 @@ pub extern "C" fn lmpc_host_say(length: u32) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn lmpc_host_poll() -> i32 {
     let mut guard = SESSION.lock().expect("session lock");
-    let Some(session) = guard.as_mut() else {
+    let Some(abi) = guard.as_mut() else {
         return 3;
     };
+    let session = &mut abi.session;
     let state = session.poll(std::time::Duration::from_millis(1));
     match state {
         crate::host_model::HostModelState::Done => {
@@ -211,11 +291,11 @@ pub extern "C" fn lmpc_host_poll() -> i32 {
 /// The pending tool call's length (0 when there is none).
 #[unsafe(no_mangle)]
 pub extern "C" fn lmpc_host_tool_request_len() -> u32 {
-    let mut guard = SESSION.lock().expect("session lock");
-    let Some(session) = guard.as_mut() else {
+    let guard = SESSION.lock().expect("session lock");
+    let Some(abi) = guard.as_ref() else {
         return 0;
     };
-    match session.tool_request_json() {
+    match abi.session.tool_request_json() {
         Some(call) => {
             let length = call.len() as u32;
             *REQUEST.lock().expect("request lock") = call;
@@ -231,18 +311,36 @@ pub extern "C" fn lmpc_host_tool_request_ptr() -> *const u8 {
     REQUEST.lock().expect("request lock").as_ptr()
 }
 
-/// Answer the pending tool call with `length` bytes of the input buffer (the
-/// result JSON).
+/// The ticket of the tool call [`lmpc_host_tool_request_len`] published (0 when
+/// there is none): the host answers with it.
 #[unsafe(no_mangle)]
-pub extern "C" fn lmpc_host_tool_result(length: u32) -> i32 {
+pub extern "C" fn lmpc_host_tool_ticket() -> u64 {
+    let guard = SESSION.lock().expect("session lock");
+    let Some(abi) = guard.as_ref() else {
+        return 0;
+    };
+    match abi.session.tool_ticket() {
+        Some(local) => abi.ticket(local),
+        None => 0,
+    }
+}
+
+/// Answer the tool call `ticket` names with `length` bytes of the input buffer
+/// (the result JSON). A ticket that is not pending — already answered, cancelled,
+/// or from a previous session — is rejected.
+#[unsafe(no_mangle)]
+pub extern "C" fn lmpc_host_tool_result(ticket: u64, length: u32) -> i32 {
     let Some(result) = read_input(length) else {
         return 3;
     };
     let guard = SESSION.lock().expect("session lock");
-    let Some(session) = guard.as_ref() else {
+    let Some(abi) = guard.as_ref() else {
         return 3;
     };
-    match session.tool_result(&result) {
+    let Some(local) = abi.local_ticket(ticket) else {
+        return 3;
+    };
+    match abi.session.tool_result_to(local, &result) {
         Ok(()) => 0,
         Err(_) => 3,
     }
@@ -251,11 +349,11 @@ pub extern "C" fn lmpc_host_tool_result(length: u32) -> i32 {
 /// The pending model request's length (0 when there is none).
 #[unsafe(no_mangle)]
 pub extern "C" fn lmpc_host_request_len() -> u32 {
-    let mut guard = SESSION.lock().expect("session lock");
-    let Some(session) = guard.as_mut() else {
+    let guard = SESSION.lock().expect("session lock");
+    let Some(abi) = guard.as_ref() else {
         return 0;
     };
-    match session.request_json() {
+    match abi.session.request_json() {
         Some(request) => {
             let length = request.len() as u32;
             *REQUEST.lock().expect("request lock") = request;
@@ -271,17 +369,37 @@ pub extern "C" fn lmpc_host_request_ptr() -> *const u8 {
     REQUEST.lock().expect("request lock").as_ptr()
 }
 
-/// Answer the pending request with `length` bytes of the input buffer.
+/// The ticket of the model request [`lmpc_host_request_len`] published (0 when
+/// there is none): the host answers with it.
 #[unsafe(no_mangle)]
-pub extern "C" fn lmpc_host_reply(length: u32) -> i32 {
+pub extern "C" fn lmpc_host_request_ticket() -> u64 {
+    let guard = SESSION.lock().expect("session lock");
+    let Some(abi) = guard.as_ref() else {
+        return 0;
+    };
+    match abi.session.request_ticket() {
+        Some(local) => abi.ticket(local),
+        None => 0,
+    }
+}
+
+/// Answer the request `ticket` names with `length` bytes of the input buffer. A
+/// ticket that is not pending — a cancelled turn, an earlier turn, or the
+/// previous session — is rejected instead of being applied to whatever is
+/// pending now.
+#[unsafe(no_mangle)]
+pub extern "C" fn lmpc_host_reply(ticket: u64, length: u32) -> i32 {
     let Some(reply) = read_input(length) else {
         return 3;
     };
     let guard = SESSION.lock().expect("session lock");
-    let Some(session) = guard.as_ref() else {
+    let Some(abi) = guard.as_ref() else {
         return 3;
     };
-    match session.reply(&reply) {
+    let Some(local) = abi.local_ticket(ticket) else {
+        return 3;
+    };
+    match abi.session.reply_to(local, &reply) {
         Ok(()) => 0,
         Err(_) => 3,
     }
@@ -291,10 +409,10 @@ pub extern "C" fn lmpc_host_reply(length: u32) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn lmpc_session_export() -> u32 {
     let guard = SESSION.lock().expect("session lock");
-    let Some(session) = guard.as_ref() else {
+    let Some(abi) = guard.as_ref() else {
         return 0;
     };
-    match session.messages_json() {
+    match abi.session.messages_json() {
         Ok(json) => {
             let length = json.len() as u32;
             *REQUEST.lock().expect("request lock") = json;
@@ -305,23 +423,25 @@ pub extern "C" fn lmpc_session_export() -> u32 {
 }
 
 /// Resume a stored conversation (`length` bytes of the input buffer) in the
-/// current session; returns how many messages were restored.
+/// current session; returns how many messages were restored, or 0 when the
+/// conversation was refused (invalid JSON, or the turn has already been polled —
+/// import before driving it).
 #[unsafe(no_mangle)]
 pub extern "C" fn lmpc_session_import(length: u32) -> u32 {
     let Some(json) = read_input(length) else {
         return 0;
     };
     let guard = SESSION.lock().expect("session lock");
-    let Some(session) = guard.as_ref() else {
+    let Some(abi) = guard.as_ref() else {
         return 0;
     };
-    session.restore(&json).unwrap_or(0) as u32
+    abi.session.restore(&json).unwrap_or(0) as u32
 }
 
 /// Cancel the running turn (state 4 afterwards; the trace shows how far it got).
 #[unsafe(no_mangle)]
 pub extern "C" fn lmpc_host_cancel() {
-    if let Some(session) = SESSION.lock().expect("session lock").as_mut() {
-        session.cancel();
+    if let Some(abi) = SESSION.lock().expect("session lock").as_mut() {
+        abi.session.cancel();
     }
 }

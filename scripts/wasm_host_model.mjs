@@ -6,12 +6,15 @@
 // scripted answers here are the same ones the native `lmpc-minimal --host-model`
 // path uses, so the two traces have to match (§5-7).
 //
-// Protocol (see crates/pillar-lmpc/src/wasm.rs):
+// Protocol (see crates/pillar-lmpc/src/abi.rs):
 //   write prompt -> input buffer
-//   lmpc_host_turn_start(len) -> 0 running / 1 needs model / 2 done / 3 failed
+//   lmpc_session_create(host_tools)          -> a fresh session
+//   lmpc_session_import(len)                 -> before the first poll
+//   lmpc_host_turn_start(len)                -> 0 running (the first poll
+//                                               publishes the first request)
 //   loop: lmpc_host_poll()
 //     needs model: read lmpc_host_request_ptr()/len(), write the reply JSON into
-//                  the input buffer, lmpc_host_reply(len)
+//                  the input buffer, lmpc_host_reply(ticket, len)
 //     done:        read the trace (lmpc_trace_ptr()/len())
 //
 // Usage: node scripts/wasm_host_model.mjs <module.wasm> [prompt]
@@ -105,11 +108,35 @@ const replyFor = (requestIndex) => {
 
 /// Run the scripted host action the guest asked for.
 const runHostAction = () => {
+  const ticket = exports.lmpc_host_tool_ticket();
   const call = readGuestBuffer(
     exports.lmpc_host_tool_request_len,
     exports.lmpc_host_tool_request_ptr,
   );
-  return exports.lmpc_host_tool_result(writeInput(scriptedHostAction(call)));
+  if (ticket === 0n) {
+    console.error("host_model: a tool call was published without a ticket");
+    process.exit(1);
+  }
+  return exports.lmpc_host_tool_result(ticket, writeInput(scriptedHostAction(call)));
+};
+
+/// Answer the pending model request, naming the ticket it was published with.
+const answerRequest = (reply, deltas) => {
+  const ticket = exports.lmpc_host_request_ticket();
+  if (ticket === 0n) {
+    console.error("host_model: a model request was published without a ticket");
+    process.exit(1);
+  }
+  for (const delta of deltas) {
+    if (exports.lmpc_host_stream(ticket, writeInput(delta)) !== 0) {
+      console.error("host_model: the guest rejected a delta");
+      process.exit(1);
+    }
+  }
+  if (exports.lmpc_host_reply(ticket, writeInput(reply)) !== 0) {
+    console.error("host_model: the guest rejected the reply");
+    process.exit(1);
+  }
 };
 
 /// Answer requests until the turn ends; returns the trace when it is done.
@@ -131,12 +158,10 @@ const driveTurn = () => {
       process.exit(1);
     }
     if (state === 1 && !cancelled) {
-      if (stream) {
-        for (const delta of ["the ", "answer ", "is 42"]) {
-          exports.lmpc_host_stream(writeInput(delta));
-        }
-      }
-      exports.lmpc_host_reply(writeInput(replyFor(repliesSent)));
+      answerRequest(
+        replyFor(repliesSent),
+        stream ? ["the ", "answer ", "is 42"] : [],
+      );
       repliesSent += 1;
     }
   }
@@ -151,28 +176,30 @@ let cancelled = false;
 // `--resume`: run the first turn, store the conversation, then continue it in a
 // *new* session (the host-side persistence round trip).
 if (resume && prompts.length > 1) {
-  exports.lmpc_host_turn_start(writeInput(prompts[0]), hostTools ? 1 : 0);
+  exports.lmpc_session_create(hostTools ? 1 : 0);
+  exports.lmpc_host_turn_start(writeInput(prompts[0]));
   driveTurn();
   const stored = readGuestBuffer(
     exports.lmpc_session_export,
     exports.lmpc_host_request_ptr,
   );
-  // The scripted answers restart with the new session (the native twin does
-  // the same).
+  // The scripted answers restart with the new session (the native twin does the
+  // same). The stored conversation is imported *before* the first poll: the
+  // first request is published by that poll, so importing after it would leave
+  // the model with an empty history.
   repliesSent = 0;
-  exports.lmpc_host_turn_start(writeInput(prompts[1]), hostTools ? 1 : 0);
+  exports.lmpc_session_create(hostTools ? 1 : 0);
   if (exports.lmpc_session_import(writeInput(stored)) === 0) {
     console.error("host_model: the conversation was not restored");
     process.exit(1);
   }
+  exports.lmpc_host_turn_start(writeInput(prompts[1]));
   process.stdout.write(driveTurn());
   process.exit(0);
 }
 
-let state = exports.lmpc_host_turn_start(
-  writeInput(prompts[turn]),
-  hostTools ? 1 : 0,
-);
+exports.lmpc_session_create(hostTools ? 1 : 0);
+let state = exports.lmpc_host_turn_start(writeInput(prompts[turn]));
 for (let frame = 0; frame < 100_000; frame += 1) {
   if (state === 5) {
     // The guest called a host tool: run the engine action and answer.
@@ -199,22 +226,14 @@ for (let frame = 0; frame < 100_000; frame += 1) {
       );
       process.exit(1);
     }
-    if (stream) {
-      // A real host streams as its model produces text; the guest forwards each
-      // delta as a message_update event.
-      for (const delta of ["the ", "answer ", "is 42"]) {
-        if (exports.lmpc_host_stream(writeInput(delta)) !== 0) {
-          console.error("host_model: the guest rejected a delta");
-          process.exit(1);
-        }
-      }
-    }
-    const reply = replyFor(repliesSent);
+    // A real host streams as its model produces text; the guest forwards each
+    // delta as a message_update event. Both the deltas and the reply name the
+    // ticket the request was published with.
+    answerRequest(
+      replyFor(repliesSent),
+      stream ? ["the ", "answer ", "is 42"] : [],
+    );
     repliesSent += 1;
-    if (exports.lmpc_host_reply(writeInput(reply)) !== 0) {
-      console.error("host_model: the guest rejected the reply");
-      process.exit(1);
-    }
   }
   if (state === 2) {
     // The turn finished: send the next prompt as another turn on the same

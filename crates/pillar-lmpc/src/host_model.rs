@@ -17,6 +17,7 @@
 //! [`crate::wasm`] exposes exactly this over the C ABI, and
 //! `scripts/wasm_host_model.mjs` is a JavaScript host that speaks it.
 
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -45,9 +46,19 @@ pub enum HostModelState {
     Cancelled,
 }
 
+/// Identifies one published host-facing request: a model request or a tool call.
+///
+/// A host answer names the ticket it answers, so an answer that arrives after a
+/// cancel, after the next turn began, or for a *different* parallel tool call is
+/// rejected instead of being applied to whatever happens to be pending.
+pub type Ticket = u64;
+
 /// A tool call the host has to run (the engine's action).
 #[derive(Debug, Clone)]
 pub struct HostToolRequest {
+    /// The ticket the host echoes back with
+    /// [`HostModelSession::tool_result_to`].
+    pub ticket: Ticket,
     /// The tool call as JSON: `{"id":…,"name":…,"arguments":…}`.
     pub call_json: String,
 }
@@ -69,16 +80,21 @@ pub struct HostModelRequest {
 
 #[derive(Default)]
 struct ModelSlot {
-    /// The request waiting for an answer, if any.
-    request: Option<HostModelRequest>,
-    /// The answer the host supplied.
-    reply: Option<Vec<Content>>,
+    /// The ticket handed out most recently (0 is reserved for "none").
+    last_ticket: Ticket,
+    /// The request waiting for an answer, with the ticket it was published as.
+    request: Option<(Ticket, HostModelRequest)>,
+    /// The answer the host supplied, for the request with that ticket.
+    reply: Option<(Ticket, Vec<Content>)>,
     /// The host cancelled the turn: the guest stops waiting for an answer.
     cancelled: bool,
-    /// The tool call waiting for the host, if any.
-    tool_request: Option<HostToolRequest>,
-    /// The result the host supplied for that call.
-    tool_result: Option<HostToolOutcome>,
+    /// The tool calls waiting for the host, by ticket: one assistant message can
+    /// call several, and they run in parallel.
+    tool_requests: BTreeMap<Ticket, HostToolRequest>,
+    /// Their publication order, so the host is offered the oldest one first.
+    tool_order: VecDeque<Ticket>,
+    /// The results the host supplied, by ticket.
+    tool_results: BTreeMap<Ticket, HostToolOutcome>,
     /// The stream the published request answers into, so the host can stream
     /// partial text before its final reply.
     stream: Option<pillar_ai::event_stream::AssistantMessageEventStream>,
@@ -87,13 +103,46 @@ struct ModelSlot {
     partial: Option<pillar_ai::AssistantMessage>,
 }
 
+impl ModelSlot {
+    /// Hand out the next ticket. Tickets are not reused when a turn is
+    /// cancelled or the next turn starts, so an answer for an old request can
+    /// never name a new one.
+    fn ticket(&mut self) -> Ticket {
+        self.last_ticket += 1;
+        self.last_ticket
+    }
+
+    /// The oldest tool call still waiting for its result.
+    fn pending_tool(&self) -> Option<&HostToolRequest> {
+        self.tool_order
+            .iter()
+            .find_map(|ticket| self.tool_requests.get(ticket))
+    }
+
+    /// Forget every pending request (a cancel, or the next turn).
+    fn clear_pending(&mut self) {
+        self.request = None;
+        self.reply = None;
+        self.tool_requests.clear();
+        self.tool_order.clear();
+        self.tool_results.clear();
+        self.stream = None;
+        self.partial = None;
+    }
+}
+
 struct HostModelFuture {
     slot: Arc<Mutex<ModelSlot>>,
+    /// The request this future answers: it only takes its own reply.
+    ticket: Ticket,
 }
 
 /// Waits for the host to run a tool the guest called.
 struct HostToolFuture {
     slot: Arc<Mutex<ModelSlot>>,
+    /// The call this future answers: it only takes its own result, however many
+    /// calls are in flight.
+    ticket: Ticket,
 }
 
 impl std::future::Future for HostToolFuture {
@@ -104,7 +153,8 @@ impl std::future::Future for HostToolFuture {
         _context: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
         let mut slot = self.slot.lock().expect("model slot lock");
-        if let Some(outcome) = slot.tool_result.take() {
+        let ticket = self.ticket;
+        if let Some(outcome) = slot.tool_results.remove(&ticket) {
             return std::task::Poll::Ready(parse_tool_result(&outcome.result_json));
         }
         if slot.cancelled {
@@ -161,20 +211,28 @@ fn host_action_tool(slot: &Arc<Mutex<ModelSlot>>) -> pillar_agent::AgentTool {
         execute: Arc::new(move |id: String, args: serde_json::Value, _signal, _update| {
             let slot = Arc::clone(&tool_slot);
             Box::pin(async move {
-                {
+                let ticket = {
                     let mut guard = slot.lock().expect("model slot lock");
-                    guard.request = None;
-                    guard.tool_result = None;
-                    guard.tool_request = Some(HostToolRequest {
-                        call_json: serde_json::json!({
-                            "id": id,
-                            "name": HOST_ACTION_TOOL,
-                            "arguments": args,
-                        })
-                        .to_string(),
-                    });
-                }
-                HostToolFuture { slot }.await
+                    if guard.cancelled {
+                        return Err(ToolExecuteError("cancelled".to_string()));
+                    }
+                    let ticket = guard.ticket();
+                    guard.tool_requests.insert(
+                        ticket,
+                        HostToolRequest {
+                            ticket,
+                            call_json: serde_json::json!({
+                                "id": id,
+                                "name": HOST_ACTION_TOOL,
+                                "arguments": args,
+                            })
+                            .to_string(),
+                        },
+                    );
+                    guard.tool_order.push_back(ticket);
+                    ticket
+                };
+                HostToolFuture { slot, ticket }.await
             })
         }),
         execution_mode: Some(pillar_agent::ToolExecutionMode::Parallel),
@@ -194,8 +252,13 @@ impl std::future::Future for HostModelFuture {
         // No waker: the frame host re-polls each frame, which is when the host
         // will have answered (or cancelled).
         let mut slot = self.slot.lock().expect("model slot lock");
-        if let Some(content) = slot.reply.take() {
-            return std::task::Poll::Ready(content);
+        let ticket = self.ticket;
+        if let Some((answered, content)) = slot.reply.take() {
+            if answered == ticket {
+                return std::task::Poll::Ready(content);
+            }
+            // Not this future's answer: put it back for the request it names.
+            slot.reply = Some((answered, content));
         }
         if slot.cancelled {
             // An empty answer: the run then observes the aborted signal and
@@ -219,6 +282,8 @@ pub struct HostModelSession {
     state: HostModelState,
     error: Option<String>,
     cancelled: bool,
+    /// Whether the current turn has been polled (its first request published).
+    started: bool,
 }
 
 impl HostModelSession {
@@ -235,12 +300,41 @@ impl HostModelSession {
         prompt: &str,
         tools: Vec<pillar_agent::AgentTool>,
     ) -> Self {
-        Self::start_with(host, prompt, tools, true)
+        let mut session = Self::prepare(host, tools, true);
+        session
+            .begin_turn(prompt)
+            .expect("a fresh session has no turn");
+        session
+    }
+
+    /// Build a session with **no turn started**, so the host can restore a
+    /// stored conversation before the first request is published (the ABI's
+    /// create → import → start order, policy review sb39f R3).
+    pub fn prepare(
+        host: &Arc<FrameHost>,
+        tools: Vec<pillar_agent::AgentTool>,
+        host_tools: bool,
+    ) -> Self {
+        let mut session = Self::build(host, tools, host_tools);
+        session.state = HostModelState::Running;
+        session
     }
 
     fn start_with(
         host: &Arc<FrameHost>,
         prompt: &str,
+        tools: Vec<pillar_agent::AgentTool>,
+        host_tools: bool,
+    ) -> Self {
+        let mut session = Self::build(host, tools, host_tools);
+        session
+            .begin_turn(prompt)
+            .expect("a fresh session has no turn");
+        session
+    }
+
+    fn build(
+        host: &Arc<FrameHost>,
         mut tools: Vec<pillar_agent::AgentTool>,
         host_tools: bool,
     ) -> Self {
@@ -258,15 +352,18 @@ impl HostModelSession {
                     partial: assistant(Vec::new(), StopReason::Pending),
                 });
                 let context_json = serde_json::to_string(&context).unwrap_or_else(|_| "{}".into());
-                {
+                let ticket = {
                     let mut guard = slot.lock().expect("model slot lock");
-                    guard.request = Some(HostModelRequest { context_json });
+                    let ticket = guard.ticket();
+                    guard.request = Some((ticket, HostModelRequest { context_json }));
                     guard.reply = None;
                     guard.stream = Some(stream.clone_stream());
                     guard.partial = None;
-                }
+                    ticket
+                };
                 let content = HostModelFuture {
                     slot: Arc::clone(&slot),
+                    ticket,
                 }
                 .await;
                 let stop_reason = if content
@@ -330,7 +427,7 @@ impl HostModelSession {
             Box::pin(async {})
         });
 
-        let mut session = Self {
+        Self {
             agent,
             host: Arc::clone(host),
             slot,
@@ -339,26 +436,28 @@ impl HostModelSession {
             state: HostModelState::Running,
             error: None,
             cancelled: false,
-        };
-        session.start_run(prompt);
-        session
+            started: false,
+        }
     }
 
     /// Start another turn on the same session: the agent keeps its state, so an
     /// NPC remembers the conversation (the trace then holds every turn so far).
     pub fn say(&mut self, prompt: &str) -> Result<(), String> {
+        self.begin_turn(prompt)
+    }
+
+    /// Begin a turn on this session (the same as [`HostModelSession::say`]): the
+    /// agent keeps its state, so an NPC remembers the conversation.
+    pub fn begin_turn(&mut self, prompt: &str) -> Result<(), String> {
         if self.run.is_some() {
             return Err("the previous turn is still running".to_string());
         }
         {
             let mut slot = self.slot.lock().expect("model slot lock");
             slot.cancelled = false;
-            slot.request = None;
-            slot.reply = None;
-            slot.tool_request = None;
-            slot.tool_result = None;
-            slot.stream = None;
-            slot.partial = None;
+            // Tickets keep increasing across turns, so a late answer for the
+            // previous turn cannot name anything pending in this one.
+            slot.clear_pending();
         }
         self.cancelled = false;
         self.error = None;
@@ -374,6 +473,7 @@ impl HostModelSession {
             agent.prompt(prompt).await.map_err(|error| error.to_string())
         }));
         self.state = HostModelState::Running;
+        self.started = false;
     }
 
     /// Advance one frame. Returns the state the host should act on.
@@ -384,7 +484,10 @@ impl HostModelSession {
         ) {
             return self.state;
         }
-        // Drive the prompt future once, then let the guest's queue run.
+        // Drive the prompt future once, then let the guest's queue run. From
+        // here on the turn's context is fixed: a restore would no longer reach
+        // the request that is being built.
+        self.started = true;
         let mut context = std::task::Context::from_waker(futures::task::noop_waker_ref());
         if let Some(run) = self.run.as_mut()
             && let std::task::Poll::Ready(result) = run.as_mut().poll(&mut context)
@@ -424,7 +527,10 @@ impl HostModelSession {
         // first (the model asked for an action), then the model itself.
         let (tool_pending, model_pending) = {
             let slot = self.slot.lock().expect("model slot lock");
-            (slot.tool_request.is_some(), slot.request.is_some())
+            (
+                slot.pending_tool().is_some(),
+                slot.request.is_some(),
+            )
         };
         self.state = if tool_pending {
             HostModelState::NeedsTool
@@ -437,28 +543,67 @@ impl HostModelSession {
     }
 
     /// The tool call the host has to run (`None` unless the state is
-    /// [`HostModelState::NeedsTool`]).
+    /// [`HostModelState::NeedsTool`]). When one assistant message calls several
+    /// tools (they run in parallel), this is the oldest one still unanswered;
+    /// [`HostModelSession::tool_requests`] lists them all.
     pub fn tool_request_json(&self) -> Option<String> {
         self.slot
             .lock()
             .expect("model slot lock")
-            .tool_request
-            .as_ref()
+            .pending_tool()
             .map(|request| request.call_json.clone())
     }
 
-    /// Answer the pending tool call with a result JSON:
+    /// The ticket of the tool call [`HostModelSession::tool_request_json`]
+    /// returned: the host names it when it answers.
+    pub fn tool_ticket(&self) -> Option<Ticket> {
+        self.slot
+            .lock()
+            .expect("model slot lock")
+            .pending_tool()
+            .map(|request| request.ticket)
+    }
+
+    /// Every tool call waiting for the host, oldest first: `(ticket, call
+    /// JSON)`. Parallel calls are answered independently and in any order.
+    pub fn tool_requests(&self) -> Vec<(Ticket, String)> {
+        let slot = self.slot.lock().expect("model slot lock");
+        slot.tool_order
+            .iter()
+            .filter_map(|ticket| {
+                slot.tool_requests
+                    .get(ticket)
+                    .map(|request| (*ticket, request.call_json.clone()))
+            })
+            .collect()
+    }
+
+    /// Answer the oldest pending tool call with a result JSON:
     /// `{"content":[{"type":"text","text":"…"}],"details":{}}`. A non-null
     /// `error` string becomes a tool error in the guest.
     pub fn tool_result(&self, json: &str) -> Result<(), String> {
+        let ticket = self
+            .tool_ticket()
+            .ok_or_else(|| "no tool call is pending".to_string())?;
+        self.tool_result_to(ticket, json)
+    }
+
+    /// Answer the tool call with `ticket` (the one
+    /// [`HostModelSession::tool_ticket`] handed out). An answer for a call that
+    /// is not pending any more — already answered, cancelled, or from an earlier
+    /// turn — is rejected instead of being given to another call.
+    pub fn tool_result_to(&self, ticket: Ticket, json: &str) -> Result<(), String> {
         let mut slot = self.slot.lock().expect("model slot lock");
-        if slot.tool_request.is_none() {
-            return Err("no tool call is pending".to_string());
+        if slot.tool_requests.remove(&ticket).is_none() {
+            return Err(format!("no tool call is pending with ticket {ticket}"));
         }
-        slot.tool_request = None;
-        slot.tool_result = Some(HostToolOutcome {
-            result_json: json.to_string(),
-        });
+        slot.tool_order.retain(|pending| *pending != ticket);
+        slot.tool_results.insert(
+            ticket,
+            HostToolOutcome {
+                result_json: json.to_string(),
+            },
+        );
         Ok(())
     }
 
@@ -467,7 +612,7 @@ impl HostModelSession {
         self.slot
             .lock()
             .expect("model slot lock")
-            .tool_request
+            .pending_tool()
             .is_some()
     }
 
@@ -479,16 +624,42 @@ impl HostModelSession {
             .expect("model slot lock")
             .request
             .as_ref()
-            .map(|request| request.context_json.clone())
+            .map(|(_, request)| request.context_json.clone())
+    }
+
+    /// The ticket of the pending model request: the host names it when it
+    /// answers, so a late answer cannot be applied to a later request.
+    pub fn request_ticket(&self) -> Option<Ticket> {
+        self.slot
+            .lock()
+            .expect("model slot lock")
+            .request
+            .as_ref()
+            .map(|(ticket, _)| *ticket)
     }
 
     /// Stream a partial answer for the pending request: the guest forwards it
     /// as `message_update` events, so a host can show text as it arrives and
     /// send the final message with [`HostModelSession::reply`].
     pub fn stream_delta(&self, delta: &str) -> Result<(), String> {
+        let ticket = self
+            .request_ticket()
+            .ok_or_else(|| "no model request is pending".to_string())?;
+        self.stream_delta_to(ticket, delta)
+    }
+
+    /// [`HostModelSession::stream_delta`] for the request with `ticket`: a delta
+    /// for a request that is not pending any more is rejected.
+    pub fn stream_delta_to(&self, ticket: Ticket, delta: &str) -> Result<(), String> {
         let mut slot = self.slot.lock().expect("model slot lock");
-        if slot.request.is_none() {
-            return Err("no model request is pending".to_string());
+        match slot.request.as_ref() {
+            Some((pending, _)) if *pending == ticket => {}
+            Some((pending, _)) => {
+                return Err(format!(
+                    "the pending model request is {pending}, not {ticket}"
+                ));
+            }
+            None => return Err("no model request is pending".to_string()),
         }
         let Some(stream) = slot.stream.as_ref().map(|stream| stream.clone_stream()) else {
             return Err("the model request has no stream".to_string());
@@ -518,14 +689,31 @@ impl HostModelSession {
     /// `{"content":[{"type":"text","text":"…"}], "stopReason":"stop"}`. The
     /// content parts are [`pillar_ai::types::Content`] values.
     pub fn reply(&self, json: &str) -> Result<(), String> {
+        let ticket = self
+            .request_ticket()
+            .ok_or_else(|| "no model request is pending".to_string())?;
+        self.reply_to(ticket, json)
+    }
+
+    /// Answer the request with `ticket` (the one
+    /// [`HostModelSession::request_ticket`] handed out). An answer naming
+    /// anything else — an older request, a cancelled turn, another session's
+    /// request — is rejected.
+    pub fn reply_to(&self, ticket: Ticket, json: &str) -> Result<(), String> {
         let content: Vec<Content> =
             serde_json::from_str(json).map_err(|error| format!("bad reply JSON: {error}"))?;
         let mut slot = self.slot.lock().expect("model slot lock");
-        if slot.request.is_none() {
-            return Err("no model request is pending".to_string());
+        match slot.request.as_ref() {
+            Some((pending, _)) if *pending == ticket => {}
+            Some((pending, _)) => {
+                return Err(format!(
+                    "the pending model request is {pending}, not {ticket}"
+                ));
+            }
+            None => return Err("no model request is pending".to_string()),
         }
         slot.request = None;
-        slot.reply = Some(content);
+        slot.reply = Some((ticket, content));
         slot.stream = None;
         slot.partial = None;
         Ok(())
@@ -539,14 +727,33 @@ impl HostModelSession {
             .map_err(|error| format!("cannot serialize the conversation: {error}"))
     }
 
-    /// Resume a stored conversation: the messages are installed before any new
-    /// turn, so the next model request carries the old context.
+    /// Resume a stored conversation: the messages are installed before the turn
+    /// is driven, so the next model request carries the old context *and* the new
+    /// prompt.
+    ///
+    /// Once the turn has been polled at least once its first request is already
+    /// published with the context of that moment, so a restore can no longer
+    /// reach it: that is refused here rather than silently ignored (the ABI bug
+    /// in policy review sb39f R3 — the host imported the stored conversation and
+    /// the model still saw an empty history).
     pub fn restore(&self, json: &str) -> Result<usize, String> {
+        if self.started {
+            return Err(
+                "the turn has already been polled: restore before driving it (or after it finishes)"
+                    .to_string(),
+            );
+        }
         let messages: Vec<pillar_agent::AgentMessage> = serde_json::from_str(json)
             .map_err(|error| format!("bad conversation JSON: {error}"))?;
         let count = messages.len();
         self.agent.set_messages(messages);
         Ok(count)
+    }
+
+    /// Whether [`HostModelSession::restore`] is still possible (no request has
+    /// been published for the current turn).
+    pub fn can_restore(&self) -> bool {
+        !self.started
     }
 
     /// Whether the guest is waiting for the host.
@@ -572,11 +779,9 @@ impl HostModelSession {
         {
             let mut slot = self.slot.lock().expect("model slot lock");
             slot.cancelled = true;
-            slot.request = None;
-            slot.tool_request = None;
-            slot.tool_result = None;
-            slot.stream = None;
-            slot.partial = None;
+            // Void every published request: the host must not answer them, and
+            // an answer that arrives anyway names a ticket that is gone.
+            slot.clear_pending();
         }
         self.cancelled = true;
     }

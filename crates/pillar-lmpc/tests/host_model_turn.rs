@@ -2,7 +2,7 @@
 //! is how an engine or a page supplies its own brain (§4 "host model").
 //!
 //! A plain `#[test]`: the whole session runs on the frame host (no threads, no
-//! tokio, no provider catalog). The same protocol is what `src/wasm.rs` exposes
+//! tokio, no provider catalog). The same protocol is what `src/abi.rs` exposes
 //! to a JavaScript host.
 
 use std::sync::Arc;
@@ -441,4 +441,244 @@ fn the_host_runs_the_tools_the_model_calls() {
     );
     assert_eq!(trace.messages[2].1, "host narrate: 42", "the host ran it");
     assert_eq!(trace.messages[3].1, "the host acted");
+}
+
+/// A host answer names the request it answers (policy review sb39f R4): an
+/// answer that arrives after a cancel, after the next turn began, or for a call
+/// that was already answered is rejected instead of being applied to whatever is
+/// pending.
+#[test]
+fn a_stale_answer_is_rejected() {
+    let host = Arc::new(pillar_lmpc::FrameHost::new());
+    let mut session = pillar_lmpc::HostModelSession::start(&host, "hello", Vec::new());
+
+    assert_eq!(session.poll(Duration::from_millis(1)), HostModelState::NeedsModel);
+    let first = session.request_ticket().expect("a published request");
+
+    // Cancelling voids the published request: its ticket is gone.
+    session.cancel();
+    assert!(
+        session
+            .reply_to(first, r#"[{"type":"text","text":"too late"}]"#)
+            .is_err(),
+        "an answer for a cancelled request must be refused"
+    );
+
+    // Drain the cancelled turn, then start another one on the same session: the
+    // tickets keep increasing, so the old one still names nothing.
+    for _ in 0..100 {
+        if session.poll(Duration::from_millis(1)) == HostModelState::Cancelled {
+            break;
+        }
+    }
+    session.say("again").expect("the next turn starts");
+    assert_eq!(session.poll(Duration::from_millis(1)), HostModelState::NeedsModel);
+    let second = session.request_ticket().expect("the new request");
+    assert!(second > first, "tickets keep increasing: {first} then {second}");
+    assert!(
+        session
+            .reply_to(first, r#"[{"type":"text","text":"stale"}]"#)
+            .is_err(),
+        "the previous turn's ticket must not answer this request"
+    );
+    assert!(
+        session
+            .stream_delta_to(first, "stale")
+            .is_err(),
+        "a stale stream delta must be refused too"
+    );
+    session
+        .reply_to(second, r#"[{"type":"text","text":"fresh"}]"#)
+        .expect("the answer for the published ticket");
+}
+
+/// The ticket of a host tool call is answered once: a second answer for the same
+/// call — or an answer for a ticket that never existed — is refused.
+#[test]
+fn a_tool_result_is_accepted_once() {
+    let host = Arc::new(pillar_lmpc::FrameHost::new());
+    let mut session = pillar_lmpc::HostModelSession::start_with_host_tools(&host, "go", Vec::new());
+
+    let mut requests = 0usize;
+    let mut done = false;
+    for _ in 0..1000 {
+        match session.poll(Duration::from_millis(1)) {
+            HostModelState::NeedsTool => {
+                let call = session.tool_request_json().expect("a pending call");
+                let ticket = session.tool_ticket().expect("its ticket");
+                session
+                    .tool_result_to(ticket, &pillar_lmpc::scripted_host_action(&call))
+                    .expect("the host runs the action");
+                assert!(
+                    session.tool_result_to(ticket, "{}").is_err(),
+                    "the same call cannot be answered twice"
+                );
+                assert!(
+                    session.tool_result_to(ticket + 1000, "{}").is_err(),
+                    "an unknown ticket is refused"
+                );
+            }
+            HostModelState::NeedsModel => {
+                let ticket = session.request_ticket().expect("a published request");
+                session
+                    .reply_to(ticket, pillar_lmpc::host_tool_scripted_reply(requests))
+                    .expect("the host answers");
+                requests += 1;
+            }
+            HostModelState::Running => {}
+            HostModelState::Done => {
+                done = true;
+                break;
+            }
+            other => panic!("unexpected state {other:?}"),
+        }
+    }
+    assert!(done, "the turn finished");
+    assert_eq!(requests, 2, "the scripted model: tool call, then answer");
+}
+
+/// One assistant message can call several host tools: they run in parallel, each
+/// is published with its own ticket, and the host may answer them in any order
+/// (policy review sb39f R2 — before this, a second call overwrote the first
+/// request and the turn never finished).
+#[test]
+fn two_host_actions_run_in_parallel_and_answer_out_of_order() {
+    let host = Arc::new(pillar_lmpc::FrameHost::new());
+    let mut session = pillar_lmpc::HostModelSession::start_with_host_tools(&host, "two", Vec::new());
+
+    let two_calls = r#"[{"type":"toolCall","id":"call-1","name":"host_action","arguments":{"do":"first","value":"1"}},
+        {"type":"toolCall","id":"call-2","name":"host_action","arguments":{"do":"second","value":"2"}}]"#;
+
+    let mut answered_model = 0usize;
+    let mut done = false;
+    let mut answered_tool: Vec<&str> = Vec::new();
+    for _ in 0..1000 {
+        match session.poll(Duration::from_millis(1)) {
+            HostModelState::NeedsModel => {
+                let ticket = session.request_ticket().expect("a published request");
+                let reply = if answered_model == 0 {
+                    two_calls
+                } else {
+                    r#"[{"type":"text","text":"both done"}]"#
+                };
+                session
+                    .reply_to(ticket, reply)
+                    .expect("the host answers the model");
+                answered_model += 1;
+            }
+            HostModelState::NeedsTool => {
+                // Both calls must be visible at the same time.
+                let pending = session.tool_requests();
+                assert_eq!(
+                    pending.len(),
+                    2,
+                    "both parallel calls are published: {pending:?}"
+                );
+                // Answer the *second* call first: the result must land on that
+                // call, not on whichever future is polled first.
+                let (ticket, call) = pending
+                    .iter()
+                    .find(|(_, call)| call.contains("second"))
+                    .expect("the second call")
+                    .clone();
+                assert!(!call.is_empty());
+                let result = pillar_lmpc::scripted_host_action(&call);
+                assert!(result.contains("host second: 2"), "{result}");
+                session
+                    .tool_result_to(ticket, &result)
+                    .expect("the host answers out of order");
+                answered_tool.push("second");
+
+                let (first_ticket, first_call) = session
+                    .tool_requests()
+                    .into_iter()
+                    .find(|(_, call)| call.contains("first"))
+                    .expect("the first call is still pending");
+                session
+                    .tool_result_to(
+                        first_ticket,
+                        &pillar_lmpc::scripted_host_action(&first_call),
+                    )
+                    .expect("the host answers the first call");
+                answered_tool.push("first");
+            }
+            HostModelState::Running => {}
+            HostModelState::Done => {
+                done = true;
+                break;
+            }
+            other => panic!("unexpected state {other:?}"),
+        }
+    }
+    assert!(done, "the turn finished (before, it hung here)");
+    assert_eq!(answered_tool, ["second", "first"], "answered out of order");
+
+    let trace = session.trace();
+    let results: Vec<&str> = trace
+        .messages
+        .iter()
+        .filter(|(role, _)| role == "toolResult")
+        .map(|(_, text)| text.as_str())
+        .collect();
+    assert_eq!(
+        results,
+        ["host first: 1", "host second: 2"],
+        "each result reached its own call: {:?}",
+        trace.messages
+    );
+    assert_eq!(trace.messages.last().map(|(_, text)| text.as_str()), Some("both done"));
+}
+
+/// A stored conversation can only be installed before the turn is driven: after
+/// the first poll its context is already published, so a restore would silently
+/// miss the model (policy review sb39f R3).
+#[test]
+fn a_restore_after_the_first_poll_is_refused() {
+    let host = Arc::new(pillar_lmpc::FrameHost::new());
+    let mut session = pillar_lmpc::HostModelSession::start(&host, "remember this", Vec::new());
+    assert!(session.can_restore(), "nothing is published yet");
+
+    assert_eq!(session.poll(Duration::from_millis(1)), HostModelState::NeedsModel);
+    assert!(!session.can_restore(), "the first request is published");
+    assert!(
+        session.restore("[]").is_err(),
+        "a restore after the first poll must be refused, not silently ignored"
+    );
+
+    // The supported order: finish a turn, prepare a session, restore, then
+    // start its turn.
+    let mut requests = 0usize;
+    for _ in 0..1000 {
+        match session.poll(Duration::from_millis(1)) {
+            HostModelState::NeedsModel => {
+                session
+                    .reply(r#"[{"type":"text","text":"I remember"}]"#)
+                    .expect("the host answers");
+                requests += 1;
+            }
+            HostModelState::Running => {}
+            HostModelState::Done => break,
+            other => panic!("unexpected state {other:?}"),
+        }
+    }
+    assert_eq!(requests, 1, "one scripted answer finished the turn");
+    let stored = session.messages_json().expect("the conversation");
+    assert!(stored.contains("remember this"), "{stored}");
+    let fresh_host = Arc::new(pillar_lmpc::FrameHost::new());
+    let mut resumed = pillar_lmpc::HostModelSession::prepare(&fresh_host, Vec::new(), false);
+    assert_eq!(
+        resumed.restore(&stored).expect("restore before the turn"),
+        2,
+        "the user message and the answer"
+    );
+    resumed.begin_turn("what is my name?").expect("then the turn");
+    assert_eq!(
+        resumed.poll(Duration::from_millis(1)),
+        HostModelState::NeedsModel
+    );
+    let request = resumed.request_json().expect("the resumed request");
+    assert!(
+        request.contains("remember this") && request.contains("what is my name?"),
+        "the request carries the old conversation and the new prompt: {request}"
+    );
 }

@@ -302,8 +302,11 @@ pub fn trace_text(trace: &TurnTrace) -> String {
     text
 }
 
-#[cfg(target_arch = "wasm32")]
-mod wasm;
+/// The C ABI a host embeds. It is compiled for every target: the native tests
+/// drive exactly the calls a Wasm / engine host makes (policy review sb39f R2/R3
+/// asks for the ABI path itself to be checked, not a Rust-API reproduction).
+mod abi;
+pub use abi::*;
 
 pub mod host_model;
 pub use host_model::{HostModelSession, HostModelState};
@@ -378,12 +381,17 @@ pub fn host_model_demo_turns_with(
     for _ in 0..100_000 {
         match session.poll(Duration::from_millis(1)) {
             HostModelState::NeedsModel => {
+                // The host names the request it answers: an answer that arrives
+                // late (after a cancel or the next turn) is refused.
+                let ticket = session
+                    .request_ticket()
+                    .ok_or("the guest published no model request")?;
                 if stream {
                     for delta in ["the ", "answer ", "is 42"] {
-                        session.stream_delta(delta)?;
+                        session.stream_delta_to(ticket, delta)?;
                     }
                 }
-                session.reply(host_model_scripted_reply(requests))?;
+                session.reply_to(ticket, host_model_scripted_reply(requests))?;
                 requests += 1;
             }
             HostModelState::Running => {}
@@ -474,10 +482,16 @@ pub fn host_tools_demo_turn(prompt: &str) -> Result<TurnTrace, String> {
         match session.poll(Duration::from_millis(1)) {
             HostModelState::NeedsTool => {
                 let call = session.tool_request_json().unwrap_or_default();
-                session.tool_result(&scripted_host_action(&call))?;
+                let ticket = session
+                    .tool_ticket()
+                    .ok_or("the guest published no tool request")?;
+                session.tool_result_to(ticket, &scripted_host_action(&call))?;
             }
             HostModelState::NeedsModel => {
-                session.reply(host_tool_scripted_reply(requests))?;
+                let ticket = session
+                    .request_ticket()
+                    .ok_or("the guest published no model request")?;
+                session.reply_to(ticket, host_tool_scripted_reply(requests))?;
                 requests += 1;
             }
             HostModelState::Running => {}
@@ -508,15 +522,20 @@ fn drive_session(session: &mut HostModelSession) -> Result<(), String> {
     for _ in 0..10_000 {
         match session.poll(Duration::from_millis(1)) {
             HostModelState::NeedsModel => {
-                session.reply(host_model_scripted_reply(requests))?;
+                let ticket = session
+                    .request_ticket()
+                    .ok_or("the guest published no model request")?;
+                session.reply_to(ticket, host_model_scripted_reply(requests))?;
                 requests += 1;
             }
             HostModelState::Running => {}
             HostModelState::Done => return Ok(()),
             HostModelState::NeedsTool => {
-                session.tool_result(&scripted_host_action(
-                    session.tool_request_json().as_deref().unwrap_or("{}"),
-                ))?;
+                let call = session.tool_request_json().unwrap_or_default();
+                let ticket = session
+                    .tool_ticket()
+                    .ok_or("the guest published no tool request")?;
+                session.tool_result_to(ticket, &scripted_host_action(&call))?;
             }
             HostModelState::Cancelled => return Err("the turn was cancelled".to_string()),
             HostModelState::Failed => {
