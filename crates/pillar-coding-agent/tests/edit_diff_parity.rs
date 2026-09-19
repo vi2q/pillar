@@ -6,7 +6,7 @@
 use pillar_coding_agent::core::tools::edit_diff::{
     Edit, apply_edits_to_normalized_content, compute_edits_diff, detect_line_ending,
     fuzzy_find_text, generate_diff_string, generate_unified_patch, normalize_for_fuzzy_match,
-    normalize_to_lf, restore_line_endings,
+    normalize_to_lf, render_edit_diffs, restore_line_endings,
 };
 
 fn edit(old_text: &str, new_text: &str) -> Edit {
@@ -258,6 +258,20 @@ fn generate_unified_patch_has_headers_and_context() {
     // Context lines surround the change.
     assert!(patch.contains(" a"), "{patch}");
     assert!(patch.contains(" c"), "{patch}");
+}
+
+/// The edit tool renders both formats from one diff pass; the shared path
+/// must produce exactly what the per-format renderers produce.
+#[test]
+fn render_edit_diffs_matches_the_separate_renderers() {
+    let old = "alpha\nbeta\ngamma\ndelta\n";
+    let new = "alpha\nBETA\ngamma\ndelta\nepsilon\n";
+    let combined = render_edit_diffs("f.txt", old, new);
+    let (diff, first_changed_line) = generate_diff_string(old, new, 4);
+
+    assert_eq!(combined.diff, diff);
+    assert_eq!(combined.first_changed_line, first_changed_line);
+    assert_eq!(combined.patch, generate_unified_patch("f.txt", old, new));
 }
 
 // --- computeEditsDiff ---------------------------------------------------------------------------

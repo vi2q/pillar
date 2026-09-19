@@ -145,7 +145,9 @@ pub fn read(
     // If limit is specified by the user, honor it first. Otherwise
     // truncateHead decides.
     if let Some(limit) = limit {
-        let end_line = (start_line + limit).min(total_file_lines);
+        // Saturating: a limit near `usize::MAX` must clamp to the end of the
+        // file instead of overflowing the sum (upstream's numbers cannot).
+        let end_line = start_line.saturating_add(limit).min(total_file_lines);
         selected_content = all_lines[start_line..end_line].join("\n");
         user_limited_lines = Some(end_line - start_line);
     } else {

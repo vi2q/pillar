@@ -3,8 +3,8 @@
 use serde_json::Value;
 
 use crate::harness::tools::edit_diff::{
-    Edit, apply_edits_to_normalized_content, detect_line_ending, generate_diff_string,
-    generate_unified_patch, normalize_to_lf, restore_line_endings, strip_bom,
+    Edit, apply_edits_to_normalized_content, detect_line_ending, normalize_to_lf, render_edit_diffs,
+    restore_line_endings, strip_bom,
 };
 use crate::harness::tools::file_mutation_queue::FileMutationQueues;
 use crate::harness::tools::path_utils::resolve_tool_path;
@@ -204,17 +204,12 @@ pub async fn execute_edit_tool<E: ExecutionEnv + ?Sized>(
                 return Err(tool_error("Operation aborted"));
             }
 
-            let (diff, first_changed_line) =
-                generate_diff_string(&applied.base_content, &applied.new_content, 4);
+            let rendering =
+                render_edit_diffs(&input.path, &applied.base_content, &applied.new_content, 4);
             let details = EditToolDetails {
-                diff,
-                patch: generate_unified_patch(
-                    &input.path,
-                    &applied.base_content,
-                    &applied.new_content,
-                    4,
-                ),
-                first_changed_line,
+                diff: rendering.diff,
+                patch: rendering.patch,
+                first_changed_line: rendering.first_changed_line,
             };
             Ok(AgentToolResult {
                 content: vec![pillar_ai::types::Content::text(format!(

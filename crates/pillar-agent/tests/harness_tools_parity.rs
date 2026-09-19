@@ -16,6 +16,9 @@ use pillar_agent::AbortSignal;
 use pillar_agent::harness::env::StdFsExecutionEnv;
 use pillar_agent::harness::tools::bash::{BashToolOptions, execute_bash_tool};
 use pillar_agent::harness::tools::edit::execute_edit_tool;
+use pillar_agent::harness::tools::edit_diff::{
+    generate_diff_string, generate_unified_patch, render_edit_diffs,
+};
 use pillar_agent::harness::tools::file_mutation_queue::FileMutationQueues;
 use pillar_agent::harness::tools::read::execute_read_tool;
 use pillar_agent::harness::tools::write::execute_write_tool;
@@ -142,6 +145,31 @@ async fn rejects_offsets_beyond_the_file() {
             .contains("Offset 100 is beyond end of file (3 lines total)"),
         "{error}"
     );
+}
+
+#[tokio::test]
+async fn tolerates_extreme_offset_and_limit_values() {
+    let env = context("read-extreme");
+    get_or_throw(env.write_file("short.txt", b"one\ntwo\nthree").await);
+
+    // An offset past `usize::MAX` saturates; deriving the 1-indexed display
+    // line before the bounds check would overflow on `start_line + 1`.
+    let error = execute_read_tool(&env, &json!({"path": "short.txt", "offset": 1e30}), None)
+        .await
+        .expect_err("saturated offset beyond end");
+    assert!(
+        error
+            .0
+            .contains("Offset 1000000000000000000000000000000 is beyond end of file"),
+        "{error}"
+    );
+
+    // A limit past `usize::MAX` must clamp to the end of the file instead of
+    // overflowing the start/end sum.
+    let result = execute_read_tool(&env, &json!({"path": "short.txt", "limit": 1e30}), None)
+        .await
+        .expect("saturated limit");
+    assert_eq!(text_output(&result), "one\ntwo\nthree");
 }
 
 #[tokio::test]
@@ -558,6 +586,20 @@ fn apply_unified_patch(original: &str, patch: &str) -> Result<String, String> {
     }
     let _ = old_lines;
     Ok(output.join("\n"))
+}
+
+/// The edit tool renders both formats from one diff pass; the shared path
+/// must produce exactly what the per-format renderers produce.
+#[test]
+fn render_edit_diffs_matches_the_separate_renderers() {
+    let old = "alpha\nbeta\ngamma\ndelta\n";
+    let new = "alpha\nBETA\ngamma\ndelta\nepsilon\n";
+    let combined = render_edit_diffs("f.txt", old, new, 4);
+    let (diff, first_changed_line) = generate_diff_string(old, new, 4);
+
+    assert_eq!(combined.diff, diff);
+    assert_eq!(combined.first_changed_line, first_changed_line);
+    assert_eq!(combined.patch, generate_unified_patch("f.txt", old, new, 4));
 }
 
 #[tokio::test]

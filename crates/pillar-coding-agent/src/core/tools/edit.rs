@@ -16,8 +16,8 @@ use pillar_agent::types::{AgentTool, AgentToolResult, ToolExecuteError};
 use pillar_ai::types::Content;
 
 use crate::core::tools::edit_diff::{
-    Edit, apply_edits_to_normalized_content, generate_diff_string, generate_unified_patch,
-    normalize_to_lf, restore_line_endings,
+    Edit, apply_edits_to_normalized_content, normalize_to_lf, render_edit_diffs,
+    restore_line_endings,
 };
 use crate::core::tools::file_mutation_queue::{FileMutationQueue, global_file_mutation_queue};
 use crate::core::tools::path_utils::resolve_to_cwd;
@@ -126,14 +126,12 @@ pub fn edit(
             .map_err(|e| format!("Failed to write file: {e}"))?;
         throw_if_aborted()?;
 
-        let (diff, first_changed_line) =
-            generate_diff_string(&applied.base_content, &applied.new_content, 4);
-        let patch = generate_unified_patch(path, &applied.base_content, &applied.new_content);
+        let rendering = render_edit_diffs(path, &applied.base_content, &applied.new_content);
         Ok(EditResult {
             text: format!("Successfully replaced {} block(s) in {path}.", edits.len()),
-            diff,
-            patch,
-            first_changed_line,
+            diff: rendering.diff,
+            patch: rendering.patch,
+            first_changed_line: rendering.first_changed_line,
         })
     })?
 }

@@ -177,11 +177,13 @@ pub async fn execute_read_tool<E: ExecutionEnv + ?Sized>(
     let all_lines: Vec<&str> = text_content.split('\n').collect();
     let total_file_lines = all_lines.len();
     // Upstream: `offset ? Math.max(0, offset - 1) : 0` (1-indexed input).
+    // An extreme f64 saturates into `usize::MAX`; the bounds check below runs
+    // before the 1-indexed display is derived, so a saturated offset reports
+    // "beyond end of file" instead of overflowing on `+ 1`.
     let start_line = match input.offset {
         Some(offset) if offset != 0.0 => (offset.max(1.0) - 1.0) as usize,
         _ => 0,
     };
-    let start_line_display = start_line + 1;
     if start_line >= all_lines.len() {
         return Err(tool_error(format!(
             "Offset {} is beyond end of file ({} lines total)",
@@ -189,10 +191,15 @@ pub async fn execute_read_tool<E: ExecutionEnv + ?Sized>(
             all_lines.len()
         )));
     }
+    let start_line_display = start_line.saturating_add(1);
 
     let (selected_content, user_limited_lines) = match input.limit {
         Some(limit) => {
-            let end_line = (start_line + limit.max(0.0) as usize).min(all_lines.len());
+            // `limit.max(0.0) as usize` saturates for huge inputs; upstream's
+            // numbers cannot overflow, so the sum must clamp rather than wrap.
+            let end_line = start_line
+                .saturating_add(limit.max(0.0) as usize)
+                .min(all_lines.len());
             (
                 all_lines[start_line..end_line].join("\n"),
                 Some(end_line - start_line),
@@ -261,8 +268,14 @@ pub async fn execute_read_tool<E: ExecutionEnv + ?Sized>(
 }
 
 /// Upstream prints numbers via JS `String(n)`; keep integral floats integral.
+///
+/// divergence: a value beyond `u64` cannot ride the integer path (the cast
+/// saturates to a different number, so an extreme offset reported a bogus line
+/// number), so it prints through `Display` instead. Upstream's `String(n)`
+/// switches to exponential notation past 1e21; the port always prints the
+/// decimal expansion.
 fn format_float(value: f64) -> String {
-    if value.fract() == 0.0 {
+    if value.fract() == 0.0 && value.abs() <= u64::MAX as f64 {
         format!("{}", value as u64)
     } else {
         format!("{value}")

@@ -448,7 +448,15 @@ pub fn apply_edits_to_normalized_content(
 /// Generate a standard unified patch (upstream `generateUnifiedPatch` via
 /// jsdiff createTwoFilesPatch, context 4).
 pub fn generate_unified_patch(path: &str, old_content: &str, new_content: &str) -> String {
-    let diff = TextDiff::from_lines(old_content, new_content);
+    render_unified_patch(path, &TextDiff::from_lines(old_content, new_content))
+}
+
+/// Render the patch from an already computed line diff.
+///
+/// The borrow must outlive the diff's own lifetime parameters (`similar`'s
+/// `Display for UnifiedDiff` requires `'diff: 'old + 'new + 'bufs`), so the
+/// caller passes a diff whose lifetimes were inferred at its own call site.
+fn render_unified_patch<'a>(path: &str, diff: &'a TextDiff<'a, 'a, 'a, str>) -> String {
     let mut patch = String::new();
     patch.push_str(&format!("--- {path}\n"));
     patch.push_str(&format!("+++ {path}\n"));
@@ -469,8 +477,7 @@ struct DiffPart {
 }
 
 /// Split a diff into parts grouped by tag (upstream Diff.diffLines parts).
-fn diff_line_parts(old_content: &str, new_content: &str) -> Vec<DiffPart> {
-    let diff = TextDiff::from_lines(old_content, new_content);
+fn diff_line_parts<'a>(diff: &'a TextDiff<'a, 'a, 'a, str>) -> Vec<DiffPart> {
     let mut parts: Vec<DiffPart> = Vec::new();
     for change in diff.iter_all_changes() {
         let (kind, text) = match change.tag() {
@@ -503,11 +510,24 @@ pub fn generate_diff_string(
     new_content: &str,
     context_lines: usize,
 ) -> (String, Option<usize>) {
-    let parts = diff_line_parts(old_content, new_content);
+    let diff = TextDiff::from_lines(old_content, new_content);
+    render_diff_string(
+        &diff_line_parts(&diff),
+        old_content.split('\n').count(),
+        new_content.split('\n').count(),
+        context_lines,
+    )
+}
+
+/// Render the display diff from an already computed line diff.
+fn render_diff_string(
+    parts: &[DiffPart],
+    old_lines: usize,
+    new_lines: usize,
+    context_lines: usize,
+) -> (String, Option<usize>) {
     let mut output: Vec<String> = Vec::new();
 
-    let old_lines = old_content.split('\n').count();
-    let new_lines = new_content.split('\n').count();
     let line_num_width = old_lines.max(new_lines).to_string().len();
 
     let mut old_line_num = 1usize;
@@ -617,6 +637,35 @@ pub fn generate_diff_string(
     }
 
     (output.join("\n"), first_changed_line)
+}
+
+/// Both diff renderings for one edit, from a single line diff.
+///
+/// divergence: upstream calls `Diff.diffLines` twice per edit (once inside
+/// `generateDiffString`, once inside `createTwoFilesPatch`); the port builds
+/// one `TextDiff` and renders both.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EditDiffRendering {
+    pub diff: String,
+    pub patch: String,
+    pub first_changed_line: Option<usize>,
+}
+
+/// Compute both edit renderings from one diff pass (context 4).
+pub fn render_edit_diffs(path: &str, old_content: &str, new_content: &str) -> EditDiffRendering {
+    let text_diff = TextDiff::from_lines(old_content, new_content);
+    let parts = diff_line_parts(&text_diff);
+    let (diff, first_changed_line) = render_diff_string(
+        &parts,
+        old_content.split('\n').count(),
+        new_content.split('\n').count(),
+        4,
+    );
+    EditDiffRendering {
+        diff,
+        patch: render_unified_patch(path, &text_diff),
+        first_changed_line,
+    }
 }
 
 /// Preview diff result (upstream `EditDiffResult`).

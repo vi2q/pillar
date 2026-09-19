@@ -532,21 +532,20 @@ pub fn generate_unified_patch(
     new_content: &str,
     context_lines: usize,
 ) -> String {
+    render_unified_patch(path, &diff_lines(old_content, new_content), context_lines)
+}
+
+/// Render the patch from an already computed line diff (upstream
+/// `Diff.createTwoFilesPatch`, context 4).
+fn render_unified_patch(path: &str, parts: &[DiffPart<'_>], context_lines: usize) -> String {
     let header = format!(
         "===================================================================\n--- {path}\n+++ {path}\n"
     );
-    let hunks = build_hunks(old_content, new_content, context_lines);
+    let hunks = build_hunks(parts, context_lines);
     format!("{header}{hunks}")
 }
 
-fn build_hunks(old_content: &str, new_content: &str, context_lines: usize) -> String {
-    let old_lines: Vec<&str> = old_content.split('\n').collect();
-    let new_lines: Vec<&str> = new_content.split('\n').collect();
-    // Convert to keep-end semantics for the LCS, then emit a unified diff.
-    let old_keep = split_keep_ends(old_content);
-    let new_keep = split_keep_ends(new_content);
-    let parts = diff_lines(old_content, new_content);
-
+fn build_hunks(parts: &[DiffPart<'_>], context_lines: usize) -> String {
     // Flatten parts into tagged lines with old/new positions.
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum Tag {
@@ -562,7 +561,7 @@ fn build_hunks(old_content: &str, new_content: &str, context_lines: usize) -> St
     }
     let mut tagged: Vec<Tagged> = Vec::new();
     let (mut old_no, mut new_no) = (0usize, 0usize);
-    for part in &parts {
+    for part in parts {
         for line in split_keep_ends(part.value) {
             match (part.added, part.removed) {
                 (false, false) => {
@@ -676,7 +675,6 @@ fn build_hunks(old_content: &str, new_content: &str, context_lines: usize) -> St
         hunks.push(hunk);
         index = end;
     }
-    let _ = (old_lines, new_lines, old_keep, new_keep);
     hunks.join("")
 }
 
@@ -687,7 +685,21 @@ pub fn generate_diff_string(
     new_content: &str,
     context_lines: usize,
 ) -> (String, Option<usize>) {
-    let parts = diff_lines(old_content, new_content);
+    render_diff_string(
+        &diff_lines(old_content, new_content),
+        old_content,
+        new_content,
+        context_lines,
+    )
+}
+
+/// Render the display diff from an already computed line diff.
+fn render_diff_string(
+    parts: &[DiffPart<'_>],
+    old_content: &str,
+    new_content: &str,
+    context_lines: usize,
+) -> (String, Option<usize>) {
     let mut output: Vec<String> = Vec::new();
 
     let old_lines: Vec<&str> = old_content.split('\n').collect();
@@ -789,6 +801,35 @@ pub fn generate_diff_string(
     }
 
     (output.join("\n"), first_changed_line)
+}
+
+/// Both diff renderings for one edit, from a single line diff.
+///
+/// divergence: upstream calls `Diff.diffLines` twice per edit (once inside
+/// `generateDiffString`, once inside `createTwoFilesPatch`); the port
+/// computes the parts once and renders both.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EditDiffRendering {
+    pub diff: String,
+    pub patch: String,
+    pub first_changed_line: Option<usize>,
+}
+
+/// Compute both edit renderings from one diff pass.
+pub fn render_edit_diffs(
+    path: &str,
+    old_content: &str,
+    new_content: &str,
+    context_lines: usize,
+) -> EditDiffRendering {
+    let parts = diff_lines(old_content, new_content);
+    let (diff, first_changed_line) =
+        render_diff_string(&parts, old_content, new_content, context_lines);
+    EditDiffRendering {
+        diff,
+        patch: render_unified_patch(path, &parts, context_lines),
+        first_changed_line,
+    }
 }
 
 #[cfg(test)]

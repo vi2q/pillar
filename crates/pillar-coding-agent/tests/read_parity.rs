@@ -90,6 +90,16 @@ fn read_offset_plus_limit_window() {
 }
 
 #[test]
+fn read_limit_near_usize_max_clamps_to_the_file_end() {
+    let dir = setup_dir("huge-limit");
+    let path = dir.join("f.txt");
+    fs::write(&path, "one\ntwo").unwrap();
+    // `start_line + limit` must clamp to the file end, not overflow.
+    let result = read(path.to_str().unwrap(), None, Some(usize::MAX), "/tmp").unwrap();
+    assert_eq!(result.text, "one\ntwo");
+}
+
+#[test]
 fn read_offset_beyond_end_errors() {
     let dir = setup_dir("beyond");
     let path = dir.join("f.txt");
