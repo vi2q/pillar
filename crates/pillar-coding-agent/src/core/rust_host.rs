@@ -41,6 +41,7 @@ use pillar_agent::rust_tools::{
 
 use crate::core::effects::{EffectAuthorizer, EffectDecision, EffectIntent};
 use crate::core::exec::{ExecOptions, exec_command};
+use crate::core::rust_analyzer::DocumentReader;
 
 /// The default `cargo metadata` invocation (`--format-version 1` is stable).
 pub const METADATA_COMMAND: [&str; 4] = ["cargo", "metadata", "--format-version", "1"];
@@ -476,22 +477,7 @@ impl SourceSnapshotPort for NativeSources {
         start_line: u64,
         line_count: u64,
     ) -> Result<SourceSlice, RustToolError> {
-        let resolved = self.resolve(path)?;
-        let resolved_str = resolved.to_string_lossy().to_string();
-        authorize(
-            self.authorizer.as_ref(),
-            EffectIntent::FsRead {
-                path: resolved_str.clone(),
-            },
-        )?;
-        let text = std::fs::read_to_string(&resolved)
-            .map_err(|_| RustToolError::source_unbound("the file could not be read"))?;
-        if text.len() > self.max_bytes {
-            return Err(RustToolError::budget_exceeded(
-                "the file exceeds the source read cap",
-                "read a narrower range",
-            ));
-        }
+        let text = self.read(path)?;
         let lines: Vec<&str> = text.split_inclusive('\n').collect();
         let total_lines = lines.len() as u64;
         if start_line == 0 || start_line > total_lines.max(1) {
@@ -508,6 +494,27 @@ impl SourceSnapshotPort for NativeSources {
             total_lines,
             text: lines[start..end].concat(),
         })
+    }
+}
+
+/// The analyzer needs the whole document for `didOpen`.
+impl DocumentReader for NativeSources {
+    fn read(&self, path: &str) -> Result<String, RustToolError> {
+        let resolved = self.resolve(path)?;
+        let resolved_str = resolved.to_string_lossy().to_string();
+        authorize(
+            self.authorizer.as_ref(),
+            EffectIntent::FsRead { path: resolved_str },
+        )?;
+        let text = std::fs::read_to_string(&resolved)
+            .map_err(|_| RustToolError::source_unbound("the file could not be read"))?;
+        if text.len() > self.max_bytes {
+            return Err(RustToolError::budget_exceeded(
+                "the file exceeds the source read cap",
+                "open the document in the editor instead",
+            ));
+        }
+        Ok(text)
     }
 }
 
@@ -537,6 +544,17 @@ impl NativeRustHost {
 
     pub fn broker(&self) -> &Arc<NativeCargoBroker> {
         &self.broker
+    }
+
+    /// The source host, for a `ContractService` fallback and for the analyzer's
+    /// document reader.
+    pub fn sources(&self) -> Arc<dyn SourceSnapshotPort> {
+        Arc::clone(&self.sources) as Arc<dyn SourceSnapshotPort>
+    }
+
+    /// The analyzer's document reader (the same file host).
+    pub fn documents(&self) -> Arc<dyn DocumentReader> {
+        Arc::clone(&self.sources) as Arc<dyn DocumentReader>
     }
 
     /// Explicit effect-gated metadata refresh (design §9).

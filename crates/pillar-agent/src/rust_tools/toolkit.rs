@@ -27,6 +27,7 @@ use super::host::{
     StartRequest, WorkspaceCatalogPort,
 };
 use super::plan::{Coverage, PlanRequest, VerifyPlan, plan};
+use super::position::{LineColumn, LineIndex, LspPosition, PositionEncoding};
 use super::suggestion::{ApplyRequest, SuggestionNotice, SuggestionReceipt, SuggestionService};
 use super::{RustToolLimits, SourcePolicy, command_digest};
 use crate::types::{AgentTool, AgentToolResult, ToolExecuteError};
@@ -330,12 +331,13 @@ impl RustToolkit {
     }
 
     fn diagnostics_tool(&self) -> AgentTool {
-        let (catalog, broker, sources, diagnostics, suggestions, owner, limits) = (
+        let (catalog, broker, sources, diagnostics, suggestions, contract, owner, limits) = (
             Arc::clone(&self.catalog),
             Arc::clone(&self.broker),
             Arc::clone(&self.sources),
             Arc::clone(&self.diagnostics),
             self.suggestions.clone(),
+            self.contract.clone(),
             self.owner.clone(),
             self.limits.clone(),
         );
@@ -349,12 +351,13 @@ impl RustToolkit {
             label: "rs_diagnostics".to_string(),
             prepare_arguments: None,
             execute: Arc::new(move |_id, args, signal, _on_update| {
-                let (catalog, broker, sources, diagnostics, suggestions, owner, limits) = (
+                let (catalog, broker, sources, diagnostics, suggestions, contract, owner, limits) = (
                     Arc::clone(&catalog),
                     Arc::clone(&broker),
                     Arc::clone(&sources),
                     Arc::clone(&diagnostics),
                     suggestions.clone(),
+                    contract.clone(),
                     owner.clone(),
                     limits.clone(),
                 );
@@ -370,6 +373,7 @@ impl RustToolkit {
                         sources,
                         diagnostics,
                         suggestions,
+                        contract,
                         owner,
                         limits,
                         request,
@@ -519,6 +523,7 @@ async fn diagnostics_impl(
     sources: Arc<dyn SourceSnapshotPort>,
     store: Arc<Mutex<DiagnosticStore>>,
     suggestions: Option<Arc<SuggestionService>>,
+    contract: Option<Arc<ContractService>>,
     owner: OwnerId,
     limits: RustToolLimits,
     request: DiagnosticsRequest,
@@ -584,22 +589,37 @@ async fn diagnostics_impl(
     let mut entries: Vec<DiagnosticEntry> = Vec::new();
     for diagnostic in selected.into_iter().take(max_diagnostics) {
         let mut source = None;
-        if want_source
-            && let Some(span) = primary_workspace_span(diagnostic)
-            && span.line_start > 0
+        let mut position_ref = None;
+        let primary = primary_workspace_span(diagnostic).filter(|span| span.line_start > 0);
+        if (want_source || contract.is_some())
+            && let Some(span) = primary
         {
             let slice = sources.read_range(&span.file_name, span.line_start, 1)?;
-            if slice.text.len() <= source_budget {
-                source_budget -= slice.text.len();
-                source_bytes_used += slice.text.len();
-                source = Some(slice);
-            } else {
-                truncated_sources = true;
+            if let Some(service) = &contract
+                && let Some(position) = rustc_position_to_lsp(&slice.text, span.column_start)
+            {
+                position_ref = Some(service.issue_position_for_text(
+                    &span.file_name,
+                    (span.line_start - 1) as u32,
+                    position.character,
+                    PositionEncoding::Utf16,
+                    &slice.text,
+                ));
+            }
+            if want_source {
+                if slice.text.len() <= source_budget {
+                    source_budget -= slice.text.len();
+                    source_bytes_used += slice.text.len();
+                    source = Some(slice);
+                } else {
+                    truncated_sources = true;
+                }
             }
         }
         entries.push(DiagnosticEntry {
             diagnostic: diagnostic.clone(),
             source,
+            position_ref,
             suggestions: suggestion_notices
                 .iter()
                 .filter(|notice| notice.diagnostic_id == diagnostic.id)
@@ -656,6 +676,25 @@ fn primary_workspace_span(diagnostic: &Diagnostic) -> Option<&super::diagnostic:
                 .iter()
                 .find(|span| matches!(span.binding, SourceBinding::Workspace { .. }))
         })
+}
+
+/// Convert a rustc 1-based column — counted in Unicode scalar values — into
+/// an LSP character in UTF-16 for one line of text (design §5.2: a rustc
+/// column is not an LSP character).
+fn rustc_position_to_lsp(line_text: &str, column_start: u64) -> Option<LspPosition> {
+    if column_start == 0 {
+        return None;
+    }
+    let index = LineIndex::new(line_text);
+    let byte = index.line_column_to_byte(
+        line_text,
+        LineColumn {
+            line: 1,
+            column: column_start as u32,
+        },
+        PositionEncoding::Utf32,
+    )?;
+    index.byte_to_lsp(line_text, byte, PositionEncoding::Utf16)
 }
 
 // --- request / response shapes ---------------------------------------------
@@ -726,6 +765,10 @@ pub struct JobOutcome {
 pub struct DiagnosticEntry {
     pub diagnostic: Diagnostic,
     pub source: Option<SourceSlice>,
+    /// A versioned position reference for the primary workspace span, when a
+    /// contract service is configured (design §6: `rs_contract` consumes it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position_ref: Option<String>,
     /// Proposal groups registered for this diagnostic, when a suggestion
     /// service is configured (design §8.1).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -864,6 +907,9 @@ fn diagnostics_result(response: &DiagnosticsResponse) -> AgentToolResult {
                 " at {}:{}:{}",
                 span.file_name, span.line_start, span.column_start
             ));
+        }
+        if let Some(position_ref) = &entry.position_ref {
+            content.push_str(&format!(" position={position_ref}"));
         }
         for notice in &entry.suggestions {
             content.push_str(&format!(

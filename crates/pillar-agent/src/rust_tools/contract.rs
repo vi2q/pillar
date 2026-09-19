@@ -18,6 +18,7 @@
 //! (design §5.2).
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -244,6 +245,7 @@ pub struct ContractService {
     sources: Arc<dyn SourceSnapshotPort>,
     positions: Mutex<PositionRegistry>,
     limits: ContractLimits,
+    next_generation: AtomicU64,
 }
 
 impl ContractService {
@@ -260,6 +262,7 @@ impl ContractService {
                 ..PositionRegistry::default()
             }),
             limits,
+            next_generation: AtomicU64::new(0),
         }
     }
 
@@ -278,6 +281,28 @@ impl ContractService {
         registry.order.push_back(id.clone());
         registry.by_id.insert(id.clone(), position);
         id
+    }
+
+    /// Issue a reference whose document version is derived from the text read
+    /// now. The generation is monotonic, so it is a usable LSP document
+    /// version even when only a line was read (design §6: the document version
+    /// travels with a semantic result).
+    pub fn issue_position_for_text(
+        &self,
+        path: &str,
+        line: u32,
+        character: u32,
+        encoding: PositionEncoding,
+        text: &str,
+    ) -> String {
+        let generation = self.next_generation.fetch_add(1, Ordering::SeqCst) + 1;
+        self.issue_position(SourcePosition {
+            path: path.to_string(),
+            revision: Revision::new(generation, text.as_bytes()),
+            line,
+            character,
+            encoding,
+        })
     }
 
     pub fn availability(&self) -> AnalysisAvailability {
