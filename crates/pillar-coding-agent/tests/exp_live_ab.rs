@@ -280,6 +280,9 @@ impl Condition {
 
 struct Outcome {
     turns: usize,
+    /// Provider failures (truncated streams), counted as failed attempts whose
+    /// tokens stay in the totals (design §10.3).
+    provider_failures: usize,
     tool_calls: usize,
     failed_calls: usize,
     input_tokens: u64,
@@ -342,6 +345,7 @@ async fn run_task(
 
     let mut outcome = Outcome {
         turns: 0,
+        provider_failures: 0,
         tool_calls: 0,
         failed_calls: 0,
         input_tokens: 0,
@@ -349,6 +353,7 @@ async fn run_task(
         succeeded: false,
     };
 
+    let mut retries = 0usize;
     for _ in 0..MAX_TURNS {
         let stream = stream(
             live.model.clone(),
@@ -364,8 +369,22 @@ async fn run_task(
         let (input, output) = usage_totals(&assistant.usage);
         outcome.input_tokens += input;
         outcome.output_tokens += output;
-        if assistant.error_message.is_some() {
-            println!("    model error: {:?}", assistant.error_message);
+        if let Some(message) = assistant.error_message.clone() {
+            let truncated = message.contains("ended without");
+            outcome.provider_failures += 1;
+            println!(
+                "      provider {}: {}",
+                if truncated { "truncation" } else { "error" },
+                message.chars().take(150).collect::<String>()
+            );
+            // A truncated stream is a failed attempt: the tokens stay in the
+            // totals, and the turn is re-sent. A re-sent edit is safe on the
+            // reference path (its operation id is the guard); the existing
+            // path offers no such guarantee, which is part of the comparison.
+            if truncated && retries < 2 {
+                retries += 1;
+                continue;
+            }
             break;
         }
 
@@ -385,26 +404,32 @@ async fn run_task(
                             .content
                             .iter()
                             .find_map(|part| match part {
-                                Content::Text { text, .. } => Some(text.lines().next().unwrap_or("")),
+                                Content::Text { text, .. } => {
+                                    Some(text.lines().next().unwrap_or(""))
+                                }
                                 _ => None,
                             })
                             .unwrap_or("");
                         println!(
                             "      -> {} {} | {}",
                             call.name,
-                            call.arguments.to_string().chars().take(120).collect::<String>(),
+                            call.arguments
+                                .to_string()
+                                .chars()
+                                .take(120)
+                                .collect::<String>(),
                             first_line.chars().take(120).collect::<String>()
                         );
                         results.push(Message::ToolResult(Box::new(ToolResultMessage {
-                        tool_call_id: call.id,
-                        tool_name: call.name,
-                        content: result.content,
-                        details: Some(result.details),
-                        usage: None,
-                        added_tool_names: None,
-                        is_error: false,
-                        timestamp: 0,
-                    })));
+                            tool_call_id: call.id,
+                            tool_name: call.name,
+                            content: result.content,
+                            details: Some(result.details),
+                            usage: None,
+                            added_tool_names: None,
+                            is_error: false,
+                            timestamp: 0,
+                        })));
                     }
                     Err(error) => {
                         outcome.failed_calls += 1;
