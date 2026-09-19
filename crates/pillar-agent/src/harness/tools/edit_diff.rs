@@ -1051,8 +1051,16 @@ mod tests {
     #[test]
     fn diff_parts_match_jsdiff_on_repeated_lines() {
         let cases: [(&str, &str, Vec<(bool, bool, &str)>); 5] = [
-            ("A\nA\n", "A\n", vec![(false, false, "A\n"), (false, true, "A\n")]),
-            ("A\n", "A\nA\n", vec![(false, false, "A\n"), (true, false, "A\n")]),
+            (
+                "A\nA\n",
+                "A\n",
+                vec![(false, false, "A\n"), (false, true, "A\n")],
+            ),
+            (
+                "A\n",
+                "A\nA\n",
+                vec![(false, false, "A\n"), (true, false, "A\n")],
+            ),
             (
                 "x\nA\nA\ny\n",
                 "x\nA\ny\n",
@@ -1067,7 +1075,11 @@ mod tests {
                 "a\nb\n",
                 vec![(false, false, "a\nb\n"), (false, true, "a\nb\n")],
             ),
-            ("A\nA\nA\n", "A\n", vec![(false, false, "A\n"), (false, true, "A\nA\n")]),
+            (
+                "A\nA\nA\n",
+                "A\n",
+                vec![(false, false, "A\n"), (false, true, "A\nA\n")],
+            ),
         ];
 
         for (old_content, new_content, expected) in cases {
@@ -1093,7 +1105,11 @@ mod tests {
 
         assert!(!parts[0].added && !parts[0].removed);
         assert!(parts[0].value.starts_with("line 0\n"), "{}", parts[0].value);
-        assert!(parts[0].value.ends_with("line 2999\n"), "{}", parts[0].value);
+        assert!(
+            parts[0].value.ends_with("line 2999\n"),
+            "{}",
+            parts[0].value
+        );
 
         assert!(!parts[1].added && parts[1].removed);
         assert_eq!(parts[1].value.as_ref(), "line 3000\n");
@@ -1102,7 +1118,15 @@ mod tests {
         assert_eq!(parts[2].value.as_ref(), "line 3000 changed\n");
 
         assert!(!parts[3].added && !parts[3].removed);
-        assert!(parts[3].value.starts_with("line 3001\n"), "{}", parts[3].value);
-        assert!(parts[3].value.ends_with("line 4999\n"), "{}", parts[3].value);
+        assert!(
+            parts[3].value.starts_with("line 3001\n"),
+            "{}",
+            parts[3].value
+        );
+        assert!(
+            parts[3].value.ends_with("line 4999\n"),
+            "{}",
+            parts[3].value
+        );
     }
 }
