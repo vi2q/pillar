@@ -19,6 +19,12 @@ pub mod exp;
 pub mod harness;
 #[cfg(feature = "proxy")]
 pub mod proxy;
+/// Rust-specific tooling core (saved Cargo metadata, normalized diagnostics,
+/// verify planning). See `docs/RUST-TOOLING-DESIGN.md`. A profile opts in with
+/// the `rust-tools` feature; the LMPC minimum leaves it off so no Cargo, LSP
+/// or OS-process capability enters the runtime.
+#[cfg(feature = "rust-tools")]
+pub mod rust_tools;
 #[cfg(feature = "search")]
 pub mod search;
 pub mod spawn;
