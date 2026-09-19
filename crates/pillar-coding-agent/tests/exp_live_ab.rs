@@ -40,6 +40,8 @@ use serde_json::Value;
 
 const MODEL_ID: &str = "deepseek-v4.1-flash";
 const MAX_TURNS: usize = 8;
+/// Repetitions per (condition, task): live runs vary, so one sample decides nothing.
+const REPETITIONS: usize = 3;
 
 // --- live plumbing ---------------------------------------------------------
 
@@ -515,12 +517,14 @@ async fn the_reference_and_existing_paths_on_a_live_model() {
         "condition / task", "turns", "calls", "failed", "in_tok", "out_tok", "ok"
     );
 
+    for repetition in 0..REPETITIONS {
     for task in tasks() {
         for condition in [Condition::Existing, Condition::Reference] {
             let workspace = sandbox.join(format!(
-                "{}-{}",
+                "{}-{}-{}",
                 condition.name().split(' ').next().expect("letter"),
-                task.name
+                task.name,
+                repetition
             ));
             let outcome = run_task(condition, &task, &workspace, &live).await;
             println!(
@@ -547,6 +551,7 @@ async fn the_reference_and_existing_paths_on_a_live_model() {
                 task.name
             );
         }
+    }
     }
     let _ = std::fs::remove_dir_all(&sandbox);
 }

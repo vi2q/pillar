@@ -255,7 +255,10 @@ fn tool_error(error: ExpError) -> ToolExecuteError {
 
 pub fn exp_read_description() -> String {
     "Read a line range of one file and get a reference (`ref`) for the exact bytes shown. \
-     Use the reference with exp_edit instead of copying the old text back. Only text that was \
+     Use the reference with exp_edit instead of copying the old text back. Read the whole file in \
+     one call when it is small (the header shows the total line count), and read a narrow range \
+     around the lines you are about to replace. The reference covers the lines without the last \
+     line's terminator, so write a replacement without a trailing newline. Only text that was \
      fully delivered is editable, and only on a host that can publish conditionally."
         .to_string()
 }

@@ -220,7 +220,7 @@ async fn a_retried_call_is_recognized_by_its_operation_id() {
         .to_string();
     let args = json!({
         "operationId": "op-1",
-        "edits": [{"ref": reference, "replacement": "ONE\n"}],
+        "edits": [{"ref": reference, "replacement": "ONE"}],
     });
 
     let first = execute(&toolkit, "exp_edit", args.clone(), None)
@@ -260,7 +260,7 @@ async fn a_new_host_generation_makes_the_reference_expired() {
     let error = execute(
         &toolkit,
         "exp_edit",
-        json!({"operationId": "op-1", "edits": [{"ref": reference, "replacement": "ONE\n"}]}),
+        json!({"operationId": "op-1", "edits": [{"ref": reference, "replacement": "ONE"}]}),
         None,
     )
     .await
