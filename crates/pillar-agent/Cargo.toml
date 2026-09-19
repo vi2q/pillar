@@ -24,10 +24,12 @@ session-files = []
 # (docs/TOOL-EFFICIENCY-DESIGN.md §9, §11).
 exp = []
 # The Rust-specific tooling core (saved Cargo metadata, normalized rustc JSON
-# diagnostics, verify planning). Pure parsing and planning: no Cargo, LSP or
-# OS process, so the LMPC minimum can leave it off without losing anything
-# (docs/RUST-TOOLING-DESIGN.md §1, §2).
-rust-tools = []
+# diagnostics, verify planning, suggestion application). Pure parsing, planning
+# and patch construction: no Cargo, LSP or OS process, so the LMPC minimum can
+# leave it off without losing anything (docs/RUST-TOOLING-DESIGN.md §1, §2).
+# Suggestion application reuses the experimental adapter's conditional store,
+# operation ledger and receipts (docs/TOOL-EFFICIENCY-DESIGN.md §4, §7).
+rust-tools = ["exp"]
 
 [dependencies]
 async-trait = "0.1.89"

@@ -45,6 +45,7 @@ pub mod error;
 pub mod host;
 pub mod metadata;
 pub mod plan;
+pub mod suggestion;
 pub mod toolkit;
 
 pub use diagnostic::{
@@ -67,9 +68,14 @@ pub use plan::{
     Coverage, PlanGoal, PlanRequest, PlanScope, Unverified, UnverifiedKind, VerifyPlan, VerifyStep,
     plan,
 };
+pub use suggestion::{
+    ApplyRequest, PreviewReplacement, SuggestionNotice, SuggestionPreview, SuggestionReceipt,
+    SuggestionService,
+};
 pub use toolkit::{
     DiagnosticBudget, DiagnosticEntry, DiagnosticStore, DiagnosticsRequest, DiagnosticsResponse,
     JobAction, JobOutcome, JobRequest, PlanRegistry, RunRequest, RustToolkit,
+    rs_apply_suggestion_description, rs_apply_suggestion_parameters_json,
     rs_diagnostics_description, rs_diagnostics_parameters_json, rs_job_description,
     rs_job_parameters_json, rs_run_description, rs_run_parameters_json, rs_verify_plan_description,
     rs_verify_plan_parameters_json,

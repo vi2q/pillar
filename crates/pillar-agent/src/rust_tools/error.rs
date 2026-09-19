@@ -59,6 +59,12 @@ pub enum RustToolErrorCode {
     PermissionDenied,
     /// A request id was reused with different arguments (design §10).
     OperationIdMismatch,
+    /// The target changed since the suggestion or plan was made; nothing was
+    /// published (design §8.3, base design §4.3).
+    RevisionConflict,
+    /// An operation was abandoned before it reported an outcome; never
+    /// reported as success (design §8.3).
+    OutcomeUnknown,
     HostFailure,
 }
 
@@ -77,6 +83,8 @@ impl RustToolErrorCode {
             Self::BudgetExceeded => "budget_exceeded",
             Self::PermissionDenied => "permission_denied",
             Self::OperationIdMismatch => "operation_id_mismatch",
+            Self::RevisionConflict => "revision_conflict",
+            Self::OutcomeUnknown => "outcome_unknown",
             Self::HostFailure => "host_failure",
         }
     }
@@ -155,6 +163,16 @@ impl RustToolError {
     pub fn operation_id_mismatch(message: impl Into<String>) -> Self {
         Self::new(RustToolErrorCode::OperationIdMismatch, message)
             .with_repair("repeat the same request id only when retrying this exact call")
+    }
+
+    pub fn revision_conflict(message: impl Into<String>) -> Self {
+        Self::new(RustToolErrorCode::RevisionConflict, message)
+            .with_repair("read the target again and review the suggestion against what you see")
+    }
+
+    pub fn outcome_unknown(message: impl Into<String>) -> Self {
+        Self::new(RustToolErrorCode::OutcomeUnknown, message)
+            .with_repair("check the target, then retry with a new operation id")
     }
 
     pub fn permission_denied(message: impl Into<String>) -> Self {

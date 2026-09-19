@@ -26,6 +26,7 @@ use super::host::{
     StartRequest, WorkspaceCatalogPort,
 };
 use super::plan::{Coverage, PlanRequest, VerifyPlan, plan};
+use super::suggestion::{ApplyRequest, SuggestionNotice, SuggestionReceipt, SuggestionService};
 use super::{RustToolLimits, SourcePolicy, command_digest};
 use crate::types::{AgentTool, AgentToolResult, ToolExecuteError};
 use pillar_ai::types::{Content, Tool};
@@ -110,6 +111,7 @@ pub struct RustToolkit {
     limits: RustToolLimits,
     plans: Arc<Mutex<PlanRegistry>>,
     diagnostics: Arc<Mutex<DiagnosticStore>>,
+    suggestions: Option<Arc<SuggestionService>>,
 }
 
 impl RustToolkit {
@@ -129,17 +131,26 @@ impl RustToolkit {
             limits,
             plans: Arc::new(Mutex::new(PlanRegistry::new(capacity))),
             diagnostics: Arc::new(Mutex::new(DiagnosticStore::new(capacity))),
+            suggestions: None,
         }
+    }
+
+    /// Add suggestion registration/application (design §8, stage R3). Without
+    /// a strict conditional store, `rs_diagnostics` returns no suggestion ids
+    /// and `rs_apply_suggestion` is not registered.
+    pub fn with_suggestions(mut self, service: Arc<SuggestionService>) -> Self {
+        self.suggestions = Some(service);
+        self
     }
 
     /// Every Rust workflow tool, in registration order.
     pub fn tools(&self) -> Vec<AgentTool> {
-        vec![
-            self.verify_plan_tool(),
-            self.run_tool(),
-            self.job_tool(),
-            self.diagnostics_tool(),
-        ]
+        let mut tools = vec![self.verify_plan_tool(), self.run_tool(), self.job_tool()];
+        if self.suggestions.is_some() {
+            tools.push(self.apply_suggestion_tool());
+        }
+        tools.push(self.diagnostics_tool());
+        tools
     }
 
     fn verify_plan_tool(&self) -> AgentTool {
@@ -243,12 +254,47 @@ impl RustToolkit {
         }
     }
 
+    fn apply_suggestion_tool(&self) -> AgentTool {
+        let suggestions = self
+            .suggestions
+            .clone()
+            .expect("only registered when a suggestion service exists");
+        let owner = self.owner.clone();
+        AgentTool {
+            tool: Tool {
+                name: "rs_apply_suggestion".to_string(),
+                description: rs_apply_suggestion_description(),
+                parameters: rs_apply_suggestion_parameters_json(),
+                constrained_sampling: None,
+            },
+            label: "rs_apply_suggestion".to_string(),
+            prepare_arguments: None,
+            execute: Arc::new(move |_id, args, signal, _on_update| {
+                let suggestions = Arc::clone(&suggestions);
+                let owner = owner.clone();
+                Box::pin(async move {
+                    abort_guard(signal.as_ref())?;
+                    let request: ApplyRequest = serde_json::from_value(args).map_err(|error| {
+                        ToolExecuteError(format!("rs_apply_suggestion input: {error}"))
+                    })?;
+                    let receipt = suggestions
+                        .apply(&owner, &request)
+                        .await
+                        .map_err(tool_error)?;
+                    Ok(apply_result(&receipt))
+                })
+            }),
+            execution_mode: None,
+        }
+    }
+
     fn diagnostics_tool(&self) -> AgentTool {
-        let (catalog, broker, sources, diagnostics, owner, limits) = (
+        let (catalog, broker, sources, diagnostics, suggestions, owner, limits) = (
             Arc::clone(&self.catalog),
             Arc::clone(&self.broker),
             Arc::clone(&self.sources),
             Arc::clone(&self.diagnostics),
+            self.suggestions.clone(),
             self.owner.clone(),
             self.limits.clone(),
         );
@@ -262,11 +308,12 @@ impl RustToolkit {
             label: "rs_diagnostics".to_string(),
             prepare_arguments: None,
             execute: Arc::new(move |_id, args, signal, _on_update| {
-                let (catalog, broker, sources, diagnostics, owner, limits) = (
+                let (catalog, broker, sources, diagnostics, suggestions, owner, limits) = (
                     Arc::clone(&catalog),
                     Arc::clone(&broker),
                     Arc::clone(&sources),
                     Arc::clone(&diagnostics),
+                    suggestions.clone(),
                     owner.clone(),
                     limits.clone(),
                 );
@@ -281,6 +328,7 @@ impl RustToolkit {
                         broker,
                         sources,
                         diagnostics,
+                        suggestions,
                         owner,
                         limits,
                         request,
@@ -421,11 +469,15 @@ async fn job_impl(
     }
 }
 
+// The ports are distinct host capabilities; bundling them into a struct would
+// only move the list. The handler is internal and called from one place.
+#[allow(clippy::too_many_arguments)]
 async fn diagnostics_impl(
     catalog: Arc<dyn WorkspaceCatalogPort>,
     broker: Arc<dyn CargoJobBroker>,
     sources: Arc<dyn SourceSnapshotPort>,
     store: Arc<Mutex<DiagnosticStore>>,
+    suggestions: Option<Arc<SuggestionService>>,
     owner: OwnerId,
     limits: RustToolLimits,
     request: DiagnosticsRequest,
@@ -460,6 +512,14 @@ async fn diagnostics_impl(
                 .insert(run_id.clone(), run.clone());
             run
         }
+    };
+
+    // Register each proposal group once (design §8.1). Registration is
+    // idempotent by run id, so a repeated rs_diagnostics call keeps the same
+    // suggestion ids.
+    let suggestion_notices = match &suggestions {
+        Some(service) => service.register_run(&owner, &run).await?,
+        None => Vec::new(),
     };
 
     let selected = select_diagnostics(&run, &request.diagnostic_ids);
@@ -499,6 +559,11 @@ async fn diagnostics_impl(
         entries.push(DiagnosticEntry {
             diagnostic: diagnostic.clone(),
             source,
+            suggestions: suggestion_notices
+                .iter()
+                .filter(|notice| notice.diagnostic_id == diagnostic.id)
+                .cloned()
+                .collect(),
         });
     }
 
@@ -620,6 +685,10 @@ pub struct JobOutcome {
 pub struct DiagnosticEntry {
     pub diagnostic: Diagnostic,
     pub source: Option<SourceSlice>,
+    /// Proposal groups registered for this diagnostic, when a suggestion
+    /// service is configured (design §8.1).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suggestions: Vec<SuggestionNotice>,
 }
 
 /// The `rs_diagnostics` result. Completely distinct from a new build: the run
@@ -755,6 +824,15 @@ fn diagnostics_result(response: &DiagnosticsResponse) -> AgentToolResult {
                 span.file_name, span.line_start, span.column_start
             ));
         }
+        for notice in &entry.suggestions {
+            content.push_str(&format!(
+                " suggestion {} applicable={}",
+                notice.suggestion_id, notice.applicable
+            ));
+            if let Some(reason) = &notice.reason {
+                content.push_str(&format!(" ({reason})"));
+            }
+        }
         content.push('\n');
         if let Some(source) = &entry.source {
             for line in source.text.lines() {
@@ -777,6 +855,22 @@ fn coverage_label(coverage: &Coverage) -> String {
             format!("integration_target:{package}:{target}")
         }
         Coverage::AllTargets { package } => format!("all_targets:{package}"),
+    }
+}
+
+fn apply_result(receipt: &SuggestionReceipt) -> AgentToolResult {
+    let content = format!(
+        "[rs_apply_suggestion {} applied path={} revision={} edits={} bytes={} validated=false]",
+        receipt.suggestion_id,
+        receipt.path,
+        receipt.revision.generation,
+        receipt.edits_applied,
+        receipt.bytes_written
+    );
+    AgentToolResult {
+        content: vec![Content::text(content)],
+        details: serde_json::to_value(receipt).unwrap_or(Value::Null),
+        ..Default::default()
     }
 }
 
@@ -913,6 +1007,32 @@ pub fn rs_diagnostics_parameters_json() -> Value {
     })
 }
 
+pub fn rs_apply_suggestion_description() -> String {
+    "Apply one registered compiler suggestion exactly once. Only a proposal that is entirely \
+     MachineApplicable on a single workspace file with a strict host can be applied; anything else \
+     is preview-only and is refused. Publication is not validation: run rs_verify_plan/rs_run \
+     afterwards. Repeat the same operationId only to retry this exact call."
+        .to_string()
+}
+
+pub fn rs_apply_suggestion_parameters_json() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "suggestion_id": {"type": "string"},
+            "operation_id": {
+                "type": "string",
+                "description": "Your id for this application; repeat it only to retry this exact call"
+            },
+            "expected_preview_digest": {
+                "type": "string",
+                "description": "The previewDigest you saw; a mismatch is refused"
+            }
+        },
+        "required": ["suggestion_id", "operation_id"]
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -950,5 +1070,7 @@ mod tests {
         assert_eq!(job["required"], json!(["run_id", "action"]));
         let diagnostics = rs_diagnostics_parameters_json();
         assert_eq!(diagnostics["required"], json!(["run_id"]));
+        let apply = rs_apply_suggestion_parameters_json();
+        assert_eq!(apply["required"], json!(["suggestion_id", "operation_id"]));
     }
 }
