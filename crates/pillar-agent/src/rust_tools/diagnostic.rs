@@ -53,6 +53,17 @@ pub enum BuildStatus {
     Failed,
 }
 
+impl BuildStatus {
+    /// The wire form (matches the `serde` name).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+        }
+    }
+}
+
 /// Test phase outcome. `Unknown` is not success: a filter that selected no
 /// tests, or a run whose summary was never parsed, stays unknown (design §5.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -63,6 +74,18 @@ pub enum TestStatus {
     Unknown,
     Passed,
     Failed,
+}
+
+impl TestStatus {
+    /// The wire form (matches the `serde` name).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NotRun => "not_run",
+            Self::Unknown => "unknown",
+            Self::Passed => "passed",
+            Self::Failed => "failed",
+        }
+    }
 }
 
 /// rustc diagnostic severities, plus an unknown escape hatch.
@@ -95,6 +118,20 @@ impl DiagnosticLevel {
 
     pub fn is_error(&self) -> bool {
         matches!(self, Self::Error | Self::Ice | Self::Bug)
+    }
+
+    /// The wire form (matches the `serde` name).
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Error => "error",
+            Self::Warning => "warning",
+            Self::Note => "note",
+            Self::Help => "help",
+            Self::FailureNote => "failure_note",
+            Self::Ice => "ice",
+            Self::Bug => "bug",
+            Self::Unknown(other) => other,
+        }
     }
 }
 

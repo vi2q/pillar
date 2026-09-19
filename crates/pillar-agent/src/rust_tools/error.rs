@@ -57,6 +57,8 @@ pub enum RustToolErrorCode {
     InvalidRequest,
     BudgetExceeded,
     PermissionDenied,
+    /// A request id was reused with different arguments (design §10).
+    OperationIdMismatch,
     HostFailure,
 }
 
@@ -74,6 +76,7 @@ impl RustToolErrorCode {
             Self::InvalidRequest => "invalid_request",
             Self::BudgetExceeded => "budget_exceeded",
             Self::PermissionDenied => "permission_denied",
+            Self::OperationIdMismatch => "operation_id_mismatch",
             Self::HostFailure => "host_failure",
         }
     }
@@ -147,6 +150,15 @@ impl RustToolError {
 
     pub fn invalid_request(message: impl Into<String>) -> Self {
         Self::new(RustToolErrorCode::InvalidRequest, message)
+    }
+
+    pub fn operation_id_mismatch(message: impl Into<String>) -> Self {
+        Self::new(RustToolErrorCode::OperationIdMismatch, message)
+            .with_repair("repeat the same request id only when retrying this exact call")
+    }
+
+    pub fn permission_denied(message: impl Into<String>) -> Self {
+        Self::new(RustToolErrorCode::PermissionDenied, message)
     }
 
     pub fn budget_exceeded(message: impl Into<String>, repair: impl Into<String>) -> Self {

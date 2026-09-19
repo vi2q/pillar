@@ -101,6 +101,23 @@ pub enum UnverifiedKind {
     UnknownOwners,
 }
 
+impl UnverifiedKind {
+    /// The wire form (matches the `serde` name).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ReverseDependents => "reverse_dependents",
+            Self::Doctests => "doctests",
+            Self::NonDefaultFeatures => "non_default_features",
+            Self::OtherTargets => "other_targets",
+            Self::CrossTarget => "cross_target",
+            Self::BuildScriptOrMacro => "build_script_or_macro",
+            Self::MetadataStale => "metadata_stale",
+            Self::RequiredFeatures => "required_features",
+            Self::UnknownOwners => "unknown_owners",
+        }
+    }
+}
+
 /// One unverified dimension, with the detail the caller needs to judge it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Unverified {
