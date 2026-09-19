@@ -3,8 +3,8 @@
 use serde_json::Value;
 
 use crate::harness::tools::edit_diff::{
-    Edit, apply_edits_to_normalized_content, detect_line_ending, normalize_to_lf, render_edit_diffs,
-    restore_line_endings, strip_bom,
+    Edit, apply_edits_to_normalized_content, detect_line_ending, normalize_to_lf,
+    render_edit_diffs, restore_line_endings, strip_bom,
 };
 use crate::harness::tools::file_mutation_queue::FileMutationQueues;
 use crate::harness::tools::path_utils::resolve_tool_path;

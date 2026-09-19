@@ -111,7 +111,7 @@ mod tests {
                         order.lock().unwrap().push("first-start");
                         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                         order.lock().unwrap().push("first-end");
-                        Ok(())
+                        Ok::<(), FileError>(())
                     })
                     .await
             })
@@ -124,7 +124,7 @@ mod tests {
             queues
                 .with_mutation_queue(env.as_ref(), "file.txt", || async {
                     order.lock().unwrap().push("second-start");
-                    Ok(())
+                    Ok::<(), FileError>(())
                 })
                 .await
                 .unwrap();
