@@ -318,7 +318,11 @@ fn read_text_window(
             &element[..]
         };
         if in_window(index, start_line, end_line) {
-            push_element(&mut window, &mut head_lines, &String::from_utf8_lossy(content));
+            push_element(
+                &mut window,
+                &mut head_lines,
+                &String::from_utf8_lossy(content),
+            );
         }
         index += 1;
     }
@@ -459,8 +463,14 @@ mod tests {
             ("blank-lines.txt", b"a\n\n\nb\n".to_vec()),
             ("crlf.txt", b"a\r\nb\r\n".to_vec()),
             ("invalid-utf8.bin", b"a\xffb\nc\xfed\n".to_vec()),
-            ("multibyte.txt", "\u{3b1}\n\u{3b2}\u{3b3}\n".as_bytes().to_vec()),
-            ("long-line.txt", format!("{long_line}\nshort\n").into_bytes()),
+            (
+                "multibyte.txt",
+                "\u{3b1}\n\u{3b2}\u{3b3}\n".as_bytes().to_vec(),
+            ),
+            (
+                "long-line.txt",
+                format!("{long_line}\nshort\n").into_bytes(),
+            ),
             ("many-lines.txt", many_lines.into_bytes()),
         ];
         let offsets = [
