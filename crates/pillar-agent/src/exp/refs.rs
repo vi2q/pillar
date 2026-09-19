@@ -106,6 +106,22 @@ impl ByteRange {
     }
 }
 
+/// A short, unguessable reference id: 16 hex characters (64 bits) drawn from
+/// the entropy source `pillar_ai` already uses for uuidv7.
+///
+/// Measured on real edit traffic (`docs/PERF-BASELINE.md`): the reference form
+/// saves 29.7% of argument bytes with 36-character UUIDs and 32.9% with 16
+/// characters, and the share of calls where the envelope costs more than the
+/// repeated text drops from 4.2% to 0.85%. 64 bits is still not guessable, and
+/// every lookup is additionally bound to the owner, the host generation and the
+/// lifetime (design §3).
+pub fn opaque_id() -> String {
+    format!(
+        "{:016x}",
+        super::store::digest64(pillar_ai::uuid::uuidv7().as_bytes())
+    )
+}
+
 /// What the store remembers about a reference.
 #[derive(Debug, Clone)]
 pub struct RefRecord {
@@ -142,10 +158,10 @@ pub struct RefStore {
 }
 
 impl RefStore {
-    /// A store with `pillar_ai`'s time-ordered UUIDs as ids (an id a caller
-    /// cannot guess) and room for `capacity` live references.
+    /// A store with short opaque ids (see [`opaque_id`]) and room for
+    /// `capacity` live references.
     pub fn new(clock: Clock, capacity: usize) -> Self {
-        Self::with_id_source(clock, capacity, Arc::new(pillar_ai::uuid::uuidv7))
+        Self::with_id_source(clock, capacity, Arc::new(opaque_id))
     }
 
     /// A store with an injected id source, for deterministic tests.
@@ -299,6 +315,15 @@ mod tests {
 
     fn digest_stub() -> u64 {
         crate::exp::store::digest64(b"one\n")
+    }
+
+    #[test]
+    fn opaque_ids_are_short_and_distinct() {
+        let first = opaque_id();
+        let second = opaque_id();
+        assert_eq!(first.len(), 16, "{first}");
+        assert!(first.chars().all(|c| c.is_ascii_hexdigit()), "{first}");
+        assert_ne!(first, second);
     }
 
     #[test]

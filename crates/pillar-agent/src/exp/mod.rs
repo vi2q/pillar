@@ -55,7 +55,7 @@ pub use read::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use refs::system_clock;
-pub use refs::{ByteRange, Clock, OwnerId, RefId, RefRecord, RefStore, manual_clock};
+pub use refs::{ByteRange, Clock, OwnerId, RefId, RefRecord, RefStore, manual_clock, opaque_id};
 pub use store::{
     ConditionalStore, Guarantee, MemoryHost, ResourceId, Revision, Snapshot, digest64,
 };
