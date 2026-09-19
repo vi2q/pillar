@@ -53,9 +53,9 @@ pub use ledger::{OperationId, OperationLedger, Receipt, Reservation};
 pub use read::{
     DeliveryState, ExpRange, ExpReadRequest, ExpReadResponse, WithheldReason, exp_read,
 };
-pub use refs::{ByteRange, Clock, OwnerId, RefId, RefRecord, RefStore, manual_clock};
 #[cfg(not(target_arch = "wasm32"))]
 pub use refs::system_clock;
+pub use refs::{ByteRange, Clock, OwnerId, RefId, RefRecord, RefStore, manual_clock};
 pub use store::{
     ConditionalStore, Guarantee, MemoryHost, ResourceId, Revision, Snapshot, digest64,
 };
