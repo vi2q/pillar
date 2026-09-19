@@ -34,8 +34,7 @@ use pillar_agent::types::AgentTool;
 use pillar_ai::api::openai_completions::{OpenaiCompletionsOptions, stream};
 use pillar_ai::event_stream::collect_events;
 use pillar_ai::types::{
-    AssistantMessage, Content, Context, Message, Model, ModelCost, ToolResultMessage, Usage,
-    UserContent,
+    AssistantMessage, Content, Context, Message, Model, ToolResultMessage, Usage, UserContent,
 };
 use serde_json::Value;
 
@@ -80,42 +79,49 @@ fn live_model(model_id: &str) -> Option<LiveModel> {
             .and_then(|auth| auth.get("key"))
             .and_then(Value::as_str)
             .map(str::to_string)?;
-        return Some(LiveModel {
-            model: Model {
-                id: model_id.to_string(),
-                name: entry
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or(model_id)
-                    .to_string(),
-                api: config
-                    .get("api")
-                    .and_then(Value::as_str)
-                    .unwrap_or("openai-completions")
-                    .to_string(),
-                provider: provider.clone(),
-                base_url: config.get("baseUrl").and_then(Value::as_str)?.to_string(),
-                reasoning: entry
-                    .get("reasoning")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
-                thinking_level_map: None,
-                input: vec!["text".to_string()],
-                cost: ModelCost::default(),
-                context_window: entry
-                    .get("contextWindow")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(128_000),
-                max_tokens: entry
-                    .get("maxTokens")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(4096),
-                sampling_params: None,
-                headers: None,
-                compat: None,
-            },
-            api_key,
-        });
+        // Hand-built: the catalog entry's `compat` is the store's own shape,
+        // which does not round-trip through the typed `Model` here.
+        let mut model = Model {
+            id: model_id.to_string(),
+            name: entry
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or(model_id)
+                .to_string(),
+            api: config
+                .get("api")
+                .and_then(Value::as_str)
+                .unwrap_or("openai-completions")
+                .to_string(),
+            provider: provider.clone(),
+            base_url: config.get("baseUrl").and_then(Value::as_str)?.to_string(),
+            reasoning: entry
+                .get("reasoning")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            thinking_level_map: None,
+            input: vec!["text".to_string()],
+            cost: pillar_ai::types::ModelCost::default(),
+            context_window: entry
+                .get("contextWindow")
+                .and_then(Value::as_u64)
+                .unwrap_or(128_000),
+            max_tokens: entry.get("maxTokens").and_then(Value::as_u64).unwrap_or(4096),
+            sampling_params: None,
+            headers: None,
+            compat: None,
+        };
+        // The Go endpoint routes by session: the port's own header list does
+        // not cover it, so the experiment states it explicitly.
+        model.headers = Some(
+            [(
+                "x-opencode-session".to_string(),
+                Some(pillar_ai::uuid::uuidv7()),
+            )]
+            .into_iter()
+            .collect(),
+        );
+        return Some(LiveModel { model, api_key });
     }
     None
 }
