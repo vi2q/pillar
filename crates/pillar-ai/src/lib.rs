@@ -67,10 +67,6 @@ pub mod types;
 pub mod uuid;
 
 pub use abort::{AbortReason, AbortSignal, operation_signal};
-pub use clock::{
-    Elapsed, NowFn, SleepFn, get_default_now, get_default_sleep, now_millis, set_default_now,
-    set_default_sleep, sleep, timeout,
-};
 #[cfg(feature = "providers")]
 pub use auth_resolve::{ModelsError, resolve_provider_auth};
 #[cfg(feature = "providers")]
@@ -78,6 +74,10 @@ pub use auth_types::{
     ApiKeyAuth, ApiKeyCredential, AuthCheck, AuthContext, AuthEvent, AuthOperationOptions,
     AuthPrompt, AuthResult, AuthType, Credential, CredentialInfo, CredentialStore, ModelAuth,
     OAuthAuth, OAuthCredential, ProviderAuth,
+};
+pub use clock::{
+    Elapsed, NowFn, SleepFn, get_default_now, get_default_sleep, now_millis, set_default_now,
+    set_default_sleep, sleep, timeout,
 };
 #[cfg(feature = "providers")]
 pub use constrained_sampling::{

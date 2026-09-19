@@ -723,11 +723,21 @@ pub struct ProviderResponseInfo {
 /// Upstream `onPayload`: inspect or replace the provider request payload
 /// before sending. Returning `None` keeps the payload unchanged.
 pub type OnPayloadFn = std::sync::Arc<
-    dyn Fn(&Model, serde_json::Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<serde_json::Value>> + Send + 'static>>
-        + Send
+    dyn Fn(
+            &Model,
+            serde_json::Value,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Option<serde_json::Value>> + Send + 'static>,
+        > + Send
         + Sync,
 >;
 
 /// Upstream `onResponse`: invoked after an HTTP response is received.
-pub type OnResponseFn =
-    std::sync::Arc<dyn Fn(ProviderResponseInfo, &Model) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>> + Send + Sync>;
+pub type OnResponseFn = std::sync::Arc<
+    dyn Fn(
+            ProviderResponseInfo,
+            &Model,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>
+        + Send
+        + Sync,
+>;

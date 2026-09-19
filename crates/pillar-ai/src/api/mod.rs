@@ -51,11 +51,11 @@ pub(crate) use impl_from_request_options;
 
 // The callback types are shared with the core (the loop config carries them),
 // so they live in `types` and are re-exported here for the adapters.
+pub use crate::types::{CacheRetention, Transport, Usage};
 /// Re-exported for the adapters, which import them through `crate::api`.
 pub use crate::types::{
     OnPayloadFn, OnResponseFn, ProviderEnv, ProviderHeaders, ProviderResponseInfo,
 };
-pub use crate::types::{CacheRetention, Transport, Usage};
 
 /// Base options shared by all provider stream calls (upstream
 /// `ProviderRequestOptions` + `StreamOptions`).
