@@ -64,7 +64,9 @@ fn live_model(model_id: &str) -> Option<LiveModel> {
     )
     .ok()?;
 
-    let providers = catalog.as_object()?;
+    // `models.json` nests the catalog under `providers` (the runtime store);
+    // the bundled catalog is a flat map, so accept both shapes.
+    let providers = catalog.get("providers").unwrap_or(&catalog).as_object()?;
     for (provider, config) in providers {
         let models = config.get("models")?.as_array()?;
         let Some(entry) = models
@@ -104,7 +106,10 @@ fn live_model(model_id: &str) -> Option<LiveModel> {
                     .get("contextWindow")
                     .and_then(Value::as_u64)
                     .unwrap_or(128_000),
-                max_tokens: entry.get("maxTokens").and_then(Value::as_u64).unwrap_or(4096),
+                max_tokens: entry
+                    .get("maxTokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(4096),
                 sampling_params: None,
                 headers: None,
                 compat: None,
@@ -390,7 +395,9 @@ async fn run_task(
             }
         }
 
-        context.messages.push(Message::Assistant(Box::new(assistant)));
+        context
+            .messages
+            .push(Message::Assistant(Box::new(assistant)));
         if results.is_empty() {
             break;
         }
@@ -400,6 +407,25 @@ async fn run_task(
     let final_text = std::fs::read_to_string(root.join("f.txt")).unwrap_or_default();
     outcome.succeeded = final_text == task.expected;
     outcome
+}
+
+/// Preflight, so the live run does not fail on discovery: the model entry and
+/// an api key must be found in the user's stores. Always runs (no model call).
+#[test]
+fn preflight_finds_the_model_and_its_key() {
+    match live_model(MODEL_ID) {
+        Some(live) => {
+            assert!(!live.model.base_url.is_empty());
+            assert!(!live.api_key.is_empty());
+            println!(
+                "preflight: {MODEL_ID} via {} ({})",
+                live.model.provider, live.model.api
+            );
+        }
+        None => println!(
+            "preflight: no {MODEL_ID} entry + key in ~/.pillar/agent (live run would skip)"
+        ),
+    }
 }
 
 #[tokio::test]
@@ -429,7 +455,11 @@ async fn the_reference_and_existing_paths_on_a_live_model() {
             let outcome = run_task(condition, &task, &workspace, &live).await;
             println!(
                 "{:<28} {:>6} {:>6} {:>7} {:>8} {:>8} {:>6}",
-                format!("{} / {}", condition.name().split(' ').next().unwrap(), task.name),
+                format!(
+                    "{} / {}",
+                    condition.name().split(' ').next().unwrap(),
+                    task.name
+                ),
                 outcome.turns,
                 outcome.tool_calls,
                 outcome.failed_calls,
@@ -440,7 +470,12 @@ async fn the_reference_and_existing_paths_on_a_live_model() {
             // The harness gate: a run that reports success must have produced
             // the expected file, and vice versa.
             let final_text = std::fs::read_to_string(workspace.join("f.txt")).unwrap_or_default();
-            assert_eq!(outcome.succeeded, final_text == task.expected, "{}", task.name);
+            assert_eq!(
+                outcome.succeeded,
+                final_text == task.expected,
+                "{}",
+                task.name
+            );
         }
     }
     let _ = std::fs::remove_dir_all(&sandbox);
