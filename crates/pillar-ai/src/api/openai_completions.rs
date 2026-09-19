@@ -476,6 +476,10 @@ pub struct SseDataEvents {
     byte_stream: crate::transport::ByteStream,
     buffer: Vec<u8>,
     finished: bool,
+    /// Body bytes pulled from the transport so far. The truncation
+    /// diagnostics report it: a body that ends without a terminal event
+    /// otherwise leaves no trace of how much of the response ever arrived.
+    pub(crate) bytes_received: u64,
 }
 
 impl SseDataEvents {
@@ -484,6 +488,7 @@ impl SseDataEvents {
             byte_stream,
             buffer: Vec::new(),
             finished: false,
+            bytes_received: 0,
         }
     }
 
@@ -557,7 +562,10 @@ impl Stream for SseDataEvents {
                 return std::task::Poll::Ready(None);
             }
             match std::pin::Pin::new(&mut self.byte_stream).poll_next(cx) {
-                std::task::Poll::Ready(Some(Ok(chunk))) => self.buffer.extend_from_slice(&chunk),
+                std::task::Poll::Ready(Some(Ok(chunk))) => {
+                    self.bytes_received += chunk.len() as u64;
+                    self.buffer.extend_from_slice(&chunk);
+                }
                 std::task::Poll::Ready(Some(Err(error))) => {
                     self.finished = true;
                     return std::task::Poll::Ready(Some(Err(error)));
@@ -699,6 +707,101 @@ impl StreamState {
     }
 }
 
+/// What the provider had delivered when its body ended, used for the
+/// truncation error message.
+///
+/// divergence: upstream reports a bare `Stream ended without finish_reason`.
+/// The port appends the delivered shape because the truncated assistant message
+/// keeps `arguments: {}` for a cut-off tool call, which reads identically
+/// whether the gateway never streamed any argument bytes (the request should be
+/// retried) or cut a long generation mid-arguments (a retry will be cut the
+/// same way, so the response has to be split up instead).
+struct DeliveredStream {
+    events: u64,
+    bytes: u64,
+    saw_done: bool,
+    elapsed_ms: u64,
+    text_chars: usize,
+    thinking_chars: usize,
+    /// `(name, argument bytes received)` per open tool call.
+    tool_calls: Vec<(String, usize)>,
+}
+
+impl DeliveredStream {
+    fn capture(
+        state: &StreamState,
+        bytes: u64,
+        events: u64,
+        saw_done: bool,
+        elapsed_ms: u64,
+    ) -> Self {
+        let mut text_chars = 0;
+        let mut thinking_chars = 0;
+        let mut tool_calls = Vec::new();
+        for block in &state.blocks {
+            match block {
+                StreamingBlock::Text { text } => text_chars += text.chars().count(),
+                StreamingBlock::Thinking { thinking, .. } => {
+                    thinking_chars += thinking.chars().count()
+                }
+                StreamingBlock::ToolCall(call) => tool_calls.push((
+                    if call.name.is_empty() {
+                        "<unnamed>".to_string()
+                    } else {
+                        call.name.clone()
+                    },
+                    call.partial_args.as_ref().map(String::len).unwrap_or(0),
+                )),
+            }
+        }
+        Self {
+            events,
+            bytes,
+            saw_done,
+            elapsed_ms,
+            text_chars,
+            thinking_chars,
+            tool_calls,
+        }
+    }
+
+    /// The truncation error. The `Stream ended without finish_reason` prefix
+    /// stays byte-identical: the retry classifier matches the phrase
+    /// (`retry.rs`, "ended without").
+    fn truncation_message(&self) -> String {
+        let terminator = if self.saw_done {
+            "`data: [DONE]` was sent but no finish_reason chunk"
+        } else {
+            "the body ended without `data: [DONE]`"
+        };
+        let mut content = Vec::new();
+        if self.text_chars > 0 {
+            content.push(format!("text {} chars", self.text_chars));
+        }
+        if self.thinking_chars > 0 {
+            content.push(format!("thinking {} chars", self.thinking_chars));
+        }
+        for (name, argument_bytes) in &self.tool_calls {
+            content.push(format!(
+                "tool call `{name}` with {argument_bytes} argument bytes"
+            ));
+        }
+        let content = if content.is_empty() {
+            "none".to_string()
+        } else {
+            content.join(", ")
+        };
+        format!(
+            "Stream ended without finish_reason: {} SSE events / {} bytes in {:.1}s, {}; delivered {}",
+            self.events,
+            self.bytes,
+            self.elapsed_ms as f64 / 1000.0,
+            terminator,
+            content,
+        )
+    }
+}
+
 async fn run_stream(
     model: Model,
     context: Context,
@@ -827,6 +930,8 @@ async fn run_stream_inner(
 
     let sse = SseDataEvents::new(response.body);
     tokio::pin!(sse);
+    let mut sse_events: u64 = 0;
+    let mut saw_done = false;
     loop {
         // Stop reading the body the moment the user aborts (upstream the
         // SDK's `abortSignal` cancelling the request). `break` rather than
@@ -842,7 +947,9 @@ async fn run_stream_inner(
         };
         let payload =
             payload.map_err(|error| ProviderRequestError::transport(error.to_string()))?;
+        sse_events += 1;
         if payload.trim() == "[DONE]" {
+            saw_done = true;
             break;
         }
         if payload.trim().is_empty() {
@@ -860,6 +967,16 @@ async fn run_stream_inner(
             &grammar_tool_input_properties,
         );
     }
+
+    // Capture what arrived *before* `finish_block` clears each tool call's
+    // `partial_args`; the truncation message reports it.
+    let delivered = DeliveredStream::capture(
+        state,
+        sse.as_ref().get_ref().bytes_received,
+        sse_events,
+        saw_done,
+        now_ms().saturating_sub(state.output.timestamp),
+    );
 
     // Finish all open blocks.
     let positions: Vec<usize> = (0..state.blocks.len()).collect();
@@ -910,7 +1027,7 @@ async fn run_stream_inner(
         || state.output.stop_reason == StopReason::Pending
     {
         return Err(ProviderRequestError::transport(
-            "Stream ended without finish_reason".to_string(),
+            delivered.truncation_message(),
         ));
     }
 

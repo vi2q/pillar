@@ -24,7 +24,7 @@ use pillar_ai::types::{
     AssistantMessage, Content, Context, Message, Model, StopReason, Tool, ToolResultMessage, Usage,
     UserContent,
 };
-use pillar_ai::{AbortSignal, ProviderRequestError};
+use pillar_ai::{AbortSignal, ProviderRequestError, is_retryable_assistant_error};
 
 // --- Mock transport ------------------------------------------------------
 
@@ -36,6 +36,9 @@ struct MockSse {
     chunks: Vec<Value>,
     status: u16,
     captured: CapturedRequest,
+    /// Whether the body ends with `data: [DONE]` (upstream fixtures always do;
+    /// the truncation tests need a body that just stops).
+    append_done: bool,
 }
 
 impl MockSse {
@@ -46,6 +49,20 @@ impl MockSse {
                 chunks,
                 status: 200,
                 captured: Arc::clone(&captured),
+                append_done: true,
+            },
+            captured,
+        )
+    }
+
+    /// A body that ends after `chunks` with neither `[DONE]` nor a
+    /// `finish_reason` (a gateway closing the stream cleanly mid-response).
+    fn without_done(chunks: Vec<Value>) -> (Self, CapturedRequest) {
+        let (mock, captured) = Self::new(chunks);
+        (
+            Self {
+                append_done: false,
+                ..mock
             },
             captured,
         )
@@ -58,6 +75,7 @@ impl MockSse {
                 chunks: vec![body],
                 status,
                 captured: Arc::clone(&captured),
+                append_done: true,
             },
             captured,
         )
@@ -65,11 +83,17 @@ impl MockSse {
 }
 
 fn sse_body(chunks: &[Value]) -> String {
+    sse_body_with(chunks, true)
+}
+
+fn sse_body_with(chunks: &[Value], append_done: bool) -> String {
     let mut body = String::new();
     for chunk in chunks {
         body.push_str(&format!("data: {}\n\n", chunk));
     }
-    body.push_str("data: [DONE]\n\n");
+    if append_done {
+        body.push_str("data: [DONE]\n\n");
+    }
     body
 }
 
@@ -81,7 +105,7 @@ impl FetchFn for MockSse {
     ) -> Result<FetchResponse, pillar_ai::error::AiError> {
         self.captured.lock().await.push(request);
         let (status, body) = if self.status == 200 {
-            (200, sse_body(&self.chunks))
+            (200, sse_body_with(&self.chunks, self.append_done))
         } else {
             (
                 self.status,
@@ -1155,4 +1179,100 @@ async fn abort_stops_the_body_read_without_waiting_for_the_server() {
         "partial text",
         "the streamed partial text is kept"
     );
+}
+
+// --- truncation diagnostics (port divergence) ----------------------------
+
+/// divergence: upstream throws a bare `Stream ended without finish_reason`.
+/// The port appends what the provider had delivered, because a truncated
+/// response records its tool call as `arguments: {}` either way — the gateway
+/// having streamed no argument bytes at all and having cut a long generation
+/// mid-arguments are not distinguishable from the message alone.
+#[tokio::test]
+async fn a_body_that_ends_without_a_terminal_event_reports_what_was_delivered() {
+    let partial_args = r##"{"path":"docs/design.md","content":"# Design"##;
+    let (mock, _captured) = MockSse::without_done(vec![
+        json!({
+            "id": "chatcmpl-1",
+            "choices": [{ "index": 0, "delta": { "content": "plan" } }],
+        }),
+        json!({
+            "id": "chatcmpl-1",
+            "choices": [{ "index": 0, "delta": { "tool_calls": [
+                { "index": 0, "id": "call_1", "type": "function", "function": { "name": "write" } }
+            ] } }],
+        }),
+        json!({
+            "id": "chatcmpl-1",
+            "choices": [{ "index": 0, "delta": { "tool_calls": [
+                { "index": 0, "function": { "arguments": partial_args } }
+            ] } }],
+        }),
+    ]);
+    let message = run_stream_to_message(
+        base_model(),
+        Context {
+            messages: vec![user_message("write the doc")],
+            ..Default::default()
+        },
+        OpenaiCompletionsOptions {
+            api_key: Some("test".to_string()),
+            fetch: Some(Arc::new(mock)),
+            ..Default::default()
+        },
+    )
+    .await;
+
+    assert_eq!(message.stop_reason, StopReason::Error);
+    let error = message.error_message.clone().expect("truncation message");
+    assert!(
+        error.starts_with("Stream ended without finish_reason"),
+        "{error}"
+    );
+    assert!(error.contains("3 SSE events"), "{error}");
+    assert!(
+        error.contains("the body ended without `data: [DONE]`"),
+        "{error}"
+    );
+    assert!(error.contains("text 4 chars"), "{error}");
+    assert!(
+        error.contains(&format!(
+            "tool call `write` with {} argument bytes",
+            partial_args.len()
+        )),
+        "the partial argument bytes must be visible: {error}"
+    );
+    // The prefix stays in the retry classifier's `ended without` pattern.
+    assert!(is_retryable_assistant_error(&message));
+}
+
+/// `[DONE]` with no `finish_reason` is the same error but a different cause
+/// (the provider dropped only the terminal chunk).
+#[tokio::test]
+async fn a_done_terminated_body_without_a_finish_reason_says_so() {
+    let (mock, _captured) = MockSse::new(vec![json!({
+        "id": "chatcmpl-1",
+        "choices": [{ "index": 0, "delta": { "content": "done-ish" } }],
+    })]);
+    let message = run_stream_to_message(
+        base_model(),
+        Context {
+            messages: vec![user_message("hi")],
+            ..Default::default()
+        },
+        OpenaiCompletionsOptions {
+            api_key: Some("test".to_string()),
+            fetch: Some(Arc::new(mock)),
+            ..Default::default()
+        },
+    )
+    .await;
+
+    let error = message.error_message.clone().expect("truncation message");
+    assert!(
+        error.contains("`data: [DONE]` was sent but no finish_reason chunk"),
+        "{error}"
+    );
+    assert!(error.contains("text 8 chars"), "{error}");
+    assert!(!error.contains("delivered none"), "{error}");
 }
