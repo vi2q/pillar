@@ -23,8 +23,8 @@ use super::diagnostic::{
 };
 use super::error::RustToolError;
 use super::host::{
-    CargoJobBroker, OutputStream, OwnerId, RunId, RunRecord, SourceSlice, SourceSnapshotPort,
-    StartRequest, WorkspaceCatalogPort,
+    CargoJobBroker, OutputStream, OwnerId, RunId, RunRecord, RunState, SourceSlice,
+    SourceSnapshotPort, StartRequest, WorkspaceCatalogPort,
 };
 use super::plan::{Coverage, PlanRequest, VerifyPlan, plan};
 use super::position::{LineColumn, LineIndex, LspPosition, PositionEncoding};
@@ -533,6 +533,14 @@ async fn diagnostics_impl(
     let run = match cached {
         Some(run) => run,
         None => {
+            // A run that is still in progress is normalized for progress, but
+            // it is not cached as final: a later read must see the full output
+            // (design §9: output arrives while the process runs).
+            let status = broker.status(&owner, &RunId::new(run_id.clone())).await?;
+            let in_progress = !matches!(
+                status.state,
+                RunState::Exited | RunState::Cancelled | RunState::Lost | RunState::OutcomeUnknown
+            );
             let metadata = catalog.catalog()?;
             let policy = match metadata.workspace_root() {
                 Some(root) => SourcePolicy::new(root),
@@ -552,10 +560,17 @@ async fn diagnostics_impl(
                     reason: "the broker did not retain the whole run".to_string(),
                 };
             }
-            store
-                .lock()
-                .expect("diagnostics lock")
-                .insert(run_id.clone(), run.clone());
+            if in_progress && run.collection.is_complete() {
+                run.collection = CollectionState::Partial {
+                    reason: "the run is still in progress".to_string(),
+                };
+            }
+            if !in_progress {
+                store
+                    .lock()
+                    .expect("diagnostics lock")
+                    .insert(run_id.clone(), run.clone());
+            }
             run
         }
     };

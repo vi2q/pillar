@@ -25,8 +25,13 @@
 //! process-group execution is R4.
 
 use std::collections::{HashMap, VecDeque};
+use std::io::Read;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 
@@ -40,7 +45,9 @@ use pillar_agent::rust_tools::{
 };
 
 use crate::core::effects::{EffectAuthorizer, EffectDecision, EffectIntent};
-use crate::core::exec::{ExecOptions, exec_command};
+use crate::core::exec::{
+    DRAIN_GRACE, ExecOptions, POLL_INTERVAL, TERM_GRACE, exec_command, hard_kill, terminate,
+};
 use crate::core::rust_analyzer::DocumentReader;
 
 /// The default `cargo metadata` invocation (`--format-version 1` is stable).
@@ -169,23 +176,39 @@ impl WorkspaceCatalogPort for NativeMetadataHost {
 
 // --- broker ----------------------------------------------------------------
 
+/// Bounded, streamed output of one run. The reader threads append while the
+/// process runs, so `rs_job output` sees progress before exit.
+#[derive(Debug, Default)]
+struct StreamBuffers {
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    truncated: bool,
+}
+
+impl StreamBuffers {
+    fn total(&self) -> usize {
+        self.stdout.len() + self.stderr.len()
+    }
+}
+
 #[derive(Default)]
 struct BrokerState {
     runs: HashMap<RunId, RunRecord>,
-    outputs: HashMap<RunId, RawRunOutput>,
+    outputs: HashMap<RunId, Arc<Mutex<StreamBuffers>>>,
     signals: HashMap<RunId, AbortSignal>,
     requests: HashMap<(String, String), (u64, RunId)>,
     order: VecDeque<RunId>,
     counter: u64,
 }
 
-/// A native `CargoJobBroker` over `exec_command`.
+/// A native `CargoJobBroker` that streams the child's output as it arrives.
 pub struct NativeCargoBroker {
     cwd: String,
     authorizer: Option<EffectAuthorizer>,
     program: String,
     allowed_subcommands: Vec<String>,
     timeout_ms: Option<u64>,
+    max_output_bytes: usize,
     capacity: usize,
     state: Arc<Mutex<BrokerState>>,
 }
@@ -202,6 +225,7 @@ impl NativeCargoBroker {
                 .collect(),
             // A Cargo build can be long; the host still owns an upper bound.
             timeout_ms: Some(60 * 60 * 1000),
+            max_output_bytes: 4 * 1024 * 1024,
             capacity: 16,
             state: Arc::new(Mutex::new(BrokerState::default())),
         }
@@ -220,6 +244,11 @@ impl NativeCargoBroker {
 
     pub fn with_timeout_ms(mut self, timeout_ms: Option<u64>) -> Self {
         self.timeout_ms = timeout_ms;
+        self
+    }
+
+    pub fn with_max_output_bytes(mut self, max_output_bytes: usize) -> Self {
+        self.max_output_bytes = max_output_bytes.max(1);
         self
     }
 
@@ -298,6 +327,7 @@ impl CargoJobBroker for NativeCargoBroker {
         state.counter += 1;
         let run_id = RunId::new(format!("run{}", state.counter));
         let signal = AbortSignal::new();
+        let buffers = Arc::new(Mutex::new(StreamBuffers::default()));
         let record = RunRecord {
             run_id: run_id.clone(),
             owner: request.owner.clone(),
@@ -319,6 +349,7 @@ impl CargoJobBroker for NativeCargoBroker {
             .requests
             .insert(key, (request.command_digest, run_id.clone()));
         state.runs.insert(run_id.clone(), record.clone());
+        state.outputs.insert(run_id.clone(), Arc::clone(&buffers));
         state.order.push_back(run_id.clone());
         while state.order.len() > self.capacity {
             if let Some(evicted) = state.order.pop_front() {
@@ -332,35 +363,27 @@ impl CargoJobBroker for NativeCargoBroker {
         let shared = Arc::clone(&self.state);
         let cwd = self.cwd.clone();
         let timeout_ms = self.timeout_ms;
+        let max_output_bytes = self.max_output_bytes;
         std::thread::spawn(move || {
-            let result = exec_command(
+            let (code, killed) = run_streaming(
                 &program,
                 &args,
                 &cwd,
-                &ExecOptions {
-                    signal: Some(signal),
-                    timeout_ms,
-                    cwd: None,
-                },
+                signal,
+                timeout_ms,
+                max_output_bytes,
+                Arc::clone(&buffers),
             );
             let mut state = shared.lock().expect("broker lock");
             if let Some(record) = state.runs.get_mut(&run_id) {
-                record.state = if result.killed {
+                record.state = if killed {
                     RunState::Cancelled
                 } else {
                     RunState::Exited
                 };
-                record.exit_status = Some(ExitStatus::Exited { code: result.code });
+                record.exit_status = Some(ExitStatus::Exited { code });
+                record.retained_bytes = buffers.lock().expect("buffers lock").total();
             }
-            let output = RawRunOutput {
-                stdout: result.stdout.into_bytes(),
-                stderr: result.stderr.into_bytes(),
-                truncated: result.truncated,
-            };
-            if let Some(record) = state.runs.get_mut(&run_id) {
-                record.retained_bytes = output.stdout.len() + output.stderr.len();
-            }
-            state.outputs.insert(run_id.clone(), output);
             state.signals.remove(&run_id);
         });
 
@@ -368,8 +391,15 @@ impl CargoJobBroker for NativeCargoBroker {
     }
 
     async fn status(&self, owner: &OwnerId, run_id: &RunId) -> Result<RunRecord, RustToolError> {
-        let state = self.state.lock().expect("broker lock");
-        Ok(Self::run(&state, owner, run_id)?.clone())
+        let (mut record, buffers) = {
+            let state = self.state.lock().expect("broker lock");
+            let record = Self::run(&state, owner, run_id)?.clone();
+            (record, state.outputs.get(run_id).cloned())
+        };
+        if let Some(buffers) = buffers {
+            record.retained_bytes = buffers.lock().expect("buffers lock").total();
+        }
+        Ok(record)
     }
 
     async fn output(
@@ -380,23 +410,27 @@ impl CargoJobBroker for NativeCargoBroker {
         offset: usize,
         limit_bytes: usize,
     ) -> Result<OutputPage, RustToolError> {
-        let state = self.state.lock().expect("broker lock");
-        Self::run(&state, owner, run_id)?;
-        let Some(output) = state.outputs.get(run_id) else {
-            // The process is still running: `exec_command` captures to its end,
-            // so nothing is retained yet.
+        let buffers = {
+            let state = self.state.lock().expect("broker lock");
+            Self::run(&state, owner, run_id)?;
+            state.outputs.get(run_id).cloned()
+        };
+        let Some(buffers) = buffers else {
             return Ok(OutputPage {
                 stream,
                 offset,
                 bytes: Vec::new(),
                 total_bytes: 0,
                 truncated: false,
-                expired: false,
+                expired: true,
             });
         };
+        // The readers append while the process runs, so a page is available
+        // before exit (design §9: progress and output).
+        let buffers = buffers.lock().expect("buffers lock");
         let source = match stream {
-            OutputStream::Stdout => &output.stdout,
-            OutputStream::Stderr => &output.stderr,
+            OutputStream::Stdout => &buffers.stdout,
+            OutputStream::Stderr => &buffers.stderr,
         };
         let total_bytes = source.len();
         let start = offset.min(total_bytes);
@@ -406,7 +440,7 @@ impl CargoJobBroker for NativeCargoBroker {
             offset: start,
             bytes: source[start..end].to_vec(),
             total_bytes,
-            truncated: end < total_bytes,
+            truncated: end < total_bytes || buffers.truncated,
             expired: false,
         })
     }
@@ -425,14 +459,141 @@ impl CargoJobBroker for NativeCargoBroker {
     }
 
     async fn raw(&self, owner: &OwnerId, run_id: &RunId) -> Result<RawRunOutput, RustToolError> {
-        let state = self.state.lock().expect("broker lock");
-        Self::run(&state, owner, run_id)?;
-        Ok(state.outputs.get(run_id).cloned().unwrap_or(RawRunOutput {
-            stdout: Vec::new(),
-            stderr: Vec::new(),
-            truncated: true,
-        }))
+        let buffers = {
+            let state = self.state.lock().expect("broker lock");
+            Self::run(&state, owner, run_id)?;
+            state.outputs.get(run_id).cloned()
+        };
+        match buffers {
+            Some(buffers) => {
+                let buffers = buffers.lock().expect("buffers lock");
+                Ok(RawRunOutput {
+                    stdout: buffers.stdout.clone(),
+                    stderr: buffers.stderr.clone(),
+                    truncated: buffers.truncated,
+                })
+            }
+            None => Ok(RawRunOutput {
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+                truncated: true,
+            }),
+        }
     }
+}
+
+/// Spawn the child as its own process-group leader, stream both pipes into
+/// `buffers` as data arrives, and wait for it.
+///
+/// Cancellation and timeout signal the process group through the shared
+/// `core::exec` helpers, so a grandchild stops too (docs/TASKS.md sb265). The
+/// reader threads are not joined: a descendant holding a pipe open must not
+/// hang the broker, which is why the wait uses a drain grace like
+/// `exec_command`.
+fn run_streaming(
+    program: &str,
+    args: &[String],
+    cwd: &str,
+    signal: AbortSignal,
+    timeout_ms: Option<u64>,
+    max_output_bytes: usize,
+    buffers: Arc<Mutex<StreamBuffers>>,
+) -> (i32, bool) {
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
+    command.process_group(0);
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(_) => return (-1, false),
+    };
+    if let Some(pipe) = child.stdout.take() {
+        spawn_stream_reader(
+            pipe,
+            Arc::clone(&buffers),
+            OutputStream::Stdout,
+            max_output_bytes,
+        );
+    }
+    if let Some(pipe) = child.stderr.take() {
+        spawn_stream_reader(
+            pipe,
+            Arc::clone(&buffers),
+            OutputStream::Stderr,
+            max_output_bytes,
+        );
+    }
+
+    let deadline = timeout_ms
+        .filter(|timeout| *timeout > 0)
+        .map(|timeout| Instant::now() + Duration::from_millis(timeout));
+    let mut killed = false;
+    let mut term_sent: Option<Instant> = None;
+    let code = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status.code().unwrap_or(0),
+            Ok(None) => {}
+            Err(_) => {
+                let _ = child.kill();
+                break -1;
+            }
+        }
+        let aborted = signal.is_aborted();
+        let timed_out = deadline.is_some_and(|deadline| Instant::now() >= deadline);
+        if (aborted || timed_out) && term_sent.is_none() {
+            killed = true;
+            terminate(&mut child);
+            term_sent = Some(Instant::now());
+        }
+        if term_sent.is_some_and(|sent| sent.elapsed() >= TERM_GRACE) {
+            hard_kill(&mut child);
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    };
+    std::thread::sleep(DRAIN_GRACE);
+    (code, killed)
+}
+
+/// Read one pipe into the shared buffers as data arrives. Past the cap the data
+/// is dropped but the pipe is still drained, so the writer never blocks.
+fn spawn_stream_reader(
+    mut pipe: impl Read + Send + 'static,
+    buffers: Arc<Mutex<StreamBuffers>>,
+    stream: OutputStream,
+    cap: usize,
+) {
+    std::thread::spawn(move || {
+        let mut chunk = [0u8; 8192];
+        loop {
+            match pipe.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(count) => {
+                    let mut buffers = buffers
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let target = match stream {
+                        OutputStream::Stdout => &mut buffers.stdout,
+                        OutputStream::Stderr => &mut buffers.stderr,
+                    };
+                    let room = cap.saturating_sub(target.len());
+                    if room == 0 {
+                        buffers.truncated = true;
+                        continue;
+                    }
+                    let keep = room.min(count);
+                    target.extend_from_slice(&chunk[..keep]);
+                    if keep < count {
+                        buffers.truncated = true;
+                    }
+                }
+            }
+        }
+    });
 }
 
 // --- sources ---------------------------------------------------------------

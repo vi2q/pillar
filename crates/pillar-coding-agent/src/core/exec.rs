@@ -26,12 +26,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// How often the wait loop checks the child and the abort / timeout state.
-const POLL_INTERVAL: Duration = Duration::from_millis(10);
+pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(10);
 /// How long a SIGTERM gets before the child is killed outright.
-const TERM_GRACE: Duration = Duration::from_secs(5);
+pub(crate) const TERM_GRACE: Duration = Duration::from_secs(5);
 /// How long the pipe readers get after the child exited (upstream keeps
 /// whatever arrived by then).
-const DRAIN_GRACE: Duration = Duration::from_millis(100);
+pub(crate) const DRAIN_GRACE: Duration = Duration::from_millis(100);
 /// How much of each stream a run keeps. Beyond it the pipe is still drained
 /// (the child must not block on a full pipe) but nothing more is stored, so a
 /// command that prints without end costs the host a bounded amount of memory
@@ -187,7 +187,7 @@ fn spawn_reader(mut pipe: impl Read + Send + 'static, buffer: Arc<Mutex<Captured
 /// Ask the child's process group to stop: SIGTERM on unix (upstream asks the
 /// child; the port asks its group so descendants stop too), `Child::kill`
 /// elsewhere.
-fn terminate(child: &mut Child) {
+pub(crate) fn terminate(child: &mut Child) {
     #[cfg(unix)]
     {
         // SAFETY: `id()` is a live child pid, and the child is its own process
@@ -204,7 +204,7 @@ fn terminate(child: &mut Child) {
 
 /// The escalation after [`TERM_GRACE`]: SIGKILL the group on unix, `kill`
 /// elsewhere.
-fn hard_kill(child: &mut Child) {
+pub(crate) fn hard_kill(child: &mut Child) {
     #[cfg(unix)]
     {
         // SAFETY: as in `terminate`.

@@ -100,6 +100,50 @@ async fn the_broker_runs_and_captures_both_streams() {
 }
 
 #[tokio::test]
+async fn the_broker_streams_output_while_the_process_runs() {
+    let broker = scripted_broker(allow_all());
+    let owner = OwnerId::new("session-a");
+    let record = broker
+        .start(start_request(
+            &owner,
+            "rq1",
+            "printf first; sleep 1; printf second",
+        ))
+        .await
+        .expect("start");
+
+    // `first` must be readable while the process is still sleeping, and
+    // `second` must not be there yet.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let page = broker
+            .output(&owner, &record.run_id, OutputStream::Stdout, 0, 1024)
+            .await
+            .expect("output");
+        let text = String::from_utf8_lossy(&page.bytes);
+        if text.contains("first") {
+            assert!(
+                !text.contains("second"),
+                "the second write must not be visible yet: {text}"
+            );
+            break;
+        }
+        assert!(Instant::now() < deadline, "`first` never appeared");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    assert_eq!(
+        wait_for(&broker, &owner, &record.run_id).await,
+        RunState::Exited
+    );
+    let page = broker
+        .output(&owner, &record.run_id, OutputStream::Stdout, 0, 1024)
+        .await
+        .expect("output");
+    assert_eq!(String::from_utf8_lossy(&page.bytes), "firstsecond");
+}
+
+#[tokio::test]
 async fn the_broker_deduplicates_by_request_id_and_command() {
     let broker = scripted_broker(allow_all());
     let owner = OwnerId::new("session-a");
