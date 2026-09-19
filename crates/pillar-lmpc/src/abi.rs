@@ -539,7 +539,7 @@ pub extern "C" fn lmpc_session_import_begin(total: u32) -> i32 {
         return TOO_LONG;
     }
     let mut pending = PENDING_IMPORT.lock().expect("import lock");
-    let mut buffer = vec![0; total as usize];
+    let buffer = vec![0; total as usize];
     *pending = Some(PendingImport { buffer, covered: 0 });
     0
 }

@@ -136,7 +136,7 @@ fn real_exec(commands: Arc<Mutex<Vec<String>>>, cwd: PathBuf) -> ExecHost {
                 .spawn()
             {
                 Ok(child) => child,
-                Err(error) => return ExecResult::spawn_failure(&error.to_string()),
+                Err(error) => return ExecResult::spawn_failure(error.to_string()),
             };
 
             let mut killed = false;
@@ -144,7 +144,7 @@ fn real_exec(commands: Arc<Mutex<Vec<String>>>, cwd: PathBuf) -> ExecHost {
                 match child.try_wait() {
                     Ok(Some(_)) => break,
                     Ok(None) => {}
-                    Err(error) => return ExecResult::spawn_failure(&error.to_string()),
+                    Err(error) => return ExecResult::spawn_failure(error.to_string()),
                 }
                 if options.signal.as_ref().is_some_and(|s| s.is_aborted()) {
                     let _ = child.kill();
@@ -162,7 +162,7 @@ fn real_exec(commands: Arc<Mutex<Vec<String>>>, cwd: PathBuf) -> ExecHost {
                     killed,
                     truncated: false,
                 },
-                Err(error) => ExecResult::spawn_failure(&error.to_string()),
+                Err(error) => ExecResult::spawn_failure(error.to_string()),
             }
         },
     )
@@ -451,13 +451,12 @@ fn the_plan_is_validated_before_anything_runs() {
         "nothing ran: the schema gate refused the plan first"
     );
 
-    assert_eq!(
+    assert!(
         fixture
             .runtime
             .call_tool("build", "call-1", serde_json::json!({}), None, None)
             .expect_err("a missing plan is refused")
-            .contains("Validation failed"),
-        true
+            .contains("Validation failed")
     );
     assert!(fixture.commands_run().is_empty());
 }

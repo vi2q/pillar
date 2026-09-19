@@ -39,7 +39,7 @@ log=${PILLAR_GATE_ARGV_LOG:?}
 printf 'events: agent_start,agent_end\nuser: remember something\nassistant: done\n'
 for argument in "$@"; do
     case "$argument" in
-        --stream) printf 'message_update\n' ;;
+        --stream) printf 'events: message_update,message_update,message_update,message_end\n' ;;
         --host-tools) printf 'toolResult: host narrate: 42\n' ;;
         --cancel) printf 'assistant: \n' ;;
     esac

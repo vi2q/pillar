@@ -144,8 +144,9 @@ enum UiCommand {
     LoginSettled {
         target: LoginTarget,
         /// The resolved post-login state, present when the login succeeded.
-        authentication:
-            Option<crate::modes::interactive::interactive_mode::PostLoginAuthentication>,
+        /// Boxed: the enum travels through a channel, and this rare variant is
+        /// far larger than the common ones.
+        authentication: Option<Box<crate::modes::interactive::interactive_mode::PostLoginAuthentication>>,
         error: Option<String>,
         /// True when the error is a credential-store synchronization failure
         /// (upstream `error instanceof CredentialSynchronizationError`).
@@ -821,7 +822,7 @@ async fn run_provider_login(
                 .await;
             let _ = ui.send(UiCommand::LoginSettled {
                 target: target.clone(),
-                authentication: Some(authentication),
+                authentication: Some(Box::new(authentication)),
                 error: None,
                 synchronization_error: false,
             });

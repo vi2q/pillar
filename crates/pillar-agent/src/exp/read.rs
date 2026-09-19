@@ -133,11 +133,10 @@ pub async fn exp_read(
     let max_lines = requested_lines.min(limits.max_read_lines);
     let mut text = String::new();
     let mut delivered = 0usize;
-    for index in first - 1..last {
+    for (start, end) in spans.iter().take(last).skip(first - 1).copied() {
         if delivered >= max_lines {
             break;
         }
-        let (start, end) = spans[index];
         let line = match utf8 {
             Some(text_all) => &text_all[start..end],
             None => "",

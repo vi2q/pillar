@@ -165,64 +165,62 @@ impl OperationLedger {
         args_digest: u64,
     ) -> Result<Reservation, ExpError> {
         let key = (owner.as_str().to_string(), operation.as_str().to_string());
-        loop {
-            let waiting = {
-                let mut slots = self.slots.lock().expect("ledger lock");
-                match slots.get(&key) {
-                    Some(SlotState::Done { args, outcome }) => {
-                        if *args != args_digest {
-                            return Err(operation_id_mismatch());
-                        }
-                        return Ok(Reservation::Joined(outcome.clone()));
+        let waiting = {
+            let mut slots = self.slots.lock().expect("ledger lock");
+            match slots.get(&key) {
+                Some(SlotState::Done { args, outcome }) => {
+                    if *args != args_digest {
+                        return Err(operation_id_mismatch());
                     }
-                    Some(SlotState::InFlight { args, done }) => {
-                        if *args != args_digest {
-                            return Err(operation_id_mismatch());
-                        }
-                        let rx = done.subscribe();
-                        // Re-check before awaiting: the operation may have
-                        // completed while we were looking up the slot.
-                        if let Some(outcome) = rx.borrow().clone() {
-                            return Ok(Reservation::Joined(outcome));
-                        }
-                        rx
-                    }
-                    None => {
-                        if slots.len() >= self.capacity {
-                            return Err(ExpError::budget_exceeded(
-                                format!("more than {} recorded operations", self.capacity),
-                                "retry with a new operation id, or raise the ledger budget",
-                            ));
-                        }
-                        let (done, _) = watch::channel(None);
-                        slots.insert(
-                            key.clone(),
-                            SlotState::InFlight {
-                                args: args_digest,
-                                done,
-                            },
-                        );
-                        return Ok(Reservation::Fresh(FreshOperation {
-                            ledger: Arc::clone(self),
-                            key,
-                            finished: false,
-                        }));
-                    }
+                    return Ok(Reservation::Joined(outcome.clone()));
                 }
-            };
-            let mut rx = waiting;
-            let outcome = match rx.wait_for(|value| value.is_some()).await {
-                Ok(guard) => guard.clone().expect("checked is_some"),
-                // The sender went away without recording an outcome: that is
-                // unknown, never success.
-                Err(_) => Err(ExpError::new(
-                    ExpErrorCode::OutcomeUnknown,
-                    "the operation stopped without reporting an outcome",
-                )
-                .with_repair("check the target, then retry with a new operation id")),
-            };
-            return Ok(Reservation::Joined(outcome));
-        }
+                Some(SlotState::InFlight { args, done }) => {
+                    if *args != args_digest {
+                        return Err(operation_id_mismatch());
+                    }
+                    let rx = done.subscribe();
+                    // Re-check before awaiting: the operation may have
+                    // completed while we were looking up the slot.
+                    if let Some(outcome) = rx.borrow().clone() {
+                        return Ok(Reservation::Joined(outcome));
+                    }
+                    rx
+                }
+                None => {
+                    if slots.len() >= self.capacity {
+                        return Err(ExpError::budget_exceeded(
+                            format!("more than {} recorded operations", self.capacity),
+                            "retry with a new operation id, or raise the ledger budget",
+                        ));
+                    }
+                    let (done, _) = watch::channel(None);
+                    slots.insert(
+                        key.clone(),
+                        SlotState::InFlight {
+                            args: args_digest,
+                            done,
+                        },
+                    );
+                    return Ok(Reservation::Fresh(FreshOperation {
+                        ledger: Arc::clone(self),
+                        key,
+                        finished: false,
+                    }));
+                }
+            }
+        };
+        let mut rx = waiting;
+        let outcome = match rx.wait_for(|value| value.is_some()).await {
+            Ok(guard) => guard.clone().expect("checked is_some"),
+            // The sender went away without recording an outcome: that is
+            // unknown, never success.
+            Err(_) => Err(ExpError::new(
+                ExpErrorCode::OutcomeUnknown,
+                "the operation stopped without reporting an outcome",
+            )
+            .with_repair("check the target, then retry with a new operation id")),
+        };
+        Ok(Reservation::Joined(outcome))
     }
 
     fn finish(&self, key: &(String, String), outcome: Outcome) {

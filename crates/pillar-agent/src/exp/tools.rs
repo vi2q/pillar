@@ -19,7 +19,7 @@ use super::edit::{ExpEditRequest, ExpEditResponse};
 use super::error::ExpError;
 use super::ledger::OperationLedger;
 use super::read::{ExpReadRequest, ExpReadResponse};
-use super::refs::{OwnerId, RefStore, system_clock};
+use super::refs::{Clock, OwnerId, RefStore};
 use super::store::ConditionalStore;
 use super::{ExpLimits, exp_edit, exp_read};
 use crate::types::{AgentTool, AgentToolResult, ToolExecuteError};
@@ -39,10 +39,20 @@ pub struct ExpToolkit {
 }
 
 impl ExpToolkit {
-    /// A toolkit over a host, with the host's wall clock and opaque UUID
-    /// references.
-    pub fn new(host: Arc<dyn ConditionalStore>, limits: ExpLimits, owner: OwnerId) -> Self {
-        let refs = Arc::new(RefStore::new(system_clock(), limits.max_live_refs));
+    /// A toolkit over a host, with opaque UUID references (an id a caller
+    /// cannot guess) and the host's clock.
+    ///
+    /// The clock is passed in rather than read from the platform: `SystemTime`
+    /// is not available on every host the core compiles for (the Wasm
+    /// profiles), and expiry must be controllable in tests (design §3, §8.2).
+    /// A host without a wall clock supplies its own monotonic source.
+    pub fn new(
+        host: Arc<dyn ConditionalStore>,
+        clock: Clock,
+        limits: ExpLimits,
+        owner: OwnerId,
+    ) -> Self {
+        let refs = Arc::new(RefStore::new(clock, limits.max_live_refs));
         let ledger = Arc::new(OperationLedger::new(limits.ledger_capacity));
         Self {
             host,
@@ -112,9 +122,10 @@ impl ExpToolkit {
                     }
                     let request: ExpReadRequest = serde_json::from_value(args)
                         .map_err(|error| ToolExecuteError(format!("exp_read input: {error}")))?;
-                    let response = exp_read(host.as_ref(), refs.as_ref(), &limits, &owner, &request)
-                        .await
-                        .map_err(tool_error)?;
+                    let response =
+                        exp_read(host.as_ref(), refs.as_ref(), &limits, &owner, &request)
+                            .await
+                            .map_err(tool_error)?;
                     Ok(read_result(&response))
                 })
             }),
@@ -156,10 +167,16 @@ impl ExpToolkit {
                     }
                     let request: ExpEditRequest = serde_json::from_value(args)
                         .map_err(|error| ToolExecuteError(format!("exp_edit input: {error}")))?;
-                    let response =
-                        exp_edit(host.as_ref(), refs.as_ref(), &ledger, &limits, &owner, &request)
-                            .await
-                            .map_err(tool_error)?;
+                    let response = exp_edit(
+                        host.as_ref(),
+                        refs.as_ref(),
+                        &ledger,
+                        &limits,
+                        &owner,
+                        &request,
+                    )
+                    .await
+                    .map_err(tool_error)?;
                     Ok(edit_result(&response))
                 })
             }),
@@ -331,11 +348,17 @@ mod tests {
 
     #[test]
     fn the_experimental_tool_names_do_not_shadow_the_existing_ones() {
-        assert_eq!(exp_read_description().is_empty(), false);
-        assert!(exp_read_parameters_json()["properties"].get("offset").is_none());
-        assert!(exp_edit_parameters_json()["properties"]
-            .get("edits")
-            .and_then(|edits| edits["items"]["properties"].get("oldText"))
-            .is_none());
+        assert!(!exp_read_description().is_empty());
+        assert!(
+            exp_read_parameters_json()["properties"]
+                .get("offset")
+                .is_none()
+        );
+        assert!(
+            exp_edit_parameters_json()["properties"]
+                .get("edits")
+                .and_then(|edits| edits["items"]["properties"].get("oldText"))
+                .is_none()
+        );
     }
 }

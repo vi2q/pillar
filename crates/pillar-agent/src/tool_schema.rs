@@ -339,8 +339,10 @@ pub fn validate_tool_arguments(schema: &Value, arguments: &Value) -> Result<Valu
 /// The compiled form of `schema`, cached by the schema's own JSON text (a tool
 /// set is small and stable, so this is bounded by the number of distinct tool
 /// schemas a process sees).
+type CompiledCache = HashMap<String, Result<Arc<Compiled>, String>>;
+
 fn compiled(schema: &Value) -> Result<Arc<Compiled>, String> {
-    static CACHE: OnceLock<Mutex<HashMap<String, Result<Arc<Compiled>, String>>>> = OnceLock::new();
+    static CACHE: OnceLock<Mutex<CompiledCache>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let key = serde_json::to_string(schema).unwrap_or_else(|_| format!("{schema:?}"));
     let mut cache = cache

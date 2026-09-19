@@ -6,6 +6,8 @@
 //! call must report the design's error code *and* leave the target
 //! byte-identical.
 
+#![cfg(feature = "exp")]
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 

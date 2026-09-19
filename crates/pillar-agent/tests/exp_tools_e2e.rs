@@ -6,6 +6,8 @@
 //! (which must carry the reference the next call needs), the structured
 //! `details`, and the error text with its repair hint.
 
+#![cfg(feature = "exp")]
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -72,13 +74,19 @@ async fn the_read_tool_hands_back_a_reference_the_edit_tool_accepts() {
     .await
     .expect("read");
     let read_text = text(&read);
-    assert!(read_text.starts_with("[exp_read f.txt 2-2/3 ref=ref-0"), "{read_text}");
+    assert!(
+        read_text.starts_with("[exp_read f.txt 2-2/3 ref=ref-0"),
+        "{read_text}"
+    );
     assert!(read_text.contains("\ntwo\n"), "{read_text}");
     let reference = read.details["reference"]
         .as_str()
         .expect("details carry the reference")
         .to_string();
-    assert!(read_text.contains(&reference), "the model must see the reference");
+    assert!(
+        read_text.contains(&reference),
+        "the model must see the reference"
+    );
 
     let edit = execute(
         &toolkit,
@@ -92,7 +100,10 @@ async fn the_read_tool_hands_back_a_reference_the_edit_tool_accepts() {
     .await
     .expect("edit");
     let edit_text = text(&edit);
-    assert!(edit_text.starts_with("[exp_edit f.txt applied 1 replacement(s)"), "{edit_text}");
+    assert!(
+        edit_text.starts_with("[exp_edit f.txt applied 1 replacement(s)"),
+        "{edit_text}"
+    );
     assert_eq!(
         host.content("f.txt").as_deref(),
         Some(&b"one\ntwo\nand a half\nthree\n"[..])
@@ -206,7 +217,10 @@ async fn a_retried_call_is_recognized_by_its_operation_id() {
     )
     .await
     .expect("read");
-    let reference = read.details["reference"].as_str().expect("reference").to_string();
+    let reference = read.details["reference"]
+        .as_str()
+        .expect("reference")
+        .to_string();
     let args = json!({
         "operationId": "op-1",
         "edits": [{"ref": reference, "replacement": "ONE\n"}],
@@ -240,7 +254,10 @@ async fn a_new_host_generation_makes_the_reference_expired() {
     )
     .await
     .expect("read");
-    let reference = read.details["reference"].as_str().expect("reference").to_string();
+    let reference = read.details["reference"]
+        .as_str()
+        .expect("reference")
+        .to_string();
 
     toolkit.restart_generation();
     let error = execute(

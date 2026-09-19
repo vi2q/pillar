@@ -7,7 +7,7 @@ rust-version.workspace = true
 description = "Agent runtime with tool calling and state management. Port of pi packages/agent (pi v0.84.3)."
 
 [features]
-default = ["harness-tools", "proxy", "search", "session-files"]
+default = ["harness-tools", "proxy", "search", "session-files", "exp"]
 # The OS-bound coding-agent surface: the harness's file/shell tools and the
 # native session-search scanner. An embedding profile with a host-provided
 # tool set and no filesystem turns them off (`--no-default-features`), which is
@@ -18,6 +18,11 @@ proxy = ["pillar-ai/providers"]
 search = []
 # The durable JSONL file-backed session backend.
 session-files = []
+# The experimental tool adapter (versioned read references, budgets, receipts).
+# It is a capability a profile opts into and the LMPC minimum leaves off, so an
+# embedding that never registers these tools neither compiles nor links them
+# (docs/TOOL-EFFICIENCY-DESIGN.md §9, §11).
+exp = []
 
 [dependencies]
 async-trait = "0.1.89"

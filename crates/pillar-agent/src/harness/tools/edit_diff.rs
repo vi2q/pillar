@@ -1048,9 +1048,12 @@ mod tests {
     /// are `jsdiff@5.2.2` `Diff.diffLines(...)` output (`value` / `added` /
     /// `removed`): the untrimmed port answered `-A, =A` for the first case and
     /// `-a\nb, =a\nb` for the fourth.
+    /// `(old content, new content, expected parts as (added, removed, value))`.
+    type ExpectedCase = (&'static str, &'static str, Vec<(bool, bool, &'static str)>);
+
     #[test]
     fn diff_parts_match_jsdiff_on_repeated_lines() {
-        let cases: [(&str, &str, Vec<(bool, bool, &str)>); 5] = [
+        let cases: [ExpectedCase; 5] = [
             (
                 "A\nA\n",
                 "A\n",
