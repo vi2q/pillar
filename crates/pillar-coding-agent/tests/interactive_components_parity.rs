@@ -1914,3 +1914,321 @@ fn session_selector_tree_groups_children_under_their_parent() {
     assert!(body.contains("└─ child") || body.contains("├─ child"), "{body:?}");
     assert!(body.contains("grandchild"), "{body:?}");
 }
+
+// --- oauth selector / login dialog (the /login and /logout UI) -----------------------------------
+
+use pillar_ai::auth_types::{AuthCheck, AuthInfoLink};
+use pillar_coding_agent::modes::interactive::components::login_dialog::{
+    LoginDialogComponent, LoginDialogOutcome,
+};
+use pillar_coding_agent::modes::interactive::components::oauth_selector::{
+    AUTH_SELECTOR_MAX_VISIBLE, AuthSelectorMode, AuthSelectorOutcome, AuthSelectorProvider,
+    OAuthSelectorComponent, format_auth_selector_provider_type, is_env_var_source,
+};
+
+static AUTH_LOCK: Mutex<()> = Mutex::new(());
+
+/// Theme for the auth components. The `tui.select.*` keybindings come from
+/// the lazily-installed TUI table, so no keybinding install (and no race with
+/// the session tests' merged table) is needed.
+fn auth_setup() -> std::sync::MutexGuard<'static, ()> {
+    let guard = AUTH_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    install_dark();
+    guard
+}
+
+fn auth_provider(
+    id: &str,
+    name: &str,
+    auth_type: &str,
+    status: Option<AuthCheck>,
+) -> AuthSelectorProvider {
+    AuthSelectorProvider {
+        id: id.to_string(),
+        name: name.to_string(),
+        auth_type: auth_type.to_string(),
+        method_name: Some(format!("{name} auth")),
+        status,
+    }
+}
+
+fn component_body(component: &mut dyn Component, width: usize) -> String {
+    component
+        .render(width)
+        .iter()
+        .map(|line| strip_ansi(line))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn the_auth_provider_type_labels_match_upstream() {
+    assert_eq!(format_auth_selector_provider_type("oauth"), "subscription");
+    assert_eq!(format_auth_selector_provider_type("api_key"), "API key");
+    assert!(is_env_var_source("GITHUB_COPILOT_TOKEN"));
+    assert!(!is_env_var_source("stored credential"));
+}
+
+#[test]
+fn the_oauth_selector_renders_status_indicators_and_a_viewport() {
+    let _guard = auth_setup();
+    let providers = vec![
+        auth_provider(
+            "anthropic",
+            "Anthropic",
+            "api_key",
+            Some(AuthCheck {
+                source: Some("ANTHROPIC_API_KEY".to_string()),
+                kind: "api_key".to_string(),
+            }),
+        ),
+        auth_provider(
+            "openai",
+            "OpenAI",
+            "api_key",
+            Some(AuthCheck {
+                source: Some("stored credential".to_string()),
+                kind: "api_key".to_string(),
+            }),
+        ),
+        auth_provider(
+            "openrouter",
+            "OpenRouter",
+            "api_key",
+            Some(AuthCheck {
+                source: Some("~/.aws/credentials".to_string()),
+                kind: "api_key".to_string(),
+            }),
+        ),
+        auth_provider(
+            "kimi-coding",
+            "Kimi For Coding",
+            "api_key",
+            Some(AuthCheck {
+                source: Some("OAuth".to_string()),
+                kind: "oauth".to_string(),
+            }),
+        ),
+        auth_provider("xai", "xAI", "api_key", None),
+    ];
+    let mut selector = OAuthSelectorComponent::new(AuthSelectorMode::Login, providers, None);
+    assert_eq!(selector.filtered_providers().len(), 5);
+    let body = component_body(&mut selector, 100);
+
+    assert!(body.contains("Select provider to configure:"), "{body}");
+    // The first row is selected.
+    assert!(body.contains("→ Anthropic"), "{body}");
+    assert!(body.contains("✓ env: ANTHROPIC_API_KEY"), "{body}");
+    // "stored credential" and "OAuth" collapse to "configured".
+    assert!(body.contains("✓ configured"), "{body}");
+    // A non-env source is shown verbatim.
+    assert!(body.contains("✓ ~/.aws/credentials"), "{body}");
+    // A stored credential of the other type is a warning.
+    assert!(body.contains("• subscription configured"), "{body}");
+    assert!(body.contains("• unconfigured"), "{body}");
+    // No authType labels when every row is the same kind.
+    assert!(!body.contains("[API key]"), "{body}");
+    // 5 rows fit in the 8-row viewport, so there is no scroll counter.
+    assert!(!body.contains("(1/5)"), "{body}");
+}
+
+#[test]
+fn the_oauth_selector_labels_the_auth_type_when_they_are_mixed() {
+    let _guard = auth_setup();
+    let mut selector = OAuthSelectorComponent::new(
+        AuthSelectorMode::Logout,
+        vec![
+            auth_provider("anthropic", "Anthropic (Pro/Max)", "oauth", None),
+            auth_provider("anthropic-key", "Anthropic", "api_key", None),
+        ],
+        None,
+    );
+    let body = component_body(&mut selector, 100);
+    assert!(body.contains("Select provider to logout:"), "{body}");
+    assert!(body.contains("[subscription]"), "{body}");
+    assert!(body.contains("[API key]"), "{body}");
+}
+
+#[test]
+fn the_oauth_selector_scrolls_and_reports_the_position() {
+    let _guard = auth_setup();
+    let providers: Vec<AuthSelectorProvider> = (0..AUTH_SELECTOR_MAX_VISIBLE + 5)
+        .map(|index| {
+            auth_provider(
+                &format!("provider{index}"),
+                &format!("Provider {index}"),
+                "api_key",
+                None,
+            )
+        })
+        .collect();
+    let mut selector = OAuthSelectorComponent::new(AuthSelectorMode::Logout, providers, None);
+    let body = component_body(&mut selector, 100);
+    // 13 rows, but the first viewport shows 8 of them: the counter is there
+    // (upstream shows it whenever the window is not the whole list) and the
+    // rows past it are not.
+    assert!(!body.contains("Provider 12"), "{body}");
+    assert!(body.contains("(1/13)"), "{body}");
+
+    // Walking down past the viewport keeps the selection visible and adds the
+    // `(n/m)` counter.
+    for _ in 0..AUTH_SELECTOR_MAX_VISIBLE + 2 {
+        selector.handle_key("\x1b[B");
+    }
+    let body = component_body(&mut selector, 100);
+    assert!(body.contains("(11/13)"), "{body}");
+    assert!(body.contains("→ Provider 10"), "{body}");
+    assert_eq!(
+        selector.handle_key("\r"),
+        AuthSelectorOutcome::Select {
+            provider_id: "provider10".to_string(),
+            auth_type: "api_key".to_string(),
+        }
+    );
+}
+
+#[test]
+fn the_oauth_selector_empty_messages_depend_on_the_mode_and_the_filter() {
+    let _guard = auth_setup();
+    let mut login = OAuthSelectorComponent::new(AuthSelectorMode::Login, Vec::new(), None);
+    assert!(
+        component_body(&mut login, 80).contains("No providers available"),
+        "login with no providers"
+    );
+    let mut logout = OAuthSelectorComponent::new(AuthSelectorMode::Logout, Vec::new(), None);
+    assert!(
+        component_body(&mut logout, 80).contains("No providers logged in. Use /login first."),
+        "logout with no stored credentials"
+    );
+
+    // A filter that matches nothing is a different message.
+    let mut filtered = OAuthSelectorComponent::new(
+        AuthSelectorMode::Login,
+        vec![auth_provider("openai", "OpenAI", "api_key", None)],
+        None,
+    );
+    filtered.handle_key("zzz");
+    assert!(
+        component_body(&mut filtered, 80).contains("No matching providers"),
+        "no matches"
+    );
+
+    // `initialSearchInput` starts the selector pre-filtered.
+    let mut prefilled = OAuthSelectorComponent::new(
+        AuthSelectorMode::Login,
+        vec![
+            auth_provider("openai", "OpenAI", "api_key", None),
+            auth_provider("anthropic", "Anthropic", "api_key", None),
+        ],
+        Some("anthropic"),
+    );
+    assert_eq!(prefilled.filtered_providers().len(), 1);
+    assert_eq!(prefilled.search_value(), "anthropic");
+    // The fuzzy text includes the method name ("Anthropic auth"), so a query
+    // against it matches too.
+    prefilled.handle_key("zzz");
+    assert_eq!(prefilled.filtered_providers().len(), 0);
+    for _ in 0..3 {
+        prefilled.handle_key("\x7f");
+    }
+    assert_eq!(
+        prefilled.filtered_providers().len(),
+        1,
+        "backspacing back to `anthropic` restores the match"
+    );
+}
+
+#[test]
+fn the_login_dialog_renders_every_show_variant() {
+    let _guard = auth_setup();
+    let mut dialog = LoginDialogComponent::new("anthropic", Some("Anthropic"), None);
+    let opened = Arc::new(Mutex::new(Vec::new()));
+    let record = Arc::clone(&opened);
+    dialog.set_url_opener(Box::new(move |url| {
+        record.lock().unwrap().push(url.to_string());
+    }));
+    dialog.show_auth(
+        "https://example.test/auth",
+        Some("Paste the code back here"),
+    );
+    let body = component_body(&mut dialog, 100);
+    assert!(body.contains("Login to Anthropic"), "{body}");
+    assert!(body.contains("https://example.test/auth"), "{body}");
+    assert!(body.contains("click to open"), "{body}");
+    assert!(body.contains("Paste the code back here"), "{body}");
+    let opened_urls = opened.lock().unwrap();
+    assert_eq!(opened_urls.as_slice(), ["https://example.test/auth"]);
+
+    // `showDetails` replaces the content.
+    dialog.show_details(&["You can also use an AWS profile.".to_string()]);
+    let body = component_body(&mut dialog, 100);
+    assert!(body.contains("You can also use an AWS profile."), "{body}");
+    assert!(!body.contains("Paste the code back here"), "{body}");
+
+    // `showDeviceCode` replaces it too.
+    dialog.show_device_code("ABCD-1234", "https://example.test/device");
+    let body = component_body(&mut dialog, 100);
+    assert!(body.contains("Enter code: ABCD-1234"), "{body}");
+    assert!(!body.contains("You can also use an AWS profile."), "{body}");
+
+    // `showWaiting` / `showProgress` append (progress emits no spacer/hint).
+    dialog.show_waiting("Waiting for approval…");
+    dialog.show_progress("Polling…");
+    let body = component_body(&mut dialog, 100);
+    assert!(body.contains("Waiting for approval…"), "{body}");
+    assert!(body.contains("Polling…"), "{body}");
+    assert!(body.contains("to cancel"), "{body}");
+
+    // `showInfo` renders links as OSC 8 hyperlinks and can hint at closing.
+    dialog.show_info(
+        "Amazon Bedrock supports AWS profiles.",
+        &[AuthInfoLink {
+            url: "https://docs.aws.amazon.com/sdkref/latest/guide/standardized-credentials.html"
+                .to_string(),
+            label: Some("AWS credential provider chain".to_string()),
+        }],
+        true,
+    );
+    let raw = dialog.render(120).join("\n");
+    assert!(
+        raw.contains("\u{1b}]8;;https://docs.aws.amazon.com/sdkref/latest/guide/standardized-credentials.html\u{7}"),
+        "{raw:?}"
+    );
+    let body = strip_ansi(&raw);
+    assert!(
+        body.contains("AWS credential provider chain: https://"),
+        "{body}"
+    );
+    assert!(body.contains("to close"), "{body}");
+}
+
+#[test]
+fn the_login_dialog_submits_a_prompt_and_esc_aborts_the_flow() {
+    let _guard = auth_setup();
+    let mut dialog = LoginDialogComponent::new("openai", None, Some("API key login"));
+    dialog.show_prompt("Enter OpenAI API key", Some("sk-…"));
+    let body = component_body(&mut dialog, 100);
+    assert!(body.contains("API key login"), "{body}");
+    assert!(body.contains("Enter OpenAI API key"), "{body}");
+    assert!(body.contains("e.g., sk-…"), "{body}");
+    assert!(body.contains("to submit"), "{body}");
+
+    for ch in "sk-test".chars() {
+        dialog.handle_key(&ch.to_string());
+    }
+    assert_eq!(
+        dialog.handle_key("\r"),
+        LoginDialogOutcome::Submit("sk-test".to_string())
+    );
+    // The submitted value stays visible in place of the input widget.
+    let body = component_body(&mut dialog, 100);
+    assert!(body.contains("> sk-test"), "{body}");
+    assert!(!dialog.awaiting_input());
+    assert!(!dialog.signal().is_aborted());
+
+    // Esc aborts the dialog's signal, which is what the login flow races on.
+    assert_eq!(dialog.handle_key("\x1b"), LoginDialogOutcome::Cancel);
+    assert!(dialog.signal().is_aborted());
+}
