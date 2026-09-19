@@ -106,7 +106,10 @@ fn live_model(model_id: &str) -> Option<LiveModel> {
                 .get("contextWindow")
                 .and_then(Value::as_u64)
                 .unwrap_or(128_000),
-            max_tokens: entry.get("maxTokens").and_then(Value::as_u64).unwrap_or(4096),
+            max_tokens: entry
+                .get("maxTokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(4096),
             sampling_params: None,
             headers: None,
             compat: None,
@@ -374,7 +377,25 @@ async fn run_task(
                 };
                 outcome.tool_calls += 1;
                 match (tool.execute)(call.id.clone(), call.arguments.clone(), None, None).await {
-                    Ok(result) => results.push(Message::ToolResult(Box::new(ToolResultMessage {
+                    // The trace: what the model asked for, and the first line of
+                    // what it got back (for `exp_read` that is the range+ref
+                    // header, which is what the diagnosis needs).
+                    Ok(result) => {
+                        let first_line = result
+                            .content
+                            .iter()
+                            .find_map(|part| match part {
+                                Content::Text { text, .. } => Some(text.lines().next().unwrap_or("")),
+                                _ => None,
+                            })
+                            .unwrap_or("");
+                        println!(
+                            "      -> {} {} | {}",
+                            call.name,
+                            call.arguments.to_string().chars().take(120).collect::<String>(),
+                            first_line.chars().take(120).collect::<String>()
+                        );
+                        results.push(Message::ToolResult(Box::new(ToolResultMessage {
                         tool_call_id: call.id,
                         tool_name: call.name,
                         content: result.content,
@@ -383,7 +404,8 @@ async fn run_task(
                         added_tool_names: None,
                         is_error: false,
                         timestamp: 0,
-                    }))),
+                    })));
+                    }
                     Err(error) => {
                         outcome.failed_calls += 1;
                         results.push(Message::ToolResult(Box::new(ToolResultMessage {
@@ -412,6 +434,23 @@ async fn run_task(
 
     let final_text = std::fs::read_to_string(root.join("f.txt")).unwrap_or_default();
     outcome.succeeded = final_text == task.expected;
+    if !outcome.succeeded {
+        let actual: Vec<&str> = final_text.lines().collect();
+        let expected: Vec<&str> = task.expected.lines().collect();
+        println!(
+            "      mismatch: actual {} lines vs expected {} lines",
+            actual.len(),
+            expected.len()
+        );
+        for index in 0..actual.len().max(expected.len()) {
+            let got = actual.get(index).copied().unwrap_or("<missing>");
+            let want = expected.get(index).copied().unwrap_or("<missing>");
+            if got != want {
+                println!("      line {}: got {got:?} want {want:?}", index + 1);
+                break;
+            }
+        }
+    }
     outcome
 }
 
