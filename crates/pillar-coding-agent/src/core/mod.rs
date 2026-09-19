@@ -18,6 +18,10 @@ pub mod exec;
 /// have no process or filesystem capability.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod rust_host;
+/// The optional rust-analyzer semantic provider (design §6, stage R2).
+/// Native-only: it drives a server process.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod rust_analyzer;
 pub mod export_html;
 pub mod extensions_loader;
 pub mod extensions_luau;

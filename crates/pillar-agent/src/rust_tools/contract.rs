@@ -171,7 +171,8 @@ pub struct ContractSlice {
 }
 
 impl ContractSlice {
-    fn empty(path: &str, revision: Revision) -> Self {
+    /// An empty slice at a revision; providers fill in what they resolved.
+    pub fn empty(path: &str, revision: Revision) -> Self {
         Self {
             path: path.to_string(),
             revision,
