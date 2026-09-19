@@ -100,10 +100,7 @@ async fn the_read_tool_hands_back_a_reference_the_edit_tool_accepts() {
     .await
     .expect("edit");
     let edit_text = text(&edit);
-    assert!(
-        edit_text.starts_with("[exp_edit f.txt applied 1 replacement(s)"),
-        "{edit_text}"
-    );
+    assert_eq!(edit_text, "[exp_edit f.txt ok]");
     assert_eq!(
         host.content("f.txt").as_deref(),
         Some(&b"one\ntwo\nand a half\nthree\n"[..])

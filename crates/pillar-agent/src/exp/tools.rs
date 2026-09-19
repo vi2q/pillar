@@ -204,7 +204,12 @@ fn read_result(response: &ExpReadResponse) -> AgentToolResult {
         }
         None => header.push_str(" ref=-"),
     }
-    header.push_str(&format!(" delivery={}", delivery_label(response)));
+    // Only the exceptional states are spelled out: a complete delivery needs no
+    // label, and the receipt/revision live in `details` (measured: every byte
+    // here is paid on each call — docs/PERF-BASELINE.md).
+    if response.delivery_state != super::read::DeliveryState::Complete {
+        header.push_str(" partial");
+    }
     if let Some(reason) = response.withheld {
         header.push_str(&format!(" withheld={reason:?}"));
     }
@@ -224,25 +229,13 @@ fn read_result(response: &ExpReadResponse) -> AgentToolResult {
     }
 }
 
-fn delivery_label(response: &ExpReadResponse) -> &'static str {
-    match response.delivery_state {
-        super::read::DeliveryState::Complete => "complete",
-        super::read::DeliveryState::Partial => "partial",
-    }
-}
-
 /// The tool result for an edit: the new revision and a short receipt, no diff
 /// (design §4.2: "適用後は新revisionと短いreceiptを返す").
 fn edit_result(response: &ExpEditResponse) -> AgentToolResult {
     let receipt = &response.receipt;
-    let content = format!(
-        "[exp_edit {} applied {} replacement(s), revision {}/{:#x}, {} bytes]",
-        receipt.path,
-        receipt.edits_applied,
-        receipt.revision.generation,
-        receipt.revision.digest,
-        receipt.bytes_written,
-    );
+    // The receipt travels in `details`; the model only needs to know that the
+    // file changed (docs/PERF-BASELINE.md measures this line).
+    let content = format!("[exp_edit {} ok]", receipt.path);
     AgentToolResult {
         content: vec![Content::text(content)],
         details: serde_json::to_value(response).unwrap_or(Value::Null),

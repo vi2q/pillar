@@ -258,7 +258,7 @@ async fn the_two_paths_agree_on_the_result_and_the_trace_records_the_cost() {
         // Both paths take one read and one edit; the reference path must not
         // need more model turns for the same task.
         assert!(
-            text_of(&edit_b).contains("applied 1 replacement"),
+            text_of(&edit_b).contains("[exp_edit f.txt ok]"),
             "{}: the reference edit must report a receipt",
             task.name
         );
