@@ -126,6 +126,16 @@ impl FileError {
     }
 }
 
+/// The harness tools' own error channel is
+/// [`ToolExecuteError`](crate::types::ToolExecuteError); letting the mutation
+/// queue return it directly means a queue-registration failure surfaces as a
+/// tool failure with the `FileError` message unchanged.
+impl From<FileError> for crate::types::ToolExecuteError {
+    fn from(error: FileError) -> Self {
+        Self(error.to_string())
+    }
+}
+
 /// Stable, backend-independent execution error codes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionErrorCode {

@@ -709,6 +709,32 @@ async fn preserves_bom_and_crlf_line_endings() {
     );
 }
 
+#[tokio::test]
+async fn normalizes_lone_cr_line_endings() {
+    // `normalize_to_lf` returns early when the text holds no `\r`; a CR-only
+    // file must still reach the replaces, otherwise the match fails and the
+    // raw `\r` bytes leak into the written file.
+    let env = context("edit-cr-only");
+    get_or_throw(env.write_file("edit.txt", b"one\rtwo\r").await);
+    let queues = FileMutationQueues::new();
+
+    execute_edit_tool(
+        &env,
+        &json!({"path": "edit.txt", "edits": [{"oldText": "two", "newText": "TWO"}]}),
+        None,
+        &queues,
+    )
+    .await
+    .expect("edit");
+
+    // `detectLineEnding` only knows CRLF and LF, so a CR-only file is
+    // written back LF-normalized (upstream behavior).
+    assert_eq!(
+        get_or_throw(env.read_text_file("edit.txt").await),
+        "one\nTWO\n"
+    );
+}
+
 // --- bash ------------------------------------------------------------------
 
 #[tokio::test]

@@ -58,34 +58,25 @@ pub async fn execute_write_tool<E: ExecutionEnv + ?Sized>(
         .map_err(|error| tool_error(error.to_string()))?;
     queues
         .with_mutation_queue(env, &absolute_path, || async {
-            let result: Result<AgentToolResult, ToolExecuteError> = async {
-                if signal.is_some_and(crate::abort::AbortSignal::is_aborted) {
-                    return Err(tool_error("Operation aborted"));
-                }
-                env.write_file(&absolute_path, input.content.as_bytes())
-                    .await
-                    .map_err(|error: FileError| tool_error(error.to_string()))?;
-                if signal.is_some_and(crate::abort::AbortSignal::is_aborted) {
-                    return Err(tool_error("Operation aborted"));
-                }
-                Ok(AgentToolResult {
-                    content: vec![pillar_ai::types::Content::text(format!(
-                        "Successfully wrote {} bytes to {}",
-                        input.content.len(),
-                        input.path
-                    ))],
-                    ..Default::default()
-                })
+            if signal.is_some_and(crate::abort::AbortSignal::is_aborted) {
+                return Err(tool_error("Operation aborted"));
             }
-            .await;
-            // The mutation queue's error channel is FileError; carry tool
-            // failures through it and re-map to ToolExecuteError outside.
-            result.map_err(|error| {
-                FileError::new(crate::harness::types::FileErrorCode::Unknown, error.0, None)
+            env.write_file(&absolute_path, input.content.as_bytes())
+                .await
+                .map_err(|error: FileError| tool_error(error.to_string()))?;
+            if signal.is_some_and(crate::abort::AbortSignal::is_aborted) {
+                return Err(tool_error("Operation aborted"));
+            }
+            Ok(AgentToolResult {
+                content: vec![pillar_ai::types::Content::text(format!(
+                    "Successfully wrote {} bytes to {}",
+                    input.content.len(),
+                    input.path
+                ))],
+                ..Default::default()
             })
         })
         .await
-        .map_err(|error| tool_error(error.to_string()))
 }
 
 /// Upstream `createWriteTool()`: the wire-level tool definition.

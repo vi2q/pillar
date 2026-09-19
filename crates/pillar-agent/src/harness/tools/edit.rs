@@ -8,7 +8,7 @@ use crate::harness::tools::edit_diff::{
 };
 use crate::harness::tools::file_mutation_queue::FileMutationQueues;
 use crate::harness::tools::path_utils::resolve_tool_path;
-use crate::harness::types::{ExecutionEnv, FileErrorCode, FileKind};
+use crate::harness::types::{ExecutionEnv, FileKind};
 use crate::types::{AgentToolResult, ToolExecuteError};
 
 /// Upstream `EditToolInput`.
@@ -152,90 +152,81 @@ pub async fn execute_edit_tool<E: ExecutionEnv + ?Sized>(
         .map_err(|error| tool_error(error.to_string()))?;
     queues
         .with_mutation_queue(env, &absolute_path, || async {
-            let work: Result<AgentToolResult, ToolExecuteError> = async {
-                if signal.is_some_and(crate::abort::AbortSignal::is_aborted) {
-                    return Err(tool_error("Operation aborted"));
-                }
-                let info = env.file_info(&absolute_path).await;
-                let info = match info {
-                    Ok(info) => info,
-                    Err(error) => return Err(edit_access_error(&input.path, &error)),
-                };
-                if info.kind != FileKind::File && info.kind != FileKind::Symlink {
-                    return Err(tool_error(format!(
-                        "Could not edit file: {}. Path is not a file.",
-                        input.path
-                    )));
-                }
-
-                let content = match env.read_text_file(&absolute_path).await {
-                    Ok(content) => content,
-                    Err(error) => return Err(edit_access_error(&input.path, &error)),
-                };
-                if signal.is_some_and(crate::abort::AbortSignal::is_aborted) {
-                    return Err(tool_error("Operation aborted"));
-                }
-
-                let (bom, text) = strip_bom(&content);
-                let original_ending = detect_line_ending(text);
-                let normalized_content = normalize_to_lf(text);
-                let applied = match apply_edits_to_normalized_content(
-                    &normalized_content,
-                    &input.edits,
-                    &input.path,
-                ) {
-                    Ok(applied) => applied,
-                    Err(message) => return Err(tool_error(message)),
-                };
-                if signal.is_some_and(crate::abort::AbortSignal::is_aborted) {
-                    return Err(tool_error("Operation aborted"));
-                }
-
-                let final_content = format!(
-                    "{bom}{}",
-                    restore_line_endings(&applied.new_content, original_ending)
-                );
-                if let Err(error) = env
-                    .write_file(&absolute_path, final_content.as_bytes())
-                    .await
-                {
-                    return Err(edit_access_error(&input.path, &error));
-                }
-                if signal.is_some_and(crate::abort::AbortSignal::is_aborted) {
-                    return Err(tool_error("Operation aborted"));
-                }
-
-                let (diff, first_changed_line) =
-                    generate_diff_string(&applied.base_content, &applied.new_content, 4);
-                let details = EditToolDetails {
-                    diff,
-                    patch: generate_unified_patch(
-                        &input.path,
-                        &applied.base_content,
-                        &applied.new_content,
-                        4,
-                    ),
-                    first_changed_line,
-                };
-                Ok(AgentToolResult {
-                    content: vec![pillar_ai::types::Content::text(format!(
-                        "Successfully replaced {} block(s) in {}.",
-                        input.edits.len(),
-                        input.path
-                    ))],
-                    details: details.to_value(),
-                    ..Default::default()
-                })
+            if signal.is_some_and(crate::abort::AbortSignal::is_aborted) {
+                return Err(tool_error("Operation aborted"));
             }
-            .await;
-            // Carry tool failures through the FileError channel (see
-            // write.rs divergence note) and re-map outside the queue.
-            work.map_err(|error| {
-                crate::harness::types::FileError::new(FileErrorCode::Unknown, error.0, None)
+            let info = env.file_info(&absolute_path).await;
+            let info = match info {
+                Ok(info) => info,
+                Err(error) => return Err(edit_access_error(&input.path, &error)),
+            };
+            if info.kind != FileKind::File && info.kind != FileKind::Symlink {
+                return Err(tool_error(format!(
+                    "Could not edit file: {}. Path is not a file.",
+                    input.path
+                )));
+            }
+
+            let content = match env.read_text_file(&absolute_path).await {
+                Ok(content) => content,
+                Err(error) => return Err(edit_access_error(&input.path, &error)),
+            };
+            if signal.is_some_and(crate::abort::AbortSignal::is_aborted) {
+                return Err(tool_error("Operation aborted"));
+            }
+
+            let (bom, text) = strip_bom(&content);
+            let original_ending = detect_line_ending(text);
+            let normalized_content = normalize_to_lf(text);
+            let applied = match apply_edits_to_normalized_content(
+                &normalized_content,
+                &input.edits,
+                &input.path,
+            ) {
+                Ok(applied) => applied,
+                Err(message) => return Err(tool_error(message)),
+            };
+            if signal.is_some_and(crate::abort::AbortSignal::is_aborted) {
+                return Err(tool_error("Operation aborted"));
+            }
+
+            let final_content = format!(
+                "{bom}{}",
+                restore_line_endings(&applied.new_content, original_ending)
+            );
+            if let Err(error) = env
+                .write_file(&absolute_path, final_content.as_bytes())
+                .await
+            {
+                return Err(edit_access_error(&input.path, &error));
+            }
+            if signal.is_some_and(crate::abort::AbortSignal::is_aborted) {
+                return Err(tool_error("Operation aborted"));
+            }
+
+            let (diff, first_changed_line) =
+                generate_diff_string(&applied.base_content, &applied.new_content, 4);
+            let details = EditToolDetails {
+                diff,
+                patch: generate_unified_patch(
+                    &input.path,
+                    &applied.base_content,
+                    &applied.new_content,
+                    4,
+                ),
+                first_changed_line,
+            };
+            Ok(AgentToolResult {
+                content: vec![pillar_ai::types::Content::text(format!(
+                    "Successfully replaced {} block(s) in {}.",
+                    input.edits.len(),
+                    input.path
+                ))],
+                details: details.to_value(),
+                ..Default::default()
             })
         })
         .await
-        .map_err(|error| tool_error(error.to_string()))
 }
 
 /// Upstream `createEditTool()`: the wire-level tool definition.

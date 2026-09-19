@@ -30,7 +30,13 @@ pub fn detect_line_ending(content: &str) -> &'static str {
 }
 
 /// Normalize CRLF and lone CR to LF (upstream `normalizeToLF`).
+/// The replaces are skipped when the text holds no `\r` at all (the common
+/// case), so an already-LF file is copied once instead of twice. The output
+/// is identical.
 pub fn normalize_to_lf(text: &str) -> String {
+    if !text.contains('\r') {
+        return text.to_owned();
+    }
     text.replace("\r\n", "\n").replace('\r', "\n")
 }
 

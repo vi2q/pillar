@@ -49,19 +49,27 @@ impl FileMutationQueues {
 
     /// Upstream `withFileMutationQueue`: run `work` while holding the
     /// mutation queue for `(env, canonical path)`.
-    pub async fn with_mutation_queue<T, E, F, Fut>(
+    ///
+    /// divergence: registration and work share one error channel, so the
+    /// work error type only has to be constructible from [`FileError`]
+    /// (identity for `FileError` itself). Upstream's promise chain carries
+    /// the work rejection through untouched; fixing the channel to
+    /// `FileError` would force callers to disguise tool failures as
+    /// `FileErrorCode::Unknown` and re-map them after the queue returned.
+    pub async fn with_mutation_queue<T, Er, E, F, Fut>(
         &self,
         env: &E,
         path: &str,
         work: F,
-    ) -> Result<T, FileError>
+    ) -> Result<T, Er>
     where
         E: ExecutionEnv + ?Sized,
+        Er: From<FileError>,
         F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output = Result<T, FileError>>,
+        Fut: std::future::Future<Output = Result<T, Er>>,
     {
         let _registration = self.registration.lock().await;
-        let key = self.mutation_queue_key(env, path).await?;
+        let key = self.mutation_queue_key(env, path).await.map_err(Er::from)?;
         let queue = self
             .queues
             .lock()
