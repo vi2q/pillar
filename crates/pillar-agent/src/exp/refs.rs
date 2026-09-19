@@ -217,7 +217,10 @@ impl RefStore {
     pub fn lookup(&self, owner: &OwnerId, id: &RefId) -> Result<RefRecord, ExpError> {
         let now = (self.clock)();
         let mut refs = self.refs.lock().expect("ref store lock");
-        let record = refs.get(id.as_str()).cloned().ok_or_else(ExpError::invalid_ref)?;
+        let record = refs
+            .get(id.as_str())
+            .cloned()
+            .ok_or_else(ExpError::invalid_ref)?;
 
         if &record.owner != owner {
             return Err(ExpError::invalid_ref());
@@ -305,7 +308,9 @@ mod tests {
         let owner = OwnerId::new("session-a");
         let id = store.issue(record(&owner), 1_000).expect("issue");
 
-        store.lookup(&OwnerId::new("session-b"), &id).expect_err("foreign");
+        store
+            .lookup(&OwnerId::new("session-b"), &id)
+            .expect_err("foreign");
         store.lookup(&owner, &id).expect("own");
 
         now.store(1_000, Ordering::SeqCst);

@@ -16,6 +16,7 @@ use super::store::{ConditionalStore, Guarantee, Revision, digest64};
 
 /// Which lines to show, 1-indexed (display addressing only).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ExpRange {
     pub start_line: usize,
     pub line_count: usize,
@@ -23,6 +24,7 @@ pub struct ExpRange {
 
 /// An `exp_read` call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ExpReadRequest {
     pub path: String,
     pub range: ExpRange,
@@ -140,7 +142,11 @@ pub async fn exp_read(
             Some(text_all) => &text_all[start..end],
             None => "",
         };
-        let extra = if utf8.is_some() { line.len() } else { end - start };
+        let extra = if utf8.is_some() {
+            line.len()
+        } else {
+            end - start
+        };
         if !text.is_empty() && text.len() + extra > limits.max_read_bytes {
             break;
         }
@@ -202,8 +208,8 @@ pub async fn exp_read(
     // bytes are shown reversibly through `from_utf8_lossy` by the caller); the
     // reference is what is withheld.
     if utf8.is_none() {
-        response.text = String::from_utf8_lossy(&snapshot.bytes[byte_range.start..byte_range.end])
-            .into_owned();
+        response.text =
+            String::from_utf8_lossy(&snapshot.bytes[byte_range.start..byte_range.end]).into_owned();
         return Ok(response);
     }
 

@@ -60,10 +60,10 @@ pub async fn exp_edit(
     request: &ExpEditRequest,
 ) -> Result<ExpEditResponse, ExpError> {
     if request.edits.is_empty() {
-        return Err(ExpError::invalid_request(
-            "edits must contain at least one replacement",
-        )
-        .with_repair("send one or more {ref, replacement} pairs"));
+        return Err(
+            ExpError::invalid_request("edits must contain at least one replacement")
+                .with_repair("send one or more {ref, replacement} pairs"),
+        );
     }
     if request.edits.len() > limits.max_edits_per_call {
         return Err(ExpError::budget_exceeded(
@@ -172,10 +172,8 @@ async fn apply(
     ranges.sort_by_key(|range| range.start);
     for pair in ranges.windows(2) {
         if pair[0].overlaps(&pair[1]) {
-            return Err(ExpError::invalid_request(
-                "referenced ranges overlap",
-            )
-            .with_repair("merge the overlapping ranges into one replacement"));
+            return Err(ExpError::invalid_request("referenced ranges overlap")
+                .with_repair("merge the overlapping ranges into one replacement"));
         }
     }
 
@@ -204,7 +202,9 @@ async fn apply(
         new_bytes.splice(range.start..range.end, replacement.iter().copied());
     }
 
-    let new_revision = host.compare_and_swap(&resource, revision, &new_bytes).await?;
+    let new_revision = host
+        .compare_and_swap(&resource, revision, &new_bytes)
+        .await?;
     refs.invalidate_resource(&resource);
 
     Ok(Receipt {
@@ -232,8 +232,8 @@ fn args_digest(request: &ExpEditRequest) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::ledger::OperationId;
+    use super::*;
 
     fn edit(reference: &str, replacement: &str) -> ExpEditRequestItem {
         ExpEditRequestItem {

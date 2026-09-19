@@ -36,11 +36,7 @@ impl Fixture {
             Arc::new(move || format!("ref-{}", next.fetch_add(1, Ordering::SeqCst)));
         Self {
             host: Arc::new(MemoryHost::new()),
-            refs: Arc::new(RefStore::with_id_source(
-                clock,
-                limits.max_live_refs,
-                ids,
-            )),
+            refs: Arc::new(RefStore::with_id_source(clock, limits.max_live_refs, ids)),
             owner: OwnerId::new("session-a"),
             now,
             limits,
@@ -247,7 +243,10 @@ async fn a_foreign_reference_is_rejected_without_leaking_the_target() {
         !error.message.contains("f.txt") && !error.message.contains("ref-"),
         "the refusal must not describe the target: {error}"
     );
-    assert_eq!(fixture.host.content("f.txt").as_deref(), Some(&b"one\ntwo\n"[..]));
+    assert_eq!(
+        fixture.host.content("f.txt").as_deref(),
+        Some(&b"one\ntwo\n"[..])
+    );
 }
 
 #[tokio::test]
@@ -255,10 +254,9 @@ async fn an_expired_reference_is_rejected() {
     let fixture = Fixture::with_file(b"one\ntwo\n");
     let reference = read_ref(&fixture, 1, 1).await;
 
-    fixture.now.store(
-        1_000 + fixture.limits.max_ref_ttl_ms + 1,
-        Ordering::SeqCst,
-    );
+    fixture
+        .now
+        .store(1_000 + fixture.limits.max_ref_ttl_ms + 1, Ordering::SeqCst);
     let error = exp_edit(
         fixture.host.as_ref(),
         &fixture.refs,
@@ -271,7 +269,10 @@ async fn an_expired_reference_is_rejected() {
     .expect_err("expired");
 
     assert_eq!(error.code, ExpErrorCode::ExpiredRef);
-    assert_eq!(fixture.host.content("f.txt").as_deref(), Some(&b"one\ntwo\n"[..]));
+    assert_eq!(
+        fixture.host.content("f.txt").as_deref(),
+        Some(&b"one\ntwo\n"[..])
+    );
 }
 
 #[tokio::test]
@@ -328,15 +329,9 @@ async fn revoked_authorization_is_rejected_and_changes_nothing() {
     let refs = Arc::new(RefStore::new(clock, limits.max_live_refs));
     let owner = OwnerId::new("session-a");
 
-    let response = exp_read(
-        &inner,
-        &refs,
-        &limits,
-        &owner,
-        &read_request(1, 1),
-    )
-    .await
-    .expect("read");
+    let response = exp_read(&inner, &refs, &limits, &owner, &read_request(1, 1))
+        .await
+        .expect("read");
     let reference = response.reference.expect("reference");
 
     let revoked = RevokedHost(MemoryHost::new());
@@ -369,7 +364,10 @@ async fn a_weak_host_reads_but_refuses_a_strict_edit() {
         .await
         .expect("read");
     assert_eq!(response.guarantee, Guarantee::Weak);
-    assert!(!response.editable, "a weak host cannot promise a strict edit");
+    assert!(
+        !response.editable,
+        "a weak host cannot promise a strict edit"
+    );
     let reference = response.reference.expect("reference is still issued");
 
     let error = exp_edit(
@@ -696,15 +694,7 @@ async fn an_in_flight_duplicate_joins_and_does_not_double_apply() {
             limits.clone(),
         );
         tokio::spawn(async move {
-            exp_edit(
-                host.as_ref(),
-                &refs,
-                &ledger,
-                &limits,
-                &owner,
-                &request,
-            )
-            .await
+            exp_edit(host.as_ref(), &refs, &ledger, &limits, &owner, &request).await
         })
     };
     // The first call is now inside the publication check.
@@ -720,15 +710,7 @@ async fn an_in_flight_duplicate_joins_and_does_not_double_apply() {
             limits,
         );
         tokio::spawn(async move {
-            exp_edit(
-                host.as_ref(),
-                &refs,
-                &ledger,
-                &limits,
-                &owner,
-                &request,
-            )
-            .await
+            exp_edit(host.as_ref(), &refs, &ledger, &limits, &owner, &request).await
         })
     };
     tokio::task::yield_now().await;

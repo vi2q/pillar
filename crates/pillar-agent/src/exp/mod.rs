@@ -45,6 +45,7 @@ pub mod ledger;
 pub mod read;
 pub mod refs;
 pub mod store;
+pub mod tools;
 
 pub use edit::{ExpEditRequest, ExpEditRequestItem, ExpEditResponse, exp_edit};
 pub use error::{ExpError, ExpErrorCode};
@@ -55,6 +56,10 @@ pub use read::{
 pub use refs::{ByteRange, Clock, OwnerId, RefId, RefRecord, RefStore, manual_clock, system_clock};
 pub use store::{
     ConditionalStore, Guarantee, MemoryHost, ResourceId, Revision, Snapshot, digest64,
+};
+pub use tools::{
+    ExpToolkit, exp_edit_parameters_json, exp_read_parameters_json, exp_edit_description,
+    exp_read_description,
 };
 
 /// Per-call hard caps (design §8.2: a call-level cap first, a cross-cutting

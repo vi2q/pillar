@@ -27,15 +27,7 @@ pub fn digest64(bytes: &[u8]) -> u64 {
 }
 
 /// What a host can promise about publication (design §4.3).
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Guarantee {
     /// The host can inspect an expected revision and publish atomically, so a
@@ -65,16 +57,7 @@ impl ResourceId {
 }
 
 /// The version of a resource.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Hash,
-    serde::Serialize,
-    serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Revision {
     /// Bumped by the host on every publication. It is what distinguishes an
