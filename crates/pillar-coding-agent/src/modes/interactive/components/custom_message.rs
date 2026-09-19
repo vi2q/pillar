@@ -80,8 +80,7 @@ impl CustomMessageComponent {
                 expanded: self.expanded,
                 output_pad: self.output_pad,
             };
-            let payload =
-                crate::core::extensions_types::message_render_payload(&self.message);
+            let payload = crate::core::extensions_types::message_render_payload(&self.message);
             let style = crate::core::extensions_types::theme_style_fn();
             if let Some(lines) = renderer(&payload, &options, &*style) {
                 self.used_custom_renderer = true;
