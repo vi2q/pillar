@@ -518,40 +518,41 @@ async fn the_reference_and_existing_paths_on_a_live_model() {
     );
 
     for repetition in 0..REPETITIONS {
-    for task in tasks() {
-        for condition in [Condition::Existing, Condition::Reference] {
-            let workspace = sandbox.join(format!(
-                "{}-{}-{}",
-                condition.name().split(' ').next().expect("letter"),
-                task.name,
-                repetition
-            ));
-            let outcome = run_task(condition, &task, &workspace, &live).await;
-            println!(
-                "{:<28} {:>6} {:>6} {:>7} {:>8} {:>8} {:>6}",
-                format!(
-                    "{} / {}",
-                    condition.name().split(' ').next().unwrap(),
+        for task in tasks() {
+            for condition in [Condition::Existing, Condition::Reference] {
+                let workspace = sandbox.join(format!(
+                    "{}-{}-{}",
+                    condition.name().split(' ').next().expect("letter"),
+                    task.name,
+                    repetition
+                ));
+                let outcome = run_task(condition, &task, &workspace, &live).await;
+                println!(
+                    "{:<28} {:>6} {:>6} {:>7} {:>8} {:>8} {:>6}",
+                    format!(
+                        "{} / {}",
+                        condition.name().split(' ').next().unwrap(),
+                        task.name
+                    ),
+                    outcome.turns,
+                    outcome.tool_calls,
+                    outcome.failed_calls,
+                    outcome.input_tokens,
+                    outcome.output_tokens,
+                    outcome.succeeded
+                );
+                // The harness gate: a run that reports success must have produced
+                // the expected file, and vice versa.
+                let final_text =
+                    std::fs::read_to_string(workspace.join("f.txt")).unwrap_or_default();
+                assert_eq!(
+                    outcome.succeeded,
+                    final_text == task.expected,
+                    "{}",
                     task.name
-                ),
-                outcome.turns,
-                outcome.tool_calls,
-                outcome.failed_calls,
-                outcome.input_tokens,
-                outcome.output_tokens,
-                outcome.succeeded
-            );
-            // The harness gate: a run that reports success must have produced
-            // the expected file, and vice versa.
-            let final_text = std::fs::read_to_string(workspace.join("f.txt")).unwrap_or_default();
-            assert_eq!(
-                outcome.succeeded,
-                final_text == task.expected,
-                "{}",
-                task.name
-            );
+                );
+            }
         }
-    }
     }
     let _ = std::fs::remove_dir_all(&sandbox);
 }
