@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use super::contract::{ContractRequest, ContractResponse, ContractService};
 use super::diagnostic::{
     BuildStatus, CollectedRun, CollectionState, Diagnostic, DiagnosticCollector, SourceBinding,
     TestStatus,
@@ -112,6 +113,7 @@ pub struct RustToolkit {
     plans: Arc<Mutex<PlanRegistry>>,
     diagnostics: Arc<Mutex<DiagnosticStore>>,
     suggestions: Option<Arc<SuggestionService>>,
+    contract: Option<Arc<ContractService>>,
 }
 
 impl RustToolkit {
@@ -132,7 +134,15 @@ impl RustToolkit {
             plans: Arc::new(Mutex::new(PlanRegistry::new(capacity))),
             diagnostics: Arc::new(Mutex::new(DiagnosticStore::new(capacity))),
             suggestions: None,
+            contract: None,
         }
+    }
+
+    /// Add the optional type/trait contract provider (design §6, stage R2).
+    /// Without it, `rs_contract` is not registered.
+    pub fn with_contract(mut self, service: Arc<ContractService>) -> Self {
+        self.contract = Some(service);
+        self
     }
 
     /// Add suggestion registration/application (design §8, stage R3). Without
@@ -148,6 +158,9 @@ impl RustToolkit {
         let mut tools = vec![self.verify_plan_tool(), self.run_tool(), self.job_tool()];
         if self.suggestions.is_some() {
             tools.push(self.apply_suggestion_tool());
+        }
+        if self.contract.is_some() {
+            tools.push(self.contract_tool());
         }
         tools.push(self.diagnostics_tool());
         tools
@@ -282,6 +295,34 @@ impl RustToolkit {
                         .await
                         .map_err(tool_error)?;
                     Ok(apply_result(&receipt))
+                })
+            }),
+            execution_mode: None,
+        }
+    }
+
+    fn contract_tool(&self) -> AgentTool {
+        let contract = self
+            .contract
+            .clone()
+            .expect("only registered when a contract service exists");
+        AgentTool {
+            tool: Tool {
+                name: "rs_contract".to_string(),
+                description: rs_contract_description(),
+                parameters: rs_contract_parameters_json(),
+                constrained_sampling: None,
+            },
+            label: "rs_contract".to_string(),
+            prepare_arguments: None,
+            execute: Arc::new(move |_id, args, signal, _on_update| {
+                let contract = Arc::clone(&contract);
+                Box::pin(async move {
+                    abort_guard(signal.as_ref())?;
+                    let request: ContractRequest = serde_json::from_value(args)
+                        .map_err(|error| ToolExecuteError(format!("rs_contract input: {error}")))?;
+                    let response = contract.contract(&request).await.map_err(tool_error)?;
+                    Ok(contract_result(&response))
                 })
             }),
             execution_mode: None,
@@ -874,6 +915,83 @@ fn apply_result(receipt: &SuggestionReceipt) -> AgentToolResult {
     }
 }
 
+fn contract_result(response: &ContractResponse) -> AgentToolResult {
+    let mut content = format!(
+        "[rs_contract {} {}",
+        response.position_ref,
+        if response.availability.is_available() {
+            "available"
+        } else {
+            "unavailable"
+        }
+    );
+    if response.fallback_to_source {
+        content.push_str(" fallback=source");
+    }
+    if response.slice.truncated {
+        content.push_str(" truncated=true");
+    }
+    content.push_str("]\n");
+    if let Some(declaration) = &response.slice.declaration {
+        content.push_str(&format!("{} {}", declaration.kind, declaration.name));
+        if let Some(signature) = &declaration.signature {
+            content.push_str(&format!(" {signature}"));
+        }
+        content.push_str(&format!(
+            " ({})\n",
+            provenance_label(declaration.provenance)
+        ));
+        for bound in declaration
+            .where_clauses
+            .iter()
+            .chain(declaration.generics.iter())
+        {
+            content.push_str(&format!("  {bound}\n"));
+        }
+    }
+    for item in &response.slice.types {
+        content.push_str(&format!("type {}", item.name));
+        if let Some(definition) = &item.definition {
+            content.push_str(&format!(" = {definition}"));
+        }
+        content.push('\n');
+    }
+    for candidate in &response.slice.impls {
+        content.push_str(&format!(
+            "impl {}{}\n",
+            candidate.text,
+            if candidate.selected {
+                " (selected)"
+            } else {
+                ""
+            }
+        ));
+    }
+    for unresolved in &response.slice.unresolved {
+        content.push_str(&format!(
+            "unresolved {}: {}\n",
+            unresolved.what, unresolved.reason
+        ));
+    }
+    if let Some(excerpt) = &response.slice.source_excerpt {
+        content.push_str("source:\n");
+        content.push_str(excerpt);
+        content.push('\n');
+    }
+    AgentToolResult {
+        content: vec![Content::text(content.trim_end().to_string())],
+        details: serde_json::to_value(response).unwrap_or(Value::Null),
+        ..Default::default()
+    }
+}
+
+fn provenance_label(provenance: super::contract::Provenance) -> &'static str {
+    match provenance {
+        super::contract::Provenance::Declared => "declared",
+        super::contract::Provenance::Inferred => "inferred",
+    }
+}
+
 fn tool_error(error: RustToolError) -> ToolExecuteError {
     let mut message = format!("rs tool failed ({}) : {}", error.code, error.message);
     if let Some(repair) = error.repair {
@@ -1033,6 +1151,41 @@ pub fn rs_apply_suggestion_parameters_json() -> Value {
     })
 }
 
+pub fn rs_contract_description() -> String {
+    "Read the type/trait contract at a versioned position reference: the declaration signature, \
+     generics and where-clauses, the referenced type definitions and related impl candidates. \
+     Selected and candidate impls are distinguished, declared and inferred types are distinguished, \
+     and anything unresolved or cut by the budget is reported. When no semantic provider is \
+     available this falls back to the raw source line and says so."
+        .to_string()
+}
+
+pub fn rs_contract_parameters_json() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "position_ref": {
+                "type": "string",
+                "description": "A versioned source position reference from a previous tool result"
+            },
+            "include": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "signature, where_clauses, type_definitions, related_impls, cfg"
+            },
+            "budget": {
+                "type": "object",
+                "properties": {
+                    "max_nodes": {"type": "integer"},
+                    "max_depth": {"type": "integer"},
+                    "output_tokens": {"type": "integer"}
+                }
+            }
+        },
+        "required": ["position_ref"]
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1072,5 +1225,7 @@ mod tests {
         assert_eq!(diagnostics["required"], json!(["run_id"]));
         let apply = rs_apply_suggestion_parameters_json();
         assert_eq!(apply["required"], json!(["suggestion_id", "operation_id"]));
+        let contract = rs_contract_parameters_json();
+        assert_eq!(contract["required"], json!(["position_ref"]));
     }
 }

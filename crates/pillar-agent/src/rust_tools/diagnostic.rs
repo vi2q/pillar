@@ -498,8 +498,7 @@ impl TestEvidence {
 
 /// Parse `test result: ok. 3 passed; 0 failed; …` best-effort.
 fn parse_libtest_summary(line: &str) -> Option<TestSummary> {
-    let rest = line.strip_prefix("test result:")?;
-    let rest = rest.trim_start();
+    let rest = line.strip_prefix("test result:")?.trim_start();
     let result_ok = rest.starts_with("ok");
     let mut summary = TestSummary {
         result_ok,
@@ -509,19 +508,31 @@ fn parse_libtest_summary(line: &str) -> Option<TestSummary> {
         measured: 0,
         filtered_out: 0,
     };
-    for part in rest.split(';') {
-        let mut words = part.split_whitespace();
-        let Some(count) = words.next().and_then(|token| token.parse::<u64>().ok()) else {
+    // Pair every number with the label that follows it. Splitting on the
+    // result word (`ok.` / `FAILED.`) as well keeps the first `N passed` from
+    // being skipped, which happens when the whole head is one `;` segment.
+    let tokens: Vec<&str> = rest
+        .split(|character: char| character == ';' || character == '.' || character.is_whitespace())
+        .filter(|token| !token.is_empty())
+        .collect();
+    let mut index = 0usize;
+    while index + 1 < tokens.len() {
+        let Some(count) = tokens[index].parse::<u64>().ok() else {
+            index += 1;
             continue;
         };
-        match words.next() {
-            Some("passed") => summary.passed = count,
-            Some("failed") => summary.failed = count,
-            Some("ignored") => summary.ignored = count,
-            Some("measured") => summary.measured = count,
-            Some("filtered") => summary.filtered_out = count,
-            _ => {}
+        match tokens[index + 1] {
+            "passed" => summary.passed = count,
+            "failed" => summary.failed = count,
+            "ignored" => summary.ignored = count,
+            "measured" => summary.measured = count,
+            "filtered" => summary.filtered_out = count,
+            _ => {
+                index += 1;
+                continue;
+            }
         }
+        index += 2;
     }
     Some(summary)
 }
@@ -1190,11 +1201,11 @@ mod tests {
     #[test]
     fn a_libtest_summary_is_parsed_but_flagged_best_effort() {
         let summary = parse_libtest_summary(
-            "test result: ok. 3 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out",
+            "test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out",
         )
         .expect("summary");
         assert!(!summary.result_ok);
-        // The count is still read even when the result is FAILED.
+        // The count is still read when the result is FAILED.
         assert_eq!(summary.passed, 3);
         assert_eq!(summary.failed, 1);
         assert_eq!(summary.filtered_out, 2);

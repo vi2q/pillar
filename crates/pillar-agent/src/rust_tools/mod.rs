@@ -40,14 +40,21 @@
 //! shared without giving the runtime Cargo, LSP or OS process access
 //! (design §1 "NPC / LMPC最小構成へCargo・LSP・OS processを持ち込まない").
 
+pub mod contract;
 pub mod diagnostic;
 pub mod error;
 pub mod host;
 pub mod metadata;
 pub mod plan;
+pub mod position;
 pub mod suggestion;
 pub mod toolkit;
 
+pub use contract::{
+    AnalysisAvailability, ContractBudget, ContractLimits, ContractRequest, ContractResponse,
+    ContractService, ContractSlice, Declaration, ImplCandidate, Provenance, SemanticProvider,
+    SemanticQuery, SourcePosition, TypeDefinition, UnavailableProvider, UnresolvedItem,
+};
 pub use diagnostic::{
     Applicability, ArtifactRecord, BuildFinished, BuildScriptRecord, BuildStatus, CollectedRun,
     CollectionLimits, CollectionState, CollectionStats, Diagnostic, DiagnosticCollector,
@@ -68,6 +75,7 @@ pub use plan::{
     Coverage, PlanGoal, PlanRequest, PlanScope, Unverified, UnverifiedKind, VerifyPlan, VerifyStep,
     plan,
 };
+pub use position::{LineColumn, LineIndex, LspPosition, PositionEncoding};
 pub use suggestion::{
     ApplyRequest, PreviewReplacement, SuggestionNotice, SuggestionPreview, SuggestionReceipt,
     SuggestionService,
@@ -75,10 +83,10 @@ pub use suggestion::{
 pub use toolkit::{
     DiagnosticBudget, DiagnosticEntry, DiagnosticStore, DiagnosticsRequest, DiagnosticsResponse,
     JobAction, JobOutcome, JobRequest, PlanRegistry, RunRequest, RustToolkit,
-    rs_apply_suggestion_description, rs_apply_suggestion_parameters_json,
-    rs_diagnostics_description, rs_diagnostics_parameters_json, rs_job_description,
-    rs_job_parameters_json, rs_run_description, rs_run_parameters_json, rs_verify_plan_description,
-    rs_verify_plan_parameters_json,
+    rs_apply_suggestion_description, rs_apply_suggestion_parameters_json, rs_contract_description,
+    rs_contract_parameters_json, rs_diagnostics_description, rs_diagnostics_parameters_json,
+    rs_job_description, rs_job_parameters_json, rs_run_description, rs_run_parameters_json,
+    rs_verify_plan_description, rs_verify_plan_parameters_json,
 };
 
 /// 64-bit FNV-1a, matching the experimental adapter's digest.
