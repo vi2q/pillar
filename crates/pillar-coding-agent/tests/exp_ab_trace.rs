@@ -19,8 +19,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use pillar_agent::exp::{
-    ExpEditRequest, ExpEditRequestItem, ExpLimits, ExpRange, ExpReadRequest, ExpToolkit, MemoryHost,
-    OperationId, OperationLedger, OwnerId, RefStore, manual_clock,
+    ExpEditRequest, ExpEditRequestItem, ExpLimits, ExpRange, ExpReadRequest, ExpToolkit,
+    MemoryHost, OperationId, OperationLedger, OwnerId, RefStore, manual_clock,
 };
 use pillar_agent::types::AgentToolResult;
 use pillar_coding_agent::core::tools::edit::edit;
@@ -134,11 +134,8 @@ async fn the_two_paths_agree_on_the_result_and_the_trace_records_the_cost() {
 
     for task in tasks() {
         // --- path A: read + edit (the existing tools) ---
-        let dir_a = std::env::temp_dir().join(format!(
-            "pillar-ab-a-{}-{}",
-            std::process::id(),
-            task.name
-        ));
+        let dir_a =
+            std::env::temp_dir().join(format!("pillar-ab-a-{}-{}", std::process::id(), task.name));
         std::fs::create_dir_all(&dir_a).expect("temp dir");
         std::fs::write(dir_a.join("f.txt"), task.file.as_bytes()).expect("write");
         let cwd = dir_a.to_string_lossy().into_owned();
