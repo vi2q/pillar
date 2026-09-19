@@ -3,7 +3,8 @@
 //!
 //! Line numbers *address* the range the caller wants to see; the reference is
 //! issued for the equivalent byte range, and that byte range is what an edit
-//! later carries. A reference is issued only for content that was fully
+//! later carries. The terminator of the last line is not part of the range, so
+//! replacing a line keeps the file's own line structure. A reference is issued only for content that was fully
 //! delivered: an omitted function body or a truncated huge line must not
 //! silently widen the editable area (design §4.2).
 
@@ -156,10 +157,22 @@ pub async fn exp_read(
     }
 
     let complete = delivered == requested_lines;
+    // The terminator of the last delivered line stays *outside* the reference.
+    // A model that "replaces this line" writes the text without a newline, and
+    // with the terminator inside the range that edit would concatenate the next
+    // line onto it — measured on a live run (docs/TASKS.md).
     let byte_range = if delivered == 0 {
         ByteRange::new(spans[first - 1].0, spans[first - 1].0)
     } else {
-        ByteRange::new(spans[first - 1].0, spans[first - 1 + delivered - 1].1)
+        let (start, mut end) = spans[first - 1 + delivered - 1];
+        if end > start && snapshot.bytes.get(end - 1) == Some(&b'\n') {
+            end -= 1;
+            // A CRLF terminator leaves its `\r` outside the range too.
+            if end > start && snapshot.bytes.get(end - 1) == Some(&b'\r') {
+                end -= 1;
+            }
+        }
+        ByteRange::new(spans[first - 1].0, end)
     };
 
     let withheld = if utf8.is_none() {

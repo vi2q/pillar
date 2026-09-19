@@ -61,28 +61,30 @@ fn tasks() -> Vec<Task> {
             file: lines(8, |index| format!("line_{index}")),
             first: 3,
             last: 3,
-            replacement: "LINE_THREE\n".to_string(),
+            replacement: "LINE_THREE".to_string(),
         },
         Task {
             name: "one_line_inside_a_200_line_function",
             file: long_function,
             first: 120,
             last: 120,
-            replacement: "    let target = 42;\n".to_string(),
+            replacement: "    let target = 42;".to_string(),
         },
         Task {
             name: "thirty_line_block_replaced",
             file: lines(60, |index| format!("    old_{index}();")),
             first: 20,
             last: 49,
-            replacement: lines(30, |index| format!("    new_{index}();")),
+            replacement: lines(30, |index| format!("    new_{index}();"))
+                .trim_end_matches('\n')
+                .to_string(),
         },
         Task {
             name: "two_regions_in_one_call",
             file: lines(80, |index| format!("    line_{index}();")),
             first: 5,
             last: 5,
-            replacement: "    first_change();\n".to_string(),
+            replacement: "    first_change();".to_string(),
         },
     ]
 }
@@ -156,9 +158,13 @@ async fn the_two_paths_agree_on_the_result_and_the_trace_records_the_cost() {
         .len();
 
         let old_text = minimal_unique_old_text(&task.file, task.first, task.last);
+        // `edit` consumes the old text with its terminator, so its new text has
+        // to carry one too; the reference form's range stops short of the last
+        // terminator. Same intended edit, stated per contract.
+        let replacement_a = format!("{}\n", task.replacement);
         let edit_args_a = json!({
             "path": "f.txt",
-            "edits": [{"oldText": old_text, "newText": task.replacement}],
+            "edits": [{"oldText": old_text, "newText": replacement_a}],
         })
         .to_string()
         .len();
@@ -166,7 +172,7 @@ async fn the_two_paths_agree_on_the_result_and_the_trace_records_the_cost() {
             "f.txt",
             &[Edit {
                 old_text: old_text.clone(),
-                new_text: task.replacement.clone(),
+                new_text: replacement_a.clone(),
             }],
             &cwd,
             None,

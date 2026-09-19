@@ -93,7 +93,7 @@ async fn the_read_tool_hands_back_a_reference_the_edit_tool_accepts() {
         "exp_edit",
         json!({
             "operationId": "op-1",
-            "edits": [{"ref": reference, "replacement": "two\nand a half\n"}],
+            "edits": [{"ref": reference, "replacement": "two\nand a half"}],
         }),
         None,
     )

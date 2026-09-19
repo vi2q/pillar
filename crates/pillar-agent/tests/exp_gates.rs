@@ -235,7 +235,7 @@ async fn a_foreign_reference_is_rejected_without_leaking_the_target() {
         &ledger(&fixture),
         &fixture.limits,
         &OwnerId::new("session-b"),
-        &edit_request("op-1", &[(&reference, "ONE\n")]),
+        &edit_request("op-1", &[(&reference, "ONE")]),
     )
     .await
     .expect_err("foreign reference");
@@ -265,7 +265,7 @@ async fn an_expired_reference_is_rejected() {
         &ledger(&fixture),
         &fixture.limits,
         &fixture.owner,
-        &edit_request("op-1", &[(&reference, "ONE\n")]),
+        &edit_request("op-1", &[(&reference, "ONE")]),
     )
     .await
     .expect_err("expired");
@@ -289,7 +289,7 @@ async fn a_restart_expires_old_references() {
         &ledger(&fixture),
         &fixture.limits,
         &fixture.owner,
-        &edit_request("op-1", &[(&reference, "ONE\n")]),
+        &edit_request("op-1", &[(&reference, "ONE")]),
     )
     .await
     .expect_err("restart");
@@ -310,7 +310,7 @@ async fn replacing_the_path_conflicts_instead_of_writing_the_old_resource() {
         &ledger(&fixture),
         &fixture.limits,
         &fixture.owner,
-        &edit_request("op-1", &[(&reference, "ONE\n")]),
+        &edit_request("op-1", &[(&reference, "ONE")]),
     )
     .await
     .expect_err("path swap");
@@ -344,7 +344,7 @@ async fn revoked_authorization_is_rejected_and_changes_nothing() {
         &Arc::new(OperationLedger::new(8)),
         &limits,
         &owner,
-        &edit_request("op-1", &[(&reference, "ONE\n")]),
+        &edit_request("op-1", &[(&reference, "ONE")]),
     )
     .await
     .expect_err("revoked");
@@ -378,7 +378,7 @@ async fn a_weak_host_reads_but_refuses_a_strict_edit() {
         &Arc::new(OperationLedger::new(8)),
         &limits,
         &owner,
-        &edit_request("op-1", &[(&reference, "ONE\n")]),
+        &edit_request("op-1", &[(&reference, "ONE")]),
     )
     .await
     .expect_err("weak");
@@ -399,7 +399,7 @@ async fn only_the_referenced_occurrence_of_repeated_text_changes() {
         &ledger(&fixture),
         &fixture.limits,
         &fixture.owner,
-        &edit_request("op-1", &[(&reference, "second\n")]),
+        &edit_request("op-1", &[(&reference, "second")]),
     )
     .await
     .expect("edit");
@@ -448,7 +448,7 @@ async fn crlf_bom_and_trailing_newline_survive_outside_the_range() {
         &ledger(&fixture),
         &fixture.limits,
         &fixture.owner,
-        &edit_request("op-1", &[(&reference, "TWO\r\n")]),
+        &edit_request("op-1", &[(&reference, "TWO")]),
     )
     .await
     .expect("edit");
@@ -472,7 +472,7 @@ async fn the_replacement_is_literal_not_normalized() {
         &ledger(&fixture),
         &fixture.limits,
         &fixture.owner,
-        &edit_request("op-1", &[(&reference, "Ω\n")]),
+        &edit_request("op-1", &[(&reference, "Ω")]),
     )
     .await
     .expect("edit");
@@ -557,7 +557,7 @@ async fn an_external_change_after_the_read_is_a_conflict() {
         &ledger(&fixture),
         &fixture.limits,
         &fixture.owner,
-        &edit_request("op-1", &[(&reference, "ONE\n")]),
+        &edit_request("op-1", &[(&reference, "ONE")]),
     )
     .await
     .expect_err("conflict");
@@ -583,7 +583,7 @@ async fn an_aba_write_is_a_conflict() {
         &ledger(&fixture),
         &fixture.limits,
         &fixture.owner,
-        &edit_request("op-1", &[(&reference, "ONE\n")]),
+        &edit_request("op-1", &[(&reference, "ONE")]),
     )
     .await
     .expect_err("aba");
@@ -609,7 +609,7 @@ async fn a_duplicate_call_returns_the_same_receipt_and_applies_once() {
         &ledger,
         &fixture.limits,
         &fixture.owner,
-        &edit_request("op-1", &[(&reference, "ONE\n")]),
+        &edit_request("op-1", &[(&reference, "ONE")]),
     )
     .await
     .expect("first");
@@ -619,7 +619,7 @@ async fn a_duplicate_call_returns_the_same_receipt_and_applies_once() {
         &ledger,
         &fixture.limits,
         &fixture.owner,
-        &edit_request("op-1", &[(&reference, "ONE\n")]),
+        &edit_request("op-1", &[(&reference, "ONE")]),
     )
     .await
     .expect("duplicate");
@@ -644,7 +644,7 @@ async fn the_same_operation_id_with_different_arguments_is_rejected() {
         &ledger,
         &fixture.limits,
         &fixture.owner,
-        &edit_request("op-1", &[(&first, "ONE\n")]),
+        &edit_request("op-1", &[(&first, "ONE")]),
     )
     .await
     .expect("first");
@@ -655,7 +655,7 @@ async fn the_same_operation_id_with_different_arguments_is_rejected() {
         &ledger,
         &fixture.limits,
         &fixture.owner,
-        &edit_request("op-1", &[(&second, "TWO\n")]),
+        &edit_request("op-1", &[(&second, "TWO")]),
     )
     .await
     .expect_err("mismatch");
@@ -685,7 +685,7 @@ async fn an_in_flight_duplicate_joins_and_does_not_double_apply() {
     let reference = response.reference.expect("reference");
     let ledger = Arc::new(OperationLedger::new(8));
 
-    let request = edit_request("op-1", &[(&reference, "ONE\n")]);
+    let request = edit_request("op-1", &[(&reference, "ONE")]);
     let first = {
         let (host, refs, ledger, owner, request, limits) = (
             Arc::clone(&host),
@@ -745,7 +745,7 @@ async fn a_cancelled_operation_is_unknown_and_leaves_no_change() {
         .expect("read");
     let reference = response.reference.expect("reference");
     let ledger = Arc::new(OperationLedger::new(8));
-    let request = edit_request("op-1", &[(&reference, "ONE\n")]);
+    let request = edit_request("op-1", &[(&reference, "ONE")]);
 
     // Start the call, let it reach the publication check, then cancel it: a
     // cancellation before publication is a definite "no change".
@@ -794,7 +794,7 @@ async fn a_full_ledger_refuses_a_new_operation_without_publishing() {
         &ledger,
         &fixture.limits,
         &fixture.owner,
-        &edit_request("op-1", &[(&reference, "ONE\n")]),
+        &edit_request("op-1", &[(&reference, "ONE")]),
     )
     .await
     .expect("first");
@@ -805,7 +805,7 @@ async fn a_full_ledger_refuses_a_new_operation_without_publishing() {
         &ledger,
         &fixture.limits,
         &fixture.owner,
-        &edit_request("op-2", &[(&reference, "One\n")]),
+        &edit_request("op-2", &[(&reference, "One")]),
     )
     .await
     .expect_err("full");
@@ -832,7 +832,7 @@ async fn too_many_replacements_in_one_call_is_a_budget_refusal() {
         &ledger(&fixture),
         &limits,
         &fixture.owner,
-        &edit_request("op-1", &[(&reference, "ONE\n"), (&reference, "again\n")]),
+        &edit_request("op-1", &[(&reference, "ONE"), (&reference, "again")]),
     )
     .await
     .expect_err("budget");
