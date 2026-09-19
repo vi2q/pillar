@@ -178,3 +178,403 @@ async fn builtin_images_models_resolves_openrouter_auth_from_env() {
         .expect("configured via env");
     assert_eq!(resolved.auth.api_key.as_deref(), Some("or-key"));
 }
+
+// --- Built-in api-key login flows ------------------------------------------
+//
+// Port of the `login` halves of packages/ai/src/auth/helpers.ts
+// (`envApiKeyAuth`), providers/anthropic.ts, cloudflare-auth.ts,
+// amazon-bedrock.ts and google-vertex.ts. The prompt-driven flows are run
+// through `Models.login`, so the stored credential is what the flow really
+// produced (upstream: `models.login(...)`).
+
+use std::collections::VecDeque;
+use std::sync::Mutex;
+
+use pillar_ai::abort::{AbortReason, AbortSignal};
+use pillar_ai::auth_types::{ApiKeyCredential, AuthEvent, AuthInteraction, AuthPrompt, Credential};
+use pillar_ai::models::{CreateModelsOptions, Models, create_models};
+use pillar_ai::providers_all::provider_auth_result;
+
+/// Answers a login flow's prompts from a script and records what it saw.
+struct ScriptedInteraction {
+    answers: Mutex<VecDeque<String>>,
+    prompts: Mutex<Vec<AuthPrompt>>,
+    events: Mutex<Vec<AuthEvent>>,
+    signal: Option<AbortSignal>,
+    /// Abort the flow from inside `prompt`, i.e. after the flow started.
+    abort_on_prompt: bool,
+}
+
+impl ScriptedInteraction {
+    fn new(answers: &[&str]) -> Self {
+        Self {
+            answers: Mutex::new(answers.iter().map(|a| a.to_string()).collect()),
+            prompts: Mutex::new(Vec::new()),
+            events: Mutex::new(Vec::new()),
+            signal: None,
+            abort_on_prompt: false,
+        }
+    }
+
+    fn aborting(answers: &[&str]) -> Self {
+        Self {
+            abort_on_prompt: true,
+            ..Self::new(answers)
+        }
+    }
+
+    fn prompts(&self) -> Vec<AuthPrompt> {
+        self.prompts.lock().unwrap().clone()
+    }
+
+    fn events(&self) -> Vec<AuthEvent> {
+        self.events.lock().unwrap().clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl AuthInteraction for ScriptedInteraction {
+    fn signal(&self) -> Option<&AbortSignal> {
+        self.signal.as_ref()
+    }
+
+    async fn prompt(&self, prompt: &AuthPrompt) -> Result<String, pillar_ai::error::AiError> {
+        self.prompts.lock().unwrap().push(prompt.clone());
+        if self.abort_on_prompt {
+            if let Some(signal) = &self.signal {
+                signal.abort(Some(AbortReason::Aborted));
+            }
+        }
+        self.answers
+            .lock()
+            .unwrap()
+            .pop_front()
+            .ok_or_else(|| pillar_ai::error::AiError::Other("no scripted answer".to_string()))
+    }
+
+    async fn notify(&self, event: &AuthEvent) {
+        self.events.lock().unwrap().push(event.clone());
+    }
+}
+
+/// The builtin providers over a fresh credential store.
+fn builtin_models_with_store() -> (Models, Arc<InMemoryCredentialStore>) {
+    let credentials = Arc::new(InMemoryCredentialStore::new());
+    let models = create_models(CreateModelsOptions {
+        credentials: Some(Arc::clone(&credentials) as Arc<dyn CredentialStore>),
+        auth_context: Some(auth_context(&[])),
+        ..Default::default()
+    });
+    for provider in builtin_providers() {
+        models.set_provider(provider);
+    }
+    (models, credentials)
+}
+
+fn api_key_login() -> String {
+    "api_key".to_string()
+}
+
+// "envApiKeyAuth prompts for the key and stores it"
+#[tokio::test(flavor = "multi_thread")]
+async fn env_api_key_login_prompts_for_the_key_and_stores_it() {
+    let (models, credentials) = builtin_models_with_store();
+    let interaction = ScriptedInteraction::new(&["sk-test"]);
+
+    let credential = models
+        .login("openai", &api_key_login(), &interaction)
+        .await
+        .expect("login succeeds");
+
+    assert_eq!(
+        interaction.prompts(),
+        vec![AuthPrompt::Secret {
+            message: "Enter OpenAI API key".to_string(),
+            placeholder: None,
+        }]
+    );
+    assert_eq!(
+        credential,
+        Credential::ApiKey(ApiKeyCredential {
+            key: Some("sk-test".to_string()),
+            env: None,
+        })
+    );
+    assert_eq!(
+        credentials.read("openai", None).await.unwrap(),
+        Some(credential)
+    );
+}
+
+// "an abort during the prompt rejects the login and stores nothing"
+#[tokio::test(flavor = "multi_thread")]
+async fn an_abort_after_the_prompt_rejects_the_login() {
+    let (models, credentials) = builtin_models_with_store();
+    let controller = AbortSignal::new();
+    let interaction = ScriptedInteraction {
+        signal: Some(controller.clone()),
+        ..ScriptedInteraction::aborting(&["sk-test"])
+    };
+
+    let result = models.login("openai", &api_key_login(), &interaction).await;
+    assert!(result.is_err(), "an aborted login must not resolve");
+    assert_eq!(credentials.read("openai", None).await.unwrap(), None);
+}
+
+// "anthropic's api-key auth is not the shared envApiKeyAuth"
+#[tokio::test(flavor = "multi_thread")]
+async fn anthropic_auth_reads_its_documented_env_vars() {
+    let credentials = InMemoryCredentialStore::new();
+    let anthropic = builtin_providers()
+        .into_iter()
+        .find(|provider| provider.id == "anthropic")
+        .expect("anthropic is a builtin provider");
+
+    // A bare ANTHROPIC_AUTH_TOKEN is a bearer credential, and it wins over
+    // the api-key env vars.
+    let resolved = provider_auth_result(
+        &anthropic,
+        &credentials,
+        &*auth_context(&[
+            ("ANTHROPIC_AUTH_TOKEN", "bearer"),
+            ("ANTHROPIC_API_KEY", "env-key"),
+        ]),
+    )
+    .await
+    .unwrap()
+    .expect("configured");
+    assert_eq!(
+        resolved
+            .auth
+            .headers
+            .as_ref()
+            .and_then(|headers| headers.get("Authorization"))
+            .and_then(|value| value.clone())
+            .as_deref(),
+        Some("Bearer bearer")
+    );
+    assert_eq!(resolved.auth.api_key, None);
+    assert_eq!(resolved.source.as_deref(), Some("ANTHROPIC_AUTH_TOKEN"));
+
+    // The api-key env vars are api keys.
+    let resolved = provider_auth_result(
+        &anthropic,
+        &credentials,
+        &*auth_context(&[("ANTHROPIC_OAUTH_TOKEN", "oauth-key")]),
+    )
+    .await
+    .unwrap()
+    .expect("configured");
+    assert_eq!(resolved.auth.api_key.as_deref(), Some("oauth-key"));
+    assert_eq!(resolved.source.as_deref(), Some("ANTHROPIC_OAUTH_TOKEN"));
+
+    // Regression: the port used to look up the *constant names* as env vars,
+    // which left the whole provider ambient-only.
+    let resolved = provider_auth_result(
+        &anthropic,
+        &credentials,
+        &*auth_context(&[
+            ("ANTHROPIC_API_KEY_ENV", "key"),
+            ("ANTHROPIC_OAUTH_TOKEN_ENV", "token"),
+        ]),
+    )
+    .await
+    .unwrap();
+    assert!(resolved.is_none(), "placeholder env names must not resolve");
+}
+
+// "anthropic's login is the same secret prompt"
+#[tokio::test(flavor = "multi_thread")]
+async fn anthropic_login_prompts_for_the_key() {
+    let (models, credentials) = builtin_models_with_store();
+    let interaction = ScriptedInteraction::new(&["sk-ant"]);
+
+    let credential = models
+        .login("anthropic", &api_key_login(), &interaction)
+        .await
+        .expect("login succeeds");
+
+    assert_eq!(
+        interaction.prompts(),
+        vec![AuthPrompt::Secret {
+            message: "Enter Anthropic API key".to_string(),
+            placeholder: None,
+        }]
+    );
+    assert_eq!(
+        credential,
+        Credential::ApiKey(ApiKeyCredential {
+            key: Some("sk-ant".to_string()),
+            env: None,
+        })
+    );
+    assert_eq!(
+        credentials.read("anthropic", None).await.unwrap(),
+        Some(credential)
+    );
+}
+
+// "cloudflare login collects the account id, and the gateway id too"
+#[tokio::test(flavor = "multi_thread")]
+async fn cloudflare_login_collects_the_account_and_gateway_ids() {
+    let (models, credentials) = builtin_models_with_store();
+
+    let workers_ai = ScriptedInteraction::new(&["cf-key", "acct"]);
+    models
+        .login("cloudflare-workers-ai", &api_key_login(), &workers_ai)
+        .await
+        .expect("login succeeds");
+    assert_eq!(
+        workers_ai.prompts(),
+        vec![
+            AuthPrompt::Secret {
+                message: "Enter Cloudflare API key".to_string(),
+                placeholder: None,
+            },
+            AuthPrompt::Text {
+                message: "Enter Cloudflare account ID".to_string(),
+                placeholder: None,
+            },
+        ]
+    );
+    assert_eq!(
+        credentials
+            .read("cloudflare-workers-ai", None)
+            .await
+            .unwrap(),
+        Some(Credential::ApiKey(ApiKeyCredential {
+            key: Some("cf-key".to_string()),
+            env: Some(BTreeMap::from([(
+                "CLOUDFLARE_ACCOUNT_ID".to_string(),
+                "acct".to_string(),
+            )])),
+        }))
+    );
+
+    let gateway = ScriptedInteraction::new(&["cf-key", "acct", "gw"]);
+    models
+        .login("cloudflare-ai-gateway", &api_key_login(), &gateway)
+        .await
+        .expect("login succeeds");
+    assert_eq!(gateway.prompts().len(), 3);
+    assert_eq!(
+        credentials
+            .read("cloudflare-ai-gateway", None)
+            .await
+            .unwrap(),
+        Some(Credential::ApiKey(ApiKeyCredential {
+            key: Some("cf-key".to_string()),
+            env: Some(BTreeMap::from([
+                ("CLOUDFLARE_ACCOUNT_ID".to_string(), "acct".to_string()),
+                ("CLOUDFLARE_GATEWAY_ID".to_string(), "gw".to_string()),
+            ])),
+        }))
+    );
+}
+
+// "bedrock login stores the bearer token, the profile, or nothing"
+#[tokio::test(flavor = "multi_thread")]
+async fn bedrock_login_follows_the_selected_method() {
+    let (models, credentials) = builtin_models_with_store();
+
+    let bearer = ScriptedInteraction::new(&["bearer-token", "bedrock-token"]);
+    models
+        .login("amazon-bedrock", &api_key_login(), &bearer)
+        .await
+        .expect("login succeeds");
+    assert_eq!(
+        credentials.read("amazon-bedrock", None).await.unwrap(),
+        Some(Credential::ApiKey(ApiKeyCredential {
+            key: Some("bedrock-token".to_string()),
+            env: None,
+        }))
+    );
+    assert!(
+        bearer.events().is_empty(),
+        "the bearer path notifies nothing"
+    );
+
+    let profile = ScriptedInteraction::new(&["aws-profile", "my-profile"]);
+    models
+        .login("amazon-bedrock", &api_key_login(), &profile)
+        .await
+        .expect("login succeeds");
+    assert_eq!(
+        credentials.read("amazon-bedrock", None).await.unwrap(),
+        Some(Credential::ApiKey(ApiKeyCredential {
+            key: None,
+            env: Some(BTreeMap::from([(
+                "AWS_PROFILE".to_string(),
+                "my-profile".to_string(),
+            )])),
+        }))
+    );
+    assert_eq!(
+        profile.events().len(),
+        1,
+        "the ambient paths explain themselves"
+    );
+
+    let chain = ScriptedInteraction::new(&["credential-chain", ""]);
+    models
+        .login("amazon-bedrock", &api_key_login(), &chain)
+        .await
+        .expect("login succeeds");
+    assert_eq!(
+        credentials.read("amazon-bedrock", None).await.unwrap(),
+        Some(Credential::ApiKey(ApiKeyCredential::default()))
+    );
+
+    let unknown = ScriptedInteraction::new(&["nonsense"]);
+    assert!(
+        models
+            .login("amazon-bedrock", &api_key_login(), &unknown)
+            .await
+            .is_err(),
+        "an unknown method must not store a credential"
+    );
+}
+
+// "vertex login collects project, location and the service account path"
+#[tokio::test(flavor = "multi_thread")]
+async fn vertex_login_collects_the_adc_inputs() {
+    let (models, credentials) = builtin_models_with_store();
+
+    let api_key = ScriptedInteraction::new(&["api-key", "gcp-key"]);
+    models
+        .login("google-vertex", &api_key_login(), &api_key)
+        .await
+        .expect("login succeeds");
+    assert_eq!(
+        credentials.read("google-vertex", None).await.unwrap(),
+        Some(Credential::ApiKey(ApiKeyCredential {
+            key: Some("gcp-key".to_string()),
+            env: None,
+        }))
+    );
+
+    let service_account =
+        ScriptedInteraction::new(&["service-account", "proj", "us-central1", "/tmp/sa.json"]);
+    models
+        .login("google-vertex", &api_key_login(), &service_account)
+        .await
+        .expect("login succeeds");
+    assert_eq!(
+        credentials.read("google-vertex", None).await.unwrap(),
+        Some(Credential::ApiKey(ApiKeyCredential {
+            key: None,
+            env: Some(BTreeMap::from([
+                ("GOOGLE_CLOUD_PROJECT".to_string(), "proj".to_string()),
+                (
+                    "GOOGLE_CLOUD_LOCATION".to_string(),
+                    "us-central1".to_string()
+                ),
+                (
+                    "GOOGLE_APPLICATION_CREDENTIALS".to_string(),
+                    "/tmp/sa.json".to_string(),
+                ),
+            ])),
+        }))
+    );
+    assert_eq!(service_account.events().len(), 1);
+}

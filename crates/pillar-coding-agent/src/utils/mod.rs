@@ -4,4 +4,5 @@ pub mod changelog;
 pub mod clipboard;
 pub mod clipboard_image;
 pub mod git;
+pub mod open_browser;
 pub mod text;

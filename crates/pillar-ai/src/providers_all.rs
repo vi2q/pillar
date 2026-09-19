@@ -8,7 +8,8 @@ use std::sync::Arc;
 
 use crate::auth_resolve::ProviderRef;
 use crate::auth_types::{
-    ApiKeyAuth, ApiKeyAuthInput, ApiKeyCredential, AuthResult, ModelAuth, ProviderAuth,
+    ApiKeyAuth, ApiKeyAuthInput, ApiKeyCredential, AuthEvent, AuthInfoLink, AuthPrompt, AuthResult,
+    ModelAuth, ProviderAuth, ProviderAuthInteraction, SelectOption,
 };
 use crate::error::AiError;
 use crate::models::{CreateProviderOptions, Models, Provider, ProviderApi};
@@ -28,6 +29,25 @@ pub struct EnvApiKeyAuth {
 impl ApiKeyAuth for EnvApiKeyAuth {
     fn name(&self) -> &str {
         self.name
+    }
+
+    async fn login(
+        &self,
+        interaction: &ProviderAuthInteraction,
+    ) -> Result<Option<ApiKeyCredential>, AiError> {
+        interaction.signal.throw_if_aborted()?;
+        let key = interaction
+            .interaction
+            .prompt(&AuthPrompt::Secret {
+                message: format!("Enter {}", self.name),
+                placeholder: None,
+            })
+            .await?;
+        interaction.signal.throw_if_aborted()?;
+        Ok(Some(ApiKeyCredential {
+            key: Some(key),
+            env: None,
+        }))
     }
 
     async fn resolve(&self, input: &ApiKeyAuthInput<'_>) -> Result<Option<AuthResult>, AiError> {
@@ -51,6 +71,94 @@ impl ApiKeyAuth for EnvApiKeyAuth {
                 return Ok(Some(AuthResult {
                     auth: ModelAuth {
                         api_key: Some(value),
+                        ..Default::default()
+                    },
+                    env: None,
+                    source: Some(env_var.to_string()),
+                }));
+            }
+        }
+        Ok(None)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Anthropic (upstream providers/anthropic.ts `anthropicApiKeyAuth`)
+// ---------------------------------------------------------------------------
+
+/// Env var names upstream exports from `env-api-keys.ts`.
+pub const ANTHROPIC_AUTH_TOKEN_ENV: &str = "ANTHROPIC_AUTH_TOKEN";
+pub const ANTHROPIC_OAUTH_TOKEN_ENV: &str = "ANTHROPIC_OAUTH_TOKEN";
+pub const ANTHROPIC_API_KEY_ENV: &str = "ANTHROPIC_API_KEY";
+
+/// Anthropic's auth is not the shared `envApiKeyAuth`: a bare
+/// `ANTHROPIC_AUTH_TOKEN` is a *bearer* credential (its own header), and it is
+/// consulted before the two api-key env vars.
+pub struct AnthropicApiKeyAuth;
+
+#[async_trait::async_trait]
+impl ApiKeyAuth for AnthropicApiKeyAuth {
+    fn name(&self) -> &str {
+        "Anthropic API key"
+    }
+
+    async fn login(
+        &self,
+        interaction: &ProviderAuthInteraction,
+    ) -> Result<Option<ApiKeyCredential>, AiError> {
+        interaction.signal.throw_if_aborted()?;
+        let key = interaction
+            .interaction
+            .prompt(&AuthPrompt::Secret {
+                message: "Enter Anthropic API key".to_string(),
+                placeholder: None,
+            })
+            .await?;
+        interaction.signal.throw_if_aborted()?;
+        Ok(Some(ApiKeyCredential {
+            key: Some(key),
+            env: None,
+        }))
+    }
+
+    async fn resolve(&self, input: &ApiKeyAuthInput<'_>) -> Result<Option<AuthResult>, AiError> {
+        if let Some(key) = input
+            .credential
+            .and_then(|credential| credential.key.clone())
+        {
+            return Ok(Some(AuthResult {
+                auth: ModelAuth {
+                    api_key: Some(key),
+                    ..Default::default()
+                },
+                env: input
+                    .credential
+                    .and_then(|credential| credential.env.clone()),
+                source: Some("stored credential".to_string()),
+            }));
+        }
+        if let Some(auth_token) = input.ctx.env(ANTHROPIC_AUTH_TOKEN_ENV).await {
+            return Ok(Some(AuthResult {
+                auth: ModelAuth {
+                    headers: Some(
+                        [(
+                            "Authorization".to_string(),
+                            Some(format!("Bearer {auth_token}")),
+                        )]
+                        .into_iter()
+                        .collect(),
+                    ),
+                    ..Default::default()
+                },
+                env: None,
+                source: Some(ANTHROPIC_AUTH_TOKEN_ENV.to_string()),
+            }));
+        }
+        for env_var in [ANTHROPIC_OAUTH_TOKEN_ENV, ANTHROPIC_API_KEY_ENV] {
+            if let Some(api_key) = input.ctx.env(env_var).await {
+                return Ok(Some(AuthResult {
+                    auth: ModelAuth {
+                        api_key: Some(api_key),
                         ..Default::default()
                     },
                     env: None,
@@ -110,6 +218,42 @@ impl CloudflareAuth {
 impl ApiKeyAuth for CloudflareAuth {
     fn name(&self) -> &str {
         self.name
+    }
+
+    async fn login(
+        &self,
+        interaction: &ProviderAuthInteraction,
+    ) -> Result<Option<ApiKeyCredential>, AiError> {
+        let key = interaction
+            .interaction
+            .prompt(&AuthPrompt::Secret {
+                message: "Enter Cloudflare API key".to_string(),
+                placeholder: None,
+            })
+            .await?;
+        let account_id = interaction
+            .interaction
+            .prompt(&AuthPrompt::Text {
+                message: "Enter Cloudflare account ID".to_string(),
+                placeholder: None,
+            })
+            .await?;
+        let mut env = BTreeMap::new();
+        env.insert(CLOUDFLARE_ACCOUNT_ID.to_string(), account_id);
+        if self.kind == CloudflareAuthKind::AiGateway {
+            let gateway_id = interaction
+                .interaction
+                .prompt(&AuthPrompt::Text {
+                    message: "Enter Cloudflare AI Gateway ID".to_string(),
+                    placeholder: None,
+                })
+                .await?;
+            env.insert(CLOUDFLARE_GATEWAY_ID.to_string(), gateway_id);
+        }
+        Ok(Some(ApiKeyCredential {
+            key: Some(key),
+            env: Some(env),
+        }))
     }
 
     async fn resolve(&self, input: &ApiKeyAuthInput<'_>) -> Result<Option<AuthResult>, AiError> {
@@ -216,6 +360,91 @@ impl ApiKeyAuth for BedrockAuth {
         "AWS credentials or bearer token"
     }
 
+    async fn login(
+        &self,
+        interaction: &ProviderAuthInteraction,
+    ) -> Result<Option<ApiKeyCredential>, AiError> {
+        interaction.signal.throw_if_aborted()?;
+        let method = interaction
+            .interaction
+            .prompt(&AuthPrompt::Select {
+                message: "Select Amazon Bedrock authentication method:".to_string(),
+                options: vec![
+                    SelectOption {
+                        id: "bearer-token".to_string(),
+                        label: "Bearer token".to_string(),
+                        description: None,
+                    },
+                    SelectOption {
+                        id: "aws-profile".to_string(),
+                        label: "AWS profile".to_string(),
+                        description: None,
+                    },
+                    SelectOption {
+                        id: "credential-chain".to_string(),
+                        label: "Existing AWS credential chain".to_string(),
+                        description: None,
+                    },
+                ],
+            })
+            .await?;
+        interaction.signal.throw_if_aborted()?;
+        if method == "bearer-token" {
+            let key = interaction
+                .interaction
+                .prompt(&AuthPrompt::Secret {
+                    message: "Enter Amazon Bedrock bearer token".to_string(),
+                    placeholder: None,
+                })
+                .await?;
+            return Ok(Some(ApiKeyCredential {
+                key: Some(key),
+                env: None,
+            }));
+        }
+        interaction
+            .interaction
+            .notify(&AuthEvent::Info {
+                message:
+                    "Amazon Bedrock supports AWS profiles, IAM credentials, and role-based credentials."
+                        .to_string(),
+                links: Some(vec![AuthInfoLink {
+                    url: "https://docs.aws.amazon.com/sdkref/latest/guide/standardized-credentials.html"
+                        .to_string(),
+                    label: Some("AWS credential provider chain".to_string()),
+                }]),
+            })
+            .await;
+        if method == "aws-profile" {
+            let profile = interaction
+                .interaction
+                .prompt(&AuthPrompt::Text {
+                    message: "Enter AWS profile name".to_string(),
+                    placeholder: None,
+                })
+                .await?;
+            let mut env = BTreeMap::new();
+            env.insert("AWS_PROFILE".to_string(), profile);
+            return Ok(Some(ApiKeyCredential {
+                key: None,
+                env: Some(env),
+            }));
+        }
+        if method != "credential-chain" {
+            return Err(AiError::Other(format!(
+                "Unknown Amazon Bedrock auth method: {method}"
+            )));
+        }
+        interaction
+            .interaction
+            .prompt(&AuthPrompt::Text {
+                message: "Configure AWS credentials, then press Enter to continue".to_string(),
+                placeholder: None,
+            })
+            .await?;
+        Ok(Some(ApiKeyCredential::default()))
+    }
+
     async fn resolve(&self, input: &ApiKeyAuthInput<'_>) -> Result<Option<AuthResult>, AiError> {
         if let Some(key) = input
             .credential
@@ -305,6 +534,111 @@ const VERTEX_ADC_PATH: &str = "~/.config/gcloud/application_default_credentials.
 impl ApiKeyAuth for VertexAuth {
     fn name(&self) -> &str {
         "Google Cloud credentials"
+    }
+
+    async fn login(
+        &self,
+        interaction: &ProviderAuthInteraction,
+    ) -> Result<Option<ApiKeyCredential>, AiError> {
+        interaction.signal.throw_if_aborted()?;
+        let method = interaction
+            .interaction
+            .prompt(&AuthPrompt::Select {
+                message: "Select Google Vertex AI authentication method:".to_string(),
+                options: vec![
+                    SelectOption {
+                        id: "api-key".to_string(),
+                        label: "Google Cloud API key".to_string(),
+                        description: None,
+                    },
+                    SelectOption {
+                        id: "adc".to_string(),
+                        label: "Application Default Credentials".to_string(),
+                        description: None,
+                    },
+                    SelectOption {
+                        id: "service-account".to_string(),
+                        label: "Service account credentials file".to_string(),
+                        description: None,
+                    },
+                ],
+            })
+            .await?;
+        interaction.signal.throw_if_aborted()?;
+        if method == "api-key" {
+            let key = interaction
+                .interaction
+                .prompt(&AuthPrompt::Secret {
+                    message: "Enter Google Cloud API key".to_string(),
+                    placeholder: None,
+                })
+                .await?;
+            return Ok(Some(ApiKeyCredential {
+                key: Some(key),
+                env: None,
+            }));
+        }
+        if method != "adc" && method != "service-account" {
+            return Err(AiError::Other(format!(
+                "Unknown Google Vertex AI auth method: {method}"
+            )));
+        }
+        interaction
+            .interaction
+            .notify(&AuthEvent::Info {
+                message: if method == "adc" {
+                    "Run `gcloud auth application-default login`, then provide the project and location."
+                } else {
+                    "Provide a service account credentials file, project, and location."
+                }
+                .to_string(),
+                links: Some(vec![AuthInfoLink {
+                    url: "https://cloud.google.com/docs/authentication/provide-credentials-adc"
+                        .to_string(),
+                    label: Some("Application Default Credentials".to_string()),
+                }]),
+            })
+            .await;
+        let project = interaction
+            .interaction
+            .prompt(&AuthPrompt::Text {
+                message: "Enter Google Cloud project ID".to_string(),
+                placeholder: None,
+            })
+            .await?;
+        let location = interaction
+            .interaction
+            .prompt(&AuthPrompt::Text {
+                message: "Enter Google Cloud location".to_string(),
+                placeholder: None,
+            })
+            .await?;
+        let credentials_path = if method == "service-account" {
+            Some(
+                interaction
+                    .interaction
+                    .prompt(&AuthPrompt::Text {
+                        message: "Enter service account credentials file path".to_string(),
+                        placeholder: None,
+                    })
+                    .await?,
+            )
+        } else {
+            None
+        };
+        let mut env = BTreeMap::new();
+        env.insert("GOOGLE_CLOUD_PROJECT".to_string(), project);
+        env.insert("GOOGLE_CLOUD_LOCATION".to_string(), location);
+        if let Some(credentials_path) = credentials_path {
+            env.insert(
+                "GOOGLE_APPLICATION_CREDENTIALS".to_string(),
+                credentials_path,
+            );
+        }
+        Ok(Some(ApiKeyCredential {
+            key: None,
+            env: Some(env),
+        }))
     }
 
     async fn resolve(&self, input: &ApiKeyAuthInput<'_>) -> Result<Option<AuthResult>, AiError> {
@@ -416,14 +750,10 @@ pub fn builtin_providers() -> Vec<Arc<Provider>> {
             "anthropic",
             "Anthropic",
             Some("https://api.anthropic.com"),
-            env_api_key_auth(
-                "Anthropic API key",
-                &[
-                    "ANTHROPIC_OAUTH_TOKEN_ENV",
-                    "ANTHROPIC_API_KEY_ENV",
-                    "ANTHROPIC_API_KEY",
-                ],
-            ),
+            ProviderAuth {
+                api_key: Some(Arc::new(AnthropicApiKeyAuth)),
+                oauth: None,
+            },
             single_api("anthropic-messages"),
         ),
         simple_provider(

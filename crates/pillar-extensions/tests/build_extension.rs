@@ -118,49 +118,54 @@ fn extension_path() -> PathBuf {
 /// signal, killing the process when it fires. This is the host half of "an
 /// interrupt stops the build" — the guest cannot kill its own child.
 fn real_exec(commands: Arc<Mutex<Vec<String>>>, cwd: PathBuf) -> ExecHost {
-    Arc::new(move |command: &str, args: &[String], options: &ExecOptions| {
-        commands
-            .lock()
-            .unwrap()
-            .push(format!("{command} {}", args.join(" ")));
-        let directory = options.cwd.clone().map_or_else(|| cwd.clone(), PathBuf::from);
-        let mut child = match std::process::Command::new(command)
-            .args(args)
-            .current_dir(&directory)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-        {
-            Ok(child) => child,
-            Err(error) => return ExecResult::spawn_failure(&error.to_string()),
-        };
-
-        let mut killed = false;
-        loop {
-            match child.try_wait() {
-                Ok(Some(_)) => break,
-                Ok(None) => {}
+    Arc::new(
+        move |command: &str, args: &[String], options: &ExecOptions| {
+            commands
+                .lock()
+                .unwrap()
+                .push(format!("{command} {}", args.join(" ")));
+            let directory = options
+                .cwd
+                .clone()
+                .map_or_else(|| cwd.clone(), PathBuf::from);
+            let mut child = match std::process::Command::new(command)
+                .args(args)
+                .current_dir(&directory)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+            {
+                Ok(child) => child,
                 Err(error) => return ExecResult::spawn_failure(&error.to_string()),
-            }
-            if options.signal.as_ref().is_some_and(|s| s.is_aborted()) {
-                let _ = child.kill();
-                killed = true;
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
+            };
 
-        match child.wait_with_output() {
-            Ok(output) => ExecResult {
-                stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-                stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-                code: output.status.code().unwrap_or(-1),
-                killed,
-                truncated: false,
-            },
-            Err(error) => ExecResult::spawn_failure(&error.to_string()),
-        }
-    })
+            let mut killed = false;
+            loop {
+                match child.try_wait() {
+                    Ok(Some(_)) => break,
+                    Ok(None) => {}
+                    Err(error) => return ExecResult::spawn_failure(&error.to_string()),
+                }
+                if options.signal.as_ref().is_some_and(|s| s.is_aborted()) {
+                    let _ = child.kill();
+                    killed = true;
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+
+            match child.wait_with_output() {
+                Ok(output) => ExecResult {
+                    stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+                    stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+                    code: output.status.code().unwrap_or(-1),
+                    killed,
+                    truncated: false,
+                },
+                Err(error) => ExecResult::spawn_failure(&error.to_string()),
+            }
+        },
+    )
 }
 
 fn step(name: &str, script: &str, artifact: Option<&str>) -> serde_json::Value {
@@ -280,7 +285,10 @@ fn a_failing_step_stops_the_build_and_is_not_success() {
     assert_eq!(result["details"]["completed"], 1);
     assert!(!fixture.path("three.txt").exists());
     assert!(
-        !fixture.commands_run().iter().any(|line| line.contains("three")),
+        !fixture
+            .commands_run()
+            .iter()
+            .any(|line| line.contains("three")),
         "the step after the failure never ran"
     );
 }
@@ -361,7 +369,10 @@ fn an_interrupted_build_kills_the_process_and_reports_what_ran() {
     assert_eq!(result["details"]["aborted"], true);
     assert_eq!(result["details"]["completed"], 1);
     assert!(
-        result["details"]["results"][1]["code"].as_i64().unwrap_or_default() != 0,
+        result["details"]["results"][1]["code"]
+            .as_i64()
+            .unwrap_or_default()
+            != 0,
         "an interrupted step does not carry a success exit code"
     );
     // The log survives the interruption: that is the moment it is needed.
