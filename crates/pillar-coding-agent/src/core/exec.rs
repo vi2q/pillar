@@ -9,12 +9,18 @@
 //!   so a detached descendant holding the pipes open cannot hang the call.
 //! - the SIGTERM → SIGKILL escalation matches upstream on unix; elsewhere the
 //!   child is killed outright (no SIGTERM).
+//! - a cancellation on unix signals the child's *process group* (the child is
+//!   started as its own group leader), so a grandchild the command spawned does
+//!   not survive the abort and keep the pipes open. Upstream kills only the
+//!   child (docs/TASKS.md sb265).
 //! - captured output is bounded by [`MAX_CAPTURED_BYTES`] per stream: past it
 //!   the readers keep draining the pipe (a full pipe would block the child) but
 //!   stop storing, and the result says `truncated`. Upstream accumulates
 //!   without a bound; the port must not let a command size the host's heap.
 
 use std::io::Read;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -51,6 +57,10 @@ pub fn exec_command(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // Make the child its own process-group leader so a cancellation can signal
+    // the whole group (the child and any grandchildren it spawned).
+    #[cfg(unix)]
+    process.process_group(0);
     let mut child = match process.spawn() {
         Ok(child) => child,
         Err(error) => return ExecResult::spawn_failure(error),
@@ -99,7 +109,7 @@ pub fn exec_command(
             term_sent = Some(Instant::now());
         }
         if term_sent.is_some_and(|sent| sent.elapsed() >= TERM_GRACE) {
-            let _ = child.kill();
+            hard_kill(&mut child);
         }
         std::thread::sleep(POLL_INTERVAL);
     };
@@ -174,14 +184,32 @@ fn spawn_reader(mut pipe: impl Read + Send + 'static, buffer: Arc<Mutex<Captured
     });
 }
 
-/// Ask the child to stop: SIGTERM on unix (upstream), `Child::kill`
+/// Ask the child's process group to stop: SIGTERM on unix (upstream asks the
+/// child; the port asks its group so descendants stop too), `Child::kill`
 /// elsewhere.
 fn terminate(child: &mut Child) {
     #[cfg(unix)]
     {
-        // SAFETY: `id()` is a live child pid owned by this process.
+        // SAFETY: `id()` is a live child pid, and the child is its own process
+        // group leader (`process_group(0)`), so its pid is the group id.
         unsafe {
-            libc::kill(child.id() as libc::pid_t, libc::SIGTERM);
+            libc::killpg(child.id() as libc::pid_t, libc::SIGTERM);
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = child.kill();
+    }
+}
+
+/// The escalation after [`TERM_GRACE`]: SIGKILL the group on unix, `kill`
+/// elsewhere.
+fn hard_kill(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        // SAFETY: as in `terminate`.
+        unsafe {
+            libc::killpg(child.id() as libc::pid_t, libc::SIGKILL);
         }
     }
     #[cfg(not(unix))]
@@ -297,6 +325,40 @@ mod tests {
         );
         assert!(result.killed);
         assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_abort_kills_the_child_process_group() {
+        let signal = AbortSignal::new();
+        let killer = signal.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            killer.abort();
+        });
+        // The shell prints the pid of the grandchild it spawned, then waits;
+        // the abort must take the grandchild with it, not leave it running.
+        let result = exec_command(
+            "sh",
+            &args(&["-c", "sleep 30 & echo $!; wait"]),
+            "/tmp",
+            &ExecOptions {
+                signal: Some(signal),
+                ..Default::default()
+            },
+        );
+        assert!(result.killed);
+        let pid: i32 = result.stdout.trim().parse().expect("the grandchild pid");
+        let mut gone = false;
+        for _ in 0..100 {
+            // SAFETY: `kill(pid, 0)` only probes for existence.
+            if unsafe { libc::kill(pid, 0) } == -1 {
+                gone = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(gone, "the grandchild {pid} must not survive the abort");
     }
 
     #[test]
