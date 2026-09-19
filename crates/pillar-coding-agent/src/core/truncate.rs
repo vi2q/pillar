@@ -209,12 +209,31 @@ pub fn format_size(bytes: usize) -> String {
 /// Truncate content from the head (keep first N lines/bytes). Never returns
 /// partial lines (upstream `truncateHead`).
 pub fn truncate_head(content: &str, options: TruncationOptions) -> TruncationResult {
+    truncate_head_with_totals(
+        content,
+        split_lines_for_counting(content).len(),
+        content.len(),
+        options,
+    )
+}
+
+/// [`truncate_head`] with the totals supplied by the caller.
+///
+/// `content` only has to be the head of the text being truncated — long enough
+/// that the cut lands inside it (`max_lines` lines and `max_bytes` bytes, or
+/// the end of the text) — while `total_lines`/`total_bytes` describe the whole
+/// text. The streaming read uses this to keep its buffer bounded without
+/// changing any reported total.
+pub fn truncate_head_with_totals(
+    content: &str,
+    total_lines: usize,
+    total_bytes: usize,
+    options: TruncationOptions,
+) -> TruncationResult {
     let max_lines = options.max_lines.unwrap_or(DEFAULT_MAX_LINES);
     let max_bytes = options.max_bytes.unwrap_or(DEFAULT_MAX_BYTES);
 
-    let total_bytes = content.len();
     let lines = split_lines_for_counting(content);
-    let total_lines = lines.len();
 
     if total_lines <= max_lines && total_bytes <= max_bytes {
         return TruncationResult {

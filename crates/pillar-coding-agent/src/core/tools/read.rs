@@ -8,6 +8,7 @@
 //! half and the pi-docs compact classification are not ported.
 
 use std::fs;
+use std::io::BufRead as _;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -18,7 +19,7 @@ use pillar_ai::types::Content;
 use crate::core::tools::path_utils::resolve_read_path;
 use crate::core::truncate::{
     DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, TruncatedBy, TruncationOptions, TruncationResult,
-    truncate_head,
+    truncate_head_with_totals,
 };
 
 /// Image extensions supported by upstream (jpg, png, gif, webp, bmp).
@@ -125,10 +126,12 @@ pub fn read(
     }
 
     // Text content.
-    let buffer = fs::read(&absolute_path).map_err(|e| e.to_string())?;
-    let text_content = String::from_utf8_lossy(&buffer);
-    let all_lines: Vec<&str> = text_content.split('\n').collect();
-    let total_file_lines = all_lines.len();
+    // Text content. The window is read in one streaming pass: the head kept in
+    // memory is bounded by the truncation limits, so a windowed read of a huge
+    // file no longer materializes the whole file (nor a per-line slice
+    // vector). See [`read_text_window`].
+    let window = read_text_window(&absolute_path, offset, limit)?;
+    let total_file_lines = window.file_lines;
     // Apply offset if specified. Convert from 1-indexed input to 0-indexed
     // array access.
     let start_line = offset.map_or(0, |o| o.saturating_sub(1));
@@ -140,21 +143,17 @@ pub fn read(
             offset.map_or_else(|| "undefined".to_string(), |o| o.to_string())
         ));
     }
-    let selected_content: String;
-    let mut user_limited_lines: Option<usize> = None;
     // If limit is specified by the user, honor it first. Otherwise
     // truncateHead decides.
-    if let Some(limit) = limit {
-        // Saturating: a limit near `usize::MAX` must clamp to the end of the
-        // file instead of overflowing the sum (upstream's numbers cannot).
-        let end_line = start_line.saturating_add(limit).min(total_file_lines);
-        selected_content = all_lines[start_line..end_line].join("\n");
-        user_limited_lines = Some(end_line - start_line);
-    } else {
-        selected_content = all_lines[start_line..].join("\n");
-    }
-    // Apply truncation, respecting both line and byte limits.
-    let truncation = truncate_head(&selected_content, TruncationOptions::default());
+    let user_limited_lines = limit.map(|_| window.selection_lines);
+    // Apply truncation, respecting both line and byte limits. The totals come
+    // from the streaming pass over the whole selection.
+    let truncation = truncate_head_with_totals(
+        &window.head,
+        window.truncation_lines(),
+        window.selection_bytes,
+        TruncationOptions::default(),
+    );
     let mut output_text: String;
     let mut result = ReadResult {
         total_file_lines,
@@ -163,7 +162,7 @@ pub fn read(
     if truncation.first_line_exceeds_limit {
         // First line alone exceeds the byte limit. Point the model at a
         // bash fallback.
-        let first_line_size = all_lines[start_line].len();
+        let first_line_size = window.head.split('\n').next().map_or(0, str::len);
         output_text = format!(
             "[Line {start_line_display} is {}, exceeds {} limit. Use bash: sed -n '{start_line_display}p' {path} | head -c {DEFAULT_MAX_BYTES}]",
             crate::core::truncate::format_size(first_line_size),
@@ -208,6 +207,130 @@ pub fn read(
 
     result.text = output_text;
     Ok(result)
+}
+
+/// One streaming pass over a text file: the selected line window, kept only as
+/// far as truncation needs it, plus the counts the notices report.
+struct TextWindow {
+    /// Head of the selected window (`join("\n")` of its lines).
+    head: String,
+    /// Lines in the whole file (`split('\n')` length).
+    file_lines: usize,
+    /// Lines and bytes of the selected window before truncation.
+    selection_lines: usize,
+    selection_bytes: usize,
+    /// `\n` separators inside the selection, and whether it ends with one:
+    /// `truncate_head` counts lines without the trailing empty element (and
+    /// counts none for empty content), while the notices count
+    /// `split('\n')` elements.
+    selection_newlines: usize,
+    selection_ends_with_newline: bool,
+}
+
+impl TextWindow {
+    /// The selected window's line count as `truncate_head` reports it.
+    fn truncation_lines(&self) -> usize {
+        if self.selection_bytes == 0 {
+            0
+        } else if self.selection_ends_with_newline {
+            self.selection_newlines
+        } else {
+            self.selection_newlines + 1
+        }
+    }
+}
+
+/// Read the `offset`/`limit` window of `path` in a single streaming pass.
+///
+/// The window is the `join("\n")` of the `split('\n')` elements
+/// `[start, min(start + limit, split('\n').len()))` — the string the whole-file
+/// read used to build — but only its head is kept. The whole file is scanned
+/// because its line count is part of the result, yet a windowed read of a huge
+/// file no longer materializes it: once the head holds `DEFAULT_MAX_LINES`
+/// lines or more than `DEFAULT_MAX_BYTES` bytes (which puts the truncation cut
+/// inside it) the pass keeps counting without storing.
+fn read_text_window(
+    path: &Path,
+    offset: Option<usize>,
+    limit: Option<usize>,
+) -> Result<TextWindow, String> {
+    fn in_window(index: usize, start_line: usize, end_line: Option<usize>) -> bool {
+        index >= start_line && end_line.is_none_or(|end_line| index < end_line)
+    }
+
+    /// Append one `split('\n')` element to the window, storing it only while
+    /// the head can still grow.
+    fn push_element(window: &mut TextWindow, head_lines: &mut usize, text: &str) {
+        let store = *head_lines == 0
+            || (*head_lines < DEFAULT_MAX_LINES && window.head.len() <= DEFAULT_MAX_BYTES);
+        if window.selection_lines > 0 {
+            window.selection_newlines += 1;
+            window.selection_bytes += 1;
+            if store {
+                window.head.push('\n');
+            }
+        }
+        window.selection_bytes += text.len();
+        window.selection_lines += 1;
+        window.selection_ends_with_newline = text.is_empty() && window.selection_newlines > 0;
+        if store {
+            window.head.push_str(text);
+            *head_lines += 1;
+        }
+    }
+
+    let start_line = offset.map_or(0, |o| o.saturating_sub(1));
+    let end_line = limit.map(|limit| start_line.saturating_add(limit));
+
+    let file = fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut reader = std::io::BufReader::new(file);
+    let mut element: Vec<u8> = Vec::new();
+    let mut window = TextWindow {
+        head: String::new(),
+        file_lines: 0,
+        selection_lines: 0,
+        selection_bytes: 0,
+        selection_newlines: 0,
+        selection_ends_with_newline: false,
+    };
+    let mut head_lines = 0usize;
+    let mut index = 0usize;
+    let mut newlines = 0usize;
+
+    loop {
+        element.clear();
+        let read = reader
+            .read_until(b'\n', &mut element)
+            .map_err(|e| e.to_string())?;
+        if read == 0 {
+            break;
+        }
+        // Elements break at `\n`, so a multi-byte character never spans two of
+        // them: converting each element lossily matches converting the whole
+        // file at once.
+        let terminated = element.last() == Some(&b'\n');
+        if terminated {
+            newlines += 1;
+        }
+        let content = if terminated {
+            &element[..element.len() - 1]
+        } else {
+            &element[..]
+        };
+        if in_window(index, start_line, end_line) {
+            push_element(&mut window, &mut head_lines, &String::from_utf8_lossy(content));
+        }
+        index += 1;
+    }
+
+    // `split('\n')` has one element after a trailing newline: the empty tail
+    // (and the single element of an empty file). It is not read by the loop.
+    if index == newlines && in_window(index, start_line, end_line) {
+        push_element(&mut window, &mut head_lines, "");
+    }
+
+    window.file_lines = newlines + 1;
+    Ok(window)
 }
 
 /// Serialize a truncation result to the tool `details` shape (upstream
@@ -290,5 +413,96 @@ pub fn read_tool(cwd: &str) -> AgentTool {
             })
         }),
         execution_mode: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::truncate::truncate_head;
+
+    /// The whole-file selection the streaming window replaced: the reference
+    /// this differential test compares against.
+    fn reference_window(
+        path: &Path,
+        offset: Option<usize>,
+        limit: Option<usize>,
+    ) -> (usize, usize, usize, String) {
+        let text = String::from_utf8_lossy(&fs::read(path).expect("read")).into_owned();
+        let all_lines: Vec<&str> = text.split('\n').collect();
+        let total = all_lines.len();
+        let start = offset.map_or(0, |o| o.saturating_sub(1));
+        let end = limit.map_or(total, |limit| start.saturating_add(limit).min(total));
+        let (selection, lines) = if start >= total {
+            (String::new(), 0)
+        } else {
+            (all_lines[start..end].join("\n"), end - start)
+        };
+        (total, lines, selection.len(), selection)
+    }
+
+    /// The windowed streaming read must agree with the whole-file read for
+    /// every file shape: the counts the notices report, and the truncation
+    /// result (whose totals come from the scan, not from the buffer).
+    #[test]
+    fn streaming_window_matches_the_whole_file_reference() {
+        let dir = std::env::temp_dir().join(format!("pillar-read-window-{}", std::process::id()));
+        fs::create_dir_all(&dir).expect("temp dir");
+        let long_line = "x".repeat(60 * 1024);
+        let many_lines: String = (0..(DEFAULT_MAX_LINES + 400))
+            .map(|index| format!("line {index}\n"))
+            .collect();
+        let cases: Vec<(&str, Vec<u8>)> = vec![
+            ("empty.txt", Vec::new()),
+            ("no-trailing.txt", b"a\nb\nc".to_vec()),
+            ("trailing.txt", b"a\nb\nc\n".to_vec()),
+            ("blank-lines.txt", b"a\n\n\nb\n".to_vec()),
+            ("crlf.txt", b"a\r\nb\r\n".to_vec()),
+            ("invalid-utf8.bin", b"a\xffb\nc\xfed\n".to_vec()),
+            ("multibyte.txt", "\u{3b1}\n\u{3b2}\u{3b3}\n".as_bytes().to_vec()),
+            ("long-line.txt", format!("{long_line}\nshort\n").into_bytes()),
+            ("many-lines.txt", many_lines.into_bytes()),
+        ];
+        let offsets = [
+            None,
+            Some(0),
+            Some(1),
+            Some(2),
+            Some(3),
+            Some(usize::MAX),
+            Some(DEFAULT_MAX_LINES + 10),
+        ];
+        let limits = [None, Some(0), Some(1), Some(2), Some(usize::MAX)];
+
+        for (name, bytes) in &cases {
+            let path = dir.join(name);
+            fs::write(&path, bytes).expect("write case");
+            for offset in offsets {
+                for limit in limits {
+                    let (total, lines, byte_len, selection) =
+                        reference_window(&path, offset, limit);
+                    let window = read_text_window(&path, offset, limit).expect("window");
+
+                    let context = (name, offset, limit);
+                    assert_eq!(window.file_lines, total, "{context:?}");
+                    assert_eq!(window.selection_lines, lines, "{context:?}");
+                    assert_eq!(window.selection_bytes, byte_len, "{context:?}");
+                    assert!(
+                        selection.starts_with(&window.head),
+                        "head is not a prefix of the selection: {context:?}"
+                    );
+                    assert_eq!(
+                        truncate_head_with_totals(
+                            &window.head,
+                            window.truncation_lines(),
+                            window.selection_bytes,
+                            TruncationOptions::default(),
+                        ),
+                        truncate_head(&selection, TruncationOptions::default()),
+                        "{context:?}"
+                    );
+                }
+            }
+        }
     }
 }
