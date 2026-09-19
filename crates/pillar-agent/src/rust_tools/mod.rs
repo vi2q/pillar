@@ -35,8 +35,8 @@
 //!
 //! The module is behind the `rust-tools` feature, which an embedding profile
 //! leaves off (the LMPC minimum builds `pillar-agent` with
-//! `--no-default-features`). It uses no `std::process`, `std::fs` or
-//! `std::net`, asserted by the LMPC dependency gate, so the pure core can be
+//! `--no-default-features`). It uses no process, filesystem or network
+//! capability, asserted by the LMPC dependency gate, so the pure core can be
 //! shared without giving the runtime Cargo, LSP or OS process access
 //! (design §1 "NPC / LMPC最小構成へCargo・LSP・OS processを持ち込まない").
 
