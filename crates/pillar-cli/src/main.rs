@@ -15,6 +15,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 
+use pillar_agent::rust_tools::host::OwnerId;
+use pillar_agent::rust_tools::{RustToolLimits, RustToolkit};
 use pillar_coding_agent::cli::args::{Args, DiagnosticKind, Mode, VERSION, parse_args};
 use pillar_coding_agent::cli::help::render_help;
 use pillar_coding_agent::cli::main::{AppMode, resolve_app_mode};
@@ -33,6 +35,7 @@ use pillar_coding_agent::core::model_resolver::{
 };
 use pillar_coding_agent::core::model_runtime::{CreateModelRuntimeOptions, ModelRuntime};
 use pillar_coding_agent::core::resource_loader::ResourceLoader;
+use pillar_coding_agent::core::rust_host::NativeRustHost;
 use pillar_coding_agent::core::sdk::{CreateAgentSessionOptions, create_agent_session};
 use pillar_coding_agent::core::session_manager::SessionManager;
 use pillar_coding_agent::core::settings_manager::SettingsManager;
@@ -299,6 +302,32 @@ fn resolve_cli_model_selection(
 
 /// Create the runtime (model runtime, Luau extension runner, session). The
 /// returned wiring must outlive the session (it owns the Luau runtime).
+/// Whether the opt-in Rust workflow profile is enabled. This is an
+/// experimental profile, not a default tool set (design docs/RUST-TOOLING-DESIGN.md
+/// §4, §9: the `rs_*` tools are registered explicitly).
+fn rust_tools_enabled() -> bool {
+    matches!(
+        std::env::var("PILLAR_RUST_TOOLS").ok().as_deref(),
+        Some("1") | Some("true") | Some("yes") | Some("on")
+    )
+}
+
+/// Build the opt-in Rust workflow toolkit: the native host adapters plus the
+/// pure `rs_*` tools. The metadata refresh here is the explicit, effect-gated
+/// one (design §9); if it fails, the tools still load and report
+/// `metadata_unavailable` rather than silently planning against nothing.
+fn build_rust_toolkit(cwd: &str, broker: &Arc<EffectBroker>) -> Option<Arc<RustToolkit>> {
+    if !rust_tools_enabled() {
+        return None;
+    }
+    let host = NativeRustHost::new(cwd, Some(broker.authorizer()));
+    if let Err(error) = host.refresh_metadata() {
+        eprintln!("Warning: Rust tools: metadata refresh failed: {error}");
+    }
+    let owner = OwnerId::new(pillar_ai::uuid::uuidv7());
+    Some(Arc::new(host.toolkit(owner, RustToolLimits::default())))
+}
+
 async fn build_session_with(
     parsed: &Args,
     model_runtime: Arc<ModelRuntime>,
@@ -350,6 +379,9 @@ async fn build_session_with(
     }
     let rebuild_inputs = wiring.rebuild.clone();
     let extension_runner: Arc<Mutex<ExtensionRunner>> = Arc::new(Mutex::new(wiring.take_runner()));
+    // The opt-in Rust workflow tools share one toolkit across `/reload`, so a
+    // plan id issued before a reload is still valid after it.
+    let rust_toolkit = build_rust_toolkit(&cwd, &broker);
 
     let selection = resolve_cli_model_selection(parsed, &model_runtime)?;
 
@@ -366,7 +398,13 @@ async fn build_session_with(
         tools: parsed.tools.clone(),
         no_tools: no_tools(parsed),
         exclude_tools: parsed.exclude_tools.clone().unwrap_or_default(),
-        custom_tools: wiring.custom_tools(),
+        custom_tools: {
+            let mut tools = wiring.custom_tools();
+            if let Some(toolkit) = &rust_toolkit {
+                tools.extend(toolkit.tools());
+            }
+            tools
+        },
         extension_runner,
         project_trusted: Some(project_trusted),
         effect_authorizer: Some(broker.authorizer()),
@@ -384,6 +422,7 @@ async fn build_session_with(
         // (docs/ARCHITECTURE-REVIEW-s05c0.md C).
         extension_runner_rebuild: {
             let inputs = rebuild_inputs;
+            let rust_toolkit = rust_toolkit.clone();
             Some(Arc::new(move |flag_values| {
                 let mut rebuilt = build_extension_runner_with_slots(
                     &inputs.cwd,
@@ -402,7 +441,13 @@ async fn build_session_with(
                 // runner) only once the build reported no error.
                 Ok(ExtensionGeneration {
                     command_handler: Some(extension_command_handler(&rebuilt.runtime)),
-                    tools: rebuilt.custom_tools(),
+                    tools: {
+                        let mut tools = rebuilt.custom_tools();
+                        if let Some(toolkit) = &rust_toolkit {
+                            tools.extend(toolkit.tools());
+                        }
+                        tools
+                    },
                     runner: rebuilt.take_runner(),
                 })
             }))
