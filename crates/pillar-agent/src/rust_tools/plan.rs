@@ -295,17 +295,17 @@ pub fn plan(
             format!("{:016x}", configuration.fingerprint()),
         );
         for package in &scope_packages {
-            let (argv, covers, applicable_targets) = build_step(
+            let built = build_step(
                 configuration,
                 package,
                 &request.requested_targets,
                 &mut notes,
-            )?;
+            );
             for target in &request.requested_targets {
                 if package
                     .target(target)
                     .is_some_and(|t| t.is_named_test_target())
-                    && !applicable_targets.contains(target)
+                    && !built.applicable_targets.contains(target)
                 {
                     unverified.push(Unverified {
                         kind: UnverifiedKind::RequiredFeatures,
@@ -316,12 +316,13 @@ pub fn plan(
                     });
                 }
             }
+            let reason = step_reason(package, &built.covers);
             steps.push(VerifyStep {
                 step_id: format!("s{}", steps.len() + 1),
                 configuration_id: configuration.id.clone(),
-                argv,
-                covers: covers.clone(),
-                reason: step_reason(package, &covers),
+                argv: built.argv,
+                covers: built.covers,
+                reason,
             });
         }
     }
@@ -492,12 +493,19 @@ fn classify_change<'a>(catalog: &'a WorkspaceCatalog, path: &str) -> Change<'a> 
     }
 }
 
+/// One package's built step, before it is turned into a [`VerifyStep`].
+struct BuiltStep {
+    argv: Vec<String>,
+    covers: Vec<Coverage>,
+    applicable_targets: BTreeSet<String>,
+}
+
 fn build_step(
     configuration: &Configuration,
     package: &PackageRecord,
     requested_targets: &[String],
     notes: &mut Vec<String>,
-) -> Result<(Vec<String>, Vec<Coverage>, BTreeSet<String>), RustToolError> {
+) -> BuiltStep {
     let mut argv = vec![
         "cargo".to_string(),
         "test".to_string(),
@@ -566,7 +574,11 @@ fn build_step(
     }
     argv.push("--message-format=json".to_string());
 
-    Ok((argv, covers, applicable_targets))
+    BuiltStep {
+        argv,
+        covers,
+        applicable_targets,
+    }
 }
 
 /// Whether a configuration's requested feature set satisfies a target's
