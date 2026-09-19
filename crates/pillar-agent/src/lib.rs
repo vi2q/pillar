@@ -11,6 +11,9 @@
 pub mod abort;
 pub mod agent;
 pub mod agent_loop;
+/// Experimental tool adapter (references, budgets, receipts). See
+/// `docs/TOOL-EFFICIENCY-DESIGN.md` and the module documentation.
+pub mod exp;
 pub mod harness;
 #[cfg(feature = "proxy")]
 pub mod proxy;
