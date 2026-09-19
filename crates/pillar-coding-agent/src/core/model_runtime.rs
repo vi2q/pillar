@@ -27,7 +27,7 @@ use pillar_ai::types::{AssistantMessage, Context, Model, ProviderEnv, ProviderHe
 
 use crate::core::auth_storage::AuthStorage;
 use crate::core::auth_storage::{FileModelsStore, InMemoryCodingAgentModelsStore};
-use crate::core::model_config::ModelConfig;
+use crate::core::model_config::{ModelConfig, ModelsJsonProvider};
 use crate::core::provider_composer::{
     AuthStatus, AuthStatusSource, ComposeError, ProviderConfigInput, compose_model_provider,
     configured_request_auth_status, resolve_compatibility_request_config,
@@ -124,9 +124,15 @@ pub struct ModelRuntime {
     default_builtins: Vec<Arc<Provider>>,
     native_extension_providers: Vec<Arc<Provider>>,
     extension_providers: BTreeMap<String, ProviderConfigInput>,
-    composition_errors: BTreeMap<String, String>,
+    /// Composition failures, interior-mutable so the credential-driven
+    /// recompose can run through `&self` (upstream `ModelRuntime` is a plain
+    /// object; the port shares it behind an `Arc`).
+    composition_errors: std::sync::Mutex<BTreeMap<String, String>>,
     models_path: Option<std::path::PathBuf>,
-    config: ModelConfig,
+    /// Where the credential store lives (upstream `getAuthPath`).
+    auth_path: Option<std::path::PathBuf>,
+    /// models.json config, interior-mutable for the same reason.
+    config: std::sync::RwLock<ModelConfig>,
     snapshot: std::sync::RwLock<ModelRuntimeSnapshot>,
 }
 
@@ -144,6 +150,7 @@ impl ModelRuntime {
             }),
         ));
         let models_path = options.models_path.clone();
+        let auth_path = options.auth_path.clone();
         let config = ModelConfig::load(models_path.as_deref());
         let models_store: Arc<dyn pillar_ai::models_store::ModelsStore> = match options.models_store
         {
@@ -159,7 +166,7 @@ impl ModelRuntime {
             },
         };
         let providers = pillar_ai::providers_all::builtin_providers();
-        let mut runtime = Self {
+        let runtime = Self {
             models: create_models(CreateModelsOptions {
                 credentials: Some(credentials.clone()),
                 models_store: Some(models_store),
@@ -169,9 +176,10 @@ impl ModelRuntime {
             default_builtins: providers,
             native_extension_providers: Vec::new(),
             extension_providers: BTreeMap::new(),
-            composition_errors: BTreeMap::new(),
+            composition_errors: std::sync::Mutex::new(BTreeMap::new()),
             models_path,
-            config,
+            auth_path,
+            config: std::sync::RwLock::new(config),
             snapshot: std::sync::RwLock::new(ModelRuntimeSnapshot::default()),
         };
         runtime.rebuild_providers()?;
@@ -193,12 +201,17 @@ impl ModelRuntime {
         for provider in &self.native_extension_providers {
             ids.insert(provider.id.clone());
         }
-        ids.extend(self.config.get_provider_ids());
+        ids.extend(
+            self.config
+                .read()
+                .expect("models config")
+                .get_provider_ids(),
+        );
         ids.extend(self.extension_providers.keys().cloned());
         ids
     }
 
-    fn recompose_provider(&mut self, provider_id: &str) {
+    fn recompose_provider(&self, provider_id: &str) {
         let base = self
             .native_extension_providers
             .iter()
@@ -206,31 +219,43 @@ impl ModelRuntime {
             .cloned()
             .or_else(|| self.builtin(provider_id));
         let extension = self.extension_providers.get(provider_id).cloned();
-        let has_config = self.config.get_provider(provider_id).is_some();
+        let has_config = self
+            .config
+            .read()
+            .expect("models config")
+            .get_provider(provider_id)
+            .is_some();
         if base.is_none() && !has_config && extension.is_none() {
             self.models.delete_provider(provider_id);
-            self.composition_errors.remove(provider_id);
+            self.composition_errors
+                .lock()
+                .expect("composition errors")
+                .remove(provider_id);
             return;
         }
         if let (Some(base), false, None) = (&base, has_config, &extension) {
             // No overlays: use the builtin untouched so its auth/login/stream
             // behavior is exact.
             self.models.set_provider(Arc::clone(base));
-            self.composition_errors.remove(provider_id);
+            self.composition_errors
+                .lock()
+                .expect("composition errors")
+                .remove(provider_id);
             return;
         }
-        match compose_model_provider(
-            provider_id,
-            base.as_deref(),
-            &self.config,
-            extension.as_ref(),
-        ) {
+        let config = self.config.read().expect("models config").clone();
+        match compose_model_provider(provider_id, base.as_deref(), &config, extension.as_ref()) {
             Ok(provider) => {
                 self.models.set_provider(Arc::new(provider));
-                self.composition_errors.remove(provider_id);
+                self.composition_errors
+                    .lock()
+                    .expect("composition errors")
+                    .remove(provider_id);
             }
             Err(error) => {
                 self.composition_errors
+                    .lock()
+                    .expect("composition errors")
                     .insert(provider_id.to_string(), error.0.clone());
                 if let Some(base) = base {
                     self.models.set_provider(base);
@@ -241,9 +266,12 @@ impl ModelRuntime {
         }
     }
 
-    fn rebuild_providers(&mut self) -> Result<(), ComposeError> {
+    fn rebuild_providers(&self) -> Result<(), ComposeError> {
         self.models.clear_providers();
-        self.composition_errors.clear();
+        self.composition_errors
+            .lock()
+            .expect("composition errors")
+            .clear();
         for provider_id in self.provider_ids() {
             self.recompose_provider(&provider_id);
         }
@@ -349,14 +377,26 @@ impl ModelRuntime {
         self.snapshot.read().unwrap().clone()
     }
 
+    /// Where this runtime stores credentials (upstream `getAuthPath`).
+    pub fn auth_path(&self) -> Option<&std::path::Path> {
+        self.auth_path.as_deref()
+    }
+
     /// Aggregated config/composition/availability errors (upstream
     /// `getError`).
     pub fn get_error(&self) -> Option<String> {
         let mut errors: Vec<String> = Vec::new();
-        if let Some(config_error) = self.config.get_error() {
+        let config = self.config.read().expect("models config");
+        if let Some(config_error) = config.get_error() {
             errors.push(config_error.to_string());
         }
-        for (provider_id, error) in &self.composition_errors {
+        drop(config);
+        for (provider_id, error) in self
+            .composition_errors
+            .lock()
+            .expect("composition errors")
+            .iter()
+        {
             errors.push(format!("Provider \"{provider_id}\": {error}"));
         }
         if !errors.is_empty() {
@@ -383,8 +423,12 @@ impl ModelRuntime {
         ids.into_iter().collect()
     }
 
-    pub fn get_composition_error(&self, provider_id: &str) -> Option<&String> {
-        self.composition_errors.get(provider_id)
+    pub fn get_composition_error(&self, provider_id: &str) -> Option<String> {
+        self.composition_errors
+            .lock()
+            .expect("composition errors")
+            .get(provider_id)
+            .cloned()
     }
 
     /// Compatibility request config for a model (upstream
@@ -395,7 +439,7 @@ impl ModelRuntime {
     ) -> Result<crate::core::provider_composer::CompatibilityRequestConfig, ComposeError> {
         resolve_compatibility_request_config(
             model,
-            self.config.get_provider(&model.provider),
+            config_entry(&self.config, &model.provider).as_ref(),
             self.extension_providers.get(&model.provider),
         )
     }
@@ -461,7 +505,7 @@ impl ModelRuntime {
                 .unwrap_or_default();
             let configured = resolve_configured_model_headers(
                 model,
-                self.config.get_provider(&model.provider),
+                config_entry(&self.config, &model.provider).as_ref(),
                 self.extension_providers.get(&model.provider),
                 Some(&explicit_env),
             )
@@ -478,14 +522,20 @@ impl ModelRuntime {
     // --- credentials -----------------------------------------------------------------
 
     async fn synchronize_credential_state(
-        &mut self,
+        &self,
         provider_id: &str,
         operation: CredentialSynchronizationOperation,
         credential: Option<Credential>,
     ) -> Result<(), CredentialSynchronizationError> {
         let result: Result<(), String> = (|| {
             self.recompose_provider(provider_id);
-            if let Some(error) = self.composition_errors.get(provider_id) {
+            if let Some(error) = self
+                .composition_errors
+                .lock()
+                .expect("composition errors")
+                .get(provider_id)
+                .cloned()
+            {
                 return Err(error.clone());
             }
             Ok(())
@@ -516,12 +566,91 @@ impl ModelRuntime {
         }
         if result.is_ok() {
             self.update_model_snapshot();
+            // Upstream ends `synchronizeCredentialState` by re-deriving this
+            // provider's availability; without it the login's credential is
+            // stored but the snapshot still reports the provider unconfigured.
+            if let Err(error) = self.refresh_provider_availability(provider_id, None).await {
+                result = Err(CredentialSynchronizationError {
+                    provider_id: provider_id.to_string(),
+                    operation,
+                    credential: credential.clone(),
+                    message: error.to_string(),
+                });
+            }
         }
         result
     }
 
+    /// Upstream `refreshProviderAvailability`: re-derive one provider's
+    /// availability after a credential change.
+    ///
+    /// divergence: upstream guards a stale full pass with generation counters;
+    /// the port serializes credential operations (`AgentSession`'s credential
+    /// lock) and re-reads the credentials here, so the counters have no work
+    /// to do yet.
+    async fn refresh_provider_availability(
+        &self,
+        provider_id: &str,
+        signal: Option<&AbortSignal>,
+    ) -> Result<(), AiError> {
+        let options = AuthOperationOptions {
+            signal: signal.cloned(),
+        };
+        let available = self
+            .models
+            .get_available(Some(provider_id), Some(&options))
+            .await?;
+        let auth = self.models.check_auth(provider_id, Some(&options)).await?;
+        let credential = self.credentials.read(provider_id, Some(&options)).await?;
+        let mut snapshot = self.snapshot.write().unwrap();
+        let mut configured_providers = snapshot.configured_providers.clone();
+        let mut stored_providers = snapshot.stored_providers.clone();
+        let mut auth_by_provider = snapshot.auth.clone();
+        match &auth {
+            Some(check) => {
+                configured_providers.insert(provider_id.to_string());
+                auth_by_provider.insert(provider_id.to_string(), Some(check.clone()));
+            }
+            None => {
+                configured_providers.remove(provider_id);
+                auth_by_provider.remove(provider_id);
+            }
+        }
+        if credential.is_some() {
+            stored_providers.insert(provider_id.to_string());
+        } else {
+            stored_providers.remove(provider_id);
+        }
+        let all = self.models.get_models(None);
+        let mut available_by_id: BTreeMap<(String, String), Model> = snapshot
+            .available
+            .iter()
+            .filter(|model| model.provider != provider_id)
+            .map(|model| ((model.provider.clone(), model.id.clone()), model.clone()))
+            .collect();
+        for model in available {
+            available_by_id.insert((model.provider.clone(), model.id.clone()), model);
+        }
+        let available = all
+            .iter()
+            .filter_map(|model| {
+                available_by_id
+                    .get(&(model.provider.clone(), model.id.clone()))
+                    .cloned()
+            })
+            .collect();
+        *snapshot = ModelRuntimeSnapshot {
+            all,
+            available,
+            configured_providers,
+            stored_providers,
+            auth: auth_by_provider,
+        };
+        Ok(())
+    }
+
     pub async fn set_runtime_api_key(
-        &mut self,
+        &self,
         provider_id: &str,
         api_key: &str,
     ) -> Result<(), CredentialSynchronizationError> {
@@ -540,7 +669,7 @@ impl ModelRuntime {
     }
 
     pub async fn remove_runtime_api_key(
-        &mut self,
+        &self,
         provider_id: &str,
     ) -> Result<(), CredentialSynchronizationError> {
         self.credentials.remove_runtime_api_key(provider_id);
@@ -578,7 +707,7 @@ impl ModelRuntime {
             };
         }
         if let Some(configured) = configured_request_auth_status(
-            self.config.get_provider(provider_id),
+            config_entry(&self.config, provider_id).as_ref(),
             self.extension_providers.get(provider_id),
         ) {
             return configured;
@@ -606,7 +735,7 @@ impl ModelRuntime {
     }
 
     pub async fn login(
-        &mut self,
+        &self,
         provider_id: &str,
         auth_type: &str,
         interaction: &dyn AuthInteraction,
@@ -630,10 +759,7 @@ impl ModelRuntime {
         Ok(credential)
     }
 
-    pub async fn logout(
-        &mut self,
-        provider_id: &str,
-    ) -> Result<(), CredentialSynchronizationError> {
+    pub async fn logout(&self, provider_id: &str) -> Result<(), CredentialSynchronizationError> {
         self.models.logout(provider_id, None).await.map_err(|e| {
             CredentialSynchronizationError {
                 provider_id: provider_id.to_string(),
@@ -653,10 +779,11 @@ impl ModelRuntime {
     /// Reload models.json, recompose providers, and refresh catalogs (the
     /// port's refresh is offline-only per the static-catalog divergence).
     pub async fn refresh(
-        &mut self,
+        &self,
         options: Option<ModelsRefreshOptions>,
     ) -> Result<ModelsRefreshResult, ComposeError> {
-        self.config = ModelConfig::load(self.models_path.as_deref());
+        *self.config.write().expect("models config") =
+            ModelConfig::load(self.models_path.as_deref());
         self.rebuild_providers()?;
         let mut options = options.unwrap_or_default();
         options.allow_network.get_or_insert(false);
@@ -706,7 +833,7 @@ impl ModelRuntime {
                 .builtin(provider_id)
                 .map(|p| p.models())
                 .unwrap_or_default(),
-            self.config.get_provider(provider_id),
+            config_entry(&self.config, provider_id).as_ref(),
             &config,
         )?;
         self.native_extension_providers
@@ -844,6 +971,19 @@ impl ModelRuntime {
     ) -> AssistantMessage {
         self.stream_simple(model, context, options).result().await
     }
+}
+
+/// The models.json entry for `provider_id`, cloned out of the interior-mutable
+/// config so callers never hold the lock (upstream reads a plain object).
+fn config_entry(
+    config: &std::sync::RwLock<ModelConfig>,
+    provider_id: &str,
+) -> Option<ModelsJsonProvider> {
+    config
+        .read()
+        .expect("models config")
+        .get_provider(provider_id)
+        .cloned()
 }
 
 /// Merge a re-registration's defined values over the previous config,

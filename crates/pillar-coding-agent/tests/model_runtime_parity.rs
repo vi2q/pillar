@@ -352,7 +352,7 @@ async fn provider_auth_status_precedence() {
         r#"{"providers":{"cfg-key":{"baseUrl":"https://x.test","apiKey":"sk-literal"}}}"#,
     )
     .unwrap();
-    let mut runtime = ModelRuntime::new(CreateModelRuntimeOptions {
+    let runtime = ModelRuntime::new(CreateModelRuntimeOptions {
         models_path: Some(models_path),
         models_store: Some(Arc::new(InMemoryCodingAgentModelsStore::new())),
         credentials: Some(Arc::new(MemCredentials::default())),
@@ -383,7 +383,7 @@ fn set_runtime_api_key_synchronizes_snapshot() {
     let dir = temp_dir("sync");
     let models_path = dir.join("models.json");
     std::fs::write(&models_path, "{}").unwrap();
-    let mut runtime = ModelRuntime::new(CreateModelRuntimeOptions {
+    let runtime = ModelRuntime::new(CreateModelRuntimeOptions {
         models_path: Some(models_path),
         models_store: Some(Arc::new(InMemoryCodingAgentModelsStore::new())),
         credentials: Some(Arc::new(MemCredentials::default())),
@@ -396,10 +396,10 @@ fn set_runtime_api_key_synchronizes_snapshot() {
             .await
             .unwrap();
     });
-    // has_configured_auth is snapshot-derived; setRuntimeApiKey updates the
-    // credential but the availability snapshot only refreshes through
-    // refresh_availability (upstream refreshes async).
-    assert!(!runtime.has_configured_auth("anthropic"));
+    // `synchronizeCredentialState` ends with `refreshProviderAvailability`
+    // (upstream), so the snapshot is already configured when the call
+    // resolves — no separate availability pass is needed.
+    assert!(runtime.has_configured_auth("anthropic"));
     tokio::runtime::Runtime::new()
         .unwrap()
         .block_on(runtime.refresh_availability(None))
@@ -419,7 +419,7 @@ async fn refresh_reloads_models_json() {
     let dir = temp_dir("refresh");
     let models_path = dir.join("models.json");
     std::fs::write(&models_path, "{}").unwrap();
-    let mut runtime = ModelRuntime::new(CreateModelRuntimeOptions {
+    let runtime = ModelRuntime::new(CreateModelRuntimeOptions {
         models_path: Some(models_path.clone()),
         models_store: Some(Arc::new(InMemoryCodingAgentModelsStore::new())),
         ..Default::default()

@@ -17,7 +17,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use pillar_ai::auth_types::{
-    ApiKeyAuthInput, AuthContext, AuthResult, ModelAuth, OAuthAuth, ProviderAuth,
+    ApiKeyAuth, ApiKeyAuthInput, AuthContext, AuthResult, ModelAuth, OAuthAuth, ProviderAuth,
+    ProviderAuthInteraction,
 };
 use pillar_ai::error::AiError;
 use pillar_ai::models::{Provider, ProviderApi};
@@ -660,6 +661,9 @@ impl<'a> AuthContext for FixedEnvAuthContext<'a> {
 pub struct ComposedApiKeyAuth {
     pub name: String,
     pub provider_id: String,
+    /// The base provider's method, when there is one (upstream `inherited`):
+    /// its `login` wins over the fabricated "Enter API key" prompt.
+    pub inherited: Option<Arc<dyn ApiKeyAuth>>,
     pub raw_key: Option<String>,
     pub raw_headers: Option<BTreeMap<String, String>>,
     pub auth_header: bool,
@@ -669,6 +673,37 @@ pub struct ComposedApiKeyAuth {
 impl pillar_ai::auth_types::ApiKeyAuth for ComposedApiKeyAuth {
     fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Upstream `inherited?.login ?? (interaction) => prompt("Enter API key")`:
+    /// a provider with no base method still gets an interactive login, which
+    /// is what `/login` needs for a models.json / extension provider.
+    async fn login(
+        &self,
+        interaction: &ProviderAuthInteraction,
+    ) -> Result<Option<pillar_ai::auth_types::ApiKeyCredential>, AiError> {
+        if let Some(inherited) = &self.inherited {
+            return inherited.login(interaction).await;
+        }
+        interaction.signal.throw_if_aborted()?;
+        let key = interaction
+            .interaction
+            .prompt(&pillar_ai::auth_types::AuthPrompt::Secret {
+                message: "Enter API key".to_string(),
+                placeholder: None,
+            })
+            .await?;
+        interaction.signal.throw_if_aborted()?;
+        Ok(Some(pillar_ai::auth_types::ApiKeyCredential {
+            key: Some(key),
+            env: None,
+        }))
+    }
+
+    fn has_login(&self) -> bool {
+        self.inherited
+            .as_ref()
+            .is_none_or(|auth| auth.has_login())
     }
 
     async fn check(
@@ -780,10 +815,12 @@ pub fn compose_api_key_auth(
     let raw_headers = configured_headers(config, extension);
     let auth_header = configured_auth_header(config, extension);
     Some(Arc::new(ComposedApiKeyAuth {
+        // Upstream `inherited?.name ?? "API key"`.
         name: inherited
-            .map(|_| "API key".to_string())
+            .map(|auth| auth.name().to_string())
             .unwrap_or_else(|| "API key".to_string()),
         provider_id: provider_id.to_string(),
+        inherited: inherited.cloned(),
         raw_key,
         raw_headers,
         auth_header,

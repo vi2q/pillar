@@ -172,8 +172,14 @@ use crate::modes::interactive::components::extension_selector::{
     ExtensionSelectorComponent, ExtensionSelectorOutcome,
 };
 use crate::modes::interactive::components::footer::FooterComponent;
+use crate::modes::interactive::components::login_dialog::{
+    LoginDialogComponent, LoginDialogOutcome,
+};
 use crate::modes::interactive::components::model_picker::{
     CategoryKind, ModelPickerComponent, ModelPickerOutcome, PickerCategory, RECENT_CATEGORY_ID,
+};
+use crate::modes::interactive::components::oauth_selector::{
+    AuthSelectorMode, AuthSelectorOutcome, AuthSelectorProvider, OAuthSelectorComponent,
 };
 use crate::modes::interactive::components::scoped_models_selector::{
     ScopedModelsOutcome, ScopedModelsSelectorComponent,
@@ -288,6 +294,21 @@ pub enum ModeAction {
     /// Upstream `/reload` → `session.reload()`: rebuild the extension runner
     /// and re-load resources.
     Reload,
+    /// Upstream `startProviderLogin`: run the provider's login flow and persist
+    /// the credential (the executor spawns the future; events and prompts come
+    /// back through `UiCommand::LoginEvent` / `UiCommand::LoginPrompt`).
+    StartLogin { target: LoginTarget },
+    /// Upstream the logout callback: remove the stored credential.
+    Logout { target: LoginTarget },
+    /// Upstream the post-login `modelRuntime.refresh({ providers: [id] })`.
+    RefreshProviderCatalog {
+        provider_id: String,
+        action_label: String,
+    },
+    /// Upstream `showOAuthSelector("logout")`: list the stored credentials
+    /// (the port's executor owns the await) and report them back through
+    /// `UiCommand::LogoutCredentials`.
+    ListCredentialsForLogout,
 }
 
 /// Mode-level options (upstream the settings-derived fields of
@@ -309,6 +330,50 @@ pub struct InteractiveModeOptions {
     /// Live terminal height for the 2-column picker's window (upstream reads
     /// `tui.terminal.rows` on every render; the pump keeps this up to date).
     pub terminal_rows: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
+}
+
+/// One provider/auth-type pair a login flow can target (upstream the
+/// `AuthSelectorProvider` the selector callbacks carry).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoginTarget {
+    pub id: String,
+    pub name: String,
+    /// `"oauth"` or `"api_key"`.
+    pub auth_type: String,
+    /// The auth method's display name (upstream `method?.name`).
+    pub method_name: Option<String>,
+}
+
+impl LoginTarget {
+    fn from_provider(provider: &AuthSelectorProvider) -> Self {
+        Self {
+            id: provider.id.clone(),
+            name: provider.name.clone(),
+            auth_type: provider.auth_type.clone(),
+            method_name: provider.method_name.clone(),
+        }
+    }
+}
+
+/// The running login (`/login`). Upstream `loginProvider` closes over the
+/// dialog and its promise; the port routes by token instead.
+struct ActiveLogin {
+    token: u64,
+    target: LoginTarget,
+    component: Shared<LoginDialogComponent>,
+    /// The prompt the flow is waiting on (upstream `inputResolver`). A
+    /// `tokio` oneshot so the executor can await it without blocking.
+    pending_prompt: Option<tokio::sync::oneshot::Sender<Option<String>>>,
+}
+
+/// What the executor resolved after a login settled (upstream the locals of
+/// `completeProviderAuthentication`).
+#[derive(Debug, Clone)]
+pub struct PostLoginAuthentication {
+    pub action_label: String,
+    pub selected_model: Option<Model>,
+    pub selection_error: Option<String>,
+    pub anthropic_warning: bool,
 }
 
 /// A pending `ctx.ui` dialog (upstream the awaited `ExtensionUIContext`
@@ -365,6 +430,13 @@ pub struct InteractiveMode {
     /// timeout can cancel it instead of leaving a stale dialog in the editor
     /// slot.
     pending_confirm: std::sync::Mutex<Option<PendingExtensionAsk>>,
+    /// The auth-type step's context: the provider options it was opened for
+    /// (upstream the closure argument of `showLoginAuthTypeSelector`).
+    pending_login_auth_type: std::sync::Mutex<Option<Option<Vec<AuthSelectorProvider>>>>,
+    /// The running login (upstream `loginProvider`'s closure state).
+    active_login: std::sync::Mutex<Option<ActiveLogin>>,
+    /// Upstream `anthropicSubscriptionWarningShown`.
+    anthropic_subscription_warning_shown: AtomicBool,
     /// Monotonic token so a stale `done` cannot close a newer selector.
     next_selector_token: AtomicU64,
     /// The 2-column picker's recent-model history (the user's
@@ -433,6 +505,28 @@ pub enum ActiveSelector {
         token: u64,
         component: Shared<ExtensionCustomComponent>,
     },
+    /// `/login` and `/logout`: the provider list (upstream the
+    /// `OAuthSelectorComponent` in the editor slot).
+    AuthSelector {
+        token: u64,
+        component: Shared<OAuthSelectorComponent>,
+        /// The flow this selector is serving, so a cancel can go back one
+        /// step (upstream the `onCancel` closures).
+        mode: AuthSelectorMode,
+        /// The auth type that opened this list, when it was opened by the
+        /// auth-type selector (upstream `showLoginProviderSelector(authType)`).
+        auth_type: Option<String>,
+        /// The provider being logged in, when a login dialog opened it
+        /// (upstream `showLoginAuthTypeSelector(providerOptions)`).
+        login_provider: Option<LoginTarget>,
+    },
+    /// A running provider login: the dialog plus the provider it belongs to
+    /// (upstream the `LoginDialogComponent` in the editor slot).
+    LoginDialog {
+        token: u64,
+        component: Shared<LoginDialogComponent>,
+        target: LoginTarget,
+    },
     UserMessage {
         token: u64,
         component: Shared<UserMessageSelectorComponent>,
@@ -454,6 +548,8 @@ impl ActiveSelector {
             ActiveSelector::ExtensionSelector { token, .. } => *token,
             ActiveSelector::ExtensionInput { token, .. } => *token,
             ActiveSelector::ExtensionCustom { token, .. } => *token,
+            ActiveSelector::AuthSelector { token, .. } => *token,
+            ActiveSelector::LoginDialog { token, .. } => *token,
             ActiveSelector::UserMessage { token, .. } => *token,
             ActiveSelector::Settings { token, .. } => *token,
         }
@@ -484,6 +580,12 @@ impl ActiveSelector {
                 crate::modes::interactive::transcript::FocusHandle::new(component.clone()),
             ),
             ActiveSelector::ExtensionCustom { component, .. } => Box::new(component.clone()),
+            ActiveSelector::AuthSelector { component, .. } => Box::new(
+                crate::modes::interactive::transcript::FocusHandle::new(component.clone()),
+            ),
+            ActiveSelector::LoginDialog { component, .. } => Box::new(
+                crate::modes::interactive::transcript::FocusHandle::new(component.clone()),
+            ),
             ActiveSelector::UserMessage { component, .. } => Box::new(
                 crate::modes::interactive::transcript::FocusHandle::new(component.clone()),
             ),
@@ -579,6 +681,9 @@ impl InteractiveMode {
             pending_bash_components: std::sync::Mutex::new(Vec::new()),
             active_selector: std::sync::Mutex::new(None),
             pending_confirm: std::sync::Mutex::new(None),
+            pending_login_auth_type: std::sync::Mutex::new(None),
+            active_login: std::sync::Mutex::new(None),
+            anthropic_subscription_warning_shown: AtomicBool::new(false),
             next_selector_token: AtomicU64::new(1),
             recent_models: std::sync::Mutex::new(match options.agent_dir.as_deref() {
                 Some(agent_dir) => RecentModels::load(agent_dir),
@@ -937,7 +1042,7 @@ impl InteractiveMode {
 
         // Selector-backed commands answer a warning until the selectors
         // land (upstream opens the corresponding selector).
-        const SELECTOR_COMMANDS: [&str; 11] = [
+        const SELECTOR_COMMANDS: [&str; 9] = [
             "/export",
             "/import",
             "/share",
@@ -945,8 +1050,6 @@ impl InteractiveMode {
             "/session",
             "/changelog",
             "/trust",
-            "/login",
-            "/logout",
             "/new",
             "/debug",
         ];
@@ -958,6 +1061,19 @@ impl InteractiveMode {
                 self.set_editor_text("");
                 return Vec::new();
             }
+        }
+
+        if text == "/login" || text.starts_with("/login ") {
+            let provider_ref = text.strip_prefix("/login ").map(str::trim);
+            self.set_editor_text("");
+            return self.handle_login_command(provider_ref);
+        }
+        if text == "/logout" {
+            self.set_editor_text("");
+            // The credential list is an await, so the executor runs it and the
+            // host opens the selector when it settles (upstream awaits it
+            // inline in `showOAuthSelector`).
+            return vec![ModeAction::ListCredentialsForLogout];
         }
 
         if text == "/reload" {
@@ -1857,6 +1973,923 @@ impl InteractiveMode {
             current_enabled_ids,
         ));
         self.show_selector(ActiveSelector::ScopedModels { token, component })
+    }
+
+    /// Upstream `getLoginProviderOptions`: every provider's available auth
+    /// methods, annotated with the resolved status, sorted by name.
+    ///
+    /// divergence: upstream lists the OAuth rows too (`provider.auth.oauth`).
+    /// The port has no OAuth flows yet, so an oauth row would open a flow that
+    /// cannot run; only `api_key` rows are offered until those land (the
+    /// deferred item in docs/TASKS.md).
+    pub fn get_login_provider_options(&self, auth_type: Option<&str>) -> Vec<AuthSelectorProvider> {
+        let runtime = self.session.model_runtime();
+        let mut options: Vec<AuthSelectorProvider> = Vec::new();
+        for provider in runtime.get_providers() {
+            let auth_status = runtime.get_provider_auth_status(&provider.id);
+            let status = auth_status
+                .configured
+                .then(|| pillar_ai::auth_types::AuthCheck {
+                    kind: if runtime.is_using_oauth(&provider.id) {
+                        "oauth".to_string()
+                    } else {
+                        "api_key".to_string()
+                    },
+                    source: auth_status
+                        .label
+                        .or_else(|| auth_status.source.map(|source| source.as_str().to_string())),
+                });
+            if let Some(api_key) = &provider.auth.api_key {
+                if auth_type.is_none() || auth_type == Some("api_key") {
+                    options.push(AuthSelectorProvider {
+                        id: provider.id.clone(),
+                        name: provider.name.clone(),
+                        auth_type: "api_key".to_string(),
+                        method_name: Some(api_key.name().to_string()),
+                        status,
+                    });
+                }
+            }
+        }
+        options.sort_by(|a, b| a.name.cmp(&b.name));
+        options
+    }
+
+    /// Upstream `findLoginProviderOptions`: exact id or name match, case
+    /// insensitive.
+    pub fn find_login_provider_options(&self, provider_ref: &str) -> Vec<AuthSelectorProvider> {
+        let normalized = provider_ref.trim().to_lowercase();
+        if normalized.is_empty() {
+            return Vec::new();
+        }
+        self.get_login_provider_options(None)
+            .into_iter()
+            .filter(|provider| {
+                provider.id.to_lowercase() == normalized
+                    || provider.name.to_lowercase() == normalized
+            })
+            .collect()
+    }
+
+    /// The options `/logout` lists: the stored credentials, named by their
+    /// provider when it is known.
+    pub async fn get_logout_provider_options(&self) -> Result<Vec<AuthSelectorProvider>, String> {
+        let runtime = self.session.model_runtime();
+        let credentials = runtime
+            .list_credentials()
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut options: Vec<AuthSelectorProvider> = credentials
+            .into_iter()
+            .map(|info| AuthSelectorProvider {
+                name: runtime
+                    .get_provider(&info.provider_id)
+                    .map(|provider| provider.name.clone())
+                    .unwrap_or_else(|| info.provider_id.clone()),
+                id: info.provider_id,
+                auth_type: info.kind.clone(),
+                method_name: None,
+                status: Some(pillar_ai::auth_types::AuthCheck {
+                    kind: info.kind,
+                    source: Some("stored credential".to_string()),
+                }),
+            })
+            .collect();
+        options.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(options)
+    }
+
+    /// Upstream `showLoginAuthTypeSelector`: the "which method" step. The port
+    /// has no OAuth flows yet, so the subscription option only appears when a
+    /// provider actually offers one (never, today) — the API-key label is the
+    /// only reachable choice.
+    pub fn show_login_auth_type_selector(
+        &self,
+        provider_options: Option<&[AuthSelectorProvider]>,
+    ) -> Vec<ModeAction> {
+        const SUBSCRIPTION_LABEL: &str = "Sign in with an account";
+        const API_KEY_LABEL: &str = "Sign in with an API key";
+        let available: Vec<&str> = match provider_options {
+            Some(options) => options
+                .iter()
+                .map(|provider| provider.auth_type.as_str())
+                .collect(),
+            None => vec!["api_key"],
+        };
+        let mut options: Vec<String> = Vec::new();
+        if available.contains(&"oauth") {
+            options.push(SUBSCRIPTION_LABEL.to_string());
+        }
+        if available.contains(&"api_key") {
+            options.push(API_KEY_LABEL.to_string());
+        }
+        if options.is_empty() {
+            self.transcript
+                .lock()
+                .show_status("No login methods available.");
+            self.mark_dirty();
+            return Vec::new();
+        }
+        // A single provider option with a single method skips the question.
+        if let Some(provider_options) = provider_options {
+            if provider_options.len() == 1 && options.len() == 1 {
+                return vec![ModeAction::StartLogin {
+                    target: LoginTarget::from_provider(&provider_options[0]),
+                }];
+            }
+        }
+        let title = match provider_options.and_then(|options| options.first()) {
+            Some(provider) => format!("Select authentication method for {}:", provider.name),
+            None => "Select authentication method:".to_string(),
+        };
+        // The step is answered by the mode, not by an executor action, so the
+        // host reports it back through `UiCommand::LoginAuthTypeSelected`.
+        self.pending_login_auth_type
+            .lock()
+            .expect("pending login")
+            .replace(provider_options.map(|options| options.to_vec()));
+        self.show_extension_selector(&title, &options)
+    }
+
+    /// Upstream `showLoginProviderSelector`: the provider list, optionally
+    /// narrowed to one auth type and/or pre-filtered by a search term.
+    pub fn show_login_provider_selector(
+        &self,
+        auth_type: Option<&str>,
+        initial_search_input: Option<&str>,
+        login_provider: Option<LoginTarget>,
+    ) -> Vec<ModeAction> {
+        let provider_options = self.get_login_provider_options(auth_type);
+        if provider_options.is_empty() {
+            let message = match auth_type {
+                Some("oauth") => "No subscription providers available.",
+                Some("api_key") => "No API key providers available.",
+                _ => "No login providers available.",
+            };
+            self.transcript.lock().show_status(message);
+            self.mark_dirty();
+            return Vec::new();
+        }
+        let token = self.next_selector_token.fetch_add(1, Ordering::SeqCst);
+        let component = Shared::new(OAuthSelectorComponent::new(
+            AuthSelectorMode::Login,
+            provider_options,
+            initial_search_input,
+        ));
+        self.show_selector(ActiveSelector::AuthSelector {
+            token,
+            component,
+            mode: AuthSelectorMode::Login,
+            auth_type: auth_type.map(str::to_string),
+            login_provider,
+        })
+    }
+
+    /// Upstream `showOAuthSelector("logout")`: list the stored credentials and
+    /// remove the chosen one.
+    pub async fn show_logout_selector(&self) -> Vec<ModeAction> {
+        vec![ModeAction::ListCredentialsForLogout]
+    }
+
+    /// The selector half of `showOAuthSelector("logout")`, once the credential
+    /// list settled.
+    pub fn show_logout_selector_with(
+        &self,
+        options: Result<Vec<AuthSelectorProvider>, String>,
+    ) -> Vec<ModeAction> {
+        let provider_options = match options {
+            Ok(options) => options,
+            Err(error) => {
+                self.transcript
+                    .lock()
+                    .show_error(&format!("Could not read stored credentials: {error}"));
+                self.mark_dirty();
+                return Vec::new();
+            }
+        };
+        if provider_options.is_empty() {
+            self.transcript.lock().show_status(
+                "No stored credentials to remove. /logout only removes credentials saved by /login; environment variables and models.json config are unchanged.",
+            );
+            self.mark_dirty();
+            return Vec::new();
+        }
+        let token = self.next_selector_token.fetch_add(1, Ordering::SeqCst);
+        let component = Shared::new(OAuthSelectorComponent::new(
+            AuthSelectorMode::Logout,
+            provider_options,
+            None,
+        ));
+        self.show_selector(ActiveSelector::AuthSelector {
+            token,
+            component,
+            mode: AuthSelectorMode::Logout,
+            auth_type: None,
+            login_provider: None,
+        })
+    }
+
+    /// Upstream `handleLoginCommand`: no argument asks for the auth type, an
+    /// argument resolves a provider (one match logs in directly, several open
+    /// the method step, none pre-filters the provider list).
+    pub fn handle_login_command(&self, provider_ref: Option<&str>) -> Vec<ModeAction> {
+        let Some(provider_ref) = provider_ref else {
+            return self.show_login_auth_type_selector(None);
+        };
+        let provider_options = self.find_login_provider_options(provider_ref);
+        if provider_options.len() == 1 {
+            // Upstream `startProviderLogin`: the dialog/ambient decision is the
+            // same one the selector's `onSelect` makes.
+            return self.start_provider_login(&LoginTarget::from_provider(&provider_options[0]));
+        }
+        if provider_options.len() > 1 {
+            let ids: std::collections::BTreeSet<&str> = provider_options
+                .iter()
+                .map(|provider| provider.id.as_str())
+                .collect();
+            if ids.len() == 1 {
+                return self.show_login_auth_type_selector(Some(&provider_options));
+            }
+        }
+        self.show_login_provider_selector(None, Some(provider_ref), None)
+    }
+
+    /// Upstream `startProviderLogin`: OAuth opens the OAuth dialog, an
+    /// api-key method with a `login` opens the key dialog, and an
+    /// ambient-only method explains that it is configured elsewhere.
+    pub fn start_provider_login(&self, target: &LoginTarget) -> Vec<ModeAction> {
+        if target.auth_type == "oauth" {
+            return self.show_login_dialog(target);
+        }
+        let has_login = self
+            .session
+            .model_runtime()
+            .get_provider(&target.id)
+            .and_then(|provider| provider.auth.api_key.clone())
+            .is_some_and(|auth| auth.has_login());
+        if has_login {
+            return self.show_api_key_login_dialog(target);
+        }
+        self.show_ambient_auth_dialog(target)
+    }
+
+    /// Upstream `showApiKeyLoginDialog`: the dialog replaces the editor while
+    /// the login future runs.
+    pub fn show_api_key_login_dialog(&self, target: &LoginTarget) -> Vec<ModeAction> {
+        let token = self.next_selector_token.fetch_add(1, Ordering::SeqCst);
+        let component = Shared::new(LoginDialogComponent::new(
+            &target.id,
+            Some(&target.name),
+            None,
+        ));
+        {
+            let mut dialog = component.lock();
+            // Upstream's special case for Bedrock: it explains the ambient
+            // options before the method prompt replaces the content.
+            if target.id == "amazon-bedrock" {
+                dialog.show_details(&[
+                    theme().fg(
+                        "text",
+                        "You can also use an AWS profile, IAM keys, or role-based credentials.",
+                    ),
+                    theme().fg("muted", "See:"),
+                    theme().fg("accent", "  docs/providers.md"),
+                ]);
+            }
+        }
+        self.begin_login(token, target, component.clone());
+        let mut actions = self.show_selector(ActiveSelector::LoginDialog {
+            token,
+            component,
+            target: target.clone(),
+        });
+        // Upstream `showApiKeyLoginDialog` awaits `loginProvider` right after
+        // mounting the dialog.
+        actions.push(ModeAction::StartLogin {
+            target: target.clone(),
+        });
+        actions
+    }
+
+    /// Upstream `showLoginDialog` (the OAuth variant): the same dialog, with
+    /// the OAuth flow behind it. No OAuth flow is ported yet, so the executor
+    /// reports that as an error rather than hanging.
+    pub fn show_login_dialog(&self, target: &LoginTarget) -> Vec<ModeAction> {
+        let token = self.next_selector_token.fetch_add(1, Ordering::SeqCst);
+        let component = Shared::new(LoginDialogComponent::new(
+            &target.id,
+            Some(&target.name),
+            None,
+        ));
+        self.begin_login(token, target, component.clone());
+        let mut actions = self.show_selector(ActiveSelector::LoginDialog {
+            token,
+            component,
+            target: target.clone(),
+        });
+        // Upstream `showApiKeyLoginDialog` awaits `loginProvider` right after
+        // mounting the dialog.
+        actions.push(ModeAction::StartLogin {
+            target: target.clone(),
+        });
+        actions
+    }
+
+    /// Upstream `showAmbientAuthDialog`: the method has no interactive setup,
+    /// so the dialog just says where it is configured.
+    fn show_ambient_auth_dialog(&self, target: &LoginTarget) -> Vec<ModeAction> {
+        let token = self.next_selector_token.fetch_add(1, Ordering::SeqCst);
+        let component = Shared::new(LoginDialogComponent::new(
+            &target.id,
+            Some(&target.name),
+            Some(&format!("{} setup", target.name)),
+        ));
+        {
+            let mut dialog = component.lock();
+            dialog.show_info(
+                &format!(
+                    "{} is configured outside {}.",
+                    target
+                        .method_name
+                        .clone()
+                        .unwrap_or_else(|| "Authentication".to_string()),
+                    APP_NAME
+                ),
+                &[],
+                true,
+            );
+        }
+        // No login runs: the method has no interactive setup (upstream
+        // `showAmbientAuthDialog` only mounts the dialog).
+        self.show_selector(ActiveSelector::LoginDialog {
+            token,
+            component,
+            target: target.clone(),
+        })
+    }
+
+    /// Upstream `showAuthPrompt`: show the prompt and remember the reply
+    /// channel. A `select` prompt is a list in the editor slot (upstream
+    /// `showAuthSelect`), everything else is answered by the dialog itself.
+    pub fn begin_login_prompt(
+        &self,
+        token: u64,
+        prompt: &pillar_ai::auth_types::AuthPrompt,
+        reply: tokio::sync::oneshot::Sender<Option<String>>,
+    ) -> Vec<ModeAction> {
+        let mut state = self.active_login.lock().expect("active login");
+        let Some(login) = state.as_mut().filter(|login| login.token == token) else {
+            let _ = reply.send(None);
+            return Vec::new();
+        };
+        login.pending_prompt = Some(reply);
+        match prompt {
+            pillar_ai::auth_types::AuthPrompt::Select { message, options } => {
+                let labels: Vec<String> =
+                    options.iter().map(|option| option.label.clone()).collect();
+                drop(state);
+                let mut actions = self.show_extension_selector(message, &labels);
+                // Upstream swaps the dialog out for the selector; the port's
+                // host owns the prompt reply, so the pending login state (not
+                // the mounted selector) decides where the answer goes.
+                actions.push(ModeAction::EditorSlotChanged);
+                actions
+            }
+            pillar_ai::auth_types::AuthPrompt::ManualCode { message, .. } => {
+                let component = login.component.clone();
+                drop(state);
+                component.lock().show_manual_input(message);
+                self.mark_dirty();
+                Vec::new()
+            }
+            pillar_ai::auth_types::AuthPrompt::Text {
+                message,
+                placeholder,
+            }
+            | pillar_ai::auth_types::AuthPrompt::Secret {
+                message,
+                placeholder,
+            } => {
+                let component = login.component.clone();
+                drop(state);
+                component
+                    .lock()
+                    .show_prompt(message, placeholder.as_deref());
+                self.mark_dirty();
+                Vec::new()
+            }
+        }
+    }
+
+    /// The running login's dialog, when `token` is still the running one.
+    fn login_dialog(&self, token: u64) -> Option<Shared<LoginDialogComponent>> {
+        self.active_login
+            .lock()
+            .expect("active login")
+            .as_ref()
+            .filter(|login| login.token == token)
+            .map(|login| login.component.clone())
+    }
+
+    /// Answer the running login's pending prompt (upstream the `resolve` /
+    /// `reject` of `showAuthPrompt`). `None` cancels the flow.
+    fn answer_login_prompt(&self, value: Option<String>) {
+        let Some(reply) = self
+            .active_login
+            .lock()
+            .expect("active login")
+            .as_mut()
+            .and_then(|login| login.pending_prompt.take())
+        else {
+            return;
+        };
+        let _ = reply.send(value);
+    }
+
+    /// Whether the active login is waiting on a `select` prompt (upstream the
+    /// selector `showAuthSelect` mounted).
+    fn login_prompt_is_a_select(&self) -> bool {
+        self.active_login
+            .lock()
+            .expect("active login")
+            .as_ref()
+            .is_some_and(|login| login.pending_prompt.is_some())
+    }
+
+    /// Upstream `showAuthSelect`'s callbacks: answer the pending select prompt
+    /// with the chosen option's label, then put the dialog back in the editor
+    /// slot.
+    fn complete_login_select(
+        &self,
+        token: u64,
+        confirm: bool,
+        option: Option<&str>,
+    ) -> Vec<ModeAction> {
+        let target = self
+            .active_login
+            .lock()
+            .expect("active login")
+            .as_ref()
+            .map(|login| login.target.clone());
+        self.answer_login_prompt(option.map(str::to_string));
+        let mut actions = self.close_selector(Some(token));
+        if !confirm {
+            if let Some(target) = &target {
+                actions.extend(self.remount_login_dialog(target));
+            }
+            return actions;
+        }
+        // The prompt is answered; the dialog goes back in the slot (upstream
+        // `restoreDialog`).
+        if let Some(target) = &target {
+            actions.extend(self.remount_login_dialog(target));
+        }
+        actions
+    }
+
+    /// Mount (or re-mount) the running login's dialog in the editor slot
+    /// (upstream `restoreDialog`).
+    fn remount_login_dialog(&self, target: &LoginTarget) -> Vec<ModeAction> {
+        let (token, component, target) = {
+            let login = self.active_login.lock().expect("active login");
+            let Some(login) = login.as_ref() else {
+                return Vec::new();
+            };
+            let target = if login.target.id == target.id {
+                login.target.clone()
+            } else {
+                target.clone()
+            };
+            (login.token, login.component.clone(), target)
+        };
+        self.show_selector(ActiveSelector::LoginDialog {
+            token,
+            component,
+            target,
+        })
+    }
+
+    /// The auth-type step's answer (upstream the `ExtensionSelectorComponent`
+    /// callbacks of `showLoginAuthTypeSelector`).
+    pub fn complete_login_auth_type_selection(&self, option: Option<&str>) -> Vec<ModeAction> {
+        const SUBSCRIPTION_LABEL: &str = "Sign in with an account";
+        let context = self
+            .pending_login_auth_type
+            .lock()
+            .expect("pending login")
+            .take()
+            .flatten();
+        let Some(option) = option else {
+            return Vec::new();
+        };
+        let auth_type = if option == SUBSCRIPTION_LABEL {
+            "oauth"
+        } else {
+            "api_key"
+        };
+        match context {
+            Some(provider_options) => provider_options
+                .iter()
+                .find(|provider| provider.auth_type == auth_type)
+                .map(|provider| self.start_provider_login(&LoginTarget::from_provider(provider)))
+                .unwrap_or_default(),
+            None => self.show_login_provider_selector(Some(auth_type), None, None),
+        }
+    }
+
+    /// Upstream `loginProvider`'s setup: remember the running login so its
+    /// dialog, prompt and cancellation can be routed by token.
+    pub fn begin_login(
+        &self,
+        token: u64,
+        target: &LoginTarget,
+        component: Shared<LoginDialogComponent>,
+    ) {
+        *self.active_login.lock().expect("active login") = Some(ActiveLogin {
+            token,
+            target: target.clone(),
+            component,
+            pending_prompt: None,
+        });
+    }
+
+    /// [`Self::handle_login_event`] for the running login (the executor does
+    /// not know the selector token; at most one login runs at a time).
+    pub fn handle_login_event_active(
+        &self,
+        event: &pillar_ai::auth_types::AuthEvent,
+    ) -> Vec<ModeAction> {
+        let token = self.active_login_token();
+        match token {
+            Some(token) => self.handle_login_event(token, event),
+            None => Vec::new(),
+        }
+    }
+
+    /// [`Self::begin_login_prompt`] for the running login.
+    pub fn begin_login_prompt_active(
+        &self,
+        prompt: &pillar_ai::auth_types::AuthPrompt,
+        reply: tokio::sync::oneshot::Sender<Option<String>>,
+    ) -> Vec<ModeAction> {
+        let token = self.active_login_token();
+        match token {
+            Some(token) => self.begin_login_prompt(token, prompt, reply),
+            None => {
+                let _ = reply.send(None);
+                Vec::new()
+            }
+        }
+    }
+
+    /// The running login's abort signal (upstream `dialog.signal`, which the
+    /// executor's interaction hands to the runtime).
+    pub fn active_login_signal(&self) -> Option<pillar_ai::abort::AbortSignal> {
+        self.active_login
+            .lock()
+            .expect("active login")
+            .as_ref()
+            .map(|login| login.component.lock().signal().clone())
+    }
+
+    fn active_login_token(&self) -> Option<u64> {
+        self.active_login
+            .lock()
+            .expect("active login")
+            .as_ref()
+            .map(|login| login.token)
+    }
+
+    /// Upstream the dialog/editor restore after a login settles: close the
+    /// mounted select/dialog and forget the running login.
+    pub fn finish_login(&self, target: &LoginTarget) -> Vec<ModeAction> {
+        // A settled login is not a cancelled one: the dialog's signal is left
+        // alone (upstream keeps the abort controller only for cancellation).
+        let _ = target;
+        if let Some(token) = self.active_login_token() {
+            self.end_login(token);
+        }
+        // The mounted selector may be the dialog or a `select` prompt's list,
+        // so close whatever is there rather than this login's token.
+        if self.has_active_selector() {
+            self.close_selector(None)
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Upstream `loginProvider`'s `finally`: the login is over.
+    pub fn end_login(&self, token: u64) {
+        let mut state = self.active_login.lock().expect("active login");
+        if state.as_ref().is_some_and(|login| login.token == token) {
+            *state = None;
+        }
+    }
+
+    /// Upstream `notifyAuthDialog`: route a login event to the dialog.
+    pub fn handle_login_event(
+        &self,
+        token: u64,
+        event: &pillar_ai::auth_types::AuthEvent,
+    ) -> Vec<ModeAction> {
+        let Some(component) = self.login_dialog(token) else {
+            return Vec::new();
+        };
+        let mut dialog = component.lock();
+        match event {
+            pillar_ai::auth_types::AuthEvent::AuthUrl { url, instructions } => {
+                dialog.show_auth(url, instructions.as_deref());
+            }
+            pillar_ai::auth_types::AuthEvent::DeviceCode {
+                user_code,
+                verification_uri,
+                ..
+            } => {
+                dialog.show_device_code(user_code, verification_uri);
+                dialog.show_waiting("Waiting for authentication...");
+            }
+            pillar_ai::auth_types::AuthEvent::Info { message, links } => {
+                dialog.show_info(message, links.as_deref().unwrap_or(&[]), false);
+            }
+            pillar_ai::auth_types::AuthEvent::Progress { message } => {
+                dialog.show_progress(message);
+            }
+        }
+        drop(dialog);
+        self.mark_dirty();
+        Vec::new()
+    }
+
+    /// Upstream `completeProviderAuthentication` up to (not including) its UI
+    /// writes: pick the provider's default model when the session has none.
+    /// Runs on the executor because it awaits `session.setModel`.
+    pub async fn resolve_post_login_authentication(
+        &self,
+        target: &LoginTarget,
+        previous_model: Option<&Model>,
+    ) -> PostLoginAuthentication {
+        let action_label = if target.auth_type == "oauth" {
+            format!("Logged in to {}", target.name)
+        } else {
+            format!("Saved API key for {}", target.name)
+        };
+        let mut selected_model: Option<Model> = None;
+        let mut selection_error: Option<String> = None;
+        if is_unknown_model(previous_model) {
+            let available_models = self.session.model_runtime().get_available_snapshot();
+            let provider_models: Vec<&Model> = available_models
+                .iter()
+                .filter(|model| model.provider == target.id)
+                .collect();
+            if target.id == "llama.cpp" {
+                selection_error = Some(llama_cpp_post_login_guidance(
+                    &action_label,
+                    provider_models.len(),
+                ));
+            } else if !has_default_model_provider(&target.id) {
+                selection_error = Some(format!(
+                    "{action_label}, but no default model is configured for provider \"{}\". Use /model to select a model.",
+                    target.id
+                ));
+            } else if provider_models.is_empty() {
+                selection_error = Some(format!(
+                    "{action_label}, but no models are available for that provider. Use /model to select a model."
+                ));
+            } else {
+                let default_model_id = default_model_per_provider(&target.id).unwrap_or_default();
+                let found = provider_models
+                    .iter()
+                    .find(|model| model.id == default_model_id)
+                    .map(|model| (*model).clone());
+                match found {
+                    Some(model) => match self.session.set_model(model.clone(), true).await {
+                        Ok(()) => selected_model = Some(model),
+                        Err(error) => {
+                            selection_error = Some(format!(
+                                "{action_label}, but selecting its default model failed: {error}. Use /model to select a model."
+                            ));
+                        }
+                    },
+                    None => {
+                        selection_error = Some(format!(
+                            "{action_label}, but its default model \"{default_model_id}\" is not available. Use /model to select a model."
+                        ));
+                    }
+                }
+            }
+        }
+        let anthropic_warning = self
+            .anthropic_subscription_warning_needed(selected_model.as_ref().or(previous_model))
+            .await;
+        PostLoginAuthentication {
+            action_label,
+            selected_model,
+            selection_error,
+            anthropic_warning,
+        }
+    }
+
+    /// The UI half of upstream `completeProviderAuthentication`: footer,
+    /// status, warning. Runs on the pump (it owns the transcript and footer).
+    pub fn finish_provider_authentication(&self, resolved: &PostLoginAuthentication) {
+        let action_label = &resolved.action_label;
+        self.update_available_provider_count();
+        self.footer.lock().invalidate();
+        self.update_editor_border_color();
+        let auth_path = self
+            .session
+            .model_runtime()
+            .auth_path()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "the credential store".to_string());
+        match &resolved.selected_model {
+            Some(model) => {
+                self.transcript.lock().show_status(&format!(
+                    "{action_label}. Selected {}. Credentials saved to {auth_path}",
+                    model.id
+                ));
+                if resolved.anthropic_warning {
+                    self.show_anthropic_subscription_warning();
+                }
+            }
+            None => {
+                self.transcript
+                    .lock()
+                    .show_status(&format!("{action_label}. Credentials saved to {auth_path}"));
+                match &resolved.selection_error {
+                    Some(error) => self.transcript.lock().show_error(error),
+                    None => {
+                        if resolved.anthropic_warning {
+                            self.show_anthropic_subscription_warning();
+                        }
+                    }
+                }
+            }
+        }
+        self.mark_dirty();
+    }
+
+    /// Upstream the `showWarning(ANTHROPIC_SUBSCRIPTION_AUTH_WARNING)` call:
+    /// warn once per session.
+    fn show_anthropic_subscription_warning(&self) {
+        if self
+            .anthropic_subscription_warning_shown
+            .swap(true, Ordering::SeqCst)
+        {
+            return;
+        }
+        self.transcript
+            .lock()
+            .show_warning(ANTHROPIC_SUBSCRIPTION_AUTH_WARNING);
+    }
+
+    /// Upstream `maybeWarnAboutAnthropicSubscriptionAuth`'s decision: whether
+    /// the active Anthropic auth is a subscription (and /settings did not
+    /// disable the warning). The caller shows it (the pump owns the
+    /// transcript).
+    pub async fn anthropic_subscription_warning_needed(&self, model: Option<&Model>) -> bool {
+        {
+            let settings = self
+                .session
+                .settings_manager()
+                .lock()
+                .expect("settings lock");
+            let warnings = settings.warnings();
+            if warnings
+                .get("anthropicExtraUsage")
+                .and_then(serde_json::Value::as_bool)
+                == Some(false)
+            {
+                return false;
+            }
+        }
+        if self
+            .anthropic_subscription_warning_shown
+            .load(Ordering::SeqCst)
+        {
+            return false;
+        }
+        let model = match model {
+            Some(model) => Some(model.clone()),
+            None => self.session.current_model(),
+        };
+        let Some(model) = model else { return false };
+        if model.provider != "anthropic" {
+            return false;
+        }
+        let runtime = self.session.model_runtime();
+        let is_oauth = runtime
+            .check_auth("anthropic", None)
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|check| check.kind == "oauth");
+        if is_oauth {
+            return true;
+        }
+        let target = pillar_ai::models::AuthTarget::Provider("anthropic".to_string());
+        match runtime.get_auth(target, None).await {
+            Ok(Some(result)) => is_anthropic_subscription_auth_key(result.auth.api_key.as_deref()),
+            // Ignore auth lookup failures for warning-only checks.
+            _ => false,
+        }
+    }
+
+    /// Upstream the catalog-refresh continuation after a login.
+    pub fn complete_login_catalog_refresh(
+        &self,
+        action_label: &str,
+        aborted: bool,
+        errors: &[String],
+        error: Option<&str>,
+    ) {
+        let message = if let Some(error) = error {
+            Some(format!(
+                "{action_label}, but its model catalog could not be refreshed: {error}"
+            ))
+        } else if aborted {
+            Some(format!(
+                "{action_label}, but its model catalog refresh timed out; using cached models."
+            ))
+        } else if !errors.is_empty() {
+            Some(format!(
+                "{action_label}, but its model catalog could not be refreshed; using cached models."
+            ))
+        } else {
+            None
+        };
+        if let Some(message) = message {
+            self.transcript.lock().show_warning(&message);
+        }
+        self.update_available_provider_count();
+        self.footer.lock().invalidate();
+        self.mark_dirty();
+    }
+
+    /// Upstream the `/logout` continuation.
+    pub fn complete_logout(
+        &self,
+        target: &LoginTarget,
+        error: Option<&str>,
+        synchronization: bool,
+    ) {
+        match error {
+            None => {
+                let message = if target.auth_type == "oauth" {
+                    format!("Logged out of {}", target.name)
+                } else {
+                    format!(
+                        "Removed stored API key for {}. Environment variables and models.json config are unchanged.",
+                        target.name
+                    )
+                };
+                self.transcript.lock().show_status(&message);
+            }
+            Some(error) => {
+                let message = if synchronization {
+                    format!(
+                        "Credentials removed for {}, but local model state could not be synchronized: {error}",
+                        target.name
+                    )
+                } else {
+                    format!("Logout failed: {error}")
+                };
+                self.transcript.lock().show_error(&message);
+            }
+        }
+        self.update_available_provider_count();
+        self.mark_dirty();
+    }
+
+    /// Upstream the login dialog's error branch (the `catch` around
+    /// `loginProvider` + `completeProviderAuthentication`).
+    pub fn complete_login_failure(
+        &self,
+        target: &LoginTarget,
+        error: Option<&str>,
+        synchronization: bool,
+    ) {
+        let action = if target.auth_type == "oauth" {
+            format!("Logged in to {}", target.name)
+        } else {
+            format!("Saved API key for {}", target.name)
+        };
+        let Some(error) = error else { return };
+        if synchronization {
+            self.transcript.lock().show_error(&format!(
+                "{action}, but local model state could not be synchronized: {error}"
+            ));
+        } else if error != "Login cancelled" {
+            let verb = if target.auth_type == "oauth" {
+                "login to"
+            } else {
+                "save API key for"
+            };
+            self.transcript
+                .lock()
+                .show_error(&format!("Failed to {verb} {}: {error}", target.name));
+        }
+        self.mark_dirty();
     }
 
     /// Upstream the `currentEnabledIds` computation of `showModelsSelector`:
@@ -3268,6 +4301,8 @@ impl InteractiveMode {
             ExtensionSelector(u64, Shared<ExtensionSelectorComponent>),
             ExtensionInput(u64, Shared<ExtensionInputComponent>),
             ExtensionCustom(u64, Shared<ExtensionCustomComponent>),
+            AuthSelector(u64, Shared<OAuthSelectorComponent>),
+            LoginDialog(u64, Shared<LoginDialogComponent>),
             UserMessage(u64, Shared<UserMessageSelectorComponent>),
             Settings(u64, Shared<SettingsSelectorComponent>),
         }
@@ -3298,6 +4333,12 @@ impl InteractiveMode {
                 Some(ActiveSelector::ExtensionCustom { token, component }) => {
                     Handle::ExtensionCustom(*token, component.clone())
                 }
+                Some(ActiveSelector::AuthSelector {
+                    token, component, ..
+                }) => Handle::AuthSelector(*token, component.clone()),
+                Some(ActiveSelector::LoginDialog {
+                    token, component, ..
+                }) => Handle::LoginDialog(*token, component.clone()),
                 Some(ActiveSelector::UserMessage { token, component }) => {
                     Handle::UserMessage(*token, component.clone())
                 }
@@ -3401,6 +4442,20 @@ impl InteractiveMode {
                         if self.answer_pending_ask(Some(&option)) {
                             return Some(self.close_selector(Some(token)));
                         }
+                        // The guard must not be held across the call (it takes
+                        // the same lock again).
+                        let auth_type_pending = {
+                            self.pending_login_auth_type
+                                .lock()
+                                .expect("pending login")
+                                .is_some()
+                        };
+                        if auth_type_pending {
+                            return Some(self.complete_login_auth_type_selection(Some(&option)));
+                        }
+                        if self.login_prompt_is_a_select() {
+                            return Some(self.complete_login_select(token, true, Some(&option)));
+                        }
                         self.complete_tree_summary_choice(token, &option)
                     }
                     ExtensionSelectorOutcome::ToggleToolsExpanded => {
@@ -3410,6 +4465,18 @@ impl InteractiveMode {
                     ExtensionSelectorOutcome::Cancel => {
                         if self.answer_pending_ask(None) {
                             return Some(self.close_selector(Some(token)));
+                        }
+                        let auth_type_pending = {
+                            self.pending_login_auth_type
+                                .lock()
+                                .expect("pending login")
+                                .is_some()
+                        };
+                        if auth_type_pending {
+                            return Some(self.complete_login_auth_type_selection(None));
+                        }
+                        if self.login_prompt_is_a_select() {
+                            return Some(self.complete_login_select(token, false, None));
                         }
                         self.cancel_tree_summary_choice(token)
                     }
@@ -3445,6 +4512,98 @@ impl InteractiveMode {
             Handle::ExtensionCustom(_token, component) => {
                 component.lock().handle_input(data);
                 Vec::new()
+            }
+            // The auth provider list: Enter starts a login (or a logout),
+            // Escape goes back one step (upstream the `onSelect` / `onCancel`
+            // closures of `showLoginProviderSelector` / `showOAuthSelector`).
+            Handle::AuthSelector(token, component) => {
+                let (mode, auth_type, login_provider) = {
+                    let guard = self.active_selector.lock().expect("active selector");
+                    match guard.as_ref() {
+                        Some(ActiveSelector::AuthSelector {
+                            mode,
+                            auth_type,
+                            login_provider,
+                            ..
+                        }) => (*mode, auth_type.clone(), login_provider.clone()),
+                        _ => (AuthSelectorMode::Login, None, None),
+                    }
+                };
+                // Bind the outcome so the component's guard is released before
+                // the arm runs (it reads the component again).
+                let outcome = component.lock().handle_key(data);
+                match outcome {
+                    AuthSelectorOutcome::Consumed => Vec::new(),
+                    AuthSelectorOutcome::Select {
+                        provider_id,
+                        auth_type: selected_auth_type,
+                    } => {
+                        let target = component
+                            .lock()
+                            .selected_provider()
+                            .map(LoginTarget::from_provider)
+                            .filter(|target| target.id == provider_id)
+                            .unwrap_or_else(|| LoginTarget {
+                                name: provider_id.clone(),
+                                id: provider_id,
+                                auth_type: selected_auth_type,
+                                method_name: None,
+                            });
+                        let mut actions = self.close_selector(Some(token));
+                        if mode == AuthSelectorMode::Logout {
+                            actions.push(ModeAction::Logout { target });
+                        } else {
+                            // Upstream `startProviderLogin`: an ambient-only
+                            // method must not run a login at all.
+                            actions.extend(self.start_provider_login(&target));
+                        }
+                        actions
+                    }
+                    AuthSelectorOutcome::Cancel => {
+                        let mut actions = self.close_selector(Some(token));
+                        // Escape from a narrowed provider list goes back to the
+                        // auth-type question; from a provider-specific list it
+                        // just closes (upstream the `onCancel` closures).
+                        if mode == AuthSelectorMode::Login {
+                            if let Some(provider) = login_provider {
+                                actions.extend(self.show_login_auth_type_selector(Some(&[
+                                    AuthSelectorProvider {
+                                        id: provider.id,
+                                        name: provider.name,
+                                        auth_type: provider.auth_type,
+                                        method_name: provider.method_name,
+                                        status: None,
+                                    },
+                                ])));
+                            } else if auth_type.is_some() {
+                                actions.extend(self.show_login_auth_type_selector(None));
+                            }
+                        }
+                        actions
+                    }
+                }
+            }
+            // The login dialog: Enter answers the pending prompt, Escape
+            // cancels the flow (upstream the input callbacks / `cancel`).
+            Handle::LoginDialog(token, component) => {
+                let outcome = component.lock().handle_key(data);
+                match outcome {
+                    LoginDialogOutcome::Consumed => Vec::new(),
+                    LoginDialogOutcome::Submit(value) => {
+                        self.answer_login_prompt(Some(value));
+                        Vec::new()
+                    }
+                    LoginDialogOutcome::Cancel => {
+                        // Upstream `cancel()` rejects the prompt and calls
+                        // `onComplete(false, "Login cancelled")`, whose
+                        // listeners only restore the editor: nothing is
+                        // printed, and the failure branch ignores the
+                        // "Login cancelled" error.
+                        self.answer_login_prompt(None);
+                        self.end_login(token);
+                        self.close_selector(Some(token))
+                    }
+                }
             }
             // `/settings`: the panel stays open while changes apply (upstream
             // the callbacks mutate the live settings).

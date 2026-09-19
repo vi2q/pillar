@@ -31,6 +31,10 @@ impl ApiKeyAuth for EnvApiKeyAuth {
         self.name
     }
 
+    fn has_login(&self) -> bool {
+        true
+    }
+
     async fn login(
         &self,
         interaction: &ProviderAuthInteraction,
@@ -100,6 +104,10 @@ pub struct AnthropicApiKeyAuth;
 impl ApiKeyAuth for AnthropicApiKeyAuth {
     fn name(&self) -> &str {
         "Anthropic API key"
+    }
+
+    fn has_login(&self) -> bool {
+        true
     }
 
     async fn login(
@@ -218,6 +226,10 @@ impl CloudflareAuth {
 impl ApiKeyAuth for CloudflareAuth {
     fn name(&self) -> &str {
         self.name
+    }
+
+    fn has_login(&self) -> bool {
+        true
     }
 
     async fn login(
@@ -358,6 +370,10 @@ struct BedrockAuth;
 impl ApiKeyAuth for BedrockAuth {
     fn name(&self) -> &str {
         "AWS credentials or bearer token"
+    }
+
+    fn has_login(&self) -> bool {
+        true
     }
 
     async fn login(
@@ -534,6 +550,10 @@ const VERTEX_ADC_PATH: &str = "~/.config/gcloud/application_default_credentials.
 impl ApiKeyAuth for VertexAuth {
     fn name(&self) -> &str {
         "Google Cloud credentials"
+    }
+
+    fn has_login(&self) -> bool {
+        true
     }
 
     async fn login(

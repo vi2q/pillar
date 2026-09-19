@@ -329,6 +329,19 @@ pub struct ExtensionBindings {
     pub on_error: Option<ExtensionErrorListener>,
 }
 
+/// Outcome of the post-login provider catalog refresh (upstream the
+/// `refresh({ providers: [id] })` result plus the timeout).
+#[derive(Debug, Clone, Default)]
+pub struct ProviderCatalogRefresh {
+    /// The 15 s timeout fired. The port's refresh is offline-only, so this
+    /// stays false (recorded divergence).
+    pub aborted: bool,
+    /// Provider-scoped refresh errors.
+    pub errors: Vec<String>,
+    /// The refresh failed outright.
+    pub error: Option<String>,
+}
+
 /// Configuration for [`AgentSession::new`] (upstream `AgentSessionConfig`,
 /// capability subset).
 pub struct AgentSessionConfig {
@@ -467,6 +480,9 @@ struct SessionInner {
     cwd: String,
     resource_loader: Arc<Mutex<ResourceLoader>>,
     model_runtime: Arc<ModelRuntime>,
+    /// Serializes credential-driven recomposes (upstream the store's per
+    /// provider queue plus the single-threaded mode).
+    credential_sync_lock: tokio::sync::Mutex<()>,
     extension_runner: Arc<Mutex<ExtensionRunner>>,
     command_handler: Mutex<Option<ExtensionCommandHandler>>,
     session_start_event: Option<SessionEventMeta>,
@@ -598,6 +614,7 @@ impl AgentSession {
             cwd: config.cwd,
             resource_loader: config.resource_loader,
             model_runtime: config.model_runtime,
+            credential_sync_lock: tokio::sync::Mutex::new(()),
             extension_runner: config.extension_runner,
             command_handler: Mutex::new(config.command_handler),
             session_start_event: config.session_start_event,
@@ -676,6 +693,75 @@ impl AgentSession {
 
     pub fn model_runtime(&self) -> &ModelRuntime {
         &self.inner.model_runtime
+    }
+
+    /// Upstream `modelRuntime.login(...)`: run the provider's login flow and
+    /// persist the credential, then recompose the provider. `Err` is
+    /// `(message, is_credential_synchronization_error)`.
+    ///
+    /// The runtime's mutating auth methods take `&self` because the session
+    /// shares it behind an `Arc`; the credential-sync lock serializes the
+    /// recompose against another login/logout (the store serializes the write
+    /// itself per provider).
+    pub async fn login_provider(
+        &self,
+        provider_id: &str,
+        auth_type: &str,
+        interaction: &dyn pillar_ai::auth_types::AuthInteraction,
+    ) -> Result<(), (String, bool)> {
+        let _guard = self.inner.credential_sync_lock.lock().await;
+        self.inner
+            .model_runtime
+            .login(provider_id, auth_type, interaction)
+            .await
+            .map(|_| ())
+            .map_err(|error| {
+                (
+                    error.message.clone(),
+                    error.operation
+                        != crate::core::model_runtime::CredentialSynchronizationOperation::Login
+                        || error.credential.is_some(),
+                )
+            })
+    }
+
+    /// Upstream `modelRuntime.logout(...)`. `Err` is
+    /// `(message, is_credential_synchronization_error)`.
+    pub async fn logout_provider(&self, provider_id: &str) -> Result<(), (String, bool)> {
+        let _guard = self.inner.credential_sync_lock.lock().await;
+        self.inner
+            .model_runtime
+            .logout(provider_id)
+            .await
+            .map_err(|error| (error.message, true))
+    }
+
+    /// Upstream the post-login `modelRuntime.refresh({ providers: [id] })`.
+    pub async fn refresh_provider_catalog(&self, provider_id: &str) -> ProviderCatalogRefresh {
+        let _guard = self.inner.credential_sync_lock.lock().await;
+        let result =
+            self.inner
+                .model_runtime
+                .refresh(Some(pillar_ai::models::ModelsRefreshOptions {
+                    allow_network: None,
+                    providers: Some(vec![provider_id.to_string()]),
+                    ..Default::default()
+                }));
+        // The port's refresh is offline-only (static catalog divergence), so it
+        // cannot time out; `aborted` stays false and the errors are the
+        // provider-scoped composition failures.
+        match result.await {
+            Ok(result) => ProviderCatalogRefresh {
+                aborted: false,
+                errors: result.errors.values().cloned().collect(),
+                error: None,
+            },
+            Err(error) => ProviderCatalogRefresh {
+                aborted: false,
+                errors: Vec::new(),
+                error: Some(error.to_string()),
+            },
+        }
     }
 
     pub fn resource_loader(&self) -> std::sync::MutexGuard<'_, ResourceLoader> {

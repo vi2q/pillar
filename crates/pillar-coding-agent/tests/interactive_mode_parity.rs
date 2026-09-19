@@ -137,7 +137,7 @@ fn session() -> Arc<AgentSession> {
 fn session_with_scoped_models(
     scoped_models: Vec<pillar_coding_agent::core::model_mutation::ScopedModel>,
 ) -> Arc<AgentSession> {
-    session_with_models_impl(scoped_models, false)
+    session_with_models_impl_with_json(scoped_models, false, "{\"providers\":{}}")
 }
 
 /// Same, but the runtime's availability snapshot also reports the anthropic
@@ -146,12 +146,34 @@ fn session_with_scoped_models(
 fn session_with_available_scoped_models(
     scoped_models: Vec<pillar_coding_agent::core::model_mutation::ScopedModel>,
 ) -> Arc<AgentSession> {
-    session_with_models_impl(scoped_models, true)
+    session_with_models_impl_with_json(scoped_models, true, "{\"providers\":{}}")
 }
 
-fn session_with_models_impl(
+/// A session with a native provider registered (its auth decides whether
+/// `/login` has a flow).
+fn session_with_native_provider(provider: Provider) -> Arc<AgentSession> {
+    build_session(Vec::new(), false, "{\"providers\":{}}", vec![provider])
+}
+
+/// A session whose `models.json` is the given body (a provider defined there
+/// composes to `ComposedApiKeyAuth`).
+fn session_with_models_json(models_json: &str) -> Arc<AgentSession> {
+    build_session(Vec::new(), false, models_json, Vec::new())
+}
+
+fn session_with_models_impl_with_json(
     scoped_models: Vec<pillar_coding_agent::core::model_mutation::ScopedModel>,
     make_available: bool,
+    models_json: &str,
+) -> Arc<AgentSession> {
+    build_session(scoped_models, make_available, models_json, Vec::new())
+}
+
+fn build_session(
+    scoped_models: Vec<pillar_coding_agent::core::model_mutation::ScopedModel>,
+    make_available: bool,
+    models_json: &str,
+    native_providers: Vec<Provider>,
 ) -> Arc<AgentSession> {
     let model = FauxModelRef {
         id: "claude-sonnet-4-5".to_string(),
@@ -215,8 +237,8 @@ fn session_with_models_impl(
     let models_path = dir.join("models.json");
     // A valid empty config: `{}` would leave a `ModelRuntime::get_error()`
     // config error that the model selector renders as its error message.
-    std::fs::write(&models_path, "{\"providers\":{}}").expect("write models");
-    let mut runtime = ModelRuntime::new(
+    std::fs::write(&models_path, models_json).expect("write models");
+    let runtime = ModelRuntime::new(
         pillar_coding_agent::core::model_runtime::CreateModelRuntimeOptions {
             models_path: Some(models_path),
             models_store: Some(Arc::new(
@@ -227,6 +249,12 @@ fn session_with_models_impl(
         },
     )
     .expect("runtime");
+    let mut runtime = runtime;
+    for provider in native_providers {
+        runtime
+            .register_native_provider(provider)
+            .expect("register native provider");
+    }
     if make_available {
         // Configure anthropic auth and refresh the availability snapshot (the
         // selector reads `getAvailableSnapshot()`).
@@ -2799,4 +2827,434 @@ fn an_editor_ask_answers_the_edited_text() {
     );
     mode.handle_selector_key("\u{1b}").expect("editor");
     assert_eq!(answer.try_recv(), Ok(Ok(serde_json::Value::Null)));
+}
+
+// --- /login and /logout ---------------------------------------------------------------------
+
+use pillar_ai::auth_types::{AuthEvent, AuthInteraction, AuthPrompt};
+use pillar_ai::models::{Provider, ProviderApi, ProviderStreams};
+use pillar_coding_agent::modes::interactive::interactive_mode::LoginTarget;
+
+/// A login interaction that answers immediately (the executor's UI-backed
+/// interaction is only reachable through the run loop).
+struct ScriptedAuthInteraction {
+    answers: Mutex<std::collections::VecDeque<String>>,
+    signal: pillar_ai::abort::AbortSignal,
+}
+
+impl ScriptedAuthInteraction {
+    fn new(answers: &[&str]) -> Self {
+        Self {
+            answers: Mutex::new(answers.iter().map(|a| a.to_string()).collect()),
+            signal: pillar_ai::abort::AbortSignal::new(),
+        }
+    }
+}
+
+#[async_trait]
+impl AuthInteraction for ScriptedAuthInteraction {
+    fn signal(&self) -> Option<&pillar_ai::abort::AbortSignal> {
+        Some(&self.signal)
+    }
+
+    async fn prompt(&self, _prompt: &AuthPrompt) -> Result<String, AiError> {
+        self.answers
+            .lock()
+            .unwrap()
+            .pop_front()
+            .ok_or_else(|| AiError::Other("no scripted answer".to_string()))
+    }
+
+    async fn notify(&self, _event: &AuthEvent) {}
+}
+
+#[test]
+fn the_login_command_asks_for_the_auth_type_then_lists_providers() {
+    let session = session();
+    let mode = make_mode(&session);
+
+    // `/login` with no argument asks which method. No OAuth flow is ported, so
+    // the subscription option is not offered (the recorded divergence).
+    let actions = mode.handle_submit("/login");
+    assert_eq!(actions, vec![ModeAction::EditorSlotChanged]);
+    let body = editor_slot_body(&mode, 80);
+    assert!(body.contains("Select authentication method:"), "{body}");
+    assert!(body.contains("Sign in with an API key"), "{body}");
+    assert!(!body.contains("Sign in with an account"), "{body}");
+
+    // Enter narrows to the API-key provider list, sorted by name and with the
+    // auth-type labels suppressed (every row is an API key).
+    let actions = mode.handle_selector_key("\r").expect("selector");
+    assert_eq!(actions, vec![ModeAction::EditorSlotChanged]);
+    let body = editor_slot_body(&mode, 100);
+    assert!(body.contains("Select provider to configure:"), "{body}");
+    assert!(
+        body.contains("✓") || body.contains("• unconfigured"),
+        "{body}"
+    );
+    assert!(body.contains("Amazon Bedrock"), "{body}");
+
+    // Enter on the first provider starts its login: the close, the dialog's
+    // mount, and the login the dialog triggers (Bedrock's method has a flow).
+    let bedrock = LoginTarget {
+        id: "amazon-bedrock".to_string(),
+        name: "Amazon Bedrock".to_string(),
+        auth_type: "api_key".to_string(),
+        method_name: Some("AWS credentials or bearer token".to_string()),
+    };
+    let actions = mode.handle_selector_key("\r").expect("selector");
+    assert_eq!(
+        actions,
+        vec![
+            ModeAction::EditorSlotChanged,
+            ModeAction::EditorSlotChanged,
+            ModeAction::StartLogin {
+                target: bedrock.clone(),
+            },
+        ]
+    );
+    let body = editor_slot_body(&mode, 80);
+    assert!(body.contains("Login to Amazon Bedrock"), "{body}");
+    // Bedrock explains its ambient options before the first prompt.
+    assert!(body.contains("You can also use an AWS profile"), "{body}");
+}
+
+/// Selecting a provider whose method has no interactive login must explain
+/// where it is configured instead of running a login (upstream
+/// `startProviderLogin` → `showAmbientAuthDialog`). A provider defined in
+/// `models.json` composes to exactly that shape.
+/// A provider defined only by `models.json` has no base method, so the
+/// composer fabricates upstream's `Enter API key` login (this is the shape
+/// the user's `opencode-go` provider has).
+#[test]
+fn a_models_json_provider_gets_the_fabricated_api_key_login() {
+    let session = session_with_models_json(
+        r#"{"providers":{"opencode-go":{"name":"OpenCode Go","baseUrl":"https://x.test","apiKey":"sk-literal"}}}"#,
+    );
+    let mode = make_mode(&session);
+
+    // `/login <ref>` opens the key dialog and starts the flow.
+    let actions = mode.handle_submit("/login opencode-go");
+    assert_eq!(
+        actions,
+        vec![
+            ModeAction::EditorSlotChanged,
+            ModeAction::StartLogin {
+                target: LoginTarget {
+                    id: "opencode-go".to_string(),
+                    name: "OpenCode Go".to_string(),
+                    auth_type: "api_key".to_string(),
+                    method_name: Some("API key".to_string()),
+                },
+            },
+        ]
+    );
+    let body = editor_slot_body(&mode, 80);
+    assert!(body.contains("Login to OpenCode Go"), "{body}");
+
+    // The fabricated prompt asks for the key and the typed value goes back.
+    let (reply, answer) = tokio::sync::oneshot::channel();
+    mode.begin_login_prompt_active(
+        &AuthPrompt::Secret {
+            message: "Enter API key".to_string(),
+            placeholder: None,
+        },
+        reply,
+    );
+    let body = editor_slot_body(&mode, 80);
+    assert!(body.contains("Enter API key"), "{body}");
+    for ch in "sk-new".chars() {
+        mode.handle_selector_key(&ch.to_string()).expect("dialog");
+    }
+    mode.handle_selector_key("\r").expect("dialog");
+    assert_eq!(
+        answer.blocking_recv().expect("reply"),
+        Some("sk-new".to_string())
+    );
+}
+
+/// An auth method with no interactive login (upstream an extension can
+/// register one): `/login` must explain where it is configured instead of
+/// asking for a key.
+struct AmbientOnlyAuth;
+
+#[async_trait]
+impl pillar_ai::auth_types::ApiKeyAuth for AmbientOnlyAuth {
+    fn name(&self) -> &str {
+        "AWS credentials"
+    }
+
+    async fn resolve(
+        &self,
+        _input: &pillar_ai::auth_types::ApiKeyAuthInput<'_>,
+    ) -> Result<Option<pillar_ai::auth_types::AuthResult>, AiError> {
+        Ok(None)
+    }
+}
+
+/// A stream the login tests never call (they stop at the auth layer).
+fn unreachable_stream() -> pillar_ai::models::StreamFn {
+    Arc::new(
+        |_model: &pillar_ai::types::Model, _ctx: &pillar_ai::types::Context, _options| {
+            unreachable!("the login tests never stream")
+        },
+    )
+}
+
+fn ambient_only_provider() -> Provider {
+    Provider {
+        id: "opencode-go".to_string(),
+        name: "OpenCode Go".to_string(),
+        base_url: Some("https://x.test".to_string()),
+        headers: None,
+        auth: pillar_ai::auth_types::ProviderAuth {
+            api_key: Some(Arc::new(AmbientOnlyAuth)),
+            oauth: None,
+        },
+        get_models: Box::new(Vec::new),
+        refresh_models: None,
+        filter_models: None,
+        api: ProviderApi::Single(Arc::new(ProviderStreams {
+            stream: unreachable_stream(),
+            stream_simple: unreachable_stream(),
+        })),
+    }
+}
+
+#[test]
+fn an_ambient_only_provider_opens_the_explanation_dialog_instead_of_logging_in() {
+    let session = session_with_native_provider(ambient_only_provider());
+    let mode = make_mode(&session);
+
+    // `/login <ref>` finds it and the ambient dialog replaces the editor.
+    let actions = mode.handle_submit("/login opencode-go");
+    assert_eq!(actions, vec![ModeAction::EditorSlotChanged]);
+    let body = editor_slot_body(&mode, 80);
+    assert!(body.contains("OpenCode Go setup"), "{body}");
+    assert!(body.contains("configured outside pillar"), "{body}");
+    assert!(body.contains("to close"), "{body}");
+
+    // Escape closes it without a status line (upstream's `onComplete` only
+    // restores the editor).
+    assert_eq!(
+        mode.handle_selector_key("\u{1b}").expect("dialog"),
+        vec![ModeAction::EditorSlotChanged]
+    );
+    assert!(!mode.has_active_selector());
+
+    // The provider list offers it too, and Enter only explains it. `/login`
+    // asks the method first, so walk that step and filter to the provider.
+    let actions = mode.handle_submit("/login");
+    assert_eq!(actions, vec![ModeAction::EditorSlotChanged]);
+    let actions = mode.handle_selector_key("\r").expect("selector");
+    assert_eq!(actions, vec![ModeAction::EditorSlotChanged]);
+    for ch in "opencode".chars() {
+        mode.handle_selector_key(&ch.to_string()).expect("selector");
+    }
+    let body = editor_slot_body(&mode, 100);
+    assert!(body.contains("OpenCode Go"), "{body}");
+    let actions = mode.handle_selector_key("\r").expect("selector");
+    assert!(
+        !actions
+            .iter()
+            .any(|action| matches!(action, ModeAction::StartLogin { .. })),
+        "an ambient-only method must not run a login: {actions:?}"
+    );
+    let body = editor_slot_body(&mode, 80);
+    assert!(body.contains("OpenCode Go setup"), "{body}");
+    assert!(body.contains("configured outside pillar"), "{body}");
+}
+
+#[test]
+fn login_openai_starts_directly_and_an_unknown_name_prefilters_the_list() {
+    let session = session();
+    let mode = make_mode(&session);
+
+    // A unique provider reference skips the questions and goes straight to
+    // the dialog + login (upstream `handleLoginCommand` → `startProviderLogin`
+    // → `showApiKeyLoginDialog`).
+    let actions = mode.handle_submit("/login openai");
+    assert_eq!(
+        actions,
+        vec![
+            ModeAction::EditorSlotChanged,
+            ModeAction::StartLogin {
+                target: LoginTarget {
+                    id: "openai".to_string(),
+                    name: "OpenAI".to_string(),
+                    auth_type: "api_key".to_string(),
+                    method_name: Some("OpenAI API key".to_string()),
+                },
+            },
+        ]
+    );
+    let body = editor_slot_body(&mode, 80);
+    assert!(body.contains("Login to OpenAI"), "{body}");
+
+    // A reference that matches nothing opens the list with the search
+    // pre-filled (a fuzzy match is a subsequence, so the term has to be
+    // genuinely absent).
+    let actions = mode.handle_submit("/login zzzz");
+    assert_eq!(actions, vec![ModeAction::EditorSlotChanged]);
+    let body = editor_slot_body(&mode, 100);
+    assert!(body.contains("No matching providers"), "{body}");
+    assert!(
+        body.contains("zzzz"),
+        "the search term is prefilled: {body}"
+    );
+}
+
+#[test]
+fn the_login_dialog_round_trips_a_prompt_and_escape_cancels() {
+    let session = session();
+    let mode = make_mode(&session);
+    let target = LoginTarget {
+        id: "anthropic".to_string(),
+        name: "Anthropic".to_string(),
+        auth_type: "api_key".to_string(),
+        method_name: Some("Anthropic API key".to_string()),
+    };
+
+    // The dialog replaces the editor and starts the flow (upstream
+    // `showApiKeyLoginDialog` awaits `loginProvider` after mounting).
+    let actions = mode.start_provider_login(&target);
+    assert_eq!(
+        actions,
+        vec![
+            ModeAction::EditorSlotChanged,
+            ModeAction::StartLogin {
+                target: target.clone(),
+            },
+        ]
+    );
+    let body = editor_slot_body(&mode, 80);
+    assert!(body.contains("Login to Anthropic"), "{body}");
+
+    // The runtime's prompt lands in the dialog and its answer goes back
+    // through the reply channel (upstream `showAuthPrompt`).
+    let (reply, answer) = tokio::sync::oneshot::channel();
+    mode.begin_login_prompt_active(
+        &AuthPrompt::Secret {
+            message: "Enter Anthropic API key".to_string(),
+            placeholder: None,
+        },
+        reply,
+    );
+    let body = editor_slot_body(&mode, 80);
+    assert!(body.contains("Enter Anthropic API key"), "{body}");
+    for ch in "sk-ant".chars() {
+        mode.handle_selector_key(&ch.to_string()).expect("dialog");
+    }
+    mode.handle_selector_key("\r").expect("dialog");
+    assert_eq!(
+        answer.blocking_recv().expect("reply"),
+        Some("sk-ant".to_string())
+    );
+
+    // Escape cancels: the dialog's signal aborts and the flow unwinds.
+    let actions = mode.handle_selector_key("\u{1b}").expect("dialog");
+    assert!(actions.contains(&ModeAction::EditorSlotChanged));
+    assert!(!mode.has_active_selector());
+}
+
+#[test]
+fn the_logout_command_lists_stored_credentials_and_removes_one() {
+    let session = session();
+    let mode = make_mode(&session);
+
+    // The credential list is an await, so the executor runs it first.
+    assert_eq!(
+        mode.handle_submit("/logout"),
+        vec![ModeAction::ListCredentialsForLogout]
+    );
+
+    // The list opens the selector in logout mode.
+    let provider = |id: &str, name: &str| {
+        pillar_coding_agent::modes::interactive::components::oauth_selector::AuthSelectorProvider {
+            id: id.to_string(),
+            name: name.to_string(),
+            auth_type: "api_key".to_string(),
+            method_name: None,
+            status: Some(pillar_ai::auth_types::AuthCheck {
+                kind: "api_key".to_string(),
+                source: Some("stored credential".to_string()),
+            }),
+        }
+    };
+    let actions = mode.show_logout_selector_with(Ok(vec![provider("openai", "OpenAI")]));
+    assert_eq!(actions, vec![ModeAction::EditorSlotChanged]);
+    let body = editor_slot_body(&mode, 80);
+    assert!(body.contains("Select provider to logout:"), "{body}");
+    assert!(body.contains("OpenAI"), "{body}");
+    assert!(body.contains("✓ configured"), "{body}");
+
+    let actions = mode.handle_selector_key("\r").expect("selector");
+    assert_eq!(
+        actions,
+        vec![
+            ModeAction::EditorSlotChanged,
+            ModeAction::Logout {
+                target: LoginTarget {
+                    id: "openai".to_string(),
+                    name: "OpenAI".to_string(),
+                    auth_type: "api_key".to_string(),
+                    method_name: None,
+                },
+            },
+        ]
+    );
+
+    // Reading the credentials can fail: the error is shown, no selector opens.
+    let fresh = make_mode(&session);
+    assert!(
+        fresh
+            .show_logout_selector_with(Err("boom".to_string()))
+            .is_empty()
+    );
+    assert!(!fresh.has_active_selector());
+}
+
+/// The user-reported case: `/login` on a models.json provider must store the
+/// key (upstream's composed auth fabricates a login for it), not fail with
+/// "does not support api_key login".
+#[test]
+fn a_models_json_provider_login_persists_the_credential() {
+    let session = session_with_models_json(
+        r#"{"providers":{"opencode-go":{"name":"OpenCode Go","baseUrl":"https://x.test","apiKey":"sk-literal"}}}"#,
+    );
+    let interaction = ScriptedAuthInteraction::new(&["sk-composed"]);
+    tokio::runtime::Runtime::new()
+        .expect("tokio runtime")
+        .block_on(session.login_provider("opencode-go", "api_key", &interaction))
+        .expect("the composed method supports api_key login");
+
+    let status = session
+        .model_runtime()
+        .get_provider_auth_status("opencode-go");
+    assert!(status.configured, "the login configured the provider");
+}
+
+#[test]
+fn a_provider_login_persists_the_credential_through_the_session() {
+    let session = session();
+    let interaction = ScriptedAuthInteraction::new(&["sk-login"]);
+    tokio::runtime::Runtime::new()
+        .expect("tokio runtime")
+        .block_on(session.login_provider("openai", "api_key", &interaction))
+        .expect("login succeeds");
+
+    // The credential is stored and the provider recomposed, so the status
+    // flips to configured.
+    let runtime = session.model_runtime();
+    let status = runtime.get_provider_auth_status("openai");
+    assert!(status.configured, "the login configured the provider");
+    let stored = tokio::runtime::Runtime::new()
+        .expect("tokio runtime")
+        .block_on(runtime.get_auth(
+            pillar_ai::models::AuthTarget::Provider("openai".to_string()),
+            None,
+        ))
+        .expect("auth lookup")
+        .expect("configured");
+    assert_eq!(stored.auth.api_key.as_deref(), Some("sk-login"));
 }

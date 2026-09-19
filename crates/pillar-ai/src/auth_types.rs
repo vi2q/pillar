@@ -175,6 +175,14 @@ pub trait ApiKeyAuth: Send + Sync {
         Ok(None)
     }
 
+    /// Whether `login` is overridden (upstream tests the method's presence;
+    /// Rust defaults cannot, so implementations declare it). An ambient-only
+    /// method leaves this `false`: `/login` then explains where the provider
+    /// is configured instead of opening a dialog.
+    fn has_login(&self) -> bool {
+        false
+    }
+
     /// Whether `check` is overridden (upstream distinguishes method presence;
     /// Rust defaults cannot, so implementations declare it).
     fn has_check(&self) -> bool {

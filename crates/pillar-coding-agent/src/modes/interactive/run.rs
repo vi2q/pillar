@@ -36,7 +36,7 @@ use crate::core::model_mutation::CycleDirection;
 use crate::core::session_manager::{SessionInfo, SessionListProgress, SessionManager};
 use crate::modes::interactive::components::session_selector::SessionScope;
 use crate::modes::interactive::interactive_mode::{
-    InteractiveMode, InteractiveModeOptions, ModeAction,
+    InteractiveMode, InteractiveModeOptions, LoginTarget, ModeAction,
 };
 use crate::modes::interactive::theme;
 use crate::modes::interactive::theme::controller::{
@@ -126,6 +126,54 @@ enum UiCommand {
     /// `ExtensionUIContext` mutating the UI directly; the port queues the
     /// request because the extension holds the Luau runtime lock).
     ExtensionUi { op: String, args: serde_json::Value },
+    /// A running login emitted an `AuthEvent` (upstream `notifyAuthDialog`).
+    /// At most one login runs at a time, so the mode routes it to its active
+    /// login rather than to a token.
+    LoginEvent {
+        event: pillar_ai::auth_types::AuthEvent,
+    },
+    /// A running login asked a prompt (upstream `showAuthPrompt`): the pump
+    /// shows it in the dialog and answers through `reply` with the entered
+    /// value, or `None` when the flow was cancelled.
+    LoginPrompt {
+        prompt: pillar_ai::auth_types::AuthPrompt,
+        reply: tokio::sync::oneshot::Sender<Option<String>>,
+    },
+    /// A login settled (upstream the code after
+    /// `await session.modelRuntime.login(...)`).
+    LoginSettled {
+        target: LoginTarget,
+        /// The resolved post-login state, present when the login succeeded.
+        authentication:
+            Option<crate::modes::interactive::interactive_mode::PostLoginAuthentication>,
+        error: Option<String>,
+        /// True when the error is a credential-store synchronization failure
+        /// (upstream `error instanceof CredentialSynchronizationError`).
+        synchronization_error: bool,
+    },
+    /// A `/logout` settled (upstream the code after
+    /// `await session.modelRuntime.logout(...)`).
+    LogoutSettled {
+        target: LoginTarget,
+        error: Option<String>,
+        synchronization_error: bool,
+    },
+    /// The stored credentials `/logout` lists settled (upstream
+    /// `getLogoutProviderOptions`).
+    LogoutCredentials {
+        options: Result<
+            Vec<crate::modes::interactive::components::oauth_selector::AuthSelectorProvider>,
+            String,
+        >,
+    },
+    /// A model catalog refresh settled after a login (upstream the
+    /// `refresh({ providers: [id], signal })` continuation).
+    LoginCatalogRefreshed {
+        action_label: String,
+        aborted: bool,
+        errors: Vec<String>,
+        error: Option<String>,
+    },
 }
 
 /// How [`run_interactive`] ends (upstream the interactive mode keeps running
@@ -462,7 +510,7 @@ pub async fn run_interactive(
         let result = tokio::select! {
             biased;
             _ = shutdown_rx.changed() => break,
-            result = execute_action(&session, &ui_tx, action) => result,
+            result = execute_action(&session, &ui_tx, &mode, action) => result,
         };
         if let Err(error) = result {
             mode.transcript().lock().show_error(&error);
@@ -501,6 +549,7 @@ pub async fn run_interactive_process(
 async fn execute_action(
     session: &AgentSession,
     ui: &tokio::sync::mpsc::UnboundedSender<UiCommand>,
+    mode: &Arc<InteractiveMode>,
     action: ModeAction,
 ) -> Result<(), String> {
     match action {
@@ -706,9 +755,141 @@ async fn execute_action(
             });
             Ok(())
         }
+        ModeAction::StartLogin { target } => {
+            run_provider_login(session, ui, mode, &target).await;
+            Ok(())
+        }
+        ModeAction::Logout { target } => {
+            let result = session.logout_provider(&target.id).await;
+            let _ = ui.send(UiCommand::LogoutSettled {
+                target,
+                error: result.as_ref().err().map(|error| error.0.clone()),
+                synchronization_error: result.as_ref().err().is_some_and(|error| error.1),
+            });
+            Ok(())
+        }
+        ModeAction::ListCredentialsForLogout => {
+            let options = mode.get_logout_provider_options().await;
+            let _ = ui.send(UiCommand::LogoutCredentials { options });
+            Ok(())
+        }
+        ModeAction::RefreshProviderCatalog {
+            provider_id,
+            action_label,
+        } => {
+            let result = session.refresh_provider_catalog(&provider_id).await;
+            let _ = ui.send(UiCommand::LoginCatalogRefreshed {
+                action_label,
+                aborted: result.aborted,
+                errors: result.errors,
+                error: result.error,
+            });
+            Ok(())
+        }
         ModeAction::Shutdown => Ok(()),
         // Handled by the pump (it owns the TUI); never reaches the executor.
         ModeAction::EditorSlotChanged => Ok(()),
+    }
+}
+
+/// Upstream `loginProvider` + `showApiKeyLoginDialog`: run the provider's
+/// login flow, reporting its events and prompts to the pump, then pick the
+/// provider's default model and refresh its catalog.
+///
+/// divergence: upstream awaits this inside the mode; the port runs it on the
+/// executor and reports each step through `UiCommand` (the pump owns the UI).
+async fn run_provider_login(
+    session: &AgentSession,
+    ui: &tokio::sync::mpsc::UnboundedSender<UiCommand>,
+    mode: &Arc<InteractiveMode>,
+    target: &LoginTarget,
+) {
+    let previous_model = session.current_model();
+    let interaction = LoginUiInteraction {
+        ui: ui.clone(),
+        // The dialog's signal: Escape aborts the flow (upstream
+        // `dialog.signal`).
+        signal: mode.active_login_signal().unwrap_or_default(),
+    };
+    let result = session
+        .login_provider(&target.id, &target.auth_type, &interaction)
+        .await;
+    match result {
+        Ok(()) => {
+            let authentication = mode
+                .resolve_post_login_authentication(target, previous_model.as_ref())
+                .await;
+            let _ = ui.send(UiCommand::LoginSettled {
+                target: target.clone(),
+                authentication: Some(authentication),
+                error: None,
+                synchronization_error: false,
+            });
+            // Upstream `completeProviderAuthentication` then refreshes the
+            // provider's catalog with a 15 s timeout.
+            let action_label = if target.auth_type == "oauth" {
+                format!("Logged in to {}", target.name)
+            } else {
+                format!("Saved API key for {}", target.name)
+            };
+            let refresh = session.refresh_provider_catalog(&target.id).await;
+            let _ = ui.send(UiCommand::LoginCatalogRefreshed {
+                action_label,
+                aborted: refresh.aborted,
+                errors: refresh.errors,
+                error: refresh.error,
+            });
+        }
+        Err((error, synchronization)) => {
+            let _ = ui.send(UiCommand::LoginSettled {
+                target: target.clone(),
+                authentication: None,
+                error: Some(error),
+                synchronization_error: synchronization,
+            });
+        }
+    }
+}
+
+/// The interaction `/login` hands to the runtime (upstream the inline
+/// `{ signal, prompt, notify }` object in `loginProvider`).
+struct LoginUiInteraction {
+    ui: tokio::sync::mpsc::UnboundedSender<UiCommand>,
+    signal: pillar_ai::abort::AbortSignal,
+}
+
+#[async_trait::async_trait]
+impl pillar_ai::auth_types::AuthInteraction for LoginUiInteraction {
+    fn signal(&self) -> Option<&pillar_ai::abort::AbortSignal> {
+        Some(&self.signal)
+    }
+
+    async fn prompt(
+        &self,
+        prompt: &pillar_ai::auth_types::AuthPrompt,
+    ) -> Result<String, pillar_ai::error::AiError> {
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        self.ui
+            .send(UiCommand::LoginPrompt {
+                prompt: prompt.clone(),
+                reply,
+            })
+            .map_err(|_| {
+                pillar_ai::error::AiError::Other("the interactive mode is gone".to_string())
+            })?;
+        match answer.await {
+            Ok(Some(value)) => Ok(value),
+            // A cancelled prompt rejects the flow (upstream `inputRejecter`).
+            _ => Err(pillar_ai::error::AiError::Other(
+                "Login cancelled".to_string(),
+            )),
+        }
+    }
+
+    async fn notify(&self, event: &pillar_ai::auth_types::AuthEvent) {
+        let _ = self.ui.send(UiCommand::LoginEvent {
+            event: event.clone(),
+        });
     }
 }
 
@@ -1009,6 +1190,58 @@ fn pump_loop(
                     }
                     Vec::new()
                 }
+                UiCommand::LoginEvent { event } => {
+                    mode.handle_login_event_active(&event);
+                    Vec::new()
+                }
+                UiCommand::LoginPrompt { prompt, reply } => {
+                    mode.begin_login_prompt_active(&prompt, reply);
+                    Vec::new()
+                }
+                UiCommand::LoginSettled {
+                    target,
+                    authentication,
+                    error,
+                    synchronization_error,
+                } => {
+                    let actions = mode.finish_login(&target);
+                    match (authentication, &error) {
+                        (Some(authentication), _) => {
+                            mode.finish_provider_authentication(&authentication);
+                        }
+                        (None, error) => {
+                            mode.complete_login_failure(
+                                &target,
+                                error.as_deref(),
+                                synchronization_error,
+                            );
+                        }
+                    }
+                    actions
+                }
+                UiCommand::LogoutSettled {
+                    target,
+                    error,
+                    synchronization_error,
+                } => {
+                    mode.complete_logout(&target, error.as_deref(), synchronization_error);
+                    Vec::new()
+                }
+                UiCommand::LoginCatalogRefreshed {
+                    action_label,
+                    aborted,
+                    errors,
+                    error,
+                } => {
+                    mode.complete_login_catalog_refresh(
+                        &action_label,
+                        aborted,
+                        &errors,
+                        error.as_deref(),
+                    );
+                    Vec::new()
+                }
+                UiCommand::LogoutCredentials { options } => mode.show_logout_selector_with(options),
                 UiCommand::TreeNavigated {
                     target_id,
                     editor_text,
