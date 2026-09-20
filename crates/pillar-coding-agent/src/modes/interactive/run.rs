@@ -194,6 +194,9 @@ pub enum InteractiveOutcome {
         position: String,
         editor_text: Option<String>,
     },
+    /// `/new` asked for a fresh session (upstream `runtimeHost.newSession`):
+    /// the caller builds one and re-enters the run loop.
+    NewSession,
 }
 
 /// Options for [`run_interactive`].
@@ -214,6 +217,14 @@ pub struct InteractiveRunOptions {
     /// Shown as a status line once the loop starts (upstream's `showStatus`
     /// after a fork / clone, which the rebuilt mode would otherwise lose).
     pub initial_status: Option<String>,
+    /// Paint the first frame with a full clear (screen and scrollback).
+    ///
+    /// divergence: upstream keeps one `TuiMainScreen` across a session
+    /// replacement, so its diff erases the replaced session's lines; the port
+    /// rebuilds the run loop per replacement, and without this the new
+    /// session would be painted below the old one (see
+    /// `TuiMainScreen::set_clear_on_first_render`).
+    pub clear_screen_on_start: bool,
     /// Where `<agentDir>/keybindings.json` lives.
     pub agent_dir: PathBuf,
 }
@@ -228,6 +239,7 @@ impl Default for InteractiveRunOptions {
             initial_message: None,
             initial_editor_text: None,
             initial_status: None,
+            clear_screen_on_start: false,
             agent_dir: PathBuf::new(),
         }
     }
@@ -247,6 +259,7 @@ pub async fn run_interactive(
         initial_message,
         initial_editor_text,
         initial_status,
+        clear_screen_on_start,
         agent_dir,
     } = options;
 
@@ -283,6 +296,12 @@ pub async fn run_interactive(
     let clear_on_shrink = mode_options.clear_on_shrink.unwrap_or(false);
     let mut screen = TuiMainScreen::new(terminal);
     screen.base_mut().set_clear_on_shrink(clear_on_shrink);
+    if clear_screen_on_start {
+        // A replacement re-enters this function with a fresh renderer: clear
+        // the terminal on its first frame so the replaced session's screen
+        // (and scrollback) cannot stay behind it.
+        screen.set_clear_on_first_render();
+    }
 
     // Host facts the 2-column picker needs: the agent directory (its
     // recent-model history) and the live terminal height.
@@ -719,6 +738,9 @@ async fn execute_action(
         // The pump also owns the fork (it ends the run loop and the caller
         // rebuilds the runtime).
         ModeAction::ForkSession { .. } => Ok(()),
+        // `/new` likewise: the pump ends the loop and the caller builds the
+        // replacement session.
+        ModeAction::NewSession => Ok(()),
         // The pump owns the TUI screen and the theme controller.
         ModeAction::ThemePreview(_)
         | ModeAction::ThemeApplied(_)
@@ -1296,6 +1318,7 @@ fn pump_loop(
         let mut requested_shutdown = false;
         let mut resume_path: Option<String> = None;
         let mut fork_request: Option<(String, String, Option<String>)> = None;
+        let mut new_session_requested = false;
         let data = screen.base_mut().terminal_mut().read_input(interval);
         // On idle, a buffered partial escape sequence flushes once its
         // disambiguation deadline passed (upstream the StdinBuffer's own
@@ -1357,6 +1380,13 @@ fn pump_loop(
                 fork_request = Some((entry_id, position, editor_text));
                 break;
             }
+            // Upstream `handleClearCommand` → `runtimeHost.newSession()`: the
+            // fresh session replaces the whole runtime, which in this port
+            // ends the run loop; the caller builds it and re-enters.
+            if matches!(action, ModeAction::NewSession) {
+                new_session_requested = true;
+                break;
+            }
             if dispatch_action(&mut screen, &mode, editor_slot, &actions, action).is_err() {
                 break;
             }
@@ -1370,6 +1400,9 @@ fn pump_loop(
                 position,
                 editor_text,
             });
+        }
+        if new_session_requested {
+            break Ok(InteractiveOutcome::NewSession);
         }
 
         // Rendering (a shutdown request still paints the final frame).

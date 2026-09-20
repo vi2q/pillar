@@ -58,6 +58,9 @@ pub struct TuiMainScreen {
     hardware_cursor_row: usize,
     max_lines_rendered: usize,
     previous_viewport_top: usize,
+    /// Paint the next frame with a full clear (see
+    /// [`Self::set_clear_on_first_render`]).
+    clear_on_first_render: bool,
 }
 
 impl TuiMainScreen {
@@ -72,7 +75,23 @@ impl TuiMainScreen {
             hardware_cursor_row: 0,
             max_lines_rendered: 0,
             previous_viewport_top: 0,
+            clear_on_first_render: false,
         }
+    }
+
+    /// Make the next frame clear the screen and the scrollback
+    /// (upstream's `fullRender(true)` decision).
+    ///
+    /// divergence: upstream never needs this because one `TuiMainScreen`
+    /// outlives a session replacement and its diff erases the replaced
+    /// session's lines; the port rebuilds the run loop (and the renderer) per
+    /// replacement, so the fresh renderer has no `previousLines` to diff and
+    /// would paint the new session below the old one. The first frame after a
+    /// replacement must therefore clear explicitly, which is what upstream's
+    /// diff ends up doing (`extraLines > height` / `firstChanged <
+    /// viewportTop` → `fullRender(true)`).
+    pub fn set_clear_on_first_render(&mut self) {
+        self.clear_on_first_render = true;
     }
 
     pub fn base(&self) -> &TuiBase {
@@ -261,7 +280,9 @@ impl TuiMainScreen {
                 | RenderDecision::HeightChanged
                 | RenderDecision::ClearOnShrink
         ) {
-            let clear = !matches!(decision, RenderDecision::FirstRender);
+            let clear = self.clear_on_first_render
+                || !matches!(decision, RenderDecision::FirstRender);
+            self.clear_on_first_render = false;
             self.full_render(&new_lines, width, height, clear, cursor_pos);
             return Ok(());
         }

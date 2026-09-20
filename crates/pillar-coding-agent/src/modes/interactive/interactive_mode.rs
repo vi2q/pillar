@@ -281,6 +281,11 @@ pub enum ModeAction {
         position: String,
         editor_text: Option<String>,
     },
+    /// Upstream `/new` → `handleClearCommand` → `runtimeHost.newSession()`:
+    /// the caller builds a fresh session and re-enters the run loop (the pump
+    /// intercepts this and ends the loop, exactly like
+    /// [`ModeAction::ForkSession`]).
+    NewSession,
     /// The `/settings` theme submenu previewed a theme setting (upstream
     /// `themeController.preview`).
     ThemePreview(String),
@@ -1042,7 +1047,7 @@ impl InteractiveMode {
 
         // Selector-backed commands answer a warning until the selectors
         // land (upstream opens the corresponding selector).
-        const SELECTOR_COMMANDS: [&str; 9] = [
+        const SELECTOR_COMMANDS: [&str; 8] = [
             "/export",
             "/import",
             "/share",
@@ -1050,7 +1055,6 @@ impl InteractiveMode {
             "/session",
             "/changelog",
             "/trust",
-            "/new",
             "/debug",
         ];
         for command in SELECTOR_COMMANDS {
@@ -1109,6 +1113,13 @@ impl InteractiveMode {
         if text == "/clone" {
             self.set_editor_text("");
             return self.clone_session();
+        }
+        if text == "/new" {
+            // Upstream `handleClearCommand`: clear the status indicator, then
+            // ask the runtime host for a new session. The host owns the
+            // session swap (the port rebuilds the run loop for it).
+            self.set_editor_text("");
+            return vec![ModeAction::NewSession];
         }
         if text == "/hotkeys" {
             self.set_editor_text("");
@@ -4925,7 +4936,7 @@ impl InteractiveMode {
     /// host must execute.
     ///
     /// divergence: selector-backed actions (model select, session tree / fork /
-    /// resume / new, copy, suspend, clipboard paste, external editor) are not
+    /// resume, copy, suspend, clipboard paste, external editor) are not
     /// ported and answer a warning.
     pub fn handle_app_action(&self, action: &str) -> Vec<ModeAction> {
         match action {
@@ -4950,6 +4961,8 @@ impl InteractiveMode {
             "app.session.resume" => self.show_session_selector(),
             "app.session.tree" => self.show_tree_selector(None),
             "app.session.fork" => self.show_user_message_selector(None),
+            // Upstream `app.session.new` is bound to `handleClearCommand`.
+            "app.session.new" => vec![ModeAction::NewSession],
             "app.message.dequeue" => {
                 self.handle_dequeue();
                 Vec::new()

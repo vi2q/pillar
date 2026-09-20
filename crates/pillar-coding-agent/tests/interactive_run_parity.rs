@@ -385,6 +385,7 @@ fn run_options(agent_dir: PathBuf) -> InteractiveRunOptions {
         initial_message: None,
         initial_editor_text: None,
         initial_status: None,
+        clear_screen_on_start: false,
         agent_dir,
         extension_ui: None,
     }
@@ -1323,6 +1324,37 @@ async fn fork_command_returns_the_fork_outcome_from_the_run_loop() {
     assert!(
         output.contains("Fork from Message"),
         "selector rendered: {output:?}"
+    );
+}
+
+/// `/new` end to end: the command reaches the run loop, which ends with the
+/// new-session outcome so the host can build the replacement (upstream
+/// `handleClearCommand` → `runtimeHost.newSession()`).
+#[tokio::test]
+async fn new_command_returns_the_new_session_outcome_from_the_run_loop() {
+    install_dark();
+    let session = session(echo_stream("pong"), "new");
+    let mut harness = harness(vec!["/new\r".to_string()], None);
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        run_interactive(
+            Arc::clone(&session),
+            Box::new(std::mem::replace(
+                &mut harness.terminal,
+                ProcessTerminal::with_io(Box::new(pillar_tui::process_terminal::NullTerminalIo)),
+            )),
+            run_options(temp_dir("keybindings")),
+        ),
+    )
+    .await
+    .expect("run loop finished")
+    .expect("run loop ok");
+
+    assert_eq!(result, InteractiveOutcome::NewSession);
+    assert!(
+        session.state().messages.is_empty(),
+        "nothing was submitted as a prompt"
     );
 }
 

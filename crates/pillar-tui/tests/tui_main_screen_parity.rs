@@ -132,6 +132,26 @@ fn first_render_writes_every_line_without_clearing() {
     assert_eq!(screen.base().full_redraws(), 1);
 }
 
+/// A rebuilt run (the port's session replacement) starts with no previous
+/// lines, so its first frame cannot erase the replaced session's screen
+/// through the diff; the caller asks for the clear explicitly (upstream
+/// reaches the same `fullRender(true)` through `extraLines > height`).
+#[test]
+fn clear_on_first_render_clears_the_screen_and_scrollback() {
+    let terminal = terminal(40, 10);
+    let mut screen = screen(&terminal, &["alpha", "beta"]);
+    screen.set_clear_on_first_render();
+    terminal.clear_writes();
+
+    screen.do_render().expect("render");
+    let written = terminal.written();
+    assert!(
+        written.contains("\u{1b}[2J\u{1b}[H\u{1b}[3J"),
+        "the first frame clears screen and scrollback: {written:?}"
+    );
+    assert!(written.contains("alpha"), "{written:?}");
+}
+
 #[test]
 fn unchanged_content_writes_no_frame() {
     let terminal = terminal(40, 10);

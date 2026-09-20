@@ -521,14 +521,71 @@ async fn resume_session(
     .await
 }
 
-/// A session replacement to install after `/resume` or `/fork` (upstream the
-/// runtime rebinding): the live session, its extension wiring, and the editor
-/// text / status the rebuilt mode starts with.
+/// A session replacement to install after `/resume`, `/new` or `/fork`
+/// (upstream the runtime rebinding): the live session, its extension wiring,
+/// and the editor text / status the rebuilt mode starts with.
 struct InteractiveReplacement {
     session: AgentSession,
     wiring: Option<ExtensionWiring>,
     initial_editor_text: Option<String>,
     initial_status: Option<String>,
+}
+
+/// Build the replacement session for `/new` (upstream
+/// `runtimeHost.newSession` + `rebindCurrentSession`). Same shape as
+/// [`resume_session`]: a fresh services bundle + model runtime for the new
+/// session manager, which the runtime creates through the same factory.
+///
+/// divergence: upstream keeps the old session's renderer and clears the chat
+/// through its diff; the port rebuilds the run loop, so the caller asks the
+/// rebuilt run for a cleared first frame (`clear_screen_on_start`).
+async fn new_session(
+    parsed: &Args,
+    current: &Arc<AgentSession>,
+) -> Result<(AgentSession, ExtensionWiring), String> {
+    let agent_dir = agent_dir();
+    let model_runtime = create_model_runtime(&agent_dir).await?;
+    // Upstream `newSession` starts from the live session manager: a persisted
+    // session creates a new file in the same directory, an in-memory one
+    // stays in memory.
+    let current_manager = current
+        .session_manager()
+        .lock()
+        .expect("session lock")
+        .clone();
+    let mut factory = replacement_factory(parsed, &agent_dir);
+    let runtime =
+        AgentSessionRuntime::create(&mut factory, current.cwd(), &agent_dir, current_manager)?;
+    let previous = runtime
+        .session_manager()
+        .session_file()
+        .map(|path| path.to_string_lossy().to_string());
+    let (outcome, runtime) = {
+        let mut hooks = RuntimeHooks::default();
+        runtime.new_session(None, &mut hooks, &mut factory)?
+    };
+    if outcome.cancelled {
+        return Err("new session cancelled".to_string());
+    }
+    let (services, session_manager, _diagnostics) = runtime.into_parts();
+    let settings_manager = Arc::clone(&services.settings_manager);
+    let resource_loader = Arc::new(Mutex::new(services.resource_loader));
+    build_session_with(
+        parsed,
+        model_runtime,
+        SessionBuildInput {
+            cwd: services.cwd.to_string_lossy().to_string(),
+            agent_dir: services.agent_dir.to_string_lossy().to_string(),
+            session_manager: Some(session_manager),
+            settings_manager: Some(settings_manager),
+            resource_loader: Some(resource_loader),
+            start_reason: "new".to_string(),
+            previous_session_file: previous,
+            project_trust_override: parsed.project_trust_override,
+            prompt_for_trust: false,
+        },
+    )
+    .await
 }
 
 /// Rebuild the runtime as a branched session for `/fork` (position `before`)
@@ -796,6 +853,9 @@ async fn run_interactive(
         initial_message,
         initial_editor_text: None,
         initial_status: None,
+        // The first entry paints into a terminal the user just started the
+        // binary in; only a rebuilt (replacement) run clears.
+        clear_screen_on_start: false,
         agent_dir: PathBuf::from(agent_dir()),
     };
 
@@ -803,7 +863,17 @@ async fn run_interactive(
     // one interactive mode instance; the port rebuilds the run loop instead
     // (see the run module's outcome docs).
     let mut wirings: Vec<ExtensionWiring> = Vec::new();
+    let mut first_entry = true;
     loop {
+        if !first_entry {
+            // Every re-entry rebuilds the run loop with a fresh renderer (the
+            // port's session-replacement divergence): without this its first
+            // frame would be painted below the replaced session's frame
+            // instead of erasing it (upstream keeps one renderer and reaches
+            // `fullRender(true)` through its diff).
+            options.clear_screen_on_start = true;
+        }
+        first_entry = false;
         let outcome = match run_interactive_process(Arc::clone(&session), options.clone()).await {
             Ok(outcome) => outcome,
             Err(error) => {
@@ -815,6 +885,19 @@ async fn run_interactive(
         // continues.
         let replacement: Option<InteractiveReplacement> = match outcome {
             InteractiveOutcome::Exit(code) => return ExitCode::from(code as u8),
+            InteractiveOutcome::NewSession => match new_session(parsed, &session).await {
+                Ok((next, wiring)) => Some(InteractiveReplacement {
+                    session: next,
+                    wiring: Some(wiring),
+                    initial_editor_text: None,
+                    // Upstream `handleClearCommand`'s confirmation line.
+                    initial_status: Some("✓ New session started".to_string()),
+                }),
+                Err(error) => {
+                    eprintln!("Error: {error}");
+                    return ExitCode::from(1);
+                }
+            },
             InteractiveOutcome::SwitchSession { session_path } => {
                 match resume_session(parsed, &session, &session_path).await {
                     Ok((next, wiring)) => Some(InteractiveReplacement {

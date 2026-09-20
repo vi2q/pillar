@@ -2309,6 +2309,22 @@ fn clone_command_forks_at_the_leaf() {
 }
 
 #[test]
+fn new_command_and_app_action_request_a_new_session() {
+    install_app_keybindings();
+    let session = session();
+    let mode = make_mode(&session);
+
+    // Upstream `/new` → `handleClearCommand` → `runtimeHost.newSession()`.
+    assert_eq!(mode.handle_submit("/new"), vec![ModeAction::NewSession]);
+    assert_eq!(
+        mode.handle_app_action("app.session.new"),
+        vec![ModeAction::NewSession]
+    );
+    // The editor is cleared, so the command text cannot be submitted again.
+    assert_eq!(mode.editor_text(), "");
+}
+
+#[test]
 fn fork_reports_when_there_is_nothing_to_fork_from() {
     install_app_keybindings();
     let session = session();
