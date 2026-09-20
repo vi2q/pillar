@@ -73,11 +73,7 @@ pub fn delete_kitty_images(ids: &[u32]) -> String {
 /// Reserved rows for an image block starting at `index` (upstream
 /// `getKittyImageReservedRows`): the declared row count bounded by the
 /// remaining lines, extended only through empty rows.
-pub fn get_kitty_image_reserved_rows(
-    lines: &[Arc<str>],
-    index: usize,
-    max_index: usize,
-) -> usize {
+pub fn get_kitty_image_reserved_rows(lines: &[Arc<str>], index: usize, max_index: usize) -> usize {
     let rows = extract_kitty_image_rows(lines.get(index).map(|line| &**line).unwrap_or(""));
     if rows <= 1 {
         return 1;

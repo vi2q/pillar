@@ -838,9 +838,10 @@ impl TuiBase {
         // token must not re-concatenate the whole transcript
         // (docs/PERF-BASELINE.md).
         let mut children: Vec<RenderLines> = Vec::with_capacity(self.roots.len());
-        let mut unchanged = self.roots_cache.as_ref().is_some_and(|cache| {
-            cache.width == width && cache.children.len() == self.roots.len()
-        });
+        let mut unchanged = self
+            .roots_cache
+            .as_ref()
+            .is_some_and(|cache| cache.width == width && cache.children.len() == self.roots.len());
         for (index, (_, component)) in self.roots.iter_mut().enumerate() {
             let lines = component.render(width);
             if unchanged {

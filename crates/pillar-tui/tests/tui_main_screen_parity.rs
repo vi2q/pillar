@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use pillar_tui::process_terminal::Terminal;
-use pillar_tui::tui::{RenderLines, render_lines};
 use pillar_tui::tui::{Component, TuiStopOptions};
+use pillar_tui::tui::{RenderLines, render_lines};
 use pillar_tui::tui_main_screen::{TuiMainScreen, TuiMainScreenRenderState};
 
 /// A terminal that records writes and reports a fixed size.

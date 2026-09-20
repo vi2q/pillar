@@ -17,15 +17,13 @@
 use std::sync::Arc;
 
 use crate::editor_autocomplete::BoundedTerminalWriter;
+use crate::input::CURSOR_MARKER;
 use crate::main_screen::{
     MainScreenRenderState, RenderDecision, changed_range, decide_render_with_range,
     delete_changed_kitty_images, delete_kitty_images, expand_changed_range_for_kitty_images,
     extract_kitty_image_ids, get_kitty_image_reserved_rows,
 };
-use crate::input::CURSOR_MARKER;
-use crate::overlay::{
-    ResolvedOverlayLayout, SEGMENT_RESET, composite_overlays, prepare_overlay,
-};
+use crate::overlay::{ResolvedOverlayLayout, SEGMENT_RESET, composite_overlays, prepare_overlay};
 use crate::process_terminal::Terminal;
 use crate::terminal_image::is_image_line;
 use crate::text_utils::visible_width;

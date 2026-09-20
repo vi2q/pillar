@@ -1,5 +1,4 @@
 #![cfg(feature = "providers")]
-
 #![allow(clippy::type_complexity)]
 //! Port of packages/ai/test/models-runtime.test.ts (pi v0.84.3) — runtime
 //! behavior of the `Models` collection: registry, refresh, publication
