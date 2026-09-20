@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use pillar_extensions_contract::{ExtensionContextFacts, ExtensionMode};
+use pillar_extensions_contract::{ExtensionContextFacts, ExtensionMode, ExtensionUiRequest};
 use pillar_extensions::runtime::{ExtensionRuntime, HostApi};
 
 /// A temp working directory plus the scripted session the host callbacks
@@ -88,6 +88,15 @@ impl Fixture {
                 has_ui: true,
             })),
             ui: Some(Arc::new(|_request| Ok(()))),
+            // `ctx.ui.confirm` auto-answers yes and `get_editor_text` starts
+            // empty; the picker/archive/clear commands need both.
+            ui_ask: Some(Arc::new(|request: ExtensionUiRequest| {
+                match request.op.as_str() {
+                    "confirm" => Ok(serde_json::json!(true)),
+                    "get_editor_text" => Ok(serde_json::json!("")),
+                    _ => Ok(serde_json::json!(null)),
+                }
+            })),
             ..Default::default()
         });
         let mut fixture = Self {
@@ -219,8 +228,9 @@ fn tasks_init_creates_the_templates_once() {
     assert_eq!(fixture.read("docs/TASKS.md"), "hand written\n");
 }
 
-/// `tasks_tidy` normalizes checkbox syntax, indentation and confirm prefixes
-/// while preserving order, trailing continuations and unrecognized lines.
+/// `tasks_tidy` normalizes checkbox syntax, flattens nested checklist items
+/// and normalizes confirm prefixes while preserving order, trailing
+/// continuations and unrecognized lines.
 #[test]
 fn tasks_tidy_normalizes_without_reordering() {
     let mut fixture = Fixture::new();
@@ -238,11 +248,12 @@ fn tasks_tidy_normalizes_without_reordering() {
         "{text}"
     );
     assert_eq!(result["details"]["status"], serde_json::json!("changed"));
-    // Continuation lines travel with their item and stay untouched; the
-    // nested checkbox item gets the normalized confirm prefix.
+    // Nested checklist items are flattened to the top level, prose
+    // continuations travel with their item and stay untouched, and the
+    // nested confirm item gets the normalized prefix.
     assert_eq!(
         fixture.read("docs/TASKS.md"),
-        "# TASKS\n\nIntro prose stays.\n\n## Active\n\n- [x] Done item\n  - [ ] Nested child\n    - [ ] Confirm (user): check the visual result\n- [ ] Another item\n\nSome free-form line.\n\n## Completed\n\n- [x] Closed\n"
+        "# TASKS\n\nIntro prose stays.\n\n## Active\n\n- [x] Done item\n- [ ] Nested child\n- [ ] Confirm (user): check the visual result\n- [ ] Another item\n\nSome free-form line.\n\n## Completed\n\n- [x] Closed\n"
     );
 
     // Idempotent: a second tidy changes nothing.
@@ -401,4 +412,69 @@ fn commands_execute_with_ctx() {
     fixture.write("docs/TASKS.md", "# TASKS\n");
     assert!(fixture.runtime.call_command("tasks-verify", "").unwrap());
     assert!(fixture.sent_walkthrough());
+}
+
+/// `/tasks-archive` moves every checked item (with its notes) to a dated
+/// file under docs/archives/ and leaves the unchecked items in place.
+#[test]
+fn tasks_archive_moves_completed_items() {
+    let mut fixture = Fixture::new();
+    fixture.write(
+        "docs/TASKS.md",
+        "# TASKS\n\n## Active\n\n- [ ] open item\n  a note\n- [x] done item\n  done note\n- [ ] another\n\n## Completed\n",
+    );
+    assert!(fixture.runtime.call_command("tasks-archive", "").unwrap());
+
+    let remaining = fixture.read("docs/TASKS.md");
+    assert!(remaining.contains("- [ ] open item"), "{remaining}");
+    assert!(remaining.contains("  a note"), "{remaining}");
+    assert!(remaining.contains("- [ ] another"), "{remaining}");
+    assert!(!remaining.contains("done item"), "{remaining}");
+    // The emptied "## Completed" section is dropped.
+    assert!(!remaining.contains("## Completed"), "{remaining}");
+
+    let archives = std::fs::read_dir(fixture.path("docs/archives"))
+        .expect("archive dir")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .collect::<Vec<_>>();
+    assert_eq!(archives.len(), 1, "{archives:?}");
+    let archived = std::fs::read_to_string(&archives[0]).unwrap();
+    assert!(archived.starts_with("# TASKS archive\n\n## Archived "), "{archived}");
+    assert!(archived.contains("- [x] done item"), "{archived}");
+    // The item's note travels with it.
+    assert!(archived.contains("  done note"), "{archived}");
+}
+
+/// `/tasks-clear` regenerates the skeleton and keeps one tombstone line.
+#[test]
+fn tasks_clear_regenerates_with_a_tombstone() {
+    let mut fixture = Fixture::new();
+    fixture.write("docs/TASKS.md", "# TASKS\n\n- [ ] something\n");
+    assert!(fixture.runtime.call_command("tasks-clear", "").unwrap());
+    let text = fixture.read("docs/TASKS.md");
+    assert!(
+        text.starts_with("# TASKS\n\n<!-- Work-instruction record."),
+        "{text}"
+    );
+    assert!(
+        text.contains("Cleared by the user via /tasks-clear on "),
+        "{text}"
+    );
+    assert!(!text.contains("something"), "{text}");
+}
+
+/// `/tasks-tidy` and `/tasks-blocked` run with the host bridge: the confirm
+/// dialog answers yes and the picker is skipped when the host cannot mount
+/// it (no custom installer in the fixture).
+#[test]
+fn tasks_tidy_and_blocked_run_through_the_host_bridge() {
+    let mut fixture = Fixture::new();
+    fixture.write(
+        "docs/TASKS.md",
+        "# TASKS\n\n## Active\n\n* [ ] one\n",
+    );
+    assert!(fixture.runtime.call_command("tasks-tidy", "").unwrap());
+    assert_eq!(fixture.read("docs/TASKS.md"), "# TASKS\n\n## Active\n\n- [ ] one\n");
+    assert!(fixture.runtime.call_command("tasks-blocked", "").unwrap());
 }

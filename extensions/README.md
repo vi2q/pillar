@@ -6,8 +6,9 @@ extension.
 
 ## `instructions.luau`
 
-The Luau port of [`pi-instructions-ext`](https://github.com/vi2q/pi-instructions-ext):
-it keeps `docs/TASKS.md` as the standing record of work instructions.
+The complete Luau port of
+[`pi-instructions-ext`](https://github.com/vi2q/pi-instructions-ext): it keeps
+`docs/TASKS.md` as the standing record of work instructions.
 
 What it does:
 
@@ -22,17 +23,31 @@ What it does:
 - `session_compact` — re-injects the pointer after compaction.
 - `tasks_init` tool — generates `docs/TASKS.md` and `docs/RULES.md` when they
   are missing (never overwrites).
-- `tasks_tidy` tool — deterministic formatting: checkbox syntax, 2-space
-  nesting, `Confirm (user):` prefixes. Order-preserving, non-destructive.
+- `tasks_tidy` tool — deterministic formatting: checkbox syntax, flattened
+  checklist items, `Confirm (user):` prefixes. Order-preserving,
+  non-destructive.
+
+Commands:
+
 - `/tasks-init` — generate the templates (never overwrites).
-- `/tasks-info` — the `/tasks-*` cheat sheet.
+- `/tasks-tidy` — normalize the format behind a confirmation dialog.
+- `/tasks-archive` — move every checked item (with its notes) to a dated file
+  under `docs/archives/`, behind a confirmation dialog.
+- `/tasks-clear` — clear the file and regenerate the skeleton with a short
+  tombstone line, behind a confirmation dialog.
+- `/tasks-blocked` — two-column picker (categories ←/→, items ↑/↓) over
+  unfinished / pending-confirmation / needs-fix items; Enter inserts the
+  item's text into the editor.
+- `/tasks-completed` — the same picker over checked items, for re-check
+  requests.
 - `/tasks-verify` — send the user message that starts the per-item
   confirmation walkthrough.
+- `/tasks-info` — the `/tasks-*` cheat sheet.
 
-Not ported yet (needs host API that is still missing, see `docs/TASKS.md`):
-`/tasks-tidy` / `/tasks-archive` / `/tasks-clear` (need `ctx.ui.confirm`),
-`/tasks-blocked` / `/tasks-completed` (need `ctx.ui.custom` and
-`ctx.ui.get_editor_text`).
+divergences from pi's version (documented in the file itself): change
+detection uses `size:mtime_ms` instead of a content hash, the owner tag is the
+session id's tail instead of a SHA-1 prefix, and the picker measures display
+width with a small East-Asian-width approximation.
 
 ### Loading it
 
@@ -50,6 +65,8 @@ Project-local extensions live in `<project>/.pillar/extensions/`.
 ### Tests
 
 `crates/pillar-extensions/tests/instructions_extension.rs` drives the
-extension through the real runtime: the templates, the tidy normalization,
-the session pointer and its dedup, the per-turn tag with the staleness
-variants, and the post-compact pointer.
+extension through the real runtime: the templates, the tidy normalization
+(including flattening), the archive and clear commands, the session pointer
+and its dedup, the per-turn tag with the staleness variants, and the
+post-compact pointer. The `ctx.ui.get_editor_text` host op the pickers use is
+covered by `crates/pillar-coding-agent/tests/interactive_mode_parity.rs`.

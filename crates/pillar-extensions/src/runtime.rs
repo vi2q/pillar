@@ -376,6 +376,11 @@ ui.set_working_indicator = function(options) call("set_working_indicator", { opt
 ui.set_working_visible = function(visible) call("set_working_visible", { visible = visible }) end
 ui.set_hidden_thinking_label = function(label) call("set_hidden_thinking_label", { label = label }) end
 ui.set_editor_text = function(text) call("set_editor_text", { text = text }) end
+ui.get_editor_text = function()
+    local value = ui_request("get_editor_text", {})
+    if type(value) == "string" then return value end
+    return ""
+end
 ui.paste_to_editor = function(text) call("paste_to_editor", { text = text }) end
 ui.set_tools_expanded = function(expanded) call("set_tools_expanded", { expanded = expanded }) end
 ui.get_all_themes = function() return themes end

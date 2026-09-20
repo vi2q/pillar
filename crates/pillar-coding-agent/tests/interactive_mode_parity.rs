@@ -2573,6 +2573,27 @@ fn an_extension_ask_answers_through_its_reply() {
     assert_eq!(answer.try_recv(), Ok(Ok(serde_json::json!(true))));
 }
 
+/// `get_editor_text` answers without opening a dialog: the mode returns the
+/// current editor text (the picker appends its selection to it).
+#[test]
+fn an_extension_ask_reads_the_editor_text() {
+    let session = session();
+    let mode = make_mode(&session);
+    mode.set_editor_text("draft");
+    let (reply, answer) = std::sync::mpsc::sync_channel(1);
+    mode.begin_extension_ask(
+        7,
+        pillar_coding_agent::core::extensions_types::ExtensionUiRequest {
+            op: "get_editor_text".to_string(),
+            args: serde_json::json!({}),
+        },
+        reply,
+    );
+    assert_eq!(answer.try_recv(), Ok(Ok(serde_json::json!("draft"))));
+    // No dialog was opened: the editor slot is untouched.
+    assert!(mode.handle_selector_key("\r").is_none());
+}
+
 /// A timed-out request cancels exactly its own dialog: the selector closes and
 /// no answer is delivered, so a stale question cannot block the editor.
 #[test]

@@ -3331,6 +3331,11 @@ impl InteractiveMode {
                     .unwrap_or_default();
                 self.show_extension_ask_editor(id, title, initial, reply);
             }
+            // Upstream `getEditorText`: no dialog — the current editor text is
+            // the answer (the picker appends its selection to it).
+            "get_editor_text" => {
+                let _ = reply.send(Ok(serde_json::Value::String(self.editor_text())));
+            }
             other => {
                 let _ = reply.send(Err(format!("ctx.ui.{other}: not supported")));
             }
