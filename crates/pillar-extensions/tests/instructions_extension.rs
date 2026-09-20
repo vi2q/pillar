@@ -5,8 +5,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use pillar_extensions_contract::{ExtensionContextFacts, ExtensionMode, ExtensionUiRequest};
 use pillar_extensions::runtime::{ExtensionRuntime, HostApi};
+use pillar_extensions_contract::{ExtensionContextFacts, ExtensionMode, ExtensionUiRequest};
 
 /// A temp working directory plus the scripted session the host callbacks
 /// answer from.
@@ -440,7 +440,10 @@ fn tasks_archive_moves_completed_items() {
         .collect::<Vec<_>>();
     assert_eq!(archives.len(), 1, "{archives:?}");
     let archived = std::fs::read_to_string(&archives[0]).unwrap();
-    assert!(archived.starts_with("# TASKS archive\n\n## Archived "), "{archived}");
+    assert!(
+        archived.starts_with("# TASKS archive\n\n## Archived "),
+        "{archived}"
+    );
     assert!(archived.contains("- [x] done item"), "{archived}");
     // The item's note travels with it.
     assert!(archived.contains("  done note"), "{archived}");
@@ -470,11 +473,11 @@ fn tasks_clear_regenerates_with_a_tombstone() {
 #[test]
 fn tasks_tidy_and_blocked_run_through_the_host_bridge() {
     let mut fixture = Fixture::new();
-    fixture.write(
-        "docs/TASKS.md",
-        "# TASKS\n\n## Active\n\n* [ ] one\n",
-    );
+    fixture.write("docs/TASKS.md", "# TASKS\n\n## Active\n\n* [ ] one\n");
     assert!(fixture.runtime.call_command("tasks-tidy", "").unwrap());
-    assert_eq!(fixture.read("docs/TASKS.md"), "# TASKS\n\n## Active\n\n- [ ] one\n");
+    assert_eq!(
+        fixture.read("docs/TASKS.md"),
+        "# TASKS\n\n## Active\n\n- [ ] one\n"
+    );
     assert!(fixture.runtime.call_command("tasks-blocked", "").unwrap());
 }

@@ -38,7 +38,10 @@ fn opts() -> MarkdownOptions {
 
 fn render(text: &str, width: usize) -> Vec<String> {
     let mut md = Markdown::new(text, 0, 0, theme(), None, opts());
-    md.render(width).iter().map(|line| line.to_string()).collect()
+    md.render(width)
+        .iter()
+        .map(|line| line.to_string())
+        .collect()
 }
 
 fn plain(lines: &[String]) -> Vec<String> {
@@ -454,7 +457,16 @@ fn inline_code_inside_list_item_renders() {
     );
     let p = plain(&lines);
     println!("{p:#?}");
-    assert!(p.iter().any(|l| l.contains("SessionManager.inMemory()")), "missing inMemory: {p:?}");
-    assert!(p.iter().any(|l| l.contains("vllmPriority")), "missing vllmPriority: {p:?}");
-    assert!(p.iter().any(|l| l.contains("supportsMaxOutputTokens")), "missing supportsMaxOutputTokens: {p:?}");
+    assert!(
+        p.iter().any(|l| l.contains("SessionManager.inMemory()")),
+        "missing inMemory: {p:?}"
+    );
+    assert!(
+        p.iter().any(|l| l.contains("vllmPriority")),
+        "missing vllmPriority: {p:?}"
+    );
+    assert!(
+        p.iter().any(|l| l.contains("supportsMaxOutputTokens")),
+        "missing supportsMaxOutputTokens: {p:?}"
+    );
 }

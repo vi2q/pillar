@@ -575,10 +575,8 @@ impl InteractiveTranscript {
                     );
                     self.chat.add_child(Box::new(user_component));
                 }
-                if populate_history {
-                    if let Some(on_history) = self.on_history.as_mut() {
-                        on_history(&text_content);
-                    }
+                if populate_history && let Some(on_history) = self.on_history.as_mut() {
+                    on_history(&text_content);
                 }
             }
             CodingAgentMessage::Base(message @ pillar_ai::types::Message::Assistant(_)) => {
@@ -754,7 +752,7 @@ impl InteractiveTranscript {
                     let error_message = error_message.unwrap_or_else(|| {
                         self.abort_error_message(assistant.stop_reason, assistant)
                     });
-                    for (_, component) in self.pending_tools.iter() {
+                    for component in self.pending_tools.values() {
                         component.lock().update_result(
                             ToolExecutionResult {
                                 content: vec![Content::text(error_message.clone())],
@@ -767,7 +765,7 @@ impl InteractiveTranscript {
                     self.pending_tools.clear();
                 } else {
                     // Args are now complete: trigger diff computation.
-                    for (_, component) in self.pending_tools.iter() {
+                    for component in self.pending_tools.values() {
                         component.lock().set_args_complete();
                     }
                 }
@@ -903,15 +901,14 @@ impl InteractiveTranscript {
                         }
                         if assistant.stop_reason != StopReason::Aborted
                             && assistant.stop_reason != StopReason::Error
-                        {
-                            if let Some(miss) = misses.and_then(|misses| {
+                            && let Some(miss) = misses.and_then(|misses| {
                                 misses.get(&(
                                     assistant.timestamp,
                                     format!("{}/{}", assistant.provider, assistant.model),
                                 ))
-                            }) {
-                                self.add_cache_miss_notice(miss);
-                            }
+                            })
+                        {
+                            self.add_cache_miss_notice(miss);
                         }
                     } else if let CodingAgentMessage::Base(pillar_ai::types::Message::ToolResult(
                         tool_result,

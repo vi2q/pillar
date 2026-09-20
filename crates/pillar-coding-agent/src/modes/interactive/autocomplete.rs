@@ -262,7 +262,7 @@ fn provider_names(session: &AgentSession) -> Vec<(String, String)> {
             .unwrap_or_else(|| model.provider.clone());
         names.push((model.provider.clone(), display_name));
     }
-    names.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+    names.sort_by_key(|a| a.1.to_lowercase());
     names
 }
 
@@ -359,22 +359,20 @@ impl InteractiveAutocomplete {
         force: bool,
     ) -> Option<AutocompleteSuggestions> {
         let text_before = text_before_cursor(lines, cursor_line, cursor_col);
-        if !force {
-            if let Some((name, arguments)) = slash_command_argument_prefix(text_before) {
-                // The provider answers `None` for arguments; the host owns them.
-                let completer = self
-                    .completers
-                    .iter()
-                    .find(|(command, _)| command == name)?;
-                let items = (completer.1)(arguments);
-                if items.is_empty() {
-                    return None;
-                }
-                return Some(AutocompleteSuggestions {
-                    items,
-                    prefix: arguments.to_string(),
-                });
+        if !force && let Some((name, arguments)) = slash_command_argument_prefix(text_before) {
+            // The provider answers `None` for arguments; the host owns them.
+            let completer = self
+                .completers
+                .iter()
+                .find(|(command, _)| command == name)?;
+            let items = (completer.1)(arguments);
+            if items.is_empty() {
+                return None;
             }
+            return Some(AutocompleteSuggestions {
+                items,
+                prefix: arguments.to_string(),
+            });
         }
         let mut fd = |_base: &str, _query: &str, _depth: usize| Vec::<FileEntry>::new();
         let line_refs: Vec<&str> = lines.iter().map(String::as_str).collect();

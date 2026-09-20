@@ -576,8 +576,18 @@ impl ToolExecutionComponent {
     fn image_lines(&mut self, width: usize) -> Vec<String> {
         let mut lines = Vec::new();
         for i in 0..self.image_components.len() {
-            lines.extend(self.image_spacers[i].render(width).iter().map(|line| line.to_string()));
-            lines.extend(self.image_components[i].render(width).iter().map(|line| line.to_string()));
+            lines.extend(
+                self.image_spacers[i]
+                    .render(width)
+                    .iter()
+                    .map(|line| line.to_string()),
+            );
+            lines.extend(
+                self.image_components[i]
+                    .render(width)
+                    .iter()
+                    .map(|line| line.to_string()),
+            );
         }
         lines
     }
@@ -625,9 +635,19 @@ impl Component for ToolExecutionComponent {
             .map(|line| line.to_string())
             .collect();
         if self.uses_content_box {
-            lines.extend(self.content_box.render(width).iter().map(|line| line.to_string()));
+            lines.extend(
+                self.content_box
+                    .render(width)
+                    .iter()
+                    .map(|line| line.to_string()),
+            );
         } else {
-            lines.extend(self.content_text.render(width).iter().map(|line| line.to_string()));
+            lines.extend(
+                self.content_text
+                    .render(width)
+                    .iter()
+                    .map(|line| line.to_string()),
+            );
         }
         lines.extend(self.image_lines(width));
         render_lines(lines)

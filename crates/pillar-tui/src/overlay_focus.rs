@@ -245,17 +245,16 @@ impl OverlayFocusMachine {
                     }
                     FocusRestoreState::Blocked { .. } => {}
                     _ => {
-                        if let Some(prev_index) = previous_focused_overlay {
-                            if restore_state != FocusRestoreState::Inactive
-                                && self.focus_restore.overlay_index() == Some(prev_index)
-                                && !self.is_overlay_focus_ancestor(&self.stack[prev_index], next)
-                            {
-                                self.focus_restore = FocusRestoreState::Blocked {
-                                    overlay_index: prev_index,
-                                    blocked_by: Some(next),
-                                    resume: Resume::RestoreOverlay,
-                                };
-                            }
+                        if let Some(prev_index) = previous_focused_overlay
+                            && restore_state != FocusRestoreState::Inactive
+                            && self.focus_restore.overlay_index() == Some(prev_index)
+                            && !self.is_overlay_focus_ancestor(&self.stack[prev_index], next)
+                        {
+                            self.focus_restore = FocusRestoreState::Blocked {
+                                overlay_index: prev_index,
+                                blocked_by: Some(next),
+                                resume: Resume::RestoreOverlay,
+                            };
                         }
                     }
                 }
@@ -280,14 +279,13 @@ impl OverlayFocusMachine {
 
         self.focused = next_focus;
 
-        if let Some(next) = next_focus {
-            if let Some(index) = self.find_entry(next) {
-                if self.is_overlay_visible(&self.stack[index]) {
-                    self.focus_restore = FocusRestoreState::Eligible {
-                        overlay_index: index,
-                    };
-                }
-            }
+        if let Some(next) = next_focus
+            && let Some(index) = self.find_entry(next)
+            && self.is_overlay_visible(&self.stack[index])
+        {
+            self.focus_restore = FocusRestoreState::Eligible {
+                overlay_index: index,
+            };
         }
         next_focus
     }
@@ -449,17 +447,16 @@ impl OverlayFocusMachine {
     /// host should dispatch to.
     pub fn route_input_focus(&mut self) -> Option<u64> {
         // Redirect when the focused overlay became invisible.
-        if let Some(focused) = self.focused {
-            if let Some(index) = self.find_entry(focused) {
-                if !self.is_overlay_visible(&self.stack[index]) {
-                    let top_visible = self.topmost_visible();
-                    if let Some(top) = top_visible {
-                        self.set_focus(Some(self.stack[top].component_id));
-                    } else {
-                        let pre_focus = self.stack[index].pre_focus;
-                        self.set_focus_internal(pre_focus, false);
-                    }
-                }
+        if let Some(focused) = self.focused
+            && let Some(index) = self.find_entry(focused)
+            && !self.is_overlay_visible(&self.stack[index])
+        {
+            let top_visible = self.topmost_visible();
+            if let Some(top) = top_visible {
+                self.set_focus(Some(self.stack[top].component_id));
+            } else {
+                let pre_focus = self.stack[index].pre_focus;
+                self.set_focus_internal(pre_focus, false);
             }
         }
         if !self.is_overlay_focused() {

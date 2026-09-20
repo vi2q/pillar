@@ -184,7 +184,12 @@ impl Component for BashExecutionComponent {
         let header = format!("$ {}", self.command);
         let header_text = theme_handle.fg("bashMode", &theme_handle.bold(&header));
         let mut header_component = Text::new(&header_text, 1, 0);
-        lines.extend(header_component.render(width).iter().map(|line| line.to_string()));
+        lines.extend(
+            header_component
+                .render(width)
+                .iter()
+                .map(|line| line.to_string()),
+        );
 
         // Output.
         let context_truncation = self.context_truncation();
@@ -241,7 +246,12 @@ impl Component for BashExecutionComponent {
 
         // Loader or status.
         if self.status == BashExecutionStatus::Running {
-            lines.extend(self.loader.render(width).iter().map(|line| line.to_string()));
+            lines.extend(
+                self.loader
+                    .render(width)
+                    .iter()
+                    .map(|line| line.to_string()),
+            );
         } else {
             let mut status_parts: Vec<String> = Vec::new();
             if hidden_line_count > 0 {
@@ -281,13 +291,11 @@ impl Component for BashExecutionComponent {
                 .map(|result| result.truncated)
                 .unwrap_or(false)
                 || context_truncation.truncated;
-            if was_truncated {
-                if let Some(full_output_path) = self.full_output_path.as_deref() {
-                    status_parts.push(theme_handle.fg(
-                        "warning",
-                        &format!("Output truncated. Full output: {full_output_path}"),
-                    ));
-                }
+            if was_truncated && let Some(full_output_path) = self.full_output_path.as_deref() {
+                status_parts.push(theme_handle.fg(
+                    "warning",
+                    &format!("Output truncated. Full output: {full_output_path}"),
+                ));
             }
 
             if !status_parts.is_empty() {

@@ -711,6 +711,9 @@ fn truncate_diagnostic_string(value: &str) -> String {
     }
 }
 
+// The streaming API's error is the whole upstream diagnostic; boxing it would
+// ripple through every `?` in the stream body.
+#[allow(clippy::result_large_err)]
 async fn run_stream_inner(
     model: &Model,
     context: &Context,
@@ -741,10 +744,10 @@ async fn run_stream_inner(
             "toolChoice": options.tool_choice,
         },
     });
-    if let Some(on_payload) = &options.on_payload {
-        if let Some(next_payload) = on_payload(model, payload.clone()).await {
-            payload = next_payload;
-        }
+    if let Some(on_payload) = &options.on_payload
+        && let Some(next_payload) = on_payload(model, payload.clone()).await
+    {
+        payload = next_payload;
     }
 
     let mut headers = vec![

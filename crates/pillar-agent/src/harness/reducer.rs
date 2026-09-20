@@ -310,16 +310,16 @@ fn validate_exact_provisioned_entry(
     entries_by_id: &HashMap<&str, &Entry>,
     target: &ProvisionedEntry,
 ) -> Result<(), RecordLogCorruption> {
-    if let Some(entry) = entries_by_id.get(target.id.as_str()) {
-        if !matches_provisioned_entry(entry, target) {
-            return Err(corrupt(
-                RecordLogCorruptionReason::ProvisionedEntryMismatch,
-                format!(
-                    "Provisioned entry {} exists with content different from its intent",
-                    target.id
-                ),
-            ));
-        }
+    if let Some(entry) = entries_by_id.get(target.id.as_str())
+        && !matches_provisioned_entry(entry, target)
+    {
+        return Err(corrupt(
+            RecordLogCorruptionReason::ProvisionedEntryMismatch,
+            format!(
+                "Provisioned entry {} exists with content different from its intent",
+                target.id
+            ),
+        ));
     }
     Ok(())
 }
@@ -330,15 +330,15 @@ fn validate_result_entry(
     matches: impl Fn(&Entry) -> bool,
     description: &str,
 ) -> Result<(), RecordLogCorruption> {
-    if let Some(entry) = entries_by_id.get(result_entry_id) {
-        if !matches(entry) {
-            return Err(corrupt(
-                RecordLogCorruptionReason::ProvisionedEntryMismatch,
-                format!(
-                    "Provisioned {description} entry {result_entry_id} exists with different content"
-                ),
-            ));
-        }
+    if let Some(entry) = entries_by_id.get(result_entry_id)
+        && !matches(entry)
+    {
+        return Err(corrupt(
+            RecordLogCorruptionReason::ProvisionedEntryMismatch,
+            format!(
+                "Provisioned {description} entry {result_entry_id} exists with different content"
+            ),
+        ));
     }
     Ok(())
 }
@@ -696,16 +696,16 @@ fn validate_lane_slice(
                     ),
                 ));
             }
-            if let Some(finish_seq) = finished_at.get(run_id) {
-                if record.seq > *finish_seq {
-                    return Err(corrupt(
-                        RecordLogCorruptionReason::RecordAfterFinish,
-                        format!(
-                            "Record {} follows the finish of operation {}",
-                            record.id, run_id
-                        ),
-                    ));
-                }
+            if let Some(finish_seq) = finished_at.get(run_id)
+                && record.seq > *finish_seq
+            {
+                return Err(corrupt(
+                    RecordLogCorruptionReason::RecordAfterFinish,
+                    format!(
+                        "Record {} follows the finish of operation {}",
+                        record.id, run_id
+                    ),
+                ));
             }
         }
 
@@ -734,15 +734,14 @@ fn validate_lane_slice(
                 run_id,
                 target,
             } => {
-                if queue != "nextRun" {
-                    if let Some(abort_seq) = run_id.as_deref().and_then(|r| aborted_at.get(r)) {
-                        if record.seq > *abort_seq {
-                            return Err(corrupt(
-                                RecordLogCorruptionReason::QueueAfterAbort,
-                                format!("{queue} item {} was enqueued after abort", target.id),
-                            ));
-                        }
-                    }
+                if queue != "nextRun"
+                    && let Some(abort_seq) = run_id.as_deref().and_then(|r| aborted_at.get(r))
+                    && record.seq > *abort_seq
+                {
+                    return Err(corrupt(
+                        RecordLogCorruptionReason::QueueAfterAbort,
+                        format!("{queue} item {} was enqueued after abort", target.id),
+                    ));
                 }
                 queue_enqueues.insert(target.id.as_str(), record);
                 validate_exact_provisioned_entry(&entries_by_id, target)?;
@@ -919,10 +918,10 @@ fn derive_tool_batch(
             tool_index,
             ..
         } = &record.payload
+            && run_id == operation_id
+            && assistant_entry_id == &assistant_entry.id
         {
-            if run_id == operation_id && assistant_entry_id == &assistant_entry.id {
-                starts.insert(*tool_index, record);
-            }
+            starts.insert(*tool_index, record);
         }
     }
 
@@ -1171,8 +1170,7 @@ pub fn reduce_lane_state(
 
     let newest_attempt = operation_records
         .iter()
-        .filter(|record| matches!(record.payload, RecordPayload::StepAttempt { .. }))
-        .next_back();
+        .rfind(|record| matches!(record.payload, RecordPayload::StepAttempt { .. }));
     let step = newest_attempt.and_then(|record| {
         let RecordPayload::StepAttempt {
             step,
@@ -1205,10 +1203,10 @@ pub fn reduce_lane_state(
         }
     }
     for record in &operation_records {
-        if let RecordPayload::QueueEnqueued { queue, target, .. } = &record.payload {
-            if queue != "nextRun" {
-                consumed_input_ids.insert(target.id.as_str());
-            }
+        if let RecordPayload::QueueEnqueued { queue, target, .. } = &record.payload
+            && queue != "nextRun"
+        {
+            consumed_input_ids.insert(target.id.as_str());
         }
     }
     // Upstream walks from NEGATIVE_INFINITY, so "no consumed message" means
@@ -1261,49 +1259,47 @@ pub fn reduce_lane_state(
         })
         .collect();
     let mut terminal_failure: Option<TerminalFailureState> = None;
-    if let Some(newest_own_entry) = newest_own_entry {
-        if let Some(assistant) = as_assistant_entry(newest_own_entry) {
-            if assistant.stop_reason == StopReason::Error
-                && !deferred_write_ids.contains(newest_own_entry.id.as_str())
-            {
-                let produced_by_step = operation_records.iter().any(|record| {
-                    matches!(
-                        &record.payload,
-                        RecordPayload::StepAttempt { result_entry_id, .. }
-                            if result_entry_id == &newest_own_entry.id
-                    )
-                });
-                let previous_own_entry = ordered_own_entries
-                    .len()
-                    .checked_sub(2)
-                    .map(|index| ordered_own_entries[index]);
-                let produced_by_deferred_fetch = operation_records.iter().any(|record| {
-                    matches!(
-                        &record.payload,
-                        RecordPayload::UsageRecord { cause, entry_id: Some(entry_id), .. }
-                            if cause == "deferred_fetch" && entry_id == &newest_own_entry.id
-                    )
-                }) || matches!(
-                    previous_own_entry.map(|entry| &entry.payload),
-                    Some(EntryPayload::Message { message, .. })
-                        if matches!(
-                            message.as_message(),
-                            Some(pillar_ai::types::Message::Assistant(a))
-                                if a.stop_reason == StopReason::Deferred
-                        )
-                );
-                if produced_by_step || produced_by_deferred_fetch {
-                    terminal_failure = Some(TerminalFailureState {
-                        entry_id: newest_own_entry.id.clone(),
-                        source: if produced_by_step {
-                            TerminalFailureSource::Step
-                        } else {
-                            TerminalFailureSource::DeferredFetch
-                        },
-                        message: Box::new(assistant.clone()),
-                    });
-                }
-            }
+    if let Some(newest_own_entry) = newest_own_entry
+        && let Some(assistant) = as_assistant_entry(newest_own_entry)
+        && assistant.stop_reason == StopReason::Error
+        && !deferred_write_ids.contains(newest_own_entry.id.as_str())
+    {
+        let produced_by_step = operation_records.iter().any(|record| {
+            matches!(
+                &record.payload,
+                RecordPayload::StepAttempt { result_entry_id, .. }
+                    if result_entry_id == &newest_own_entry.id
+            )
+        });
+        let previous_own_entry = ordered_own_entries
+            .len()
+            .checked_sub(2)
+            .map(|index| ordered_own_entries[index]);
+        let produced_by_deferred_fetch = operation_records.iter().any(|record| {
+            matches!(
+                &record.payload,
+                RecordPayload::UsageRecord { cause, entry_id: Some(entry_id), .. }
+                    if cause == "deferred_fetch" && entry_id == &newest_own_entry.id
+            )
+        }) || matches!(
+            previous_own_entry.map(|entry| &entry.payload),
+            Some(EntryPayload::Message { message, .. })
+                if matches!(
+                    message.as_message(),
+                    Some(pillar_ai::types::Message::Assistant(a))
+                        if a.stop_reason == StopReason::Deferred
+                )
+        );
+        if produced_by_step || produced_by_deferred_fetch {
+            terminal_failure = Some(TerminalFailureState {
+                entry_id: newest_own_entry.id.clone(),
+                source: if produced_by_step {
+                    TerminalFailureSource::Step
+                } else {
+                    TerminalFailureSource::DeferredFetch
+                },
+                message: Box::new(assistant.clone()),
+            });
         }
     }
 

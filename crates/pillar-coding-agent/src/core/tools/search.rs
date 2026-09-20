@@ -425,12 +425,10 @@ pub fn grep_files(
 }
 
 fn format_grep_path(file_path: &Path, is_directory: bool, search_path: &Path) -> String {
-    if is_directory {
-        if let Ok(relative) = file_path.strip_prefix(search_path) {
-            let rel = relative.to_string_lossy().replace('\\', "/");
-            if !rel.is_empty() && !rel.starts_with("..") {
-                return rel;
-            }
+    if is_directory && let Ok(relative) = file_path.strip_prefix(search_path) {
+        let rel = relative.to_string_lossy().replace('\\', "/");
+        if !rel.is_empty() && !rel.starts_with("..") {
+            return rel;
         }
     }
     file_path
@@ -766,7 +764,7 @@ impl GrepVisitor {
                 Err(_) => break,
             }
             line_number += 1;
-            if line_number % ABORT_CHECK_LINES == 0 && self.aborted() {
+            if line_number.is_multiple_of(ABORT_CHECK_LINES) && self.aborted() {
                 return WalkState::Quit;
             }
             // `str::lines` semantics: drop the terminator, then one `\r`.

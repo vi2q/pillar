@@ -29,52 +29,52 @@ struct SplitRef {
 
 fn split_ref(url: &str) -> SplitRef {
     // scp-like: git@host:path[@ref]
-    if let Some(rest) = url.strip_prefix("git@") {
-        if let Some(colon) = rest.find(':') {
-            let host = &rest[..colon];
-            let path_with_maybe_ref = &rest[colon + 1..];
+    if let Some(rest) = url.strip_prefix("git@")
+        && let Some(colon) = rest.find(':')
+    {
+        let host = &rest[..colon];
+        let path_with_maybe_ref = &rest[colon + 1..];
+        if let Some(at) = path_with_maybe_ref.find('@') {
+            let repo_path = &path_with_maybe_ref[..at];
+            let ref_ = &path_with_maybe_ref[at + 1..];
+            if !repo_path.is_empty() && !ref_.is_empty() {
+                return SplitRef {
+                    repo: format!("git@{host}:{repo_path}"),
+                    ref_: Some(ref_.to_string()),
+                };
+            }
+        }
+        return SplitRef {
+            repo: url.to_string(),
+            ref_: None,
+        };
+    }
+
+    if url.contains("://")
+        && let Some(scheme_end) = url.find("://")
+    {
+        let after = &url[scheme_end + 3..];
+        // Strip query/fragment-free path portion.
+        let path_start = after.find('/').map(|i| i + scheme_end + 3);
+        if let Some(ps) = path_start {
+            let path_with_maybe_ref = &url[ps..];
+            let path_with_maybe_ref = path_with_maybe_ref.trim_start_matches('/');
             if let Some(at) = path_with_maybe_ref.find('@') {
                 let repo_path = &path_with_maybe_ref[..at];
                 let ref_ = &path_with_maybe_ref[at + 1..];
                 if !repo_path.is_empty() && !ref_.is_empty() {
+                    let base = &url[..ps + 1];
                     return SplitRef {
-                        repo: format!("git@{host}:{repo_path}"),
+                        repo: format!("{base}{repo_path}"),
                         ref_: Some(ref_.to_string()),
                     };
                 }
             }
-            return SplitRef {
-                repo: url.to_string(),
-                ref_: None,
-            };
         }
-    }
-
-    if url.contains("://") {
-        if let Some(scheme_end) = url.find("://") {
-            let after = &url[scheme_end + 3..];
-            // Strip query/fragment-free path portion.
-            let path_start = after.find('/').map(|i| i + scheme_end + 3);
-            if let Some(ps) = path_start {
-                let path_with_maybe_ref = &url[ps..];
-                let path_with_maybe_ref = path_with_maybe_ref.trim_start_matches('/');
-                if let Some(at) = path_with_maybe_ref.find('@') {
-                    let repo_path = &path_with_maybe_ref[..at];
-                    let ref_ = &path_with_maybe_ref[at + 1..];
-                    if !repo_path.is_empty() && !ref_.is_empty() {
-                        let base = &url[..ps + 1];
-                        return SplitRef {
-                            repo: format!("{base}{repo_path}"),
-                            ref_: Some(ref_.to_string()),
-                        };
-                    }
-                }
-            }
-            return SplitRef {
-                repo: url.to_string(),
-                ref_: None,
-            };
-        }
+        return SplitRef {
+            repo: url.to_string(),
+            ref_: None,
+        };
     }
 
     // Shorthand host/path[@ref]

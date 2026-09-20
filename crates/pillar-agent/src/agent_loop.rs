@@ -243,19 +243,19 @@ async fn run_loop(
         // Inner loop: process tool calls and steering messages.
         while has_more_tool_calls || !pending_messages.is_empty() {
             if let Some(snapshot) = &last_completed_turn {
-                if let Some(prepare) = &config.prepare_next_turn {
-                    if let Some(update) = prepare(snapshot).await {
-                        if let Some(next_context) = update.context {
-                            current_context = next_context;
-                        }
-                        if let Some(next_model) = update.model {
-                            config.model = Some(next_model);
-                        }
-                        // Upstream maps "off" to undefined and leaves the
-                        // previous level in place when the update omits it.
-                        if let Some(next_thinking) = update.thinking_level {
-                            config.reasoning = next_thinking.to_thinking_level();
-                        }
+                if let Some(prepare) = &config.prepare_next_turn
+                    && let Some(update) = prepare(snapshot).await
+                {
+                    if let Some(next_context) = update.context {
+                        current_context = next_context;
+                    }
+                    if let Some(next_model) = update.model {
+                        config.model = Some(next_model);
+                    }
+                    // Upstream maps "off" to undefined and leaves the
+                    // previous level in place when the update omits it.
+                    if let Some(next_thinking) = update.thinking_level {
+                        config.reasoning = next_thinking.to_thinking_level();
                     }
                 }
                 // Preparation can be long-running; pick up steering queued
@@ -349,14 +349,14 @@ async fn run_loop(
                 new_messages: new_messages.clone(),
             });
 
-            if let Some(should_stop) = &config.should_stop_after_turn {
-                if should_stop(last_completed_turn.as_ref().expect("just set")).await {
-                    emit.emit(AgentEvent::AgentEnd {
-                        messages: new_messages.clone(),
-                    })
-                    .await;
-                    return new_messages;
-                }
+            if let Some(should_stop) = &config.should_stop_after_turn
+                && should_stop(last_completed_turn.as_ref().expect("just set")).await
+            {
+                emit.emit(AgentEvent::AgentEnd {
+                    messages: new_messages.clone(),
+                })
+                .await;
+                return new_messages;
             }
 
             pending_messages = poll_steering(&config).await;
@@ -431,12 +431,11 @@ async fn stream_assistant_response(
     if call_options.reasoning.is_none() {
         call_options.reasoning = config.reasoning;
     }
-    if let Some(get_key) = &config.get_api_key {
-        if let Some(model) = &config.model {
-            if let Some(key) = get_key(&model.provider).await {
-                call_options.api_key = Some(key);
-            }
-        }
+    if let Some(get_key) = &config.get_api_key
+        && let Some(model) = &config.model
+        && let Some(key) = get_key(&model.provider).await
+    {
+        call_options.api_key = Some(key);
     }
 
     // Upstream awaits `streamFunction(...)` inside runLoop; a throw becomes
@@ -872,21 +871,21 @@ async fn prepare_tool_call(
                 is_error: true,
             };
         }
-        if let Some(before_result) = before_result {
-            if before_result.block {
-                let mut result = create_error_tool_result(
-                    before_result
-                        .reason
-                        .unwrap_or_else(|| "Tool execution was blocked".to_owned()),
-                );
-                if before_result.terminate {
-                    result.terminate = true;
-                }
-                return Preparation::Immediate {
-                    result,
-                    is_error: true,
-                };
+        if let Some(before_result) = before_result
+            && before_result.block
+        {
+            let mut result = create_error_tool_result(
+                before_result
+                    .reason
+                    .unwrap_or_else(|| "Tool execution was blocked".to_owned()),
+            );
+            if before_result.terminate {
+                result.terminate = true;
             }
+            return Preparation::Immediate {
+                result,
+                is_error: true,
+            };
         }
         let executed_args = match Arc::try_unwrap(hook_args) {
             Ok(mutex) => mutex.into_inner().expect("args lock"),
@@ -1013,8 +1012,8 @@ async fn finalize_executed_tool_call(
     let mut result = executed.result;
     let mut is_error = executed.is_error;
 
-    if let Some(after) = &config.after_tool_call {
-        if let Some(after_result) = after(
+    if let Some(after) = &config.after_tool_call
+        && let Some(after_result) = after(
             crate::types::AfterToolCallContext {
                 assistant_message: _assistant_message.clone(),
                 tool_call: tool_call.clone(),
@@ -1028,22 +1027,21 @@ async fn finalize_executed_tool_call(
             signal,
         )
         .await
-        {
-            if let Some(content) = after_result.content {
-                result.content = content;
-            }
-            if let Some(details) = after_result.details {
-                result.details = details;
-            }
-            if let Some(usage) = after_result.usage {
-                result.usage = Some(usage);
-            }
-            if let Some(terminate) = after_result.terminate {
-                result.terminate = terminate;
-            }
-            if let Some(is_error_override) = after_result.is_error {
-                is_error = is_error_override;
-            }
+    {
+        if let Some(content) = after_result.content {
+            result.content = content;
+        }
+        if let Some(details) = after_result.details {
+            result.details = details;
+        }
+        if let Some(usage) = after_result.usage {
+            result.usage = Some(usage);
+        }
+        if let Some(terminate) = after_result.terminate {
+            result.terminate = terminate;
+        }
+        if let Some(is_error_override) = after_result.is_error {
+            is_error = is_error_override;
         }
     }
 

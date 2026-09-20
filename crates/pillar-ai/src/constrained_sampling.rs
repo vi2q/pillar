@@ -72,23 +72,22 @@ fn schema_allows_null(schema: &Value) -> bool {
     };
     match map.get("type") {
         Some(Value::String(text)) if text == "null" => return true,
-        Some(Value::Array(items)) => {
+        Some(Value::Array(items))
             if items
                 .iter()
-                .any(|item| item == &Value::String("null".to_string()))
-            {
-                return true;
-            }
+                .any(|item| item == &Value::String("null".to_string())) =>
+        {
+            return true;
         }
         _ => {}
     }
     if map.get("const").is_some_and(Value::is_null) {
         return true;
     }
-    if let Some(Value::Array(items)) = map.get("enum") {
-        if items.iter().any(Value::is_null) {
-            return true;
-        }
+    if let Some(Value::Array(items)) = map.get("enum")
+        && items.iter().any(Value::is_null)
+    {
+        return true;
     }
     match map.get("anyOf") {
         Some(Value::Array(variants)) => variants.iter().any(schema_allows_null),
@@ -148,10 +147,10 @@ fn make_json_schema_node_strict(
         }
         _ => {}
     }
-    if let Some(properties) = map.get("properties") {
-        if !properties.is_object() {
-            return Err(unsupported("object properties must be a schema map"));
-        }
+    if let Some(properties) = map.get("properties")
+        && !properties.is_object()
+    {
+        return Err(unsupported("object properties must be a schema map"));
     }
     if let Some(required) = map.get("required") {
         let valid = required

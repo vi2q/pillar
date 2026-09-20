@@ -269,7 +269,12 @@ impl Component for AltScreenSearchComponent {
         let title = truncate_to_width(&format!("{label}{gap}{status}"), safe_width, "", false);
         let padding = " ".repeat(safe_width.saturating_sub(visible_width(&title)));
         let mut lines = vec![format!("\u{1b}[7m{title}{padding}\u{1b}[27m")];
-        lines.extend(self.input.render(safe_width).iter().map(|line| line.to_string()));
+        lines.extend(
+            self.input
+                .render(safe_width)
+                .iter()
+                .map(|line| line.to_string()),
+        );
         render_lines(lines)
     }
 

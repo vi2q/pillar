@@ -182,24 +182,23 @@ fn scan(entries: &[CacheStatsEntry], models: &dyn ModelPriceSource) -> ScanResul
             prev = None;
             continue;
         }
-        if entry.kind == CacheStatsEntryKind::Message {
-            if let Some(message) = entry.assistant {
-                if let Some(miss) = detect_miss(prev.as_ref(), message, models) {
-                    totals.missed_tokens += miss.missed_tokens;
-                    totals.missed_cost += miss.missed_cost;
-                    totals.miss_count += 1;
-                    misses.insert(
-                        (
-                            message.timestamp,
-                            format!("{}/{}", message.provider, message.model),
-                        ),
-                        miss,
-                    );
-                }
-                prev =
-                    as_previous_request(message, prev.as_ref().is_some_and(|p| p.reported_cache))
-                        .or(prev);
+        if entry.kind == CacheStatsEntryKind::Message
+            && let Some(message) = entry.assistant
+        {
+            if let Some(miss) = detect_miss(prev.as_ref(), message, models) {
+                totals.missed_tokens += miss.missed_tokens;
+                totals.missed_cost += miss.missed_cost;
+                totals.miss_count += 1;
+                misses.insert(
+                    (
+                        message.timestamp,
+                        format!("{}/{}", message.provider, message.model),
+                    ),
+                    miss,
+                );
             }
+            prev = as_previous_request(message, prev.as_ref().is_some_and(|p| p.reported_cache))
+                .or(prev);
         }
     }
     ScanResult {

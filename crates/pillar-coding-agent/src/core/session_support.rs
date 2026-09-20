@@ -48,10 +48,10 @@ pub fn export_session_to_jsonl(
     let file_path =
         crate::core::tools::path_utils::resolve_to_cwd(output_path.unwrap_or(&default_name), cwd);
 
-    if let Some(dir) = file_path.parent() {
-        if !dir.exists() {
-            fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-        }
+    if let Some(dir) = file_path.parent()
+        && !dir.exists()
+    {
+        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
 
     let header = SessionHeader {

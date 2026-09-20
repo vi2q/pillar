@@ -198,10 +198,10 @@ pub fn discover_extensions_in_dir(dir: &Path) -> Vec<PathBuf> {
             discovered.push(entry_path);
             continue;
         }
-        if metadata.is_dir() || metadata.file_type().is_symlink() {
-            if let Some(entries) = resolve_extension_entries(&entry_path) {
-                discovered.extend(entries);
-            }
+        if (metadata.is_dir() || metadata.file_type().is_symlink())
+            && let Some(entries) = resolve_extension_entries(&entry_path)
+        {
+            discovered.extend(entries);
         }
     }
     discovered
@@ -276,7 +276,6 @@ pub fn discover_and_load_extension_paths(
 // (the VM returns them; this crate's loader drives them).
 pub use pillar_extensions_contract::{LoadOutcome, ModuleLoader};
 
-
 /// Cache entry: the loaded extension keyed by resolved path, invalidated
 /// by cwd change or generation bump (upstream `extensionCache`).
 #[derive(Default)]
@@ -303,10 +302,10 @@ impl ExtensionCache {
     /// `useExtensionCacheCwd`). Returns the generation token.
     pub fn use_cwd(&mut self, cwd: &str) -> u64 {
         let resolved = resolve_to_cwd(cwd, "/");
-        if let Some(previous) = &self.cwd {
-            if previous != &resolved {
-                self.clear();
-            }
+        if let Some(previous) = &self.cwd
+            && previous != &resolved
+        {
+            self.clear();
         }
         self.cwd = Some(resolved);
         self.generation
@@ -332,11 +331,9 @@ impl ExtensionCache {
         for ext_path in paths {
             let resolved = resolve_to_cwd(ext_path, cwd);
             let key = resolved.to_string_lossy().to_string();
-            if use_cache {
-                if let Some(cached) = self.cache.get(&key) {
-                    extensions.push(cached.clone());
-                    continue;
-                }
+            if use_cache && let Some(cached) = self.cache.get(&key) {
+                extensions.push(cached.clone());
+                continue;
             }
             match load(&key) {
                 Ok(Some(extension)) => {

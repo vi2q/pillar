@@ -184,15 +184,15 @@ fn load_template_from_file(file_path: &Path) -> Option<PromptTemplate> {
         .unwrap_or_default();
 
     let mut description = frontmatter.get("description").cloned().unwrap_or_default();
-    if description.is_empty() {
-        if let Some(first_line) = body.lines().find(|line| !line.trim().is_empty()) {
-            let mut truncated = first_line.trim().to_string();
-            if truncated.chars().count() > 60 {
-                truncated = truncated.chars().take(60).collect();
-                truncated.push_str("...");
-            }
-            description = truncated;
+    if description.is_empty()
+        && let Some(first_line) = body.lines().find(|line| !line.trim().is_empty())
+    {
+        let mut truncated = first_line.trim().to_string();
+        if truncated.chars().count() > 60 {
+            truncated = truncated.chars().take(60).collect();
+            truncated.push_str("...");
         }
+        description = truncated;
     }
 
     Some(PromptTemplate {
@@ -216,10 +216,11 @@ fn load_templates_from_dir(dir: &Path) -> Vec<PromptTemplate> {
     for entry in entries.flatten() {
         let path = entry.path();
         let is_file = path.is_file();
-        if is_file && path.extension().map(|ext| ext == "md").unwrap_or(false) {
-            if let Some(template) = load_template_from_file(&path) {
-                templates.push(template);
-            }
+        if is_file
+            && path.extension().map(|ext| ext == "md").unwrap_or(false)
+            && let Some(template) = load_template_from_file(&path)
+        {
+            templates.push(template);
         }
     }
 
@@ -273,10 +274,9 @@ pub fn load_prompt_templates(options: &LoadPromptTemplatesOptions) -> Vec<Prompt
                 .extension()
                 .map(|ext| ext == "md")
                 .unwrap_or(false)
+            && let Some(template) = load_template_from_file(&resolved_path)
         {
-            if let Some(template) = load_template_from_file(&resolved_path) {
-                templates.push(template);
-            }
+            templates.push(template);
         }
     }
 
@@ -310,13 +310,13 @@ pub fn expand_prompt_template(text: &str, templates: &[PromptTemplate]) -> Strin
 /// to the home directory when available.
 fn resolve_path(path: &str) -> PathBuf {
     let trimmed = path.trim();
-    if trimmed == "~" || trimmed.starts_with("~/") {
-        if let Some(home) = std::env::var_os("HOME") {
-            let home = PathBuf::from(home);
-            let rest = trimmed.strip_prefix('~').unwrap_or("");
-            let rest = rest.strip_prefix('/').unwrap_or(rest);
-            return home.join(rest);
-        }
+    if (trimmed == "~" || trimmed.starts_with("~/"))
+        && let Some(home) = std::env::var_os("HOME")
+    {
+        let home = PathBuf::from(home);
+        let rest = trimmed.strip_prefix('~').unwrap_or("");
+        let rest = rest.strip_prefix('/').unwrap_or(rest);
+        return home.join(rest);
     }
     PathBuf::from(trimmed)
 }

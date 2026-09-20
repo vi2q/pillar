@@ -26,20 +26,18 @@ pub enum KeyboardProtocolNegotiationSequence {
 pub fn parse_keyboard_protocol_negotiation_sequence(
     sequence: &str,
 ) -> Option<KeyboardProtocolNegotiationSequence> {
-    if let Some(rest) = sequence.strip_prefix("\u{1b}[?") {
-        if let Some(flags_str) = rest.strip_suffix('u') {
-            if let Ok(flags) = flags_str.parse::<u32>() {
-                return Some(KeyboardProtocolNegotiationSequence::KittyFlags { flags });
-            }
-        }
+    if let Some(rest) = sequence.strip_prefix("\u{1b}[?")
+        && let Some(flags_str) = rest.strip_suffix('u')
+        && let Ok(flags) = flags_str.parse::<u32>()
+    {
+        return Some(KeyboardProtocolNegotiationSequence::KittyFlags { flags });
     }
     // CSI ? [digits;]* c
-    if let Some(rest) = sequence.strip_prefix("\u{1b}[?") {
-        if let Some(body) = rest.strip_suffix('c') {
-            if body.is_empty() || body.chars().all(|c| c.is_ascii_digit() || c == ';') {
-                return Some(KeyboardProtocolNegotiationSequence::DeviceAttributes);
-            }
-        }
+    if let Some(rest) = sequence.strip_prefix("\u{1b}[?")
+        && let Some(body) = rest.strip_suffix('c')
+        && (body.is_empty() || body.chars().all(|c| c.is_ascii_digit() || c == ';'))
+    {
+        return Some(KeyboardProtocolNegotiationSequence::DeviceAttributes);
     }
     None
 }
@@ -91,12 +89,11 @@ pub fn normalize_apple_terminal_input(
 pub fn resolve_escape_timeout_ms(pi_tui_esc_timeout: Option<&str>, has_ssh: bool) -> u64 {
     const DEFAULT_ESCAPE_TIMEOUT_MS: u64 = 10;
     const DEFAULT_SSH_ESCAPE_TIMEOUT_MS: u64 = 100;
-    if let Some(configured) = pi_tui_esc_timeout {
-        if let Ok(value) = configured.parse::<u64>() {
-            if value > 0 {
-                return value;
-            }
-        }
+    if let Some(configured) = pi_tui_esc_timeout
+        && let Ok(value) = configured.parse::<u64>()
+        && value > 0
+    {
+        return value;
     }
     if has_ssh {
         return DEFAULT_SSH_ESCAPE_TIMEOUT_MS;

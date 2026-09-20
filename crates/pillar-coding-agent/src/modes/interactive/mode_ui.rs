@@ -130,10 +130,10 @@ impl StatusUi {
 
     /// Upstream `clearStatusIndicator`.
     pub fn clear_status_indicator(&mut self, kind: Option<StatusIndicatorKind>) {
-        if let Some(kind) = kind {
-            if self.active_kind() != Some(kind) {
-                return;
-            }
+        if let Some(kind) = kind
+            && self.active_kind() != Some(kind)
+        {
+            return;
         }
         let had_active = self.active.is_some();
         if let Some(active) = &self.active {
@@ -173,13 +173,12 @@ impl StatusUi {
     /// Upstream `setWorkingIndicator`.
     pub fn set_working_indicator(&mut self, options: Option<WorkingIndicatorOptions>) {
         self.working_indicator_options = options.clone();
-        if self.active_kind() == Some(StatusIndicatorKind::Working) {
-            if let Some(active) = self.active.as_ref().and_then(ActiveIndicator::as_status) {
-                active
-                    .lock()
-                    .loader_mut()
-                    .set_indicator(options.map(crate::modes::interactive::components::status_indicator::loader_indicator_options));
-            }
+        if self.active_kind() == Some(StatusIndicatorKind::Working)
+            && let Some(active) = self.active.as_ref().and_then(ActiveIndicator::as_status)
+        {
+            active.lock().loader_mut().set_indicator(options.map(
+                crate::modes::interactive::components::status_indicator::loader_indicator_options,
+            ));
         }
     }
 
@@ -187,14 +186,14 @@ impl StatusUi {
     /// updates).
     pub fn set_working_message(&mut self, message: Option<String>) {
         self.working_message = message;
-        if self.active_kind() == Some(StatusIndicatorKind::Working) {
-            if let Some(active) = self.active.as_ref().and_then(ActiveIndicator::as_status) {
-                let message = self
-                    .working_message
-                    .clone()
-                    .unwrap_or_else(|| DEFAULT_WORKING_MESSAGE.to_string());
-                active.lock().set_message(&message);
-            }
+        if self.active_kind() == Some(StatusIndicatorKind::Working)
+            && let Some(active) = self.active.as_ref().and_then(ActiveIndicator::as_status)
+        {
+            let message = self
+                .working_message
+                .clone()
+                .unwrap_or_else(|| DEFAULT_WORKING_MESSAGE.to_string());
+            active.lock().set_message(&message);
         }
     }
 

@@ -71,18 +71,18 @@ fn non_overflow_patterns() -> &'static Vec<Regex> {
 /// `context_window` enables cases 2 and 3.
 pub fn is_context_overflow(message: &AssistantMessage, context_window: Option<u64>) -> bool {
     // Case 1: error message patterns.
-    if message.stop_reason == StopReason::Error {
-        if let Some(error_message) = &message.error_message {
-            let is_non_overflow = non_overflow_patterns()
+    if message.stop_reason == StopReason::Error
+        && let Some(error_message) = &message.error_message
+    {
+        let is_non_overflow = non_overflow_patterns()
+            .iter()
+            .any(|p| p.is_match(error_message));
+        if !is_non_overflow
+            && overflow_patterns()
                 .iter()
-                .any(|p| p.is_match(error_message));
-            if !is_non_overflow
-                && overflow_patterns()
-                    .iter()
-                    .any(|p| p.is_match(error_message))
-            {
-                return true;
-            }
+                .any(|p| p.is_match(error_message))
+        {
+            return true;
         }
     }
 

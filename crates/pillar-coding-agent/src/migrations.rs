@@ -53,48 +53,43 @@ pub fn migrate_auth_to_auth_json(agent_dir: &Path) -> Vec<String> {
 
     let mut migrated = serde_json::Map::new();
     let mut providers = Vec::new();
-    if oauth_path.exists() {
-        if let Ok(content) = fs::read_to_string(&oauth_path) {
-            if let Ok(Value::Object(oauth)) = serde_json::from_str::<Value>(strip_bom(&content)) {
-                for (provider, credential) in oauth {
-                    let mut entry = credential.as_object().cloned().unwrap_or_default();
-                    entry.insert("type".to_string(), Value::String("oauth".to_string()));
-                    migrated.insert(provider.clone(), Value::Object(entry));
-                    providers.push(provider);
-                }
-                let _ = fs::rename(&oauth_path, oauth_path.with_extension("json.migrated"));
-            }
+    if oauth_path.exists()
+        && let Ok(content) = fs::read_to_string(&oauth_path)
+        && let Ok(Value::Object(oauth)) = serde_json::from_str::<Value>(strip_bom(&content))
+    {
+        for (provider, credential) in oauth {
+            let mut entry = credential.as_object().cloned().unwrap_or_default();
+            entry.insert("type".to_string(), Value::String("oauth".to_string()));
+            migrated.insert(provider.clone(), Value::Object(entry));
+            providers.push(provider);
         }
+        let _ = fs::rename(&oauth_path, oauth_path.with_extension("json.migrated"));
     }
-    if settings_path.exists() {
-        if let Ok(content) = fs::read_to_string(&settings_path) {
-            if let Ok(Value::Object(mut settings)) =
-                serde_json::from_str::<Value>(strip_bom(&content))
-            {
-                if let Some(Value::Object(api_keys)) = settings.get("apiKeys").cloned() {
-                    for (provider, key) in api_keys {
-                        if migrated.contains_key(&provider) {
-                            continue;
-                        }
-                        if let Value::String(key) = key {
-                            migrated.insert(
-                                provider.clone(),
-                                serde_json::json!({ "type": "api_key", "key": key }),
-                            );
-                            providers.push(provider);
-                        }
-                    }
-                    settings.remove("apiKeys");
-                    let _ = fs::write(
-                        &settings_path,
-                        format!(
-                            "{}\n",
-                            serde_json::to_string_pretty(&settings).unwrap_or_default()
-                        ),
-                    );
-                }
+    if settings_path.exists()
+        && let Ok(content) = fs::read_to_string(&settings_path)
+        && let Ok(Value::Object(mut settings)) = serde_json::from_str::<Value>(strip_bom(&content))
+        && let Some(Value::Object(api_keys)) = settings.get("apiKeys").cloned()
+    {
+        for (provider, key) in api_keys {
+            if migrated.contains_key(&provider) {
+                continue;
+            }
+            if let Value::String(key) = key {
+                migrated.insert(
+                    provider.clone(),
+                    serde_json::json!({ "type": "api_key", "key": key }),
+                );
+                providers.push(provider);
             }
         }
+        settings.remove("apiKeys");
+        let _ = fs::write(
+            &settings_path,
+            format!(
+                "{}\n",
+                serde_json::to_string_pretty(&settings).unwrap_or_default()
+            ),
+        );
     }
     if !migrated.is_empty() {
         let _ = fs::create_dir_all(agent_dir);

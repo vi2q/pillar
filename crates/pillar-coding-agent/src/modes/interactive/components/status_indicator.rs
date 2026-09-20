@@ -155,15 +155,12 @@ impl RetryStatusIndicator {
             .as_mut()
             .map(|countdown| countdown.tick())
             .unwrap_or(false);
-        if let Some(seconds) = self.seconds_remaining() {
-            if seconds != self.displayed_seconds {
-                self.displayed_seconds = seconds;
-                self.indicator.set_message(&retry_message(
-                    self.attempt,
-                    self.max_attempts,
-                    seconds,
-                ));
-            }
+        if let Some(seconds) = self.seconds_remaining()
+            && seconds != self.displayed_seconds
+        {
+            self.displayed_seconds = seconds;
+            self.indicator
+                .set_message(&retry_message(self.attempt, self.max_attempts, seconds));
         }
         spinner || countdown
     }

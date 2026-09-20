@@ -248,10 +248,10 @@ async fn generate_images_inner(
         .to_string();
 
     let mut params = build_params(model, context);
-    if let Some(on_payload) = &options.on_payload {
-        if let Some(next_params) = on_payload(model, params.clone()).await {
-            params = next_params;
-        }
+    if let Some(on_payload) = &options.on_payload
+        && let Some(next_params) = on_payload(model, params.clone()).await
+    {
+        params = next_params;
     }
 
     let headers = merge_request_headers(

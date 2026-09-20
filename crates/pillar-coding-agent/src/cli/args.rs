@@ -323,11 +323,12 @@ pub fn parse_args(args: &[String]) -> Args {
             }
         } else if arg == "--print" || arg == "-p" {
             result.print = Some(true);
-            if let Some(next) = args.get(i + 1) {
-                if !next.starts_with('@') && (!next.starts_with('-') || next.starts_with("---")) {
-                    result.messages.push(next.clone());
-                    i += 1;
-                }
+            if let Some(next) = args.get(i + 1)
+                && !next.starts_with('@')
+                && (!next.starts_with('-') || next.starts_with("---"))
+            {
+                result.messages.push(next.clone());
+                i += 1;
             }
         } else if arg == "--export" && i + 1 < args.len() {
             result.export = value_at(args, &mut i);

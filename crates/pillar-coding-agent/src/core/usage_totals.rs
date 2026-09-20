@@ -135,10 +135,11 @@ pub fn export_session_to_jsonl(
             timestamp.replace([':', '.'], "-")
         ))
     });
-    if let Some(dir) = file_path.parent() {
-        if !dir.as_os_str().is_empty() && !dir.exists() {
-            fs::create_dir_all(dir).map_err(|e| format!("Failed to create export dir: {e}"))?;
-        }
+    if let Some(dir) = file_path.parent()
+        && !dir.as_os_str().is_empty()
+        && !dir.exists()
+    {
+        fs::create_dir_all(dir).map_err(|e| format!("Failed to create export dir: {e}"))?;
     }
 
     let timestamp = iso_now();

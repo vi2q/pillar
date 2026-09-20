@@ -1152,10 +1152,10 @@ pub mod validation {
         for key in ["input", "output", "cacheRead", "cacheWrite", "totalTokens"] {
             uint_field(map, key, 0)?;
         }
-        if let Some(r) = map.get("reasoning") {
-            if !r.is_null() {
-                uint_value(r, 0)?;
-            }
+        if let Some(r) = map.get("reasoning")
+            && !r.is_null()
+        {
+            uint_value(r, 0)?;
         }
         let cost = field(map, "cost")?;
         let cost_map = cost.as_object().ok_or_else(|| fail(SERVER))?;

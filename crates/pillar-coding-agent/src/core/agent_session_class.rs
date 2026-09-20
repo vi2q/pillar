@@ -1144,33 +1144,32 @@ impl AgentSession {
     ) -> Result<(), String> {
         // When a user message starts, remove it from either queue BEFORE
         // emitting so the UI sees the updated queue state.
-        if let pillar_agent::types::AgentEvent::MessageStart { message } = &event {
-            if let pillar_agent::types::AgentMessage::Message(Message::User { content, .. }) =
+        if let pillar_agent::types::AgentEvent::MessageStart { message } = &event
+            && let pillar_agent::types::AgentMessage::Message(Message::User { content, .. }) =
                 &**message
-            {
-                let message_text = match content {
-                    UserContent::Text(text) => text.clone(),
-                    UserContent::Blocks(blocks) => content_text(blocks, ""),
-                };
-                if !message_text.is_empty() {
-                    let mut state = inner.state.lock().expect("session state");
-                    if let Some(index) = state
-                        .steering_messages
-                        .iter()
-                        .position(|m| *m == message_text)
-                    {
-                        state.steering_messages.remove(index);
-                        drop(state);
-                        inner.emit_queue_update();
-                    } else if let Some(index) = state
-                        .follow_up_messages
-                        .iter()
-                        .position(|m| *m == message_text)
-                    {
-                        state.follow_up_messages.remove(index);
-                        drop(state);
-                        inner.emit_queue_update();
-                    }
+        {
+            let message_text = match content {
+                UserContent::Text(text) => text.clone(),
+                UserContent::Blocks(blocks) => content_text(blocks, ""),
+            };
+            if !message_text.is_empty() {
+                let mut state = inner.state.lock().expect("session state");
+                if let Some(index) = state
+                    .steering_messages
+                    .iter()
+                    .position(|m| *m == message_text)
+                {
+                    state.steering_messages.remove(index);
+                    drop(state);
+                    inner.emit_queue_update();
+                } else if let Some(index) = state
+                    .follow_up_messages
+                    .iter()
+                    .position(|m| *m == message_text)
+                {
+                    state.follow_up_messages.remove(index);
+                    drop(state);
+                    inner.emit_queue_update();
                 }
             }
         }
@@ -1461,11 +1460,11 @@ impl AgentSession {
         replacement: &pillar_agent::types::AgentMessage,
     ) {
         let mut messages = inner.agent.state().messages;
-        if let Some(last) = messages.last_mut() {
-            if std::mem::discriminant(last) == std::mem::discriminant(replacement) {
-                *last = replacement.clone();
-                inner.agent.set_messages(messages);
-            }
+        if let Some(last) = messages.last_mut()
+            && std::mem::discriminant(last) == std::mem::discriminant(replacement)
+        {
+            *last = replacement.clone();
+            inner.agent.set_messages(messages);
         }
     }
 
@@ -2875,15 +2874,15 @@ impl AgentSession {
 
         // Remove the error message from agent state (keep in session).
         let messages = self.inner.agent.state().messages;
-        if let Some(last) = messages.last() {
-            if matches!(
+        if let Some(last) = messages.last()
+            && matches!(
                 last,
                 pillar_agent::types::AgentMessage::Message(Message::Assistant(_))
-            ) {
-                let mut trimmed = messages;
-                trimmed.pop();
-                self.inner.agent.set_messages(trimmed);
-            }
+            )
+        {
+            let mut trimmed = messages;
+            trimmed.pop();
+            self.inner.agent.set_messages(trimmed);
         }
 
         // Wait with exponential backoff (abortable).
@@ -3301,15 +3300,15 @@ impl AgentSession {
 
     fn drop_trailing_assistant_message(&self) {
         let messages = self.inner.agent.state().messages;
-        if let Some(last) = messages.last() {
-            if matches!(
+        if let Some(last) = messages.last()
+            && matches!(
                 last,
                 pillar_agent::types::AgentMessage::Message(Message::Assistant(_))
-            ) {
-                let mut trimmed = messages;
-                trimmed.pop();
-                self.inner.agent.set_messages(trimmed);
-            }
+            )
+        {
+            let mut trimmed = messages;
+            trimmed.pop();
+            self.inner.agent.set_messages(trimmed);
         }
     }
 
@@ -3401,11 +3400,11 @@ impl AgentSession {
                         );
                         return Ok(false);
                     }
-                    if let Some(compaction) = result.get("compaction") {
-                        if let Some(compaction) = compaction_result_from_json(compaction) {
-                            extension_compaction = Some(compaction);
-                            from_extension = true;
-                        }
+                    if let Some(compaction) = result.get("compaction")
+                        && let Some(compaction) = compaction_result_from_json(compaction)
+                    {
+                        extension_compaction = Some(compaction);
+                        from_extension = true;
                     }
                 }
             }
@@ -3536,16 +3535,15 @@ impl AgentSession {
             // _checkCompaction removed it; rebuild state can restore a
             // trailing assistant that agent.continue() rejects.
             let messages = self.inner.agent.state().messages;
-            if let Some(last) = messages.last() {
-                if let pillar_agent::types::AgentMessage::Message(Message::Assistant(assistant)) =
+            if let Some(last) = messages.last()
+                && let pillar_agent::types::AgentMessage::Message(Message::Assistant(assistant)) =
                     last
-                    && (assistant.stop_reason == StopReason::Error
-                        || assistant.stop_reason == StopReason::Length)
-                {
-                    let mut trimmed = messages;
-                    trimmed.pop();
-                    self.inner.agent.set_messages(trimmed);
-                }
+                && (assistant.stop_reason == StopReason::Error
+                    || assistant.stop_reason == StopReason::Length)
+            {
+                let mut trimmed = messages;
+                trimmed.pop();
+                self.inner.agent.set_messages(trimmed);
             }
             return Ok(true);
         }
@@ -3617,20 +3615,20 @@ impl AgentSession {
             .get_auth(AuthTarget::Model(Box::new(model_value.clone())), None)
             .await
             .map_err(|e| e.to_string())?;
-        if let Some(result) = result {
-            if result.auth.api_key.is_some() || result.auth.headers.is_some() {
-                return Ok((
-                    model_value,
-                    result.auth.api_key,
-                    result
-                        .auth
-                        .headers
-                        .map(|h| serde_json::to_value(h).unwrap_or(Value::Null)),
-                    result
-                        .env
-                        .map(|env| serde_json::to_value(env).unwrap_or(Value::Null)),
-                ));
-            }
+        if let Some(result) = result
+            && (result.auth.api_key.is_some() || result.auth.headers.is_some())
+        {
+            return Ok((
+                model_value,
+                result.auth.api_key,
+                result
+                    .auth
+                    .headers
+                    .map(|h| serde_json::to_value(h).unwrap_or(Value::Null)),
+                result
+                    .env
+                    .map(|env| serde_json::to_value(env).unwrap_or(Value::Null)),
+            ));
         }
         if self.inner.model_runtime.is_using_oauth(&model.provider) {
             return Err(format!(
@@ -3821,9 +3819,9 @@ impl AgentSession {
                             });
                         }
                         let summary = result.get("summary");
-                        if options.summarize {
-                            if let Some(summary) = summary {
-                                if let Some(text) = summary.get("summary").and_then(Value::as_str) {
+                        if options.summarize
+                            && let Some(summary) = summary
+                                && let Some(text) = summary.get("summary").and_then(Value::as_str) {
                                     extension_summary = Some((
                                         text.to_string(),
                                         summary.get("details").cloned(),
@@ -3833,8 +3831,6 @@ impl AgentSession {
                                     ));
                                     from_extension = true;
                                 }
-                            }
-                        }
                         if let Some(value) = result.get("customInstructions") {
                             custom_instructions = value.as_str().map(str::to_string);
                         }
@@ -4065,11 +4061,11 @@ impl AgentSession {
                         {
                             return Err("Compaction cancelled".to_string());
                         }
-                        if let Some(compaction) = result.get("compaction") {
-                            if let Some(compaction) = compaction_result_from_json(compaction) {
-                                extension_compaction = Some(compaction);
-                                from_extension = true;
-                            }
+                        if let Some(compaction) = result.get("compaction")
+                            && let Some(compaction) = compaction_result_from_json(compaction)
+                        {
+                            extension_compaction = Some(compaction);
+                            from_extension = true;
                         }
                     }
                 }
@@ -4233,10 +4229,10 @@ fn agent_user_message(
 /// Normalize an extension-provided message (upstream content `?? []`):
 /// missing/null content becomes an empty array.
 fn normalize_extension_message(mut value: Value) -> Value {
-    if let Some(obj) = value.as_object_mut() {
-        if obj.get("content").is_none_or(|v| v.is_null()) {
-            obj.insert("content".to_string(), Value::Array(Vec::new()));
-        }
+    if let Some(obj) = value.as_object_mut()
+        && obj.get("content").is_none_or(|v| v.is_null())
+    {
+        obj.insert("content".to_string(), Value::Array(Vec::new()));
     }
     value
 }
@@ -4371,10 +4367,10 @@ pub(crate) fn coding_message_to_agent(
 
 /// Convert coding-agent custom content to a user-content value.
 fn custom_content_to_user_content(content: Vec<CustomContent>) -> UserContent {
-    if content.len() == 1 {
-        if let CustomContent::Text(text) = &content[0] {
-            return UserContent::Text(text.clone());
-        }
+    if content.len() == 1
+        && let CustomContent::Text(text) = &content[0]
+    {
+        return UserContent::Text(text.clone());
     }
     let blocks: Vec<Content> = content
         .into_iter()

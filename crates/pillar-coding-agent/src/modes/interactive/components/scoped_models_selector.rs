@@ -510,7 +510,12 @@ impl Component for ScopedModelsSelectorComponent {
     fn render(&mut self, width: usize) -> RenderLines {
         let theme_handle = theme();
         let mut lines: Vec<String> = Vec::new();
-        lines.extend(DynamicBorder::new().render(width).iter().map(|line| line.to_string()));
+        lines.extend(
+            DynamicBorder::new()
+                .render(width)
+                .iter()
+                .map(|line| line.to_string()),
+        );
         lines.push(String::new());
         lines.extend(
             Text::new(
@@ -518,7 +523,9 @@ impl Component for ScopedModelsSelectorComponent {
                 0,
                 0,
             )
-            .render(width).iter().map(|line| line.to_string()),
+            .render(width)
+            .iter()
+            .map(|line| line.to_string()),
         );
         lines.extend(
             Text::new(
@@ -532,16 +539,26 @@ impl Component for ScopedModelsSelectorComponent {
                 0,
                 0,
             )
-            .render(width).iter().map(|line| line.to_string()),
+            .render(width)
+            .iter()
+            .map(|line| line.to_string()),
         );
         lines.push(String::new());
-        lines.extend(self.search_input.render(width).iter().map(|line| line.to_string()));
+        lines.extend(
+            self.search_input
+                .render(width)
+                .iter()
+                .map(|line| line.to_string()),
+        );
         lines.push(String::new());
 
         // Upstream `updateList` into `listContainer`.
         if self.filtered_items.is_empty() {
             lines.extend(
-                Text::new(&theme_handle.fg("muted", "  No matching models"), 0, 0).render(width).iter().map(|line| line.to_string()),
+                Text::new(&theme_handle.fg("muted", "  No matching models"), 0, 0)
+                    .render(width)
+                    .iter()
+                    .map(|line| line.to_string()),
             );
         } else {
             let start = self.window_start();
@@ -579,7 +596,12 @@ impl Component for ScopedModelsSelectorComponent {
                     None => theme_handle.fg("dim", " ✗"),
                 };
                 let text = format!("{prefix}{model_text}{provider_badge}{status}");
-                lines.extend(Text::new(&text, 0, 0).render(width).iter().map(|line| line.to_string()));
+                lines.extend(
+                    Text::new(&text, 0, 0)
+                        .render(width)
+                        .iter()
+                        .map(|line| line.to_string()),
+                );
             }
 
             if start > 0 || end < self.filtered_items.len() {
@@ -596,7 +618,9 @@ impl Component for ScopedModelsSelectorComponent {
                         0,
                         0,
                     )
-                    .render(width).iter().map(|line| line.to_string()),
+                    .render(width)
+                    .iter()
+                    .map(|line| line.to_string()),
                 );
             }
 
@@ -616,13 +640,25 @@ impl Component for ScopedModelsSelectorComponent {
                     0,
                     0,
                 )
-                .render(width).iter().map(|line| line.to_string()),
+                .render(width)
+                .iter()
+                .map(|line| line.to_string()),
             );
         }
 
         lines.push(String::new());
-        lines.extend(Text::new(&self.footer_text(), 0, 0).render(width).iter().map(|line| line.to_string()));
-        lines.extend(DynamicBorder::new().render(width).iter().map(|line| line.to_string()));
+        lines.extend(
+            Text::new(&self.footer_text(), 0, 0)
+                .render(width)
+                .iter()
+                .map(|line| line.to_string()),
+        );
+        lines.extend(
+            DynamicBorder::new()
+                .render(width)
+                .iter()
+                .map(|line| line.to_string()),
+        );
         render_lines(lines)
     }
 }
@@ -881,7 +917,14 @@ mod tests {
             .map(|item| item.full_id.as_str())
             .collect();
         assert_eq!(ids, vec!["p1/m1", "ghost/none", "p1/m2", "p2/m3"]);
-        let body = strip_ansi_vec(selector.render(60).iter().map(|line| line.to_string()).collect()).join("\n");
+        let body = strip_ansi_vec(
+            selector
+                .render(60)
+                .iter()
+                .map(|line| line.to_string())
+                .collect(),
+        )
+        .join("\n");
         assert!(body.contains("[unavailable]"), "{body:?}");
         assert!(
             selector
@@ -891,7 +934,14 @@ mod tests {
 
         // The highlighted unavailable row renders the fallback info line.
         selector.handle_key("\u{1b}[B"); // ghost/none
-        let body = strip_ansi_vec(selector.render(60).iter().map(|line| line.to_string()).collect()).join("\n");
+        let body = strip_ansi_vec(
+            selector
+                .render(60)
+                .iter()
+                .map(|line| line.to_string())
+                .collect(),
+        )
+        .join("\n");
         assert!(body.contains("Model unavailable"), "{body:?}");
 
         // Toggling the highlighted unavailable id still tracks it (the

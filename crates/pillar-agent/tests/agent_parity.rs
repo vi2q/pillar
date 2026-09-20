@@ -538,14 +538,12 @@ async fn should_ignore_a_settled_parallel_tool_update_while_another_tool_is_stil
         let events = Arc::clone(&events_for_listener);
         let ended_tx = Arc::clone(&ended_tx);
         Box::pin(async move {
-            if event_kind(&event) == "tool_execution_end" {
-                if let AgentEvent::ToolExecutionEnd { tool_call_id, .. } = &event {
-                    if tool_call_id == "call-1" {
-                        if let Some(tx) = ended_tx.lock().unwrap().take() {
-                            let _ = tx.send(());
-                        }
-                    }
-                }
+            if event_kind(&event) == "tool_execution_end"
+                && let AgentEvent::ToolExecutionEnd { tool_call_id, .. } = &event
+                && tool_call_id == "call-1"
+                && let Some(tx) = ended_tx.lock().unwrap().take()
+            {
+                let _ = tx.send(());
             }
             events.lock().unwrap().push(event);
         }) as pillar_agent::ListenerFuture

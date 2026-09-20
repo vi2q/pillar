@@ -14,8 +14,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    EntryRenderer, ExtensionContextFacts, MarkdownTransformer, MessageRenderer,
-    ResourceDiagnostic,
+    EntryRenderer, ExtensionContextFacts, MarkdownTransformer, MessageRenderer, ResourceDiagnostic,
 };
 
 /// Extension flag definition (upstream `ExtensionFlag` subset).
@@ -135,10 +134,11 @@ pub fn build_builtin_keybindings(
             RESERVED_KEYBINDINGS_FOR_EXTENSION_CONFLICTS.contains(&keybinding.as_str());
         for key in keys {
             let normalized = key.to_lowercase();
-            if let Some(existing) = builtin.get(&normalized) {
-                if existing.restrict_override && !restrict_override {
-                    continue;
-                }
+            if let Some(existing) = builtin.get(&normalized)
+                && existing.restrict_override
+                && !restrict_override
+            {
+                continue;
             }
             builtin.insert(
                 normalized,
@@ -341,17 +341,17 @@ impl ExtensionRunner {
                     });
                     continue;
                 }
-                if let Some(b) = builtin_entry {
-                    if !b.restrict_override {
-                        let message = format!(
-                            "Extension shortcut conflict: '{key}' is built-in shortcut for {} and {}. Using {}.",
-                            b.keybinding, shortcut.extension_path, shortcut.extension_path
-                        );
-                        self.shortcut_diagnostics.push(ResourceDiagnostic::Warning {
-                            message,
-                            path: shortcut.extension_path.clone(),
-                        });
-                    }
+                if let Some(b) = builtin_entry
+                    && !b.restrict_override
+                {
+                    let message = format!(
+                        "Extension shortcut conflict: '{key}' is built-in shortcut for {} and {}. Using {}.",
+                        b.keybinding, shortcut.extension_path, shortcut.extension_path
+                    );
+                    self.shortcut_diagnostics.push(ResourceDiagnostic::Warning {
+                        message,
+                        path: shortcut.extension_path.clone(),
+                    });
                 }
                 if let Some(existing) = extension_shortcuts.get(&normalized) {
                     let message = format!(
@@ -772,12 +772,11 @@ impl ExtensionRunner {
                         if action == Some("handled") {
                             return result;
                         }
-                        if action == Some("transform") {
-                            if let Some(new_text) =
+                        if action == Some("transform")
+                            && let Some(new_text) =
                                 result.get("text").and_then(serde_json::Value::as_str)
-                            {
-                                current_text = new_text.to_string();
-                            }
+                        {
+                            current_text = new_text.to_string();
                         }
                     }
                     Ok(None) => {}

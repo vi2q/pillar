@@ -602,16 +602,16 @@ pub fn resolve_cli_model(options: ResolveCliModelOptions) -> ResolveCliModelResu
     let mut provider: Option<String> = cli_provider
         .as_deref()
         .and_then(|p| provider_map.get(&p.to_lowercase()).cloned());
-    if let Some(cli_provider) = &cli_provider {
-        if provider.is_none() {
-            return ResolveCliModelResult {
-                error: Some(format!(
-                    "Unknown provider \"{}\". Use --list-models to see available providers/models.",
-                    cli_provider
-                )),
-                ..Default::default()
-            };
-        }
+    if let Some(cli_provider) = &cli_provider
+        && provider.is_none()
+    {
+        return ResolveCliModelResult {
+            error: Some(format!(
+                "Unknown provider \"{}\". Use --list-models to see available providers/models.",
+                cli_provider
+            )),
+            ..Default::default()
+        };
     }
 
     // If no explicit --provider, try to interpret "provider/model" format
@@ -622,14 +622,14 @@ pub fn resolve_cli_model(options: ResolveCliModelOptions) -> ResolveCliModelResu
     let mut pattern = cli_model.clone();
     let mut inferred_provider = false;
 
-    if provider.is_none() {
-        if let Some(slash_index) = cli_model.find('/') {
-            let maybe_provider = &cli_model[..slash_index];
-            if let Some(canonical) = provider_map.get(&maybe_provider.to_lowercase()) {
-                provider = Some(canonical.clone());
-                pattern = cli_model[slash_index + 1..].to_string();
-                inferred_provider = true;
-            }
+    if provider.is_none()
+        && let Some(slash_index) = cli_model.find('/')
+    {
+        let maybe_provider = &cli_model[..slash_index];
+        if let Some(canonical) = provider_map.get(&maybe_provider.to_lowercase()) {
+            provider = Some(canonical.clone());
+            pattern = cli_model[slash_index + 1..].to_string();
+            inferred_provider = true;
         }
     }
 
@@ -688,14 +688,14 @@ pub fn resolve_cli_model(options: ResolveCliModelOptions) -> ResolveCliModelResu
         }
     }
 
-    if cli_provider.is_some() {
-        if let Some(provider) = &provider {
-            // If both were provided, tolerate --model <provider>/<pattern> by
-            // stripping the provider prefix
-            let prefix = format!("{}/", provider);
-            if cli_model.to_lowercase().starts_with(&prefix.to_lowercase()) {
-                pattern = cli_model[prefix.len()..].to_string();
-            }
+    if cli_provider.is_some()
+        && let Some(provider) = &provider
+    {
+        // If both were provided, tolerate --model <provider>/<pattern> by
+        // stripping the provider prefix
+        let prefix = format!("{}/", provider);
+        if cli_model.to_lowercase().starts_with(&prefix.to_lowercase()) {
+            pattern = cli_model[prefix.len()..].to_string();
         }
     }
 
@@ -792,13 +792,13 @@ pub fn resolve_cli_model(options: ResolveCliModelOptions) -> ResolveCliModelResu
         // fallbackThinking="high"
         let mut fallback_pattern = pattern.clone();
         let mut fallback_thinking: Option<ResolverThinkingLevel> = None;
-        if cli_thinking.is_none() {
-            if let Some(last_colon) = pattern.rfind(':') {
-                let suffix = &pattern[last_colon + 1..];
-                if let Some(level) = parse_thinking_level(suffix) {
-                    fallback_pattern = pattern[..last_colon].to_string();
-                    fallback_thinking = Some(level);
-                }
+        if cli_thinking.is_none()
+            && let Some(last_colon) = pattern.rfind(':')
+        {
+            let suffix = &pattern[last_colon + 1..];
+            if let Some(level) = parse_thinking_level(suffix) {
+                fallback_pattern = pattern[..last_colon].to_string();
+                fallback_thinking = Some(level);
             }
         }
 
@@ -806,10 +806,10 @@ pub fn resolve_cli_model(options: ResolveCliModelOptions) -> ResolveCliModelResu
             build_fallback_model(provider, &fallback_pattern, &available_models)
         {
             let requested_thinking = cli_thinking.or(fallback_thinking);
-            if let Some(level) = requested_thinking {
-                if level != ResolverThinkingLevel::Off {
-                    fallback_model.reasoning = true;
-                }
+            if let Some(level) = requested_thinking
+                && level != ResolverThinkingLevel::Off
+            {
+                fallback_model.reasoning = true;
             }
             let fallback_warning = parsed.warning.as_ref().map_or_else(
                 || {
@@ -948,26 +948,24 @@ pub fn find_initial_model(options: FindInitialModelOptions) -> InitialModelResul
 
     // 3. Try saved default from settings if auth is configured.
     if let (Some(default_provider), Some(default_model_id)) = (&default_provider, &default_model_id)
+        && let Some(found) = runtime.get_model(default_provider, default_model_id)
+        && runtime.auth.has_configured_auth(&found.provider)
     {
-        if let Some(found) = runtime.get_model(default_provider, default_model_id) {
-            if runtime.auth.has_configured_auth(&found.provider) {
-                let per_model = model_thinking_levels
-                    .as_ref()
-                    .and_then(|map| map.get(&format!("{}/{}", default_provider, default_model_id)))
-                    .copied()
-                    .flatten();
-                let thinking_level = if let Some(per_model) = per_model {
-                    per_model
-                } else {
-                    default_thinking_level.unwrap_or(DEFAULT_THINKING_LEVEL)
-                };
-                return InitialModelResult {
-                    model: Some(found),
-                    thinking_level,
-                    fallback_message: None,
-                };
-            }
-        }
+        let per_model = model_thinking_levels
+            .as_ref()
+            .and_then(|map| map.get(&format!("{}/{}", default_provider, default_model_id)))
+            .copied()
+            .flatten();
+        let thinking_level = if let Some(per_model) = per_model {
+            per_model
+        } else {
+            default_thinking_level.unwrap_or(DEFAULT_THINKING_LEVEL)
+        };
+        return InitialModelResult {
+            model: Some(found),
+            thinking_level,
+            fallback_message: None,
+        };
     }
 
     // 4. Try first available model with valid API key

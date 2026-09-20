@@ -176,10 +176,10 @@ pub fn estimate_context_tokens(context: &Context) -> ContextUsageEstimate {
         // Tools added after the last usage block need adding to the estimate.
         let mut added_names = std::collections::HashSet::new();
         for message in &context.messages[last_usage_index + 1..] {
-            if let Message::ToolResult(tool_result) = message {
-                if let Some(names) = &tool_result.added_tool_names {
-                    added_names.extend(names.iter().cloned());
-                }
+            if let Message::ToolResult(tool_result) = message
+                && let Some(names) = &tool_result.added_tool_names
+            {
+                added_names.extend(names.iter().cloned());
             }
         }
         let added_tools: Vec<Tool> = context

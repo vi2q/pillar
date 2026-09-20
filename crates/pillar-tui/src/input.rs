@@ -10,11 +10,11 @@
 //! dispatch loop.
 
 use crate::edit_support::{KillRing, UndoStack, find_word_backward, find_word_forward};
-use crate::tui::{RenderLines, render_lines};
 use crate::keybindings::with_global_keybindings;
 use crate::keys::decode_printable_key;
 use crate::stack_layout::slice_by_column;
 use crate::text_utils::{grapheme_clusters, visible_width};
+use crate::tui::{RenderLines, render_lines};
 
 /// Hardware cursor marker (upstream `CURSOR_MARKER`): zero-width escape
 /// emitted before the fake cursor for IME positioning.

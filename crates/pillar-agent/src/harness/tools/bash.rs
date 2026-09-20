@@ -182,35 +182,35 @@ pub async fn execute_bash_tool<E: ExecutionEnv + ?Sized>(
 
     let mut output_text = capture.output.clone();
     let mut details: Option<BashToolDetails> = None;
-    if let Some(truncation) = &capture.truncation {
-        if truncation.truncated {
-            let full_output_path = capture.full_output_path.clone().unwrap_or_default();
-            details = Some(BashToolDetails {
-                truncation: Some(truncation.clone()),
-                full_output_path: Some(full_output_path.clone()),
-            });
-            let start_line = truncation.total_lines - truncation.output_lines + 1;
-            let end_line = truncation.total_lines;
-            if truncation.last_line_partial {
-                let last_line_size = format_size(capture.last_line_bytes);
-                output_text.push_str(&format!(
+    if let Some(truncation) = &capture.truncation
+        && truncation.truncated
+    {
+        let full_output_path = capture.full_output_path.clone().unwrap_or_default();
+        details = Some(BashToolDetails {
+            truncation: Some(truncation.clone()),
+            full_output_path: Some(full_output_path.clone()),
+        });
+        let start_line = truncation.total_lines - truncation.output_lines + 1;
+        let end_line = truncation.total_lines;
+        if truncation.last_line_partial {
+            let last_line_size = format_size(capture.last_line_bytes);
+            output_text.push_str(&format!(
                     "\n\n[Showing last {} of line {end_line} (line is {last_line_size}). Full output: {full_output_path}]",
                     format_size(truncation.output_bytes)
                 ));
-            } else if truncation.truncated_by
-                == Some(crate::harness::utils::truncate::TruncatedBy::Lines)
-            {
-                output_text.push_str(&format!(
+        } else if truncation.truncated_by
+            == Some(crate::harness::utils::truncate::TruncatedBy::Lines)
+        {
+            output_text.push_str(&format!(
                     "\n\n[Showing lines {start_line}-{end_line} of {}. Full output: {full_output_path}]",
                     truncation.total_lines
                 ));
-            } else {
-                output_text.push_str(&format!(
+        } else {
+            output_text.push_str(&format!(
                     "\n\n[Showing lines {start_line}-{end_line} of {} ({} limit). Full output: {full_output_path}]",
                     truncation.total_lines,
                     format_size(DEFAULT_MAX_BYTES)
                 ));
-            }
         }
     }
 
@@ -233,12 +233,12 @@ pub async fn execute_bash_tool<E: ExecutionEnv + ?Sized>(
         }
         return Err(tool_error(execution_error.message.clone()));
     }
-    if let Some(exit_code) = capture.exit_code {
-        if exit_code != 0 {
-            return Err(tool_error(append_status(&format!(
-                "Command exited with code {exit_code}"
-            ))));
-        }
+    if let Some(exit_code) = capture.exit_code
+        && exit_code != 0
+    {
+        return Err(tool_error(append_status(&format!(
+            "Command exited with code {exit_code}"
+        ))));
     }
 
     Ok(AgentToolResult {

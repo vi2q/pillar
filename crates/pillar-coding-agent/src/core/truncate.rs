@@ -24,11 +24,11 @@ pub fn strip_ansi(value: &str) -> String {
     let mut i = 0usize;
     while i < bytes.len() {
         let b = bytes[i];
-        if b == 0x1b || b == 0x9b {
-            if let Some(end) = find_sequence_end(bytes, i) {
-                i = end;
-                continue;
-            }
+        if (b == 0x1b || b == 0x9b)
+            && let Some(end) = find_sequence_end(bytes, i)
+        {
+            i = end;
+            continue;
         }
         // Copy the full UTF-8 character starting at i.
         let ch_len = utf8_len(b);

@@ -1093,11 +1093,11 @@ impl LatexParser {
             let Some(character) = self.current() else {
                 break;
             };
-            if let Some(end) = end_character {
-                if character == end {
-                    self.position += 1;
-                    return result;
-                }
+            if let Some(end) = end_character
+                && character == end
+            {
+                self.position += 1;
+                return result;
             }
             if character == '}' {
                 self.supported = false;

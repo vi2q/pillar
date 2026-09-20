@@ -109,15 +109,15 @@ pub fn bash_execution_to_text(msg: &BashExecutionMessage) -> String {
     }
     if msg.cancelled {
         text.push_str("\n\n(command cancelled)");
-    } else if let Some(exit_code) = msg.exit_code {
-        if exit_code != 0 {
-            text.push_str(&format!("\n\nCommand exited with code {exit_code}"));
-        }
+    } else if let Some(exit_code) = msg.exit_code
+        && exit_code != 0
+    {
+        text.push_str(&format!("\n\nCommand exited with code {exit_code}"));
     }
-    if msg.truncated {
-        if let Some(path) = &msg.full_output_path {
-            text.push_str(&format!("\n\n[Output truncated. Full output: {path}]"));
-        }
+    if msg.truncated
+        && let Some(path) = &msg.full_output_path
+    {
+        text.push_str(&format!("\n\n[Output truncated. Full output: {path}]"));
     }
     text
 }

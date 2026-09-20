@@ -1939,9 +1939,9 @@ async fn reload_rebuilds_runner_and_reemits_session_start() {
                 entry_renderers: Default::default(),
                 markdown_transformer: None,
             };
-            Ok(ExtensionGeneration::from_runner(ExtensionRunner::new(vec![
-                extension,
-            ])))
+            Ok(ExtensionGeneration::from_runner(ExtensionRunner::new(
+                vec![extension],
+            )))
         })
     };
 
@@ -3095,11 +3095,11 @@ async fn extension_handlers_may_trigger_session_mutations_without_deadlocking() 
     let handler: ExtensionHandler = {
         let slot = Arc::clone(&slot);
         Arc::new(move |event: &serde_json::Value| {
-            if event["type"] == "session_start" {
-                if let Some(session) = slot.lock().unwrap().clone() {
-                    // Emits `thinking_level_select` from inside the dispatch.
-                    session.set_thinking_level("low", false);
-                }
+            if event["type"] == "session_start"
+                && let Some(session) = slot.lock().unwrap().clone()
+            {
+                // Emits `thinking_level_select` from inside the dispatch.
+                session.set_thinking_level("low", false);
             }
             Ok(None)
         })

@@ -156,10 +156,9 @@ where
         // Abort: terminal but not successful. Never retry an aborted message.
         if response.stop_reason == StopReason::Aborted {
             if let (Some(callbacks), Some((attempt, _))) = (callbacks.as_ref(), last_retry.as_ref())
+                && let Some(on_finished) = &callbacks.on_retry_finished
             {
-                if let Some(on_finished) = &callbacks.on_retry_finished {
-                    on_finished(false, *attempt, None);
-                }
+                on_finished(false, *attempt, None);
             }
             return response;
         }
@@ -167,10 +166,9 @@ where
         // Success: non-error, non-abort responses return as-is.
         if response.stop_reason != StopReason::Error {
             if let (Some(callbacks), Some((attempt, _))) = (callbacks.as_ref(), last_retry.as_ref())
+                && let Some(on_finished) = &callbacks.on_retry_finished
             {
-                if let Some(on_finished) = &callbacks.on_retry_finished {
-                    on_finished(true, *attempt, None);
-                }
+                on_finished(true, *attempt, None);
             }
             return response;
         }
@@ -178,10 +176,9 @@ where
         // Non-retryable, or budget exhausted: return the final error message.
         if attempt >= max_attempts || !is_retryable_assistant_error(&response) {
             if let (Some(callbacks), Some((attempt, _))) = (callbacks.as_ref(), last_retry.as_ref())
+                && let Some(on_finished) = &callbacks.on_retry_finished
             {
-                if let Some(on_finished) = &callbacks.on_retry_finished {
-                    on_finished(false, *attempt, response.error_message.as_deref());
-                }
+                on_finished(false, *attempt, response.error_message.as_deref());
             }
             return response;
         }
@@ -194,10 +191,10 @@ where
         let delay_ms = policy
             .map(|p| p.base_delay_ms * 2u64.pow(attempt - 1))
             .unwrap_or(0);
-        if let Some(callbacks) = callbacks.as_ref() {
-            if let Some(on_scheduled) = &callbacks.on_retry_scheduled {
-                on_scheduled(attempt, max_attempts, delay_ms, &error_message);
-            }
+        if let Some(callbacks) = callbacks.as_ref()
+            && let Some(on_scheduled) = &callbacks.on_retry_scheduled
+        {
+            on_scheduled(attempt, max_attempts, delay_ms, &error_message);
         }
 
         last_retry = Some((attempt, error_message));
@@ -207,10 +204,10 @@ where
         if delay_ms > 0 {
             crate::clock::sleep(std::time::Duration::from_millis(delay_ms)).await;
         }
-        if let Some(callbacks) = callbacks.as_ref() {
-            if let Some(on_start) = &callbacks.on_retry_attempt_start {
-                on_start();
-            }
+        if let Some(callbacks) = callbacks.as_ref()
+            && let Some(on_start) = &callbacks.on_retry_attempt_start
+        {
+            on_start();
         }
     }
 }

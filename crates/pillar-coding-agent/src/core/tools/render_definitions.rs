@@ -317,18 +317,17 @@ pub fn get_compact_read_classification(
         .parent()
         .map(|parent| parent.to_path_buf())
         .unwrap_or_default();
-    if let Ok(relative) = absolute.strip_prefix(&package_root) {
-        if !relative.as_os_str().is_empty() {
-            let label = relative
-                .to_string_lossy()
-                .replace(std::path::MAIN_SEPARATOR, "/");
-            if label == "README.md" || label.starts_with("docs/") || label.starts_with("examples/")
-            {
-                return Some(CompactReadClassification {
-                    kind: "docs",
-                    label,
-                });
-            }
+    if let Ok(relative) = absolute.strip_prefix(&package_root)
+        && !relative.as_os_str().is_empty()
+    {
+        let label = relative
+            .to_string_lossy()
+            .replace(std::path::MAIN_SEPARATOR, "/");
+        if label == "README.md" || label.starts_with("docs/") || label.starts_with("examples/") {
+            return Some(CompactReadClassification {
+                kind: "docs",
+                label,
+            });
         }
     }
 
@@ -425,45 +424,45 @@ pub fn format_read_result(
         ));
     }
 
-    if let Some(truncation) = result.truncation() {
-        if truncation.truncated {
-            if truncation.first_line_exceeds_limit {
-                text.push_str(&format!(
-                    "\n{}",
-                    theme.fg(
-                        "warning",
-                        &format!(
-                            "[First line exceeds {} limit]",
-                            format_size(truncation.max_bytes.unwrap_or(DEFAULT_MAX_BYTES))
-                        )
+    if let Some(truncation) = result.truncation()
+        && truncation.truncated
+    {
+        if truncation.first_line_exceeds_limit {
+            text.push_str(&format!(
+                "\n{}",
+                theme.fg(
+                    "warning",
+                    &format!(
+                        "[First line exceeds {} limit]",
+                        format_size(truncation.max_bytes.unwrap_or(DEFAULT_MAX_BYTES))
                     )
-                ));
-            } else if truncation.truncated_by.as_deref() == Some("lines") {
-                text.push_str(&format!(
-                    "\n{}",
-                    theme.fg(
-                        "warning",
-                        &format!(
-                            "[Truncated: showing {} of {} lines ({} line limit)]",
-                            truncation.output_lines.unwrap_or_default(),
-                            truncation.total_lines.unwrap_or_default(),
-                            truncation.max_lines.unwrap_or(DEFAULT_MAX_LINES)
-                        )
+                )
+            ));
+        } else if truncation.truncated_by.as_deref() == Some("lines") {
+            text.push_str(&format!(
+                "\n{}",
+                theme.fg(
+                    "warning",
+                    &format!(
+                        "[Truncated: showing {} of {} lines ({} line limit)]",
+                        truncation.output_lines.unwrap_or_default(),
+                        truncation.total_lines.unwrap_or_default(),
+                        truncation.max_lines.unwrap_or(DEFAULT_MAX_LINES)
                     )
-                ));
-            } else {
-                text.push_str(&format!(
-                    "\n{}",
-                    theme.fg(
-                        "warning",
-                        &format!(
-                            "[Truncated: {} lines shown ({} limit)]",
-                            truncation.output_lines.unwrap_or_default(),
-                            format_size(truncation.max_bytes.unwrap_or(DEFAULT_MAX_BYTES))
-                        )
+                )
+            ));
+        } else {
+            text.push_str(&format!(
+                "\n{}",
+                theme.fg(
+                    "warning",
+                    &format!(
+                        "[Truncated: {} lines shown ({} limit)]",
+                        truncation.output_lines.unwrap_or_default(),
+                        format_size(truncation.max_bytes.unwrap_or(DEFAULT_MAX_BYTES))
                     )
-                ));
-            }
+                )
+            ));
         }
     }
     text
@@ -1195,11 +1194,10 @@ impl BashToolRenderer {
         {
             // Drop the "full output" footer the bash tool appends to the text
             // and re-add it as a warning line below.
-            if let Some(footer_start) = output.rfind("\n\n[") {
-                if output[footer_start..].contains(full_output_path.as_deref().unwrap_or_default())
-                {
-                    output = output[..footer_start].trim_end().to_string();
-                }
+            if let Some(footer_start) = output.rfind("\n\n[")
+                && output[footer_start..].contains(full_output_path.as_deref().unwrap_or_default())
+            {
+                output = output[..footer_start].trim_end().to_string();
             }
         }
 

@@ -77,10 +77,10 @@ impl FileAuthStorageBackend {
     }
 
     fn ensure_parent_dir(&self) -> Result<(), String> {
-        if let Some(dir) = self.auth_path.parent() {
-            if !dir.exists() {
-                fs::create_dir_all(dir).map_err(|e| format!("Failed to create auth dir: {e}"))?;
-            }
+        if let Some(dir) = self.auth_path.parent()
+            && !dir.exists()
+        {
+            fs::create_dir_all(dir).map_err(|e| format!("Failed to create auth dir: {e}"))?;
         }
         Ok(())
     }
@@ -103,10 +103,10 @@ impl FileAuthStorageBackend {
         self.ensure_parent_dir()?;
         self.ensure_file_exists()?;
         let lock_path = self.lock_path();
-        if let Some(dir) = lock_path.parent() {
-            if !dir.exists() {
-                fs::create_dir_all(dir).map_err(|e| format!("Failed to create lock dir: {e}"))?;
-            }
+        if let Some(dir) = lock_path.parent()
+            && !dir.exists()
+        {
+            fs::create_dir_all(dir).map_err(|e| format!("Failed to create lock dir: {e}"))?;
         }
         let mut lock_file = fs::OpenOptions::new()
             .create(true)

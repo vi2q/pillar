@@ -289,10 +289,10 @@ fn fail_stream(
 /// names get their human-readable prefix, everything else passes through
 /// (the transport message already carries the HTTP body when present).
 fn format_bedrock_error_message(error: &BedrockStreamError) -> String {
-    if let Some(code) = &error.error_code {
-        if let Some((_, prefix)) = BEDROCK_ERROR_PREFIXES.iter().find(|(name, _)| name == code) {
-            return format!("{prefix}: {}", error.message);
-        }
+    if let Some(code) = &error.error_code
+        && let Some((_, prefix)) = BEDROCK_ERROR_PREFIXES.iter().find(|(name, _)| name == code)
+    {
+        return format!("{prefix}: {}", error.message);
     }
     error.message.clone()
 }
@@ -383,10 +383,10 @@ async fn run_stream_inner(
     if let Some(request_metadata) = &options.request_metadata {
         command_input["requestMetadata"] = Value::Object(request_metadata.clone());
     }
-    if let Some(on_payload) = &options.on_payload {
-        if let Some(next) = on_payload(model, command_input.clone()).await {
-            command_input = next;
-        }
+    if let Some(on_payload) = &options.on_payload
+        && let Some(next) = on_payload(model, command_input.clone()).await
+    {
+        command_input = next;
     }
 
     // --- Send request (upstream `client.send(command, {abortSignal})`) ---
@@ -420,10 +420,10 @@ async fn run_stream_inner(
     // skipped (upstream build-step middleware).
     if let Some(custom_headers) = options.headers.as_ref() {
         for (key, value) in custom_headers {
-            if let Some(value) = value {
-                if !is_reserved_header(key) {
-                    headers.push((key.clone(), value.clone()));
-                }
+            if let Some(value) = value
+                && !is_reserved_header(key)
+            {
+                headers.push((key.clone(), value.clone()));
             }
         }
     }
@@ -901,25 +901,25 @@ fn handle_content_block_delta(
     }
 
     if let Some(tool_use) = delta.get("toolUse") {
-        if let Some(slot) = slot {
-            if matches!(blocks[slot].content, Content::ToolCall { .. }) {
-                let chunk = tool_use.get("input").and_then(Value::as_str).unwrap_or("");
-                let partial = blocks[slot].partial_json.get_or_insert_with(String::new);
-                partial.push_str(chunk);
-                let arguments = parse_streaming_json(Some(partial.as_str()));
-                if let Content::ToolCall {
-                    arguments: args, ..
-                } = &mut blocks[slot].content
-                {
-                    *args = arguments;
-                }
-                sync_slot(blocks, output, slot);
-                stream.push(AssistantMessageEvent::ToolcallDelta {
-                    content_index: slot,
-                    delta: chunk.to_string(),
-                    partial: output.clone(),
-                });
+        if let Some(slot) = slot
+            && matches!(blocks[slot].content, Content::ToolCall { .. })
+        {
+            let chunk = tool_use.get("input").and_then(Value::as_str).unwrap_or("");
+            let partial = blocks[slot].partial_json.get_or_insert_with(String::new);
+            partial.push_str(chunk);
+            let arguments = parse_streaming_json(Some(partial.as_str()));
+            if let Content::ToolCall {
+                arguments: args, ..
+            } = &mut blocks[slot].content
+            {
+                *args = arguments;
             }
+            sync_slot(blocks, output, slot);
+            stream.push(AssistantMessageEvent::ToolcallDelta {
+                content_index: slot,
+                delta: chunk.to_string(),
+                partial: output.clone(),
+            });
         }
         return;
     }
@@ -954,18 +954,18 @@ fn handle_content_block_delta(
             return;
         }
 
-        if let Some(text) = reasoning.get("text").and_then(Value::as_str) {
-            if !text.is_empty() {
-                if let Content::Thinking { thinking, .. } = &mut blocks[slot].content {
-                    thinking.push_str(text);
-                }
-                sync_slot(blocks, output, slot);
-                stream.push(AssistantMessageEvent::ThinkingDelta {
-                    content_index: slot,
-                    delta: text.to_string(),
-                    partial: output.clone(),
-                });
+        if let Some(text) = reasoning.get("text").and_then(Value::as_str)
+            && !text.is_empty()
+        {
+            if let Content::Thinking { thinking, .. } = &mut blocks[slot].content {
+                thinking.push_str(text);
             }
+            sync_slot(blocks, output, slot);
+            stream.push(AssistantMessageEvent::ThinkingDelta {
+                content_index: slot,
+                delta: text.to_string(),
+                partial: output.clone(),
+            });
         }
         // `thinking_signature` holds either an Anthropic signature or an
         // opaque redacted payload, never both: mixing them would corrupt
@@ -977,52 +977,53 @@ fn handle_content_block_delta(
                 ..
             }
         );
-        if let Some(signature) = reasoning.get("signature").and_then(Value::as_str) {
-            if !signature.is_empty() && !redacted {
+        if let Some(signature) = reasoning.get("signature").and_then(Value::as_str)
+            && !signature.is_empty()
+            && !redacted
+        {
+            if let Content::Thinking {
+                thinking_signature: Some(existing),
+                ..
+            } = &mut blocks[slot].content
+            {
+                existing.push_str(signature);
+            }
+            sync_slot(blocks, output, slot);
+        }
+        if let Some(redacted_content) = reasoning.get("redactedContent").and_then(Value::as_array)
+            && !redacted_content.is_empty()
+        {
+            // Encrypted reasoning from non-Anthropic models on Bedrock
+            // (e.g. OpenAI GPT-5.6). The payload is opaque, so keep it
+            // verbatim in `thinking_signature` the way the Anthropic path
+            // stores redacted thinking, and replay it on the next turn.
+            if !redacted {
                 if let Content::Thinking {
-                    thinking_signature: Some(existing),
-                    ..
+                    thinking,
+                    thinking_signature,
+                    redacted: redacted_flag,
                 } = &mut blocks[slot].content
                 {
-                    existing.push_str(signature);
+                    *redacted_flag = Some(true);
+                    *thinking_signature = Some(String::new());
+                    thinking.push_str(REDACTED_THINKING_PLACEHOLDER);
                 }
                 sync_slot(blocks, output, slot);
+                stream.push(AssistantMessageEvent::ThinkingDelta {
+                    content_index: slot,
+                    delta: REDACTED_THINKING_PLACEHOLDER.to_string(),
+                    partial: output.clone(),
+                });
             }
-        }
-        if let Some(redacted_content) = reasoning.get("redactedContent").and_then(Value::as_array) {
-            if !redacted_content.is_empty() {
-                // Encrypted reasoning from non-Anthropic models on Bedrock
-                // (e.g. OpenAI GPT-5.6). The payload is opaque, so keep it
-                // verbatim in `thinking_signature` the way the Anthropic path
-                // stores redacted thinking, and replay it on the next turn.
-                if !redacted {
-                    if let Content::Thinking {
-                        thinking,
-                        thinking_signature,
-                        redacted: redacted_flag,
-                    } = &mut blocks[slot].content
-                    {
-                        *redacted_flag = Some(true);
-                        *thinking_signature = Some(String::new());
-                        thinking.push_str(REDACTED_THINKING_PLACEHOLDER);
-                    }
-                    sync_slot(blocks, output, slot);
-                    stream.push(AssistantMessageEvent::ThinkingDelta {
-                        content_index: slot,
-                        delta: REDACTED_THINKING_PLACEHOLDER.to_string(),
-                        partial: output.clone(),
-                    });
-                }
-                let chunks: Vec<u8> = redacted_content
-                    .iter()
-                    .filter_map(Value::as_u64)
-                    .map(|v| v as u8)
-                    .collect();
-                blocks[slot]
-                    .redacted_chunks
-                    .get_or_insert_with(Vec::new)
-                    .push(chunks);
-            }
+            let chunks: Vec<u8> = redacted_content
+                .iter()
+                .filter_map(Value::as_u64)
+                .map(|v| v as u8)
+                .collect();
+            blocks[slot]
+                .redacted_chunks
+                .get_or_insert_with(Vec::new)
+                .push(chunks);
         }
     }
 }
@@ -1900,10 +1901,10 @@ pub fn build_client_config(model: &Model, options: &BedrockOptions) -> ClientCon
             secret_access_key: "dummy-secret-key".to_string(),
             session_token: None,
         });
-    } else if let Some(credentials) = get_configured_bedrock_credentials(options.env.as_ref()) {
-        if options_profile.is_none() {
-            config.credentials = Some(credentials);
-        }
+    } else if let Some(credentials) = get_configured_bedrock_credentials(options.env.as_ref())
+        && options_profile.is_none()
+    {
+        config.credentials = Some(credentials);
     }
 
     // Resolve bearer token for Bedrock API key auth.
@@ -1945,10 +1946,10 @@ fn extract_arn_region(model_id: &str) -> Option<String> {
 }
 
 fn is_gov_cloud_bedrock_target(model: &Model, options: &BedrockOptions) -> bool {
-    if let Some(region) = get_configured_bedrock_region(options) {
-        if region.to_lowercase().starts_with("us-gov-") {
-            return true;
-        }
+    if let Some(region) = get_configured_bedrock_region(options)
+        && region.to_lowercase().starts_with("us-gov-")
+    {
+        return true;
     }
     let model_id = model.id.to_lowercase();
     model_id.starts_with("us-gov.") || model_id.starts_with("arn:aws-us-gov:")

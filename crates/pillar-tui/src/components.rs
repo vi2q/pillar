@@ -71,10 +71,11 @@ impl Text {
     }
 
     pub fn render(&mut self, width: usize) -> RenderLines {
-        if let Some((cached_text, cached_width, lines)) = &self.cache {
-            if cached_text == &self.text && *cached_width == width {
-                return Arc::clone(lines);
-            }
+        if let Some((cached_text, cached_width, lines)) = &self.cache
+            && cached_text == &self.text
+            && *cached_width == width
+        {
+            return Arc::clone(lines);
         }
         if self.text.trim().is_empty() {
             let empty: RenderLines = render_lines(Vec::new());
@@ -404,10 +405,10 @@ impl Image {
     }
 
     pub fn render(&mut self, width: usize) -> RenderLines {
-        if let (Some(lines), Some(cached_width)) = (&self.cached_lines, self.cached_width) {
-            if cached_width == width {
-                return Arc::clone(lines);
-            }
+        if let (Some(lines), Some(cached_width)) = (&self.cached_lines, self.cached_width)
+            && cached_width == width
+        {
+            return Arc::clone(lines);
         }
 
         let max_width = width

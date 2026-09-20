@@ -313,22 +313,22 @@ fn parse_kitty_sequence(data: &str) -> Option<ParsedKittySequence> {
             };
             let mut kv = first.split(';');
             // The modifier field is part of the sequence (upstream `;(\d+)`).
-            if kv.next() == Some("1") {
-                if let Some(mod_value) = kv.next().and_then(|v| v.parse::<i32>().ok()) {
-                    let codepoint = match arrow_char {
-                        'A' => ARROW_UP,
-                        'B' => ARROW_DOWN,
-                        'C' => ARROW_RIGHT,
-                        'D' => ARROW_LEFT,
-                        _ => return None,
-                    };
-                    return Some(ParsedKittySequence {
-                        codepoint,
-                        base_layout_key: None,
-                        modifier: (mod_value - 1).clamp(0, u8::MAX as i32) as u8,
-                        event_type: parse_event_type(event_part),
-                    });
-                }
+            if kv.next() == Some("1")
+                && let Some(mod_value) = kv.next().and_then(|v| v.parse::<i32>().ok())
+            {
+                let codepoint = match arrow_char {
+                    'A' => ARROW_UP,
+                    'B' => ARROW_DOWN,
+                    'C' => ARROW_RIGHT,
+                    'D' => ARROW_LEFT,
+                    _ => return None,
+                };
+                return Some(ParsedKittySequence {
+                    codepoint,
+                    base_layout_key: None,
+                    modifier: (mod_value - 1).clamp(0, u8::MAX as i32) as u8,
+                    event_type: parse_event_type(event_part),
+                });
             }
         }
         if let Some(rest) = rest.strip_suffix('H').or_else(|| rest.strip_suffix('F')) {
@@ -759,12 +759,12 @@ pub fn matches_key(data: &str, key_id: &str) -> bool {
                 let is_letter = ch.is_ascii_lowercase();
                 let is_digit = is_digit_key(&key);
 
-                if modifier == MOD_CTRL | MOD_ALT && !is_kitty_protocol_active() {
-                    if let Some(raw) = raw_ctrl {
-                        if data == format!("\x1b{raw}") {
-                            return true;
-                        }
-                    }
+                if modifier == MOD_CTRL | MOD_ALT
+                    && !is_kitty_protocol_active()
+                    && let Some(raw) = raw_ctrl
+                    && data == format!("\x1b{raw}")
+                {
+                    return true;
                 }
 
                 if modifier == MOD_ALT
@@ -779,10 +779,10 @@ pub fn matches_key(data: &str, key_id: &str) -> bool {
 
                 if modifier == MOD_CTRL {
                     // Legacy: ctrl+key sends the control character
-                    if let Some(raw) = raw_ctrl {
-                        if data == raw.to_string() {
-                            return true;
-                        }
+                    if let Some(raw) = raw_ctrl
+                        && data == raw.to_string()
+                    {
+                        return true;
                     }
                     return matches_kitty_sequence(data, codepoint, MOD_CTRL)
                         || matches_printable_modify_other_keys(data, codepoint, MOD_CTRL);
@@ -874,10 +874,10 @@ pub fn decode_kitty_printable(data: &str) -> Option<String> {
         return None;
     }
     let mut effective_codepoint = parsed.codepoint;
-    if modifier & MOD_SHIFT != 0 {
-        if let Some(shifted) = parsed.shifted_key {
-            effective_codepoint = shifted;
-        }
+    if modifier & MOD_SHIFT != 0
+        && let Some(shifted) = parsed.shifted_key
+    {
+        effective_codepoint = shifted;
     }
     let effective_codepoint = normalize_kitty_functional_codepoint(effective_codepoint);
     if effective_codepoint < 32 {

@@ -188,10 +188,10 @@ fn cache_hits_skip_loader_and_clear_bumps_generation() {
         tools: BTreeMap::new(),
         flags: BTreeMap::new(),
         shortcuts: BTreeMap::new(),
-            message_renderers: Default::default(),
+        message_renderers: Default::default(),
         entry_renderers: Default::default(),
         markdown_transformer: None,
-};
+    };
     let paths = vec!["ext-a".to_string()];
     let (first, errors) =
         cache.load_extensions(&paths, &cwd.to_string_lossy(), true, &mut |_path| {

@@ -215,7 +215,9 @@ fn one_frame_costs_the_whole_transcript() {
 
     println!("\n== stage cost on {} lines ==", rows[1].1);
     let previous: Vec<Arc<str>> = (0..rows[1].1)
-        .map(|index| Arc::<str>::from(format!("line {index} with a little text to compare").as_str()))
+        .map(|index| {
+            Arc::<str>::from(format!("line {index} with a little text to compare").as_str())
+        })
         .collect();
     let mut next = previous.clone();
     let tail = next.len() - 1;

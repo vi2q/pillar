@@ -1440,10 +1440,10 @@ fn pump_loop(
             // so the width/height change still goes through `full_render`.
             screen.base_mut().request_render(true);
         }
-        if screen.base_mut().take_render_request(Instant::now()) {
-            if let Err(error) = screen.do_render() {
-                break Err(error);
-            }
+        if screen.base_mut().take_render_request(Instant::now())
+            && let Err(error) = screen.do_render()
+        {
+            break Err(error);
         }
         if requested_shutdown {
             break Ok(InteractiveOutcome::Exit(0));

@@ -502,22 +502,21 @@ fn get_retry_after_delay_ms(headers: &[(String, String)]) -> Option<u64> {
             .find(|(key, _)| key.eq_ignore_ascii_case(name))
             .map(|(_, value)| value.clone())
     };
-    if let Some(retry_after_ms) = header("retry-after-ms") {
-        if let Ok(millis) = retry_after_ms.trim().parse::<f64>() {
-            if millis.is_finite() {
-                return Some(millis.max(0.0) as u64);
-            }
-        }
+    if let Some(retry_after_ms) = header("retry-after-ms")
+        && let Ok(millis) = retry_after_ms.trim().parse::<f64>()
+        && millis.is_finite()
+    {
+        return Some(millis.max(0.0) as u64);
     }
     let retry_after = header("retry-after")?;
     let trimmed = retry_after.trim();
     if trimmed.is_empty() {
         return None;
     }
-    if let Ok(seconds) = trimmed.parse::<f64>() {
-        if seconds.is_finite() {
-            return Some((seconds * 1000.0).max(0.0) as u64);
-        }
+    if let Ok(seconds) = trimmed.parse::<f64>()
+        && seconds.is_finite()
+    {
+        return Some((seconds * 1000.0).max(0.0) as u64);
     }
     // divergence: upstream falls back to Date.parse(retry-after) HTTP dates.
     None
@@ -605,10 +604,10 @@ async fn run_stream_inner(
         codex_session_id.as_deref(),
         &grammar_tool_input_properties,
     );
-    if let Some(on_payload) = &options.on_payload {
-        if let Some(next_body) = on_payload(model, body.clone()).await {
-            body = next_body;
-        }
+    if let Some(on_payload) = &options.on_payload
+        && let Some(next_body) = on_payload(model, body.clone()).await
+    {
+        body = next_body;
     }
     let websocket_request_id = codex_session_id.clone().unwrap_or_else(uuidv7);
     let sse_headers = build_sse_headers(
@@ -989,46 +988,46 @@ fn parse_error_response(status: u16, raw: &str) -> ParsedErrorResponse {
     };
     let mut friendly_message: Option<String> = None;
 
-    if let Ok(parsed) = serde_json::from_str::<Value>(raw) {
-        if let Some(err) = parsed.get("error") {
-            let code = err
-                .get("code")
+    if let Ok(parsed) = serde_json::from_str::<Value>(raw)
+        && let Some(err) = parsed.get("error")
+    {
+        let code = err
+            .get("code")
+            .and_then(Value::as_str)
+            .or_else(|| err.get("type").and_then(Value::as_str))
+            .unwrap_or("");
+        let lower_code = code.to_lowercase();
+        if lower_code.contains("usage_limit_reached")
+            || lower_code.contains("usage_not_included")
+            || lower_code.contains("rate_limit_exceeded")
+            || status == 429
+        {
+            let plan = err
+                .get("plan_type")
                 .and_then(Value::as_str)
-                .or_else(|| err.get("type").and_then(Value::as_str))
-                .unwrap_or("");
-            let lower_code = code.to_lowercase();
-            if lower_code.contains("usage_limit_reached")
-                || lower_code.contains("usage_not_included")
-                || lower_code.contains("rate_limit_exceeded")
-                || status == 429
-            {
-                let plan = err
-                    .get("plan_type")
-                    .and_then(Value::as_str)
-                    .map(|plan| format!(" ({} plan)", plan.to_lowercase()))
-                    .unwrap_or_default();
-                let mins = err
-                    .get("resets_at")
-                    .and_then(Value::as_f64)
-                    .map(|resets_at| {
-                        ((resets_at * 1000.0 - now_ms() as f64) / 60_000.0)
-                            .round()
-                            .max(0.0) as u64
-                    });
-                let when = mins
-                    .map(|mins| format!(" Try again in ~{mins} min."))
-                    .unwrap_or_default();
-                friendly_message = Some(
-                    format!("You have hit your ChatGPT usage limit{plan}.{when}")
-                        .trim_end()
-                        .to_string(),
-                );
-            }
-            if let Some(err_message) = err.get("message").and_then(Value::as_str) {
-                message = err_message.to_string();
-            } else if let Some(friendly) = &friendly_message {
-                message = friendly.clone();
-            }
+                .map(|plan| format!(" ({} plan)", plan.to_lowercase()))
+                .unwrap_or_default();
+            let mins = err
+                .get("resets_at")
+                .and_then(Value::as_f64)
+                .map(|resets_at| {
+                    ((resets_at * 1000.0 - now_ms() as f64) / 60_000.0)
+                        .round()
+                        .max(0.0) as u64
+                });
+            let when = mins
+                .map(|mins| format!(" Try again in ~{mins} min."))
+                .unwrap_or_default();
+            friendly_message = Some(
+                format!("You have hit your ChatGPT usage limit{plan}.{when}")
+                    .trim_end()
+                    .to_string(),
+            );
+        }
+        if let Some(err_message) = err.get("message").and_then(Value::as_str) {
+            message = err_message.to_string();
+        } else if let Some(friendly) = &friendly_message {
+            message = friendly.clone();
         }
     }
 
@@ -1062,7 +1061,7 @@ fn extract_account_id(token: &str) -> Result<String, CodexStreamError> {
 fn base64_decode_url_nopad(segment: &str) -> Option<Vec<u8>> {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut normalized = segment.replace(['-', '_'], "+/");
-    while normalized.len() % 4 != 0 {
+    while !normalized.len().is_multiple_of(4) {
         normalized.push('=');
     }
     let mut output = Vec::new();
@@ -1193,10 +1192,10 @@ fn build_request_body(
         let converted: Vec<Value> = converted
             .into_iter()
             .map(|mut tool| {
-                if tool.get("strict") == Some(&Value::Bool(false)) {
-                    if let Value::Object(object) = &mut tool {
-                        object.insert("strict".to_string(), Value::Null);
-                    }
+                if tool.get("strict") == Some(&Value::Bool(false))
+                    && let Value::Object(object) = &mut tool
+                {
+                    object.insert("strict".to_string(), Value::Null);
                 }
                 tool
             })
@@ -1545,10 +1544,10 @@ fn map_codex_event_immutable(
     ) {
         let mut mapped = event.clone();
         if let Some(response) = mapped.get_mut("response") {
-            if let Some(end_turn_value) = response.get("end_turn").and_then(Value::as_bool) {
-                if let Some(slot) = end_turn {
-                    *slot.lock().unwrap() = Some(end_turn_value);
-                }
+            if let Some(end_turn_value) = response.get("end_turn").and_then(Value::as_bool)
+                && let Some(slot) = end_turn
+            {
+                *slot.lock().unwrap() = Some(end_turn_value);
             }
             let mut normalized = response.clone();
             if let Value::Object(object) = &mut normalized {
@@ -1793,47 +1792,46 @@ async fn process_websocket_stream(
     let mut keep_connection = true;
     match &process_result {
         Ok(()) => {
-            if use_cached_context && output.response_id.is_some() {
-                if let Some(cache_key) = &cache_key {
-                    let response_items: Vec<Value> = convert_responses_messages(
-                        model,
-                        &Context {
-                            system_prompt: None,
-                            messages: vec![crate::types::Message::Assistant(Box::new(
-                                output.clone(),
-                            ))],
-                            tools: Vec::new(),
-                        },
-                        &CODEX_TOOL_CALL_PROVIDERS
-                            .iter()
-                            .map(|provider| provider.to_string())
-                            .collect(),
-                        Some(ConvertResponsesMessagesOptions {
-                            include_system_prompt: Some(false),
-                            grammar_tool_input_properties: Some(grammar_tool_input_properties),
-                            ..Default::default()
-                        }),
+            if use_cached_context
+                && output.response_id.is_some()
+                && let Some(cache_key) = &cache_key
+            {
+                let response_items: Vec<Value> = convert_responses_messages(
+                    model,
+                    &Context {
+                        system_prompt: None,
+                        messages: vec![crate::types::Message::Assistant(Box::new(output.clone()))],
+                        tools: Vec::new(),
+                    },
+                    &CODEX_TOOL_CALL_PROVIDERS
+                        .iter()
+                        .map(|provider| provider.to_string())
+                        .collect(),
+                    Some(ConvertResponsesMessagesOptions {
+                        include_system_prompt: Some(false),
+                        grammar_tool_input_properties: Some(grammar_tool_input_properties),
+                        ..Default::default()
+                    }),
+                )
+                .into_iter()
+                .filter(|item| {
+                    !matches!(
+                        item.get("type").and_then(Value::as_str),
+                        Some("function_call_output") | Some("custom_tool_call_output")
                     )
-                    .into_iter()
-                    .filter(|item| {
-                        !matches!(
-                            item.get("type").and_then(Value::as_str),
-                            Some("function_call_output") | Some("custom_tool_call_output")
-                        )
-                    })
-                    .collect();
-                    let mut state = ws_state();
-                    if let Some(entry) = state
-                        .session_cache
-                        .get_mut(&cache_key.0)
-                        .and_then(|entries| entries.get_mut(&cache_key.1))
-                    {
-                        entry.continuation = Some(CachedWebSocketContinuationState {
-                            last_request_body: full_body,
-                            last_response_id: output.response_id.clone().unwrap_or_default(),
-                            last_response_items: response_items,
-                        });
-                    }
+                })
+                .collect();
+                let mut state = ws_state();
+                if let Some(entry) = state
+                    .session_cache
+                    .get_mut(&cache_key.0)
+                    .and_then(|entries| entries.get_mut(&cache_key.1))
+                {
+                    entry.continuation = Some(CachedWebSocketContinuationState {
+                        last_request_body: full_body,
+                        last_response_id: output.response_id.clone().unwrap_or_default(),
+                        last_response_items: response_items,
+                    });
                 }
             }
         }
@@ -2210,11 +2208,10 @@ impl WsConn for NativeWsConn {
                         return Some(Ok(String::from_utf8_lossy(&bytes).to_string()));
                     }
                     tokio_tungstenite::tungstenite::Message::Close(frame) => {
-                        if let Some(frame) = frame {
-                            if frame.code == tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::from(WEBSOCKET_MESSAGE_TOO_BIG_CLOSE_CODE) {
+                        if let Some(frame) = frame
+                            && frame.code == tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::from(WEBSOCKET_MESSAGE_TOO_BIG_CLOSE_CODE) {
                                 return Some(Err("websocket message too big".to_string()));
                             }
-                        }
                         return None;
                     }
                     _ => continue,

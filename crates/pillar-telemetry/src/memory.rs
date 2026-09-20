@@ -166,10 +166,10 @@ fn record(
     options: SpanOptions,
 ) -> Option<Arc<Mutex<MutableSpan>>> {
     // A child under a settled parent runs unrecorded (noop fallback upstream).
-    if let Some(parent) = parent {
-        if parent.lock().expect("span lock").settled {
-            return None;
-        }
+    if let Some(parent) = parent
+        && parent.lock().expect("span lock").settled
+    {
+        return None;
     }
     let id = state.allocate_span_id();
     let span = Arc::new(Mutex::new(MutableSpan {

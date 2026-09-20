@@ -98,8 +98,9 @@ impl Component for UserMessageComponent {
         let mut owned: Vec<std::sync::Arc<str>> = lines.iter().cloned().collect();
         let last = owned.len() - 1;
         owned[0] = std::sync::Arc::from(format!("{OSC133_ZONE_START}{}", owned[0]).as_str());
-        owned[last] =
-            std::sync::Arc::from(format!("{OSC133_ZONE_END}{OSC133_ZONE_FINAL}{}", owned[last]).as_str());
+        owned[last] = std::sync::Arc::from(
+            format!("{OSC133_ZONE_END}{OSC133_ZONE_FINAL}{}", owned[last]).as_str(),
+        );
         owned.into()
     }
 

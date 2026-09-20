@@ -8,9 +8,7 @@
 use std::sync::Mutex;
 
 use pillar_agent::types::AgentMessage;
-use pillar_ai::types::{
-    AssistantMessage, Content, Message, StopReason, Usage, UsageCost,
-};
+use pillar_ai::types::{AssistantMessage, Content, Message, StopReason, Usage, UsageCost};
 use pillar_coding_agent::core::messages::CodingAgentMessage;
 use pillar_coding_agent::modes::interactive::transcript::{
     InteractiveTranscript, TranscriptSettings,
@@ -83,12 +81,14 @@ fn cjk_and_multiline_tool_output_fit_the_width() {
     assert_fits(&mut transcript, 80);
 
     // Assistant streaming with thinking + text.
-    transcript.handle_event(&pillar_coding_agent::core::agent_session_class::AgentSessionEvent::MessageStart {
-        message: AgentMessage::Message(Message::Assistant(Box::new(assistant_message(
-            Vec::new(),
-            StopReason::Pending,
-        )))),
-    });
+    transcript.handle_event(
+        &pillar_coding_agent::core::agent_session_class::AgentSessionEvent::MessageStart {
+            message: AgentMessage::Message(Message::Assistant(Box::new(assistant_message(
+                Vec::new(),
+                StopReason::Pending,
+            )))),
+        },
+    );
     transcript.handle_event(&pillar_coding_agent::core::agent_session_class::AgentSessionEvent::MessageUpdate {
         message: AgentMessage::Message(Message::Assistant(Box::new(assistant_message(
             vec![

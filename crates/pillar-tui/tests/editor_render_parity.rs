@@ -9,7 +9,6 @@ use pillar_tui::text_utils::visible_width;
 use pillar_tui::tui::RenderLines;
 use pillar_tui::tui::{Component, Focusable};
 
-
 /// Drop every escape sequence (for border comparisons).
 /// The shared frame as owned lines (the parity assertions compare strings).
 fn to_vec(lines: RenderLines) -> Vec<String> {

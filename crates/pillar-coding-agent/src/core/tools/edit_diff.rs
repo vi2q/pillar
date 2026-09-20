@@ -488,10 +488,10 @@ fn diff_line_parts<'a>(diff: &'a TextDiff<'a, 'a, 'a, str>) -> Vec<DiffPart> {
         let mut lines: Vec<String> = text.split('\n').map(str::to_string).collect();
         // jsdiff part values keep the trailing newline; drop the trailing
         // empty segment the same way.
-        if let Some(last) = lines.last() {
-            if last.is_empty() {
-                lines.pop();
-            }
+        if let Some(last) = lines.last()
+            && last.is_empty()
+        {
+            lines.pop();
         }
         match parts.last_mut() {
             Some(part) if std::mem::discriminant(&part.kind) == std::mem::discriminant(&kind) => {

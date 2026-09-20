@@ -227,14 +227,13 @@ pub fn prepare_branch_entries(entries: &[Entry], token_budget: u64) -> BranchPre
             details: Some(details),
             ..
         } = &entry.payload
+            && let Ok(parsed) = serde_json::from_value::<BranchSummaryDetails>(details.clone())
         {
-            if let Ok(parsed) = serde_json::from_value::<BranchSummaryDetails>(details.clone()) {
-                for f in &parsed.read_files {
-                    file_ops.read.insert(f.clone());
-                }
-                for f in &parsed.modified_files {
-                    file_ops.edited.insert(f.clone());
-                }
+            for f in &parsed.read_files {
+                file_ops.read.insert(f.clone());
+            }
+            for f in &parsed.modified_files {
+                file_ops.edited.insert(f.clone());
             }
         }
     }

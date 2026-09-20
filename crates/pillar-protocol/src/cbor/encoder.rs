@@ -134,21 +134,21 @@ fn encode_value(
         Value::Null => writer.write_byte(0xf6),
         Value::Bool(b) => writer.write_byte(if *b { 0xf5 } else { 0xf4 }),
         Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                if n.as_f64() == Some(i as f64) {
-                    // Safe-integer check mirrors Number.isSafeInteger: the
-                    // safe range is -(2^53-1)..(2^53-1) inclusive.
-                    if !(-(2i64.pow(53) - 1)..=(2i64.pow(53) - 1)).contains(&i) {
-                        return Err(CborError(
-                            "CBOR integers must be safe JavaScript integers".into(),
-                        ));
-                    }
-                    return if i >= 0 {
-                        write_argument(writer, 0, i as u64)
-                    } else {
-                        write_argument(writer, 1, (-1 - i) as u64)
-                    };
+            if let Some(i) = n.as_i64()
+                && n.as_f64() == Some(i as f64)
+            {
+                // Safe-integer check mirrors Number.isSafeInteger: the
+                // safe range is -(2^53-1)..(2^53-1) inclusive.
+                if !(-(2i64.pow(53) - 1)..=(2i64.pow(53) - 1)).contains(&i) {
+                    return Err(CborError(
+                        "CBOR integers must be safe JavaScript integers".into(),
+                    ));
                 }
+                return if i >= 0 {
+                    write_argument(writer, 0, i as u64)
+                } else {
+                    write_argument(writer, 1, (-1 - i) as u64)
+                };
             }
             let f = n
                 .as_f64()

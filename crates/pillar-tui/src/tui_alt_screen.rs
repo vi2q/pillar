@@ -844,10 +844,8 @@ impl TuiAltScreen {
     /// Convert a mouse event into a selection point (upstream
     /// `getSelectionPoint`).
     fn get_selection_point(&self, event: &SgrMouseEvent, in_viewport: bool) -> SelectionPoint {
-        if in_viewport {
-            if let Some(point) = self.get_scroll_selection_point(event.x, event.y) {
-                return point;
-            }
+        if in_viewport && let Some(point) = self.get_scroll_selection_point(event.x, event.y) {
+            return point;
         }
         SelectionPoint {
             row: event.y.min(self.base.terminal().rows().saturating_sub(1)),
@@ -1106,15 +1104,15 @@ impl TuiAltScreen {
                 None
             };
             self.pressed_url = None;
-            if let Some(url) = clicked_url {
-                if let Some(open_url) = self.open_url.as_ref() {
-                    self.selection_anchor = None;
-                    self.selection_focus = None;
-                    // URL activation is best-effort.
-                    open_url(&url);
-                    self.base.request_render(false);
-                    return;
-                }
+            if let Some(url) = clicked_url
+                && let Some(open_url) = self.open_url.as_ref()
+            {
+                self.selection_anchor = None;
+                self.selection_focus = None;
+                // URL activation is best-effort.
+                open_url(&url);
+                self.base.request_render(false);
+                return;
             }
             if self.copy_on_select {
                 self.copy_selection_to_clipboard();
@@ -1381,7 +1379,7 @@ impl TuiAltScreen {
             }
             let line_width = visible_width(&current);
             let mut line = current;
-            ranges.sort_by(|a, b| b.start_col.cmp(&a.start_col));
+            ranges.sort_by_key(|a| std::cmp::Reverse(a.start_col));
             for range in ranges {
                 let start_col = range.start_col.min(line_width);
                 let end_col = range.end_col.min(line_width);

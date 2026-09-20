@@ -224,15 +224,15 @@ pub fn parse_changelog_content(content: &str) -> Vec<ChangelogEntry> {
 
     for line in content.split('\n') {
         if line.starts_with("## ") {
-            if let Some((major, minor, patch)) = current_version {
-                if !current_lines.is_empty() {
-                    entries.push(ChangelogEntry {
-                        major,
-                        minor,
-                        patch,
-                        content: current_lines.join("\n").trim().to_string(),
-                    });
-                }
+            if let Some((major, minor, patch)) = current_version
+                && !current_lines.is_empty()
+            {
+                entries.push(ChangelogEntry {
+                    major,
+                    minor,
+                    patch,
+                    content: current_lines.join("\n").trim().to_string(),
+                });
             }
 
             match VERSION_HEADER_RE.captures(line) {
@@ -254,15 +254,15 @@ pub fn parse_changelog_content(content: &str) -> Vec<ChangelogEntry> {
         }
     }
 
-    if let Some((major, minor, patch)) = current_version {
-        if !current_lines.is_empty() {
-            entries.push(ChangelogEntry {
-                major,
-                minor,
-                patch,
-                content: current_lines.join("\n").trim().to_string(),
-            });
-        }
+    if let Some((major, minor, patch)) = current_version
+        && !current_lines.is_empty()
+    {
+        entries.push(ChangelogEntry {
+            major,
+            minor,
+            patch,
+            content: current_lines.join("\n").trim().to_string(),
+        });
     }
 
     entries
@@ -316,17 +316,17 @@ pub fn get_new_entries(entries: &[ChangelogEntry], last_version: &str) -> Vec<Ch
 /// Path of the bundled CHANGELOG.md (upstream `getChangelogPath`, adapted to
 /// a binary without a JS package layout).
 pub fn changelog_path() -> PathBuf {
-    if let Ok(configured) = std::env::var("PILLAR_CHANGELOG_PATH") {
-        if !configured.trim().is_empty() {
-            return PathBuf::from(configured);
-        }
+    if let Ok(configured) = std::env::var("PILLAR_CHANGELOG_PATH")
+        && !configured.trim().is_empty()
+    {
+        return PathBuf::from(configured);
     }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let candidate = dir.join("CHANGELOG.md");
-            if candidate.exists() {
-                return candidate;
-            }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        let candidate = dir.join("CHANGELOG.md");
+        if candidate.exists() {
+            return candidate;
         }
     }
     PathBuf::from("CHANGELOG.md")

@@ -181,13 +181,12 @@ impl<'a> ModelMutations<'a> {
         if let Some(level) = explicit_level {
             return level;
         }
-        if let Some(target) = target {
-            if let Some(per_model) = self
+        if let Some(target) = target
+            && let Some(per_model) = self
                 .settings
                 .model_thinking_level(&target.provider, &target.id)
-            {
-                return per_model;
-            }
+        {
+            return per_model;
         }
         self.settings
             .default_thinking_level()

@@ -126,12 +126,32 @@ impl Component for BorderedLoader {
         let mut border = DynamicBorder::with_color(Box::new(|text: &str| text.to_string()));
         let _ = &mut border;
         let mut lines = self.border(width);
-        lines.extend(self.loader.render(width).iter().map(|line| line.to_string()));
+        lines.extend(
+            self.loader
+                .render(width)
+                .iter()
+                .map(|line| line.to_string()),
+        );
         if let Some(cancel_hint) = self.cancel_hint.as_mut() {
-            lines.extend(self.spacer.render(width).iter().map(|line| line.to_string()));
-            lines.extend(cancel_hint.render(width).iter().map(|line| line.to_string()));
+            lines.extend(
+                self.spacer
+                    .render(width)
+                    .iter()
+                    .map(|line| line.to_string()),
+            );
+            lines.extend(
+                cancel_hint
+                    .render(width)
+                    .iter()
+                    .map(|line| line.to_string()),
+            );
         }
-        lines.extend(self.spacer.render(width).iter().map(|line| line.to_string()));
+        lines.extend(
+            self.spacer
+                .render(width)
+                .iter()
+                .map(|line| line.to_string()),
+        );
         lines.extend(self.border(width));
         render_lines(lines)
     }

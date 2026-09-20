@@ -386,10 +386,10 @@ pub fn visible_width(text: &str) -> usize {
         width += grapheme_width(&pending.iter().collect::<String>());
     }
     let mut cache = width_cache().lock().unwrap();
-    if cache.len() >= WIDTH_CACHE_SIZE {
-        if let Some(first) = cache.keys().next().cloned() {
-            cache.remove(&first);
-        }
+    if cache.len() >= WIDTH_CACHE_SIZE
+        && let Some(first) = cache.keys().next().cloned()
+    {
+        cache.remove(&first);
     }
     cache.insert(text.to_string(), width);
     width
@@ -401,11 +401,11 @@ pub fn visible_width(text: &str) -> usize {
 pub fn grapheme_clusters(text: &str) -> Vec<String> {
     let mut clusters: Vec<String> = Vec::new();
     for ch in text.chars() {
-        if is_mark_char(ch) || is_terminal_spacing_mark(ch) {
-            if let Some(last) = clusters.last_mut() {
-                last.push(ch);
-                continue;
-            }
+        if (is_mark_char(ch) || is_terminal_spacing_mark(ch))
+            && let Some(last) = clusters.last_mut()
+        {
+            last.push(ch);
+            continue;
         }
         clusters.push(ch.to_string());
     }
@@ -1106,11 +1106,11 @@ pub fn truncate_to_width(text: &str, max_width: usize, ellipsis: &str, pad: bool
     let mut kept_width = 0usize;
     let mut keep_contiguous_prefix = true;
     let mut overflowed = false;
-    let exhausted_input;
+
     let has_ansi = text.contains('\u{1b}');
     let has_tabs = text.contains('\t');
 
-    if !has_ansi && !has_tabs {
+    let exhausted_input = if !has_ansi && !has_tabs {
         for cluster in grapheme_clusters(text) {
             let width = grapheme_width(&cluster);
             if keep_contiguous_prefix && kept_width + width <= target_width {
@@ -1125,7 +1125,7 @@ pub fn truncate_to_width(text: &str, max_width: usize, ellipsis: &str, pad: bool
                 break;
             }
         }
-        exhausted_input = !overflowed;
+        !overflowed
     } else {
         let chars: Vec<char> = text.chars().collect();
         let mut i = 0;
@@ -1186,8 +1186,8 @@ pub fn truncate_to_width(text: &str, max_width: usize, ellipsis: &str, pad: bool
             }
             i = end;
         }
-        exhausted_input = i >= chars.len();
-    }
+        i >= chars.len()
+    };
 
     if !overflowed && exhausted_input {
         return if pad {

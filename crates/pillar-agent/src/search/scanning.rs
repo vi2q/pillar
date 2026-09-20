@@ -241,10 +241,10 @@ impl Iterator for ScanReadableEntries {
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             if let Some(entry) = self.page.next() {
-                if let Some(types) = &self.entry_types {
-                    if !types.contains(entry.kind()) {
-                        continue;
-                    }
+                if let Some(types) = &self.entry_types
+                    && !types.contains(entry.kind())
+                {
+                    continue;
                 }
                 let label = match self.readable.get_label(&entry.id) {
                     Ok(label) => label,
@@ -496,10 +496,10 @@ impl<H: Send> Stream for ScanningSearchStream<H> {
                             this.finished = true;
                             return Poll::Ready(Some(Err(SearchError::Aborted)));
                         }
-                        if let Some(types) = &this.entry_types {
-                            if !types.contains(candidate.entry_type.as_str()) {
-                                continue;
-                            }
+                        if let Some(types) = &this.entry_types
+                            && !types.contains(candidate.entry_type.as_str())
+                        {
+                            continue;
                         }
                         let matched = match &this.matcher {
                             Some(matcher) => {

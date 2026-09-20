@@ -130,10 +130,10 @@ pub fn resolve_deployment_name(
     model: &Model,
     options: Option<&AzureOpenAIResponsesOptions>,
 ) -> String {
-    if let Some(name) = options.and_then(|options| options.azure_deployment_name.as_deref()) {
-        if !name.is_empty() {
-            return name.to_string();
-        }
+    if let Some(name) = options.and_then(|options| options.azure_deployment_name.as_deref())
+        && !name.is_empty()
+    {
+        return name.to_string();
     }
     let mapped = options
         .and_then(|options| options.env.as_ref())
@@ -521,10 +521,10 @@ async fn run_stream_inner(
         &deployment_name,
         &grammar_tool_input_properties,
     );
-    if let Some(on_payload) = &options.on_payload {
-        if let Some(next_params) = on_payload(model, params.clone()).await {
-            params = next_params;
-        }
+    if let Some(on_payload) = &options.on_payload
+        && let Some(next_params) = on_payload(model, params.clone()).await
+    {
+        params = next_params;
     }
 
     let headers = merge_request_headers(

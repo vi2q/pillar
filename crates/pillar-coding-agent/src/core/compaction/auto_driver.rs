@@ -165,15 +165,13 @@ pub fn check_compaction(input: &CheckInput<'_>) -> CompactionDecision {
             Some(last_usage_index) => {
                 // Usage-backed estimates must come from post-compaction
                 // messages; pre-compaction usage is stale (larger context).
-                if let Some(at) = compaction_at {
-                    if let Some(CodingAgentMessage::Base(pillar_ai::types::Message::Assistant(
+                if let Some(at) = compaction_at
+                    && let Some(CodingAgentMessage::Base(pillar_ai::types::Message::Assistant(
                         assistant,
                     ))) = input.messages.get(last_usage_index)
-                    {
-                        if assistant.timestamp <= at {
-                            return CompactionDecision::None;
-                        }
-                    }
+                    && assistant.timestamp <= at
+                {
+                    return CompactionDecision::None;
                 }
                 estimate.tokens
             }

@@ -164,8 +164,6 @@ pub struct ResourcesDiscoverEvent {
     pub reason: String,
 }
 
-
-
 // The UI bridge, the `ctx` facts, the Markdown transform, and the render
 // options live in the contract crate (docs/DEVELOPMENT-STRATEGY.md §4): they
 // name no session or message model, so the VM can hold them without depending
@@ -204,7 +202,9 @@ pub fn message_render_payload(
                 .content
                 .iter()
                 .map(|content| match content {
-                    CustomContent::Text(text) => serde_json::json!({ "type": "text", "text": text }),
+                    CustomContent::Text(text) => {
+                        serde_json::json!({ "type": "text", "text": text })
+                    }
                     CustomContent::Image { data, mime_type } => {
                         serde_json::json!({ "type": "image", "data": data, "mimeType": mime_type })
                     }

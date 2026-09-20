@@ -229,10 +229,9 @@ impl Component for FooterComponent {
                     if let crate::core::messages::CodingAgentMessage::Base(
                         pillar_ai::types::Message::ToolResult(tool_result),
                     ) = &message_entry.message
+                        && let Some(usage) = &tool_result.usage
                     {
-                        if let Some(usage) = &tool_result.usage {
-                            usage_totals.add(usage);
-                        }
+                        usage_totals.add(usage);
                     }
                 }
                 crate::core::session_entries::SessionEntry::BranchSummary(branch_summary)
@@ -295,9 +294,9 @@ impl Component for FooterComponent {
             stats_parts.push(format!("W{}", format_tokens(usage_totals.cache_write)));
         }
         if (usage_totals.cache_read > 0 || usage_totals.cache_write > 0)
-            && latest_cache_hit_rate.is_some()
+            && let Some(rate) = latest_cache_hit_rate
         {
-            stats_parts.push(format!("CH{:.1}%", latest_cache_hit_rate.expect("checked")));
+            stats_parts.push(format!("CH{rate:.1}%"));
         }
 
         // Kimi Coding is subscription-backed despite using API-key
@@ -377,13 +376,13 @@ impl Component for FooterComponent {
         // Provider in parentheses when there are multiple providers and
         // enough room.
         let mut right_side = right_side_without_provider.clone();
-        if self.footer_data.available_provider_count() > 1 {
-            if let Some(model) = &model {
-                right_side = format!("({}) {right_side_without_provider}", model.provider);
-                if stats_left_width + min_padding + visible_width(&right_side) > width {
-                    // Too wide, fall back.
-                    right_side = right_side_without_provider.clone();
-                }
+        if self.footer_data.available_provider_count() > 1
+            && let Some(model) = &model
+        {
+            right_side = format!("({}) {right_side_without_provider}", model.provider);
+            if stats_left_width + min_padding + visible_width(&right_side) > width {
+                // Too wide, fall back.
+                right_side = right_side_without_provider.clone();
             }
         }
 

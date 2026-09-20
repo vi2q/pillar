@@ -295,10 +295,10 @@ pub fn prepare_overlay(
 ) -> (Vec<String>, ResolvedOverlayLayout) {
     let first = resolve_overlay_layout(options, 0, term_width, term_height);
     let mut lines = overlay_lines;
-    if let Some(max_height) = first.max_height {
-        if lines.len() > max_height {
-            lines.truncate(max_height);
-        }
+    if let Some(max_height) = first.max_height
+        && lines.len() > max_height
+    {
+        lines.truncate(max_height);
     }
     let second = resolve_overlay_layout(options, lines.len(), term_width, term_height);
     (lines, second)

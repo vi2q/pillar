@@ -438,31 +438,28 @@ fn append_openai_reasoning_detail(details: &mut Vec<ReasoningDetail>, detail: Re
             text, signature, ..
         },
     ) = (details.last_mut(), &detail)
-    {
-        if let ReasoningDetail::Text {
+        && let ReasoningDetail::Text {
             text: last_text,
             signature: last_signature,
             ..
         } = last
-        {
-            last_text.push_str(text);
-            if last_signature.is_none() {
-                *last_signature = signature.clone();
-            }
-            ReasoningDetail::fill_missing_common_fields(last, &detail);
-            return;
+    {
+        last_text.push_str(text);
+        if last_signature.is_none() {
+            *last_signature = signature.clone();
         }
+        ReasoningDetail::fill_missing_common_fields(last, &detail);
+        return;
     }
-    if let (Some(last), ReasoningDetail::Summary { summary, .. }) = (details.last_mut(), &detail) {
-        if let ReasoningDetail::Summary {
+    if let (Some(last), ReasoningDetail::Summary { summary, .. }) = (details.last_mut(), &detail)
+        && let ReasoningDetail::Summary {
             summary: last_summary,
             ..
         } = last
-        {
-            last_summary.push_str(summary);
-            ReasoningDetail::fill_missing_common_fields(last, &detail);
-            return;
-        }
+    {
+        last_summary.push_str(summary);
+        ReasoningDetail::fill_missing_common_fields(last, &detail);
+        return;
     }
     details.push(detail);
 }
@@ -692,16 +689,15 @@ impl StreamState {
                     .map(ReasoningDetail::to_value)
                     .collect::<Vec<_>>(),
             );
-            if let Ok(serialized) = serialized {
-                if let Some(StreamingBlock::Thinking {
+            if let Ok(serialized) = serialized
+                && let Some(StreamingBlock::Thinking {
                     thinking_signature, ..
                 }) = self
                     .blocks
                     .iter_mut()
                     .find(|block| matches!(block, StreamingBlock::Thinking { .. }))
-                {
-                    *thinking_signature = serialized;
-                }
+            {
+                *thinking_signature = serialized;
             }
         }
     }
@@ -867,10 +863,10 @@ async fn run_stream_inner(
         cache_retention,
         &grammar_tool_input_properties,
     );
-    if let Some(on_payload) = &options.on_payload {
-        if let Some(next_params) = on_payload(model, params.clone()).await {
-            params = next_params;
-        }
+    if let Some(on_payload) = &options.on_payload
+        && let Some(next_params) = on_payload(model, params.clone()).await
+    {
+        params = next_params;
     }
 
     let request = crate::transport::FetchRequest {
@@ -1072,20 +1068,19 @@ fn build_request_headers(
             ),
         );
     }
-    if let Some(session_id) = session_id {
-        if compat.send_session_affinity_headers {
-            match compat.session_affinity_format {
-                SessionAffinityFormat::Openrouter => {
-                    defaults.push(("x-session-id".to_string(), session_id.to_string()));
+    if let Some(session_id) = session_id
+        && compat.send_session_affinity_headers
+    {
+        match compat.session_affinity_format {
+            SessionAffinityFormat::Openrouter => {
+                defaults.push(("x-session-id".to_string(), session_id.to_string()));
+            }
+            format @ (SessionAffinityFormat::Openai | SessionAffinityFormat::OpenaiNosession) => {
+                if format == SessionAffinityFormat::Openai {
+                    defaults.push(("session_id".to_string(), session_id.to_string()));
                 }
-                format @ (SessionAffinityFormat::Openai
-                | SessionAffinityFormat::OpenaiNosession) => {
-                    if format == SessionAffinityFormat::Openai {
-                        defaults.push(("session_id".to_string(), session_id.to_string()));
-                    }
-                    defaults.push(("x-client-request-id".to_string(), session_id.to_string()));
-                    defaults.push(("x-session-affinity".to_string(), session_id.to_string()));
-                }
+                defaults.push(("x-client-request-id".to_string(), session_id.to_string()));
+                defaults.push(("x-session-affinity".to_string(), session_id.to_string()));
             }
         }
     }
@@ -1176,22 +1171,20 @@ fn process_chunk(
     };
 
     // Each chunk in a streamed completion carries the same chat id.
-    if state.output.response_id.is_none() {
-        if let Some(id) = chunk_obj
+    if state.output.response_id.is_none()
+        && let Some(id) = chunk_obj
             .get("id")
             .and_then(Value::as_str)
             .filter(|id| !id.is_empty())
-        {
-            state.output.response_id = Some(id.to_string());
-        }
+    {
+        state.output.response_id = Some(id.to_string());
     }
-    if let Some(chunk_model) = chunk_obj.get("model").and_then(Value::as_str) {
-        if !chunk_model.is_empty()
-            && chunk_model != model.id
-            && state.output.response_model.is_none()
-        {
-            state.output.response_model = Some(chunk_model.to_string());
-        }
+    if let Some(chunk_model) = chunk_obj.get("model").and_then(Value::as_str)
+        && !chunk_model.is_empty()
+        && chunk_model != model.id
+        && state.output.response_model.is_none()
+    {
+        state.output.response_model = Some(chunk_model.to_string());
     }
     if let Some(usage) = chunk_obj.get("usage").filter(|usage| !usage.is_null()) {
         state.output.usage = parse_chunk_usage(usage, model);
@@ -1207,10 +1200,10 @@ fn process_chunk(
     };
 
     // Fallback: some providers (e.g. Moonshot) return usage in choice.usage.
-    if chunk_obj.get("usage").is_none() {
-        if let Some(usage) = choice.get("usage").filter(|usage| !usage.is_null()) {
-            state.output.usage = parse_chunk_usage(usage, model);
-        }
+    if chunk_obj.get("usage").is_none()
+        && let Some(usage) = choice.get("usage").filter(|usage| !usage.is_null())
+    {
+        state.output.usage = parse_chunk_usage(usage, model);
     }
 
     if let Some(finish_reason) = choice.get("finish_reason") {
@@ -1256,11 +1249,11 @@ fn process_chunk(
     const REASONING_FIELDS: [&str; 3] = ["reasoning_content", "reasoning", "reasoning_text"];
     let mut found_reasoning_field: Option<(&str, &str)> = None;
     for field in REASONING_FIELDS {
-        if let Some(Value::String(value)) = delta.get(field) {
-            if !value.is_empty() {
-                found_reasoning_field = Some((field, value));
-                break;
-            }
+        if let Some(Value::String(value)) = delta.get(field)
+            && !value.is_empty()
+        {
+            found_reasoning_field = Some((field, value));
+            break;
         }
     }
     if let Some((field, delta_text)) = found_reasoning_field {
@@ -2112,10 +2105,10 @@ pub fn build_params(
     let prompt_cache_key_condition = (model.base_url.contains("api.openai.com")
         && cache_retention != CacheRetention::None)
         || (cache_retention == CacheRetention::Long && compat.supports_long_cache_retention);
-    if prompt_cache_key_condition {
-        if let Some(key) = clamp_openai_prompt_cache_key(options.session_id.as_deref()) {
-            params.insert("prompt_cache_key".to_string(), Value::String(key));
-        }
+    if prompt_cache_key_condition
+        && let Some(key) = clamp_openai_prompt_cache_key(options.session_id.as_deref())
+    {
+        params.insert("prompt_cache_key".to_string(), Value::String(key));
     }
     if cache_retention == CacheRetention::Long && compat.supports_long_cache_retention {
         params.insert(
@@ -2205,20 +2198,20 @@ pub fn build_params(
     }
 
     // Vercel AI Gateway provider routing preferences.
-    if let Some(routing) = &compat.vercel_gateway_routing {
-        if routing.get("only").is_some() || routing.get("order").is_some() {
-            let mut gateway = Map::new();
-            if let Some(only) = routing.get("only") {
-                gateway.insert("only".to_string(), only.clone());
-            }
-            if let Some(order) = routing.get("order") {
-                gateway.insert("order".to_string(), order.clone());
-            }
-            params.insert(
-                "providerOptions".to_string(),
-                serde_json::json!({ "gateway": gateway }),
-            );
+    if let Some(routing) = &compat.vercel_gateway_routing
+        && (routing.get("only").is_some() || routing.get("order").is_some())
+    {
+        let mut gateway = Map::new();
+        if let Some(only) = routing.get("only") {
+            gateway.insert("only".to_string(), only.clone());
         }
+        if let Some(order) = routing.get("order") {
+            gateway.insert("order".to_string(), order.clone());
+        }
+        params.insert(
+            "providerOptions".to_string(),
+            serde_json::json!({ "gateway": gateway }),
+        );
     }
 
     // Last so custom keys override the named request fields.
@@ -2266,10 +2259,11 @@ fn apply_thinking_format(
                 serde_json::json!({ "type": "disabled" })
             };
             params.insert("thinking".to_string(), thinking);
-            if reasoning_effort.is_some() && compat.supports_reasoning_effort {
-                if let Some(effort) = effort_string(reasoning_effort) {
-                    params.insert("reasoning_effort".to_string(), Value::String(effort));
-                }
+            if reasoning_effort.is_some()
+                && compat.supports_reasoning_effort
+                && let Some(effort) = effort_string(reasoning_effort)
+            {
+                params.insert("reasoning_effort".to_string(), Value::String(effort));
             }
         }
         ThinkingFormat::Qwen if model.reasoning => {
@@ -2277,10 +2271,11 @@ fn apply_thinking_format(
                 "enable_thinking".to_string(),
                 Value::Bool(reasoning_effort.is_some()),
             );
-            if reasoning_effort.is_some() && compat.supports_reasoning_effort {
-                if let Some(effort) = effort_string(reasoning_effort) {
-                    params.insert("reasoning_effort".to_string(), Value::String(effort));
-                }
+            if reasoning_effort.is_some()
+                && compat.supports_reasoning_effort
+                && let Some(effort) = effort_string(reasoning_effort)
+            {
+                params.insert("reasoning_effort".to_string(), Value::String(effort));
             }
         }
         ThinkingFormat::QwenChatTemplate if model.reasoning => {
@@ -2335,10 +2330,11 @@ fn apply_thinking_format(
                     serde_json::json!({ "type": "disabled" }),
                 );
             }
-            if reasoning_effort.is_some() && compat.supports_reasoning_effort {
-                if let Some(effort) = effort_string(reasoning_effort) {
-                    params.insert("reasoning_effort".to_string(), Value::String(effort));
-                }
+            if reasoning_effort.is_some()
+                && compat.supports_reasoning_effort
+                && let Some(effort) = effort_string(reasoning_effort)
+            {
+                params.insert("reasoning_effort".to_string(), Value::String(effort));
             }
         }
         ThinkingFormat::Openrouter if model.reasoning => {
@@ -2368,10 +2364,11 @@ fn apply_thinking_format(
                 "reasoning".to_string(),
                 serde_json::json!({ "enabled": reasoning_effort.is_some() }),
             );
-            if reasoning_effort.is_some() && compat.supports_reasoning_effort {
-                if let Some(effort) = effort_string(reasoning_effort) {
-                    params.insert("reasoning_effort".to_string(), Value::String(effort));
-                }
+            if reasoning_effort.is_some()
+                && compat.supports_reasoning_effort
+                && let Some(effort) = effort_string(reasoning_effort)
+            {
+                params.insert("reasoning_effort".to_string(), Value::String(effort));
             }
         }
         ThinkingFormat::StringThinking if model.reasoning => {
@@ -2391,10 +2388,9 @@ fn apply_thinking_format(
             } else if reasoning_effort.is_none()
                 && model.reasoning
                 && compat.supports_reasoning_effort
+                && let Some(off) = off_mapped().flatten()
             {
-                if let Some(off) = off_mapped().flatten() {
-                    params.insert("reasoning_effort".to_string(), Value::String(off));
-                }
+                params.insert("reasoning_effort".to_string(), Value::String(off));
             }
         }
     }
@@ -2552,12 +2548,11 @@ fn apply_anthropic_cache_control(params: &mut Map<String, Value>, cache_control:
     }
 
     // Last tool definition.
-    if let Some(tools) = params.get_mut("tools").and_then(Value::as_array_mut) {
-        if let Some(last_tool) = tools.last_mut() {
-            if let Some(tool_obj) = last_tool.as_object_mut() {
-                tool_obj.insert("cache_control".to_string(), cache_control.clone());
-            }
-        }
+    if let Some(tools) = params.get_mut("tools").and_then(Value::as_array_mut)
+        && let Some(last_tool) = tools.last_mut()
+        && let Some(tool_obj) = last_tool.as_object_mut()
+    {
+        tool_obj.insert("cache_control".to_string(), cache_control.clone());
     }
 
     // Last conversation message (user/assistant/tool).
@@ -2591,11 +2586,11 @@ fn add_cache_control_to_text_content(message: &mut Value, cache_control: &Value)
         }
         Some(Value::Array(parts)) => {
             for part in parts.iter_mut().rev() {
-                if part.get("type").and_then(Value::as_str) == Some("text") {
-                    if let Some(part_obj) = part.as_object_mut() {
-                        part_obj.insert("cache_control".to_string(), cache_control.clone());
-                        return true;
-                    }
+                if part.get("type").and_then(Value::as_str) == Some("text")
+                    && let Some(part_obj) = part.as_object_mut()
+                {
+                    part_obj.insert("cache_control".to_string(), cache_control.clone());
+                    return true;
                 }
             }
             false

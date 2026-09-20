@@ -9,8 +9,8 @@
 use std::collections::VecDeque;
 use std::time::Instant;
 
-use crate::tui::{RenderLines, render_lines};
 use crate::text_utils::{truncate_to_width, visible_width};
+use crate::tui::{RenderLines, render_lines};
 
 // ============================================================================
 // Loader (upstream loader.ts)
@@ -379,13 +379,13 @@ impl ScrollView {
     /// Fire the pending scrollbar hide timer if due. Returns true when
     /// the visibility changed (host should re-render).
     pub fn tick_scrollbar(&mut self, now: Instant) -> bool {
-        if let Some(deadline) = self.next_hide_deadline {
-            if now >= deadline {
-                self.next_hide_deadline = None;
-                if self.transient_scrollbar_visible {
-                    self.transient_scrollbar_visible = false;
-                    return true;
-                }
+        if let Some(deadline) = self.next_hide_deadline
+            && now >= deadline
+        {
+            self.next_hide_deadline = None;
+            if self.transient_scrollbar_visible {
+                self.transient_scrollbar_visible = false;
+                return true;
             }
         }
         false

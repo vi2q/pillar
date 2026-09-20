@@ -103,10 +103,10 @@ impl RpcMode {
     fn event_listener(&self) -> crate::core::agent_session_class::AgentSessionEventListener {
         let sink = Arc::clone(&self.out);
         Arc::new(move |event| {
-            if let Ok(value) = to_json_event(event) {
-                if let Ok(mut writer) = sink.lock() {
-                    let _ = writeln!(writer, "{value}");
-                }
+            if let Ok(value) = to_json_event(event)
+                && let Ok(mut writer) = sink.lock()
+            {
+                let _ = writeln!(writer, "{value}");
             }
         })
     }
@@ -140,10 +140,10 @@ impl RpcMode {
 
     /// Write one response line (upstream `writeResponse`).
     pub fn write_response(&self, response: &RpcResponse) {
-        if let Ok(value) = serde_json::to_value(response) {
-            if let Ok(mut writer) = self.out.lock() {
-                let _ = writeln!(writer, "{value}");
-            }
+        if let Ok(value) = serde_json::to_value(response)
+            && let Ok(mut writer) = self.out.lock()
+        {
+            let _ = writeln!(writer, "{value}");
         }
     }
 

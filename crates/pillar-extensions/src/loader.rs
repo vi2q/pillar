@@ -45,8 +45,8 @@ pub fn luau_module_loader(
     source_reader: SourceReader,
 ) -> impl FnMut(&str) -> LoadOutcome + '_ {
     move |path: &str| {
-        let source = source_reader(path)
-            .map_err(|error| format!("Failed to load extension: {error}"))?;
+        let source =
+            source_reader(path).map_err(|error| format!("Failed to load extension: {error}"))?;
         let mut guard = runtime
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -167,10 +167,7 @@ impl LuauLoader {
 }
 
 impl LuauExtensionLoader for LuauLoader {
-    fn load_extension(
-        &self,
-        path: &str,
-    ) -> LoadOutcome {
+    fn load_extension(&self, path: &str) -> LoadOutcome {
         luau_module_loader(&self.runtime, Arc::clone(&self.source_reader))(path)
     }
 }
@@ -231,7 +228,10 @@ mod integration_tests {
             .expect("no load error")
             .expect("an extension");
         assert!(
-            extension.commands.iter().any(|command| command.name == "hello"),
+            extension
+                .commands
+                .iter()
+                .any(|command| command.name == "hello"),
             "command registered"
         );
 
@@ -264,10 +264,12 @@ mod integration_tests {
             Ok(_) => panic!("expected a type-check error"),
         };
         assert!(error.contains("type-check failed"), "{error}");
-        assert!(loader
-            .load_extension("good.luau")
-            .expect("good loads")
-            .is_some());
+        assert!(
+            loader
+                .load_extension("good.luau")
+                .expect("good loads")
+                .is_some()
+        );
     }
 
     /// A source the host cannot answer is a per-path error, and the runtime
@@ -312,8 +314,14 @@ mod integration_tests {
         ]);
         let (_runtime, loader) = create_luau_loader(None, source);
 
-        let first = loader.load_extension("one.luau").expect("ok").expect("extension");
-        let second = loader.load_extension("two.luau").expect("ok").expect("extension");
+        let first = loader
+            .load_extension("one.luau")
+            .expect("ok")
+            .expect("extension");
+        let second = loader
+            .load_extension("two.luau")
+            .expect("ok")
+            .expect("extension");
         assert!(first.commands.iter().any(|command| command.name == "one"));
         assert!(second.commands.iter().any(|command| command.name == "two"));
     }

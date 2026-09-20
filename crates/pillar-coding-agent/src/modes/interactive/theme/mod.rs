@@ -223,10 +223,10 @@ impl ThemeJson {
 fn with_color_fallbacks(colors: &BTreeMap<String, ColorValue>) -> BTreeMap<String, ColorValue> {
     let mut result = colors.clone();
     let fallback = |result: &mut BTreeMap<String, ColorValue>, key: &str, from: &str| {
-        if !result.contains_key(key) {
-            if let Some(value) = result.get(from).cloned() {
-                result.insert(key.to_string(), value);
-            }
+        if !result.contains_key(key)
+            && let Some(value) = result.get(from).cloned()
+        {
+            result.insert(key.to_string(), value);
         }
     };
     fallback(&mut result, "thinkingMax", "thinkingXhigh");
@@ -718,10 +718,10 @@ pub struct TerminalThemeDetection {
 /// `getColorFgBgBackgroundIndex`).
 pub fn get_color_fg_bg_background_index(colorfgbg: &str) -> Option<u8> {
     for part in colorfgbg.split(';').rev() {
-        if let Ok(index) = part.trim().parse::<u16>() {
-            if index <= 255 {
-                return Some(index as u8);
-            }
+        if let Ok(index) = part.trim().parse::<u16>()
+            && index <= 255
+        {
+            return Some(index as u8);
         }
     }
     None
@@ -1120,10 +1120,10 @@ pub struct ThemeInfo {
 /// The user's agent directory: `PILLAR_CODING_AGENT_DIR` (with `~` expansion) or
 /// `~/.pillar/agent` (upstream `config.ts::getAgentDir`).
 pub fn agent_dir() -> String {
-    if let Ok(dir) = std::env::var("PILLAR_CODING_AGENT_DIR") {
-        if !dir.is_empty() {
-            return expand_tilde_path(&dir);
-        }
+    if let Ok(dir) = std::env::var("PILLAR_CODING_AGENT_DIR")
+        && !dir.is_empty()
+    {
+        return expand_tilde_path(&dir);
     }
     let home = std::env::var("HOME").unwrap_or_else(|_| String::from("~"));
     format!("{}/.pillar/agent", home.trim_end_matches('/'))
@@ -1131,11 +1131,11 @@ pub fn agent_dir() -> String {
 
 /// Expand a leading `~` against `$HOME` (upstream `expandTildePath`).
 pub fn expand_tilde_path(path: &str) -> String {
-    if let Some(rest) = path.strip_prefix('~') {
-        if rest.is_empty() || rest.starts_with('/') {
-            let home = std::env::var("HOME").unwrap_or_else(|_| String::from("~"));
-            return format!("{}{}", home.trim_end_matches('/'), rest);
-        }
+    if let Some(rest) = path.strip_prefix('~')
+        && (rest.is_empty() || rest.starts_with('/'))
+    {
+        let home = std::env::var("HOME").unwrap_or_else(|_| String::from("~"));
+        return format!("{}{}", home.trim_end_matches('/'), rest);
     }
     path.to_string()
 }
@@ -1152,10 +1152,10 @@ pub fn custom_themes_dir() -> String {
 /// `include_str!`, so this path is informational (the theme list's `path`)
 /// and resolves next to the executable or `$PI_PACKAGE_DIR`.
 pub fn themes_dir() -> String {
-    if let Ok(dir) = std::env::var("PILLAR_PACKAGE_DIR") {
-        if !dir.is_empty() {
-            return format!("{}/theme", dir.trim_end_matches('/'));
-        }
+    if let Ok(dir) = std::env::var("PILLAR_PACKAGE_DIR")
+        && !dir.is_empty()
+    {
+        return format!("{}/theme", dir.trim_end_matches('/'));
     }
     std::env::current_exe()
         .ok()
@@ -1183,13 +1183,13 @@ pub fn get_custom_theme_infos_in(dir: &str) -> Vec<ThemeInfo> {
             continue;
         }
         let path_string = path.to_string_lossy().to_string();
-        if let Ok(theme) = load_theme_from_path(&path_string, ColorMode::Truecolor) {
-            if let Some(name) = theme.name() {
-                result.push(ThemeInfo {
-                    name: name.to_string(),
-                    path: Some(path_string),
-                });
-            }
+        if let Ok(theme) = load_theme_from_path(&path_string, ColorMode::Truecolor)
+            && let Some(name) = theme.name()
+        {
+            result.push(ThemeInfo {
+                name: name.to_string(),
+                path: Some(path_string),
+            });
         }
     }
     result

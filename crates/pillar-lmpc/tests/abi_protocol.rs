@@ -244,10 +244,7 @@ fn the_abi_restores_a_conversation_before_the_first_poll() {
     assert_eq!(pillar_lmpc::lmpc_session_import_begin(cap as u32 + 1), -1);
     assert_eq!(pillar_lmpc::lmpc_session_import_write(0, 0), -4);
 
-    assert_eq!(
-        pillar_lmpc::lmpc_session_import_begin(big.len() as u32),
-        0
-    );
+    assert_eq!(pillar_lmpc::lmpc_session_import_begin(big.len() as u32), 0);
     // Out-of-order and over-long writes are refused…
     assert_eq!(pillar_lmpc::lmpc_session_import_write(1, 1), -3);
     assert_eq!(
@@ -262,10 +259,7 @@ fn the_abi_restores_a_conversation_before_the_first_poll() {
         "an unfinished transfer is refused"
     );
 
-    assert_eq!(
-        pillar_lmpc::lmpc_session_import_begin(big.len() as u32),
-        0
-    );
+    assert_eq!(pillar_lmpc::lmpc_session_import_begin(big.len() as u32), 0);
     let mut offset = 0usize;
     while offset < big.len() {
         let chunk = (big.len() - offset).min(capacity);
@@ -337,10 +331,14 @@ fn the_abi_restores_a_conversation_before_the_first_poll() {
         0,
         "invalid UTF-8 is refused at the commit"
     );
-    let split = "[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"é\"}],\"timestamp\":1}]";
+    let split =
+        "[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"é\"}],\"timestamp\":1}]";
     let bytes = split.as_bytes();
     let accent = bytes.iter().position(|byte| *byte >= 0x80).expect("é");
-    assert_eq!(pillar_lmpc::lmpc_session_import_begin(bytes.len() as u32), 0);
+    assert_eq!(
+        pillar_lmpc::lmpc_session_import_begin(bytes.len() as u32),
+        0
+    );
     for (offset, chunk) in [(0, accent), (accent, bytes.len() - accent)] {
         let pointer = pillar_lmpc::lmpc_input_ptr();
         unsafe {

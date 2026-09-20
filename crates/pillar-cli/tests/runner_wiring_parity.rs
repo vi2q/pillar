@@ -236,15 +236,14 @@ fn configured_extensions_register_renderers() {
     assert!(wiring.errors.is_empty(), "{:?}", wiring.errors);
 
     let style = pillar_coding_agent::core::extensions_types::theme_style_fn();
-    let message = pillar_coding_agent::core::extensions_types::message_render_payload(
-        &CustomMessage {
+    let message =
+        pillar_coding_agent::core::extensions_types::message_render_payload(&CustomMessage {
             custom_type: "notice".to_string(),
             content: vec![CustomContent::Text("body".to_string())],
             display: true,
             details: Some(serde_json::json!({ "title": "deployed" })),
             timestamp: 0,
-        },
-    );
+        });
     let renderer = wiring
         .runner
         .get_message_renderer("notice")

@@ -5,10 +5,9 @@
 //! Re-exported here so existing paths keep working.
 
 pub use pillar_extensions_contract::{
-    RESERVED_KEYBINDINGS_FOR_EXTENSION_CONFLICTS,
     BuiltinKeybinding, DiscoveredResources, ExtensionError, ExtensionEventPayload, ExtensionFlag,
     ExtensionHandler, ExtensionRunner, ExtensionShortcut, HandlerResult, HostExtension,
-    ProjectTrustDecision, RegisteredCommand, ResolvedCommand, build_builtin_keybindings,
-    emit_project_trust_event, emit_session_shutdown_event, in_extension_dispatch,
-    queue_extension_event,
+    ProjectTrustDecision, RESERVED_KEYBINDINGS_FOR_EXTENSION_CONFLICTS, RegisteredCommand,
+    ResolvedCommand, build_builtin_keybindings, emit_project_trust_event,
+    emit_session_shutdown_event, in_extension_dispatch, queue_extension_event,
 };

@@ -198,10 +198,10 @@ impl Markdown {
     pub fn render(&mut self, width: usize) -> RenderLines {
         if let (Some(cached_lines), Some(cached_text), Some(cached_width)) =
             (&self.cached_lines, &self.cached_text, self.cached_width)
+            && *cached_text == self.text
+            && cached_width == width
         {
-            if *cached_text == self.text && cached_width == width {
-                return Arc::clone(cached_lines);
-            }
+            return Arc::clone(cached_lines);
         }
 
         let content_width = width.saturating_sub(self.padding_x * 2).max(1);
@@ -323,18 +323,19 @@ impl Markdown {
                 } else {
                     lines.push(heading_text);
                 }
-                if let Some(next) = next_type {
-                    if next != "space" {
-                        lines.push(String::new());
-                    }
+                if let Some(next) = next_type
+                    && next != "space"
+                {
+                    lines.push(String::new());
                 }
             }
             BlockKind::Paragraph(inline) => {
                 lines.push(self.render_inline(inline, context));
-                if let Some(next) = next_type {
-                    if next != "list" && next != "space" {
-                        lines.push(String::new());
-                    }
+                if let Some(next) = next_type
+                    && next != "list"
+                    && next != "space"
+                {
+                    lines.push(String::new());
                 }
             }
             BlockKind::LatexBlock { text, raw, pending } => {
@@ -347,10 +348,10 @@ impl Markdown {
                 for line in rendered.split('\n') {
                     lines.push(self.apply_default_style(line));
                 }
-                if let Some(next) = next_type {
-                    if next != "space" {
-                        lines.push(String::new());
-                    }
+                if let Some(next) = next_type
+                    && next != "space"
+                {
+                    lines.push(String::new());
                 }
             }
             BlockKind::Code { lang, text } => {
@@ -376,10 +377,10 @@ impl Markdown {
                     }
                 }
                 lines.push((self.theme.code_block_border)("```"));
-                if let Some(next) = next_type {
-                    if next != "space" {
-                        lines.push(String::new());
-                    }
+                if let Some(next) = next_type
+                    && next != "space"
+                {
+                    lines.push(String::new());
                 }
             }
             BlockKind::Blockquote(quote_blocks) => {
@@ -421,10 +422,10 @@ impl Markdown {
                         lines.push(format!("{}{wrapped}", (self.theme.quote_border)("│ ")));
                     }
                 }
-                if let Some(next) = next_type {
-                    if next != "space" {
-                        lines.push(String::new());
-                    }
+                if let Some(next) = next_type
+                    && next != "space"
+                {
+                    lines.push(String::new());
                 }
             }
             BlockKind::List(list) => {
@@ -435,10 +436,10 @@ impl Markdown {
             }
             BlockKind::Rule => {
                 lines.push((self.theme.hr)(&"─".repeat(width.min(80))));
-                if let Some(next) = next_type {
-                    if next != "space" {
-                        lines.push(String::new());
-                    }
+                if let Some(next) = next_type
+                    && next != "space"
+                {
+                    lines.push(String::new());
                 }
             }
             BlockKind::Html(raw) => {
@@ -633,10 +634,10 @@ impl Markdown {
         };
         if available_for_cells < num_cols {
             let mut fallback = wrap_text_with_ansi(&table.raw, available_width);
-            if let Some(next) = next_type {
-                if next != "space" {
-                    fallback.push(String::new());
-                }
+            if let Some(next) = next_type
+                && next != "space"
+            {
+                fallback.push(String::new());
             }
             return fallback;
         }
@@ -674,11 +675,7 @@ impl Markdown {
                     .iter()
                     .map(|w| {
                         let weight = w.saturating_sub(1);
-                        if total_weight > 0 {
-                            weight * remaining / total_weight
-                        } else {
-                            0
-                        }
+                        (weight * remaining).checked_div(total_weight).unwrap_or(0)
                     })
                     .collect();
                 for index in 0..num_cols {
@@ -716,11 +713,9 @@ impl Markdown {
                 .zip(&natural_widths)
                 .map(|(min_width, natural)| {
                     let delta = natural.saturating_sub(*min_width);
-                    let grow = if total_grow_potential > 0 {
-                        delta * extra_width / total_grow_potential
-                    } else {
-                        0
-                    };
+                    let grow = (delta * extra_width)
+                        .checked_div(total_grow_potential)
+                        .unwrap_or(0);
                     min_width + grow
                 })
                 .collect();
@@ -810,10 +805,10 @@ impl Markdown {
             column_widths.iter().map(|w| "─".repeat(*w)).collect();
         lines.push(format!("└─{}─┘", bottom_border_cells.join("─┴─")));
 
-        if let Some(next) = next_type {
-            if next != "space" {
-                lines.push(String::new());
-            }
+        if let Some(next) = next_type
+            && next != "space"
+        {
+            lines.push(String::new());
         }
         lines
     }
@@ -1014,8 +1009,7 @@ fn build_block(
         }
         Event::Start(Tag::BlockQuote(_)) => {
             let mut inner: Vec<Block> = Vec::new();
-            loop {
-                let Some(event) = iter.next() else { break };
+            while let Some(event) = iter.next() {
                 match event {
                     Event::End(TagEnd::BlockQuote(_)) => break,
                     other => {
@@ -1038,8 +1032,7 @@ fn build_block(
                 items: Vec::new(),
             };
             let mut saw_paragraph = false;
-            loop {
-                let Some(event) = iter.next() else { break };
+            while let Some(event) = iter.next() {
                 match event {
                     Event::End(TagEnd::List(_)) => break,
                     Event::Start(Tag::Item) => {
@@ -1047,8 +1040,7 @@ fn build_block(
                         let mut raw_marker: Option<String> = None;
                         let mut task: Option<bool> = None;
                         let mut first_text: Option<String> = None;
-                        loop {
-                            let Some(item_event) = iter.next() else { break };
+                        while let Some(item_event) = iter.next() {
                             match item_event {
                                 Event::End(TagEnd::Item) => break,
                                 Event::TaskListMarker(checked) => task = Some(checked),
@@ -1057,11 +1049,11 @@ fn build_block(
                                         first_text = Some(text.to_string());
                                     }
                                     // Capture into first paragraph inline.
-                                    if let Some(last) = item_blocks.last_mut() {
-                                        if let BlockKind::Paragraph(inline) = &mut last.kind {
-                                            inline.push(Inline::Text(text.to_string()));
-                                            continue;
-                                        }
+                                    if let Some(last) = item_blocks.last_mut()
+                                        && let BlockKind::Paragraph(inline) = &mut last.kind
+                                    {
+                                        inline.push(Inline::Text(text.to_string()));
+                                        continue;
                                     }
                                     let inner_next = String::new();
                                     let kind =
@@ -1075,11 +1067,11 @@ fn build_block(
                                     // Tight list items emit bare `Event::Code`
                                     // without a Paragraph start (upstream
                                     // handles inline code spans here too).
-                                    if let Some(last) = item_blocks.last_mut() {
-                                        if let BlockKind::Paragraph(inline) = &mut last.kind {
-                                            inline.push(Inline::Code(text.to_string()));
-                                            continue;
-                                        }
+                                    if let Some(last) = item_blocks.last_mut()
+                                        && let BlockKind::Paragraph(inline) = &mut last.kind
+                                    {
+                                        inline.push(Inline::Code(text.to_string()));
+                                        continue;
                                     }
                                     let inner_next = String::new();
                                     let kind =
@@ -1144,11 +1136,11 @@ fn build_block(
                                 _ => {}
                             }
                         }
-                        if let Some(first) = first_text {
-                            if !item_blocks.is_empty() {
-                                raw_marker = ordered_marker_from(&first)
-                                    .or_else(|| unordered_marker_from(&first));
-                            }
+                        if let Some(first) = first_text
+                            && !item_blocks.is_empty()
+                        {
+                            raw_marker = ordered_marker_from(&first)
+                                .or_else(|| unordered_marker_from(&first));
                         }
                         list.items.push(ListItemBlock {
                             raw_marker,
@@ -1169,8 +1161,7 @@ fn build_block(
             let mut current_row: Vec<Vec<Inline>> = Vec::new();
             let mut current_cell: Vec<Inline> = Vec::new();
             let mut _in_header = true;
-            loop {
-                let Some(event) = iter.next() else { break };
+            while let Some(event) = iter.next() {
                 match event {
                     Event::End(TagEnd::Table) => break,
                     Event::Start(Tag::TableHead) => _in_header = true,

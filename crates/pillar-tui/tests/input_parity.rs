@@ -1,14 +1,13 @@
 //! Parity tests for the Input component (pi v0.84.3
 //! components/input.ts) and printable key decoding (keys.ts).
 
-use pillar_tui::tui::RenderLines;
 use pillar_tui::edit_support::KillRing;
 use pillar_tui::input::{CURSOR_MARKER, Input};
 use pillar_tui::keys::{
     decode_kitty_printable, decode_modify_other_keys_printable, decode_printable_key,
 };
 use pillar_tui::text_utils::visible_width;
-
+use pillar_tui::tui::RenderLines;
 
 // --- Input basics -----------------------------------------------------------------------------
 

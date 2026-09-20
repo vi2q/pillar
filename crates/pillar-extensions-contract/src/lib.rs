@@ -415,11 +415,7 @@ pub fn without_absent_keys(value: serde_json::Value) -> serde_json::Value {
 /// Renders a custom session entry (upstream `EntryRenderer`). The renderer
 /// answers themed lines, or `None` to skip the entry.
 pub type EntryRenderer = Arc<
-    dyn Fn(
-            &CustomEntryPayload,
-            &EntryRenderOptions,
-            &dyn ThemeStyle,
-        ) -> Option<RenderedLines>
+    dyn Fn(&CustomEntryPayload, &EntryRenderOptions, &dyn ThemeStyle) -> Option<RenderedLines>
         + Send
         + Sync,
 >;
@@ -427,11 +423,7 @@ pub type EntryRenderer = Arc<
 /// Renders a custom message (upstream `MessageRenderer`); `None` falls back to
 /// the default message rendering.
 pub type MessageRenderer = Arc<
-    dyn Fn(
-            &CustomMessagePayload,
-            &MessageRenderOptions,
-            &dyn ThemeStyle,
-        ) -> Option<RenderedLines>
+    dyn Fn(&CustomMessagePayload, &MessageRenderOptions, &dyn ThemeStyle) -> Option<RenderedLines>
         + Send
         + Sync,
 >;

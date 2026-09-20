@@ -530,10 +530,10 @@ impl Editor {
             } else {
                 None
             };
-            if let Some(ch) = char_before {
-                if ch.is_alphanumeric() || ch == '_' {
-                    filtered = format!(" {filtered}");
-                }
+            if let Some(ch) = char_before
+                && (ch.is_alphanumeric() || ch == '_')
+            {
+                filtered = format!(" {filtered}");
             }
         }
 
@@ -1708,13 +1708,13 @@ fn renumber_paste_markers(line: &str, target_id: u32) -> String {
             .chars()
             .take_while(|c| c.is_ascii_digit())
             .collect();
-        if let Ok(id) = digits.parse::<u32>() {
-            if id > target_id {
-                let suffix = &span[id_start + digits.len()..span.len() - 1];
-                out.push_str(&format!("[paste #{}{suffix}]", id - 1));
-                last = end;
-                continue;
-            }
+        if let Ok(id) = digits.parse::<u32>()
+            && id > target_id
+        {
+            let suffix = &span[id_start + digits.len()..span.len() - 1];
+            out.push_str(&format!("[paste #{}{suffix}]", id - 1));
+            last = end;
+            continue;
         }
         out.push_str(span);
         last = end;

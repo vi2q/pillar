@@ -182,10 +182,10 @@ async fn run_stream_task(
     };
 
     let mut params = build_params(model, context, options)?;
-    if let Some(on_payload) = &options.on_payload {
-        if let Some(next_params) = on_payload(model, params.clone()).await {
-            params = next_params;
-        }
+    if let Some(on_payload) = &options.on_payload
+        && let Some(next_params) = on_payload(model, params.clone()).await
+    {
+        params = next_params;
     }
 
     let url = format!(
@@ -388,10 +388,10 @@ fn process_chunk(
     current_block: &mut Option<CurrentBlock>,
 ) -> RunResult {
     // Keep the first non-empty responseId from the stream.
-    if output.response_id.is_none() {
-        if let Some(response_id) = chunk.response_id.as_deref().filter(|id| !id.is_empty()) {
-            output.response_id = Some(response_id.to_string());
-        }
+    if output.response_id.is_none()
+        && let Some(response_id) = chunk.response_id.as_deref().filter(|id| !id.is_empty())
+    {
+        output.response_id = Some(response_id.to_string());
     }
 
     let candidate = chunk.candidates.as_ref().and_then(|c| c.first());
@@ -660,16 +660,16 @@ pub(crate) fn build_params(
         );
     }
 
-    if let Some(system_prompt) = &context.system_prompt {
-        if !system_prompt.is_empty() {
-            params.insert(
-                "systemInstruction".to_string(),
-                json!({
-                    "role": "user",
-                    "parts": [{ "text": sanitize_surrogates(system_prompt) }],
-                }),
-            );
-        }
+    if let Some(system_prompt) = &context.system_prompt
+        && !system_prompt.is_empty()
+    {
+        params.insert(
+            "systemInstruction".to_string(),
+            json!({
+                "role": "user",
+                "parts": [{ "text": sanitize_surrogates(system_prompt) }],
+            }),
+        );
     }
 
     if !context.tools.is_empty() {

@@ -154,10 +154,10 @@ fn resolve_env_config_value(name: &str, env: Option<&Env>) -> Option<String> {
 fn get_template_env_var_names(parts: &[TemplatePart]) -> Vec<String> {
     let mut names = Vec::new();
     for part in parts {
-        if let TemplatePart::Env(name) = part {
-            if !names.contains(name) {
-                names.push(name.clone());
-            }
+        if let TemplatePart::Env(name) = part
+            && !names.contains(name)
+        {
+            names.push(name.clone());
         }
     }
     names

@@ -9,7 +9,7 @@ use crate::modes::interactive::components::markdown_transform::{
 use crate::modes::interactive::theme::theme;
 use pillar_tui::components::{BoxComponent, Spacer, Text};
 use pillar_tui::markdown::{DefaultTextStyle, Markdown};
-use pillar_tui::tui::{RenderLines, Component};
+use pillar_tui::tui::{Component, RenderLines};
 
 /// A branch summary message (upstream `BranchSummaryMessageComponent`).
 pub struct BranchSummaryMessageComponent {

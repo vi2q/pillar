@@ -102,10 +102,10 @@ pub fn transform_messages(
         .map(|message| match message {
             Message::User { .. } => message,
             Message::ToolResult(mut tool_result) => {
-                if let Some(normalized_id) = tool_call_id_map.get(&tool_result.tool_call_id) {
-                    if normalized_id != &tool_result.tool_call_id {
-                        tool_result.tool_call_id = normalized_id.clone();
-                    }
+                if let Some(normalized_id) = tool_call_id_map.get(&tool_result.tool_call_id)
+                    && normalized_id != &tool_result.tool_call_id
+                {
+                    tool_result.tool_call_id = normalized_id.clone();
                 }
                 Message::ToolResult(tool_result)
             }
@@ -191,14 +191,11 @@ pub fn transform_messages(
                                 *call_thought_signature = None;
                             }
 
-                            if !is_same_model {
-                                if let Some(normalize) = normalize_tool_call_id {
-                                    let normalized_id = normalize(call_id, model, &source);
-                                    if normalized_id != *call_id {
-                                        tool_call_id_map
-                                            .insert(call_id.clone(), normalized_id.clone());
-                                        *call_id = normalized_id;
-                                    }
+                            if !is_same_model && let Some(normalize) = normalize_tool_call_id {
+                                let normalized_id = normalize(call_id, model, &source);
+                                if normalized_id != *call_id {
+                                    tool_call_id_map.insert(call_id.clone(), normalized_id.clone());
+                                    *call_id = normalized_id;
                                 }
                             }
 

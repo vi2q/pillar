@@ -136,6 +136,10 @@ pub struct ModelRuntime {
     snapshot: std::sync::RwLock<ModelRuntimeSnapshot>,
 }
 
+// The credential-sync errors are diagnostics carrying the provider, operation
+// and message; boxing them would ripple through the auth API. Allow the size
+// lint on the type's methods only.
+#[allow(clippy::result_large_err)]
 impl ModelRuntime {
     /// Build a runtime with the builtin provider catalog.
     pub fn new(options: CreateModelRuntimeOptions) -> Result<Self, ComposeError> {

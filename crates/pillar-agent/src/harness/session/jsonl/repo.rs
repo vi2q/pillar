@@ -253,7 +253,7 @@ impl<F: FileSystem + 'static> JsonlSessionRepo<F> {
                 }
             }
         }
-        metadata.sort_by(|left, right| right.modified_at.cmp(&left.modified_at));
+        metadata.sort_by_key(|left| std::cmp::Reverse(left.modified_at));
         Ok(metadata)
     }
 

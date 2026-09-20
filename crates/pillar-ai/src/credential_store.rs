@@ -42,10 +42,10 @@ impl CredentialStore for InMemoryCredentialStore {
         provider_id: &str,
         options: Option<&AuthOperationOptions>,
     ) -> Result<Option<Credential>, crate::error::AiError> {
-        if let Some(options) = options {
-            if let Some(signal) = &options.signal {
-                signal.throw_if_aborted()?;
-            }
+        if let Some(options) = options
+            && let Some(signal) = &options.signal
+        {
+            signal.throw_if_aborted()?;
         }
         let guard = self.credentials.lock().expect("credential store lock");
         Ok(guard
@@ -58,10 +58,10 @@ impl CredentialStore for InMemoryCredentialStore {
         &self,
         options: Option<&AuthOperationOptions>,
     ) -> Result<Vec<CredentialInfo>, crate::error::AiError> {
-        if let Some(options) = options {
-            if let Some(signal) = &options.signal {
-                signal.throw_if_aborted()?;
-            }
+        if let Some(options) = options
+            && let Some(signal) = &options.signal
+        {
+            signal.throw_if_aborted()?;
         }
         let guard = self.credentials.lock().expect("credential store lock");
         Ok(guard

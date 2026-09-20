@@ -497,16 +497,14 @@ pub fn user_messages_for_forking(
 ) -> Vec<(String, String)> {
     let mut result = Vec::new();
     for entry in entries {
-        if let crate::core::session_entries::SessionEntry::Message(message_entry) = entry {
-            if let CodingAgentMessage::Base(pillar_ai::types::Message::User {
+        if let crate::core::session_entries::SessionEntry::Message(message_entry) = entry
+            && let CodingAgentMessage::Base(pillar_ai::types::Message::User {
                 content: pillar_ai::types::UserContent::Text(text),
                 ..
             }) = &message_entry.message
-            {
-                if !text.is_empty() {
-                    result.push((entry.id().to_string(), text.clone()));
-                }
-            }
+            && !text.is_empty()
+        {
+            result.push((entry.id().to_string(), text.clone()));
         }
     }
     result
@@ -544,20 +542,15 @@ pub fn compute_context_usage(
     if let Some(compaction_index) = latest_compaction_index {
         let mut has_post_compaction_usage = false;
         for entry in &branch_entries[compaction_index + 1..] {
-            if let crate::core::session_entries::SessionEntry::Message(message_entry) = entry {
-                if let CodingAgentMessage::Base(pillar_ai::types::Message::Assistant(assistant)) =
+            if let crate::core::session_entries::SessionEntry::Message(message_entry) = entry
+                && let CodingAgentMessage::Base(pillar_ai::types::Message::Assistant(assistant)) =
                     &message_entry.message
-                {
-                    if assistant.stop_reason != pillar_ai::types::StopReason::Aborted
-                        && assistant.stop_reason != pillar_ai::types::StopReason::Error
-                        && crate::core::compaction::driver::calculate_context_tokens(
-                            &assistant.usage,
-                        ) > 0
-                    {
-                        has_post_compaction_usage = true;
-                        break;
-                    }
-                }
+                && assistant.stop_reason != pillar_ai::types::StopReason::Aborted
+                && assistant.stop_reason != pillar_ai::types::StopReason::Error
+                && crate::core::compaction::driver::calculate_context_tokens(&assistant.usage) > 0
+            {
+                has_post_compaction_usage = true;
+                break;
             }
         }
         if !has_post_compaction_usage {

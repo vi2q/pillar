@@ -1,9 +1,9 @@
 //! Parity tests for tui components: Text, Spacer, Box, TruncatedText
 //! (pi v0.84.3).
 
-use pillar_tui::tui::RenderLines;
 use pillar_tui::components::{BoxComponent, Spacer, Text, TruncatedText};
 use pillar_tui::text_utils::visible_width;
+use pillar_tui::tui::RenderLines;
 
 // --- Text ---------------------------------------------------------------------------------------
 
@@ -166,7 +166,6 @@ fn truncated_text_wide_chars() {
 
 use pillar_tui::components::{Image, ImageOptions};
 use pillar_tui::terminal_image::{
-
     CellDimensions, ImageDimensions, ImageProtocol, TerminalCapabilities,
     calculate_image_cell_size, get_cell_dimensions, get_kitty_image_metadata, set_capabilities,
     set_cell_dimensions,

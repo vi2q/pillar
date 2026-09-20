@@ -47,13 +47,13 @@ fn invalid(message: &str) -> SessionError {
 }
 
 fn assert_valid_limit(limit: Option<usize>) -> Result<(), SessionError> {
-    if let Some(limit) = limit {
-        if limit == 0 {
-            return Err(SessionError::new(
-                SessionErrorCode::InvalidQuery,
-                "limit must be a positive integer",
-            ));
-        }
+    if let Some(limit) = limit
+        && limit == 0
+    {
+        return Err(SessionError::new(
+            SessionErrorCode::InvalidQuery,
+            "limit must be a positive integer",
+        ));
     }
     Ok(())
 }
@@ -139,13 +139,13 @@ impl SessionState {
     }
 
     pub fn validate_target(&self, target_id: Option<&str>) -> Result<(), SessionError> {
-        if let Some(target_id) = target_id {
-            if !self.entries_by_id.contains_key(target_id) {
-                return Err(SessionError::new(
-                    SessionErrorCode::NotFound,
-                    format!("Entry not found: {target_id}"),
-                ));
-            }
+        if let Some(target_id) = target_id
+            && !self.entries_by_id.contains_key(target_id)
+        {
+            return Err(SessionError::new(
+                SessionErrorCode::NotFound,
+                format!("Entry not found: {target_id}"),
+            ));
         }
         Ok(())
     }
@@ -188,10 +188,10 @@ impl SessionState {
                         return Err(invalid("does not chain to the lane leaf"));
                     }
                 }
-                if let Some(parent_id) = &entry.parent_id {
-                    if !self.entries_by_id.contains_key(parent_id) {
-                        return Err(invalid(&format!("references missing parent {parent_id}")));
-                    }
+                if let Some(parent_id) = &entry.parent_id
+                    && !self.entries_by_id.contains_key(parent_id)
+                {
+                    return Err(invalid(&format!("references missing parent {parent_id}")));
                 }
                 self.sequence = seq;
                 self.used_ids.insert(entry.id.clone());
@@ -241,12 +241,12 @@ impl SessionState {
                 self.log.push(LogItem::Record { seq, record });
             }
             SessionMutation::Lane { seq, lane, leaf_id } => {
-                if let Some(leaf_id) = &leaf_id {
-                    if !self.entries_by_id.contains_key(leaf_id) {
-                        return Err(invalid(&format!(
-                            "references missing lane target {leaf_id}"
-                        )));
-                    }
+                if let Some(leaf_id) = &leaf_id
+                    && !self.entries_by_id.contains_key(leaf_id)
+                {
+                    return Err(invalid(&format!(
+                        "references missing lane target {leaf_id}"
+                    )));
                 }
                 self.sequence = seq;
                 self.lanes.insert(lane.clone(), leaf_id.clone());
@@ -389,10 +389,10 @@ impl SessionState {
         assert_valid_cursor(after_seq)?;
         let mut results = Vec::new();
         for item in &self.log {
-            if let Some(after_seq) = after_seq {
-                if item.seq() <= after_seq {
-                    continue;
-                }
+            if let Some(after_seq) = after_seq
+                && item.seq() <= after_seq
+            {
+                continue;
             }
             results.push(item.clone());
             if results.len() == limit.unwrap_or(usize::MAX) {
@@ -637,10 +637,10 @@ impl SessionState {
                 return false;
             }
         }
-        if let Some(after_seq) = query.after_seq {
-            if record.seq <= after_seq {
-                return false;
-            }
+        if let Some(after_seq) = query.after_seq
+            && record.seq <= after_seq
+        {
+            return false;
         }
         true
     }

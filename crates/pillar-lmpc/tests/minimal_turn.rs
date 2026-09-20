@@ -7,9 +7,9 @@
 //! so they take a lock instead of racing each other. The clock is no longer
 //! shared: each frame host routes timers and timestamps to itself.
 
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
-use std::sync::Arc;
 use std::time::Duration;
 
 static TESTS: Mutex<()> = Mutex::new(());

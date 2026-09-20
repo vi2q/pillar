@@ -229,7 +229,11 @@ fn measure_search_corpus() {
                 },
             )
             .expect("grep");
-            result.text.lines().filter(|line| line.contains("needle")).count()
+            result
+                .text
+                .lines()
+                .filter(|line| line.contains("needle"))
+                .count()
         }),
     ];
     let dense_rss = peak_rss_kb();

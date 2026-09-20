@@ -506,12 +506,12 @@ pub struct LoadSkillsOptions<'a> {
 
 fn resolve_path(path: &str) -> PathBuf {
     let trimmed = path.trim();
-    if trimmed == "~" || trimmed.starts_with("~/") {
-        if let Some(home) = std::env::var_os("HOME") {
-            let rest = trimmed.strip_prefix('~').unwrap_or("");
-            let rest = rest.strip_prefix('/').unwrap_or(rest);
-            return PathBuf::from(home).join(rest);
-        }
+    if (trimmed == "~" || trimmed.starts_with("~/"))
+        && let Some(home) = std::env::var_os("HOME")
+    {
+        let rest = trimmed.strip_prefix('~').unwrap_or("");
+        let rest = rest.strip_prefix('/').unwrap_or(rest);
+        return PathBuf::from(home).join(rest);
     }
     PathBuf::from(trimmed)
 }

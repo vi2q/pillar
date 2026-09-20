@@ -38,18 +38,16 @@ pub fn encode_text_signature_v1(id: &str, phase: Option<&str>) -> String {
 /// Parse a text signature: `TextSignatureV1` JSON or a legacy plain id.
 pub fn parse_text_signature(signature: Option<&str>) -> Option<(String, Option<String>)> {
     let signature = signature?;
-    if signature.starts_with('{') {
-        if let Ok(parsed) = serde_json::from_str::<Value>(signature) {
-            if parsed.get("v") == Some(&json!(1)) {
-                if let Some(id) = parsed.get("id").and_then(Value::as_str) {
-                    let phase = match parsed.get("phase").and_then(Value::as_str) {
-                        Some(phase @ ("commentary" | "final_answer")) => Some(phase.to_string()),
-                        _ => None,
-                    };
-                    return Some((id.to_string(), phase));
-                }
-            }
-        }
+    if signature.starts_with('{')
+        && let Ok(parsed) = serde_json::from_str::<Value>(signature)
+        && parsed.get("v") == Some(&json!(1))
+        && let Some(id) = parsed.get("id").and_then(Value::as_str)
+    {
+        let phase = match parsed.get("phase").and_then(Value::as_str) {
+            Some(phase @ ("commentary" | "final_answer")) => Some(phase.to_string()),
+            _ => None,
+        };
+        return Some((id.to_string(), phase));
     }
     Some((signature.to_string(), None))
 }
@@ -178,15 +176,13 @@ pub fn convert_responses_messages(
         .as_ref()
         .and_then(|o| o.include_system_prompt)
         .unwrap_or(true);
-    if include_system_prompt {
-        if let Some(system_prompt) = &context.system_prompt {
-            let role = if model.reasoning {
-                "developer"
-            } else {
-                "system"
-            };
-            messages.push(json!({ "role": role, "content": sanitize_surrogates(system_prompt) }));
-        }
+    if include_system_prompt && let Some(system_prompt) = &context.system_prompt {
+        let role = if model.reasoning {
+            "developer"
+        } else {
+            "system"
+        };
+        messages.push(json!({ "role": role, "content": sanitize_surrogates(system_prompt) }));
     }
 
     let mut msg_index = 0usize;
@@ -343,13 +339,11 @@ pub fn convert_responses_messages(
                                     "input".to_string(),
                                     Value::String(sanitize_surrogates(&input)),
                                 );
-                                if can_replay_namespace {
-                                    if let Some(namespace) = namespace {
-                                        item.insert(
-                                            "namespace".to_string(),
-                                            Value::String(namespace.clone()),
-                                        );
-                                    }
+                                if can_replay_namespace && let Some(namespace) = namespace {
+                                    item.insert(
+                                        "namespace".to_string(),
+                                        Value::String(namespace.clone()),
+                                    );
                                 }
                                 output.push(Value::Object(item));
                             } else {
@@ -370,13 +364,11 @@ pub fn convert_responses_messages(
                                     "arguments".to_string(),
                                     Value::String(arguments.to_string()),
                                 );
-                                if can_replay_namespace {
-                                    if let Some(namespace) = namespace {
-                                        item.insert(
-                                            "namespace".to_string(),
-                                            Value::String(namespace.clone()),
-                                        );
-                                    }
+                                if can_replay_namespace && let Some(namespace) = namespace {
+                                    item.insert(
+                                        "namespace".to_string(),
+                                        Value::String(namespace.clone()),
+                                    );
                                 }
                                 output.push(Value::Object(item));
                             }
@@ -1421,10 +1413,10 @@ fn finalize_response(
     }
     calculate_cost(model, &mut output.usage);
     let service_tier = response.get("service_tier").and_then(Value::as_str);
-    if let Some(options) = options {
-        if let Some(apply) = &mut options.apply_service_tier_pricing {
-            apply(&mut output.usage, service_tier);
-        }
+    if let Some(options) = options
+        && let Some(apply) = &mut options.apply_service_tier_pricing
+    {
+        apply(&mut output.usage, service_tier);
     }
 
     // Map status to stop reason.

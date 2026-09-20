@@ -794,10 +794,10 @@ impl InteractiveMode {
     }
 
     fn set_terminal_progress(&self, running: bool) {
-        if self.show_terminal_progress.load(Ordering::SeqCst) {
-            if let Some(on_progress) = &self.on_terminal_progress {
-                on_progress(running);
-            }
+        if self.show_terminal_progress.load(Ordering::SeqCst)
+            && let Some(on_progress) = &self.on_terminal_progress
+        {
+            on_progress(running);
         }
     }
 
@@ -843,16 +843,16 @@ impl InteractiveMode {
             }
             AgentSessionEvent::MessageStart { .. } => {
                 // Upstream shows the pending display after a user message.
-                if let AgentSessionEvent::MessageStart { message } = event {
-                    if matches!(
+                if let AgentSessionEvent::MessageStart { message } = event
+                    && matches!(
                         message,
                         pillar_agent::types::AgentMessage::Message(
                             pillar_ai::types::Message::User { .. }
                         )
-                    ) {
-                        let (steering, follow_up) = self.session_queues();
-                        self.pending.lock().update_display(&steering, &follow_up);
-                    }
+                    )
+                {
+                    let (steering, follow_up) = self.session_queues();
+                    self.pending.lock().update_display(&steering, &follow_up);
                 }
                 self.transcript.lock().handle_event(event);
                 Vec::new()
@@ -2010,16 +2010,16 @@ impl InteractiveMode {
                         .label
                         .or_else(|| auth_status.source.map(|source| source.as_str().to_string())),
                 });
-            if let Some(api_key) = &provider.auth.api_key {
-                if auth_type.is_none() || auth_type == Some("api_key") {
-                    options.push(AuthSelectorProvider {
-                        id: provider.id.clone(),
-                        name: provider.name.clone(),
-                        auth_type: "api_key".to_string(),
-                        method_name: Some(api_key.name().to_string()),
-                        status,
-                    });
-                }
+            if let Some(api_key) = &provider.auth.api_key
+                && (auth_type.is_none() || auth_type == Some("api_key"))
+            {
+                options.push(AuthSelectorProvider {
+                    id: provider.id.clone(),
+                    name: provider.name.clone(),
+                    auth_type: "api_key".to_string(),
+                    method_name: Some(api_key.name().to_string()),
+                    status,
+                });
             }
         }
         options.sort_by(|a, b| a.name.cmp(&b.name));
@@ -2102,12 +2102,13 @@ impl InteractiveMode {
             return Vec::new();
         }
         // A single provider option with a single method skips the question.
-        if let Some(provider_options) = provider_options {
-            if provider_options.len() == 1 && options.len() == 1 {
-                return vec![ModeAction::StartLogin {
-                    target: LoginTarget::from_provider(&provider_options[0]),
-                }];
-            }
+        if let Some(provider_options) = provider_options
+            && provider_options.len() == 1
+            && options.len() == 1
+        {
+            return vec![ModeAction::StartLogin {
+                target: LoginTarget::from_provider(&provider_options[0]),
+            }];
         }
         let title = match provider_options.and_then(|options| options.first()) {
             Some(provider) => format!("Select authentication method for {}:", provider.name),
@@ -3615,10 +3616,10 @@ impl InteractiveMode {
         // Upstream `chatContainer.clear(); renderInitialMessages();`.
         self.transcript.lock().clear_conversation();
         self.render_initial_messages();
-        if let Some(editor_text) = editor_text {
-            if self.editor().lock().get_text().trim().is_empty() {
-                self.set_editor_text(&editor_text);
-            }
+        if let Some(editor_text) = editor_text
+            && self.editor().lock().get_text().trim().is_empty()
+        {
+            self.set_editor_text(&editor_text);
         }
         self.transcript
             .lock()
@@ -4184,7 +4185,7 @@ impl InteractiveMode {
                     .then_with(|| a.id.cmp(&b.id))
             });
         }
-        groups.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+        groups.sort_by_key(|a| a.1.to_lowercase());
         groups
     }
 

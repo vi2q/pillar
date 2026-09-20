@@ -402,7 +402,7 @@ fn recovery_slice(
         })
         .cloned()
         .collect();
-    open_operations.sort_by(|left, right| right.seq.cmp(&left.seq));
+    open_operations.sort_by_key(|left| std::cmp::Reverse(left.seq));
     pillar_agent::harness::reducer::RecordLogSlice {
         lane: "main".to_owned(),
         open_operations,

@@ -381,7 +381,11 @@ async fn the_agent_forwards_its_spawner_to_the_loop() {
 
     agent.prompt("hello").await.expect("prompt");
 
-    assert_eq!(*spawned.lock().unwrap(), 1, "the agent's spawner ran the run");
+    assert_eq!(
+        *spawned.lock().unwrap(),
+        1,
+        "the agent's spawner ran the run"
+    );
     let state = agent.state();
     assert_eq!(state.messages.len(), 2);
     assert!(!state.is_streaming);

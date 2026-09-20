@@ -667,6 +667,9 @@ use crate::types::AssistantMessageEvent as AssistantMessageEvent2;
 
 type StreamOutcome = Result<(), AssistantMessage>;
 
+// The faux stream's error is the whole AssistantMessage; boxing it would ripple
+// through every `?` and the discarded-error call site.
+#[allow(clippy::result_large_err)]
 async fn run_stream(
     inner: Arc<Mutex<FauxCoreInner>>,
     pending: Arc<Mutex<Vec<FauxResponseStep>>>,

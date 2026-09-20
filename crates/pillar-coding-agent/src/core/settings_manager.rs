@@ -235,10 +235,10 @@ impl SettingsStorage for FileSettingsStorage {
             let current = file_exists.then(|| std::fs::read_to_string(path).unwrap_or_default());
             let next = f(current);
             if let Some(next) = next {
-                if let Some(dir) = path.parent() {
-                    if !dir.exists() {
-                        let _ = std::fs::create_dir_all(dir);
-                    }
+                if let Some(dir) = path.parent()
+                    && !dir.exists()
+                {
+                    let _ = std::fs::create_dir_all(dir);
                 }
                 if std::fs::write(path, next).is_err() {
                     return None::<String>;
@@ -344,50 +344,50 @@ pub fn migrate_settings(mut settings: Value) -> Value {
     }
 
     // Legacy skills object format -> array
-    if let Some(skills) = object.get("skills") {
-        if skills.is_object() {
-            let enable_skill_commands = skills.get("enableSkillCommands").cloned();
-            let custom_directories = skills.get("customDirectories").cloned();
-            if let Some(enabled) = enable_skill_commands {
-                object
-                    .entry("enableSkillCommands".to_string())
-                    .or_insert(enabled);
+    if let Some(skills) = object.get("skills")
+        && skills.is_object()
+    {
+        let enable_skill_commands = skills.get("enableSkillCommands").cloned();
+        let custom_directories = skills.get("customDirectories").cloned();
+        if let Some(enabled) = enable_skill_commands {
+            object
+                .entry("enableSkillCommands".to_string())
+                .or_insert(enabled);
+        }
+        match custom_directories {
+            Some(Value::Array(directories)) if !directories.is_empty() => {
+                object.insert("skills".to_string(), Value::Array(directories));
             }
-            match custom_directories {
-                Some(Value::Array(directories)) if !directories.is_empty() => {
-                    object.insert("skills".to_string(), Value::Array(directories));
-                }
-                _ => {
-                    object.remove("skills");
-                }
+            _ => {
+                object.remove("skills");
             }
         }
     }
 
     // retry.maxDelayMs -> retry.provider.maxRetryDelayMs
-    if let Some(retry) = object.get_mut("retry") {
-        if let Some(retry_object) = retry.as_object_mut() {
-            let max_delay = retry_object.get("maxDelayMs").and_then(|v| v.as_f64());
-            if let Some(max_delay) = max_delay {
-                let has_provider_max = retry_object
+    if let Some(retry) = object.get_mut("retry")
+        && let Some(retry_object) = retry.as_object_mut()
+    {
+        let max_delay = retry_object.get("maxDelayMs").and_then(|v| v.as_f64());
+        if let Some(max_delay) = max_delay {
+            let has_provider_max = retry_object
+                .get("provider")
+                .and_then(|provider| provider.get("maxRetryDelayMs"))
+                .map(|v| !v.is_null())
+                .unwrap_or(false);
+            if !has_provider_max {
+                let provider = retry_object
                     .get("provider")
-                    .and_then(|provider| provider.get("maxRetryDelayMs"))
-                    .map(|v| !v.is_null())
-                    .unwrap_or(false);
-                if !has_provider_max {
-                    let provider = retry_object
-                        .get("provider")
-                        .cloned()
-                        .unwrap_or_else(|| Value::Object(Default::default()));
-                    let mut provider_object = provider.as_object().cloned().unwrap_or_default();
-                    provider_object.insert(
-                        "maxRetryDelayMs".to_string(),
-                        serde_json::json!(max_delay as u64),
-                    );
-                    retry_object.insert("provider".to_string(), Value::Object(provider_object));
-                }
-                retry_object.remove("maxDelayMs");
+                    .cloned()
+                    .unwrap_or_else(|| Value::Object(Default::default()));
+                let mut provider_object = provider.as_object().cloned().unwrap_or_default();
+                provider_object.insert(
+                    "maxRetryDelayMs".to_string(),
+                    serde_json::json!(max_delay as u64),
+                );
+                retry_object.insert("provider".to_string(), Value::Object(provider_object));
             }
+            retry_object.remove("maxDelayMs");
         }
     }
 
@@ -629,21 +629,21 @@ impl SettingsManager {
                 let Some(value) = snapshot.get(field) else {
                     continue;
                 };
-                if let Some(nested_modified) = modified_nested_fields.get(field) {
-                    if value.is_object() {
-                        let mut merged_nested = current_file_settings
-                            .get(field)
-                            .and_then(|v| v.as_object())
-                            .cloned()
-                            .unwrap_or_default();
-                        for nested_key in nested_modified {
-                            if let Some(nested_value) = value.get(nested_key) {
-                                merged_nested.insert(nested_key.clone(), nested_value.clone());
-                            }
+                if let Some(nested_modified) = modified_nested_fields.get(field)
+                    && value.is_object()
+                {
+                    let mut merged_nested = current_file_settings
+                        .get(field)
+                        .and_then(|v| v.as_object())
+                        .cloned()
+                        .unwrap_or_default();
+                    for nested_key in nested_modified {
+                        if let Some(nested_value) = value.get(nested_key) {
+                            merged_nested.insert(nested_key.clone(), nested_value.clone());
                         }
-                        merged_object.insert(field.clone(), Value::Object(merged_nested));
-                        continue;
                     }
+                    merged_object.insert(field.clone(), Value::Object(merged_nested));
+                    continue;
                 }
                 merged_object.insert(field.clone(), value.clone());
             }

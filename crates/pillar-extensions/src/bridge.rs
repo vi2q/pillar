@@ -396,7 +396,9 @@ pub type HostCallFuture =
 /// aborted. Without a runner the bridge runs the call inline, under the lock —
 /// the behaviour before the state machine existed.
 pub type HostCallRunner = Arc<
-    dyn Fn(HostCallRequest, Option<pillar_agent::abort::AbortSignal>) -> HostCallFuture + Send + Sync,
+    dyn Fn(HostCallRequest, Option<pillar_agent::abort::AbortSignal>) -> HostCallFuture
+        + Send
+        + Sync,
 >;
 
 /// [`bridge_to_agent_tools`] with a host-call runner (see [`HostCallRunner`]).

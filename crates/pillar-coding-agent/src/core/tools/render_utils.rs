@@ -14,10 +14,10 @@ use pillar_tui::terminal_image::{
 /// `shortenPath`).
 pub fn shorten_path(path: &str) -> String {
     let home = std::env::var("HOME").unwrap_or_default();
-    if !home.is_empty() {
-        if let Some(rest) = path.strip_prefix(&home) {
-            return format!("~{rest}");
-        }
+    if !home.is_empty()
+        && let Some(rest) = path.strip_prefix(&home)
+    {
+        return format!("~{rest}");
     }
     path.to_string()
 }
@@ -168,10 +168,10 @@ pub fn format_path_relative_to_cwd_or_absolute(file_path: &str, cwd: &str) -> St
 /// divergence: the port has no bundled package layout, so the directory comes
 /// from `PILLAR_PACKAGE_DIR` or next to the executable.
 pub fn package_dir() -> std::path::PathBuf {
-    if let Ok(dir) = std::env::var("PILLAR_PACKAGE_DIR") {
-        if !dir.is_empty() {
-            return std::path::PathBuf::from(dir);
-        }
+    if let Ok(dir) = std::env::var("PILLAR_PACKAGE_DIR")
+        && !dir.is_empty()
+    {
+        return std::path::PathBuf::from(dir);
     }
     std::env::current_exe()
         .ok()

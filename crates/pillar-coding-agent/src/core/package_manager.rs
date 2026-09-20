@@ -890,10 +890,10 @@ pub fn collect_ancestor_agents_skill_dirs(start_dir: &Path) -> Vec<PathBuf> {
     let mut dir = start_dir.to_path_buf();
     loop {
         skill_dirs.push(dir.join(".agents").join("skills"));
-        if let Some(root) = &git_repo_root {
-            if &dir == root {
-                break;
-            }
+        if let Some(root) = &git_repo_root
+            && &dir == root
+        {
+            break;
         }
         let Some(parent) = dir.parent() else {
             break;
@@ -960,20 +960,18 @@ pub fn collect_auto_theme_entries(dir: &Path) -> Vec<PathBuf> {
 /// `resolveExtensionEntries`).
 pub fn resolve_extension_entries(dir: &Path) -> Option<Vec<PathBuf>> {
     let package_json_path = dir.join("package.json");
-    if package_json_path.is_file() {
-        if let Some(manifest) = read_pi_manifest(&package_json_path) {
-            if let Some(extensions) = &manifest.extensions {
-                if !extensions.is_empty() {
-                    let entries: Vec<PathBuf> = extensions
-                        .iter()
-                        .map(|ext_path| dir.join(ext_path))
-                        .filter(|resolved| resolved.exists())
-                        .collect();
-                    if !entries.is_empty() {
-                        return Some(entries);
-                    }
-                }
-            }
+    if package_json_path.is_file()
+        && let Some(manifest) = read_pi_manifest(&package_json_path)
+        && let Some(extensions) = &manifest.extensions
+        && !extensions.is_empty()
+    {
+        let entries: Vec<PathBuf> = extensions
+            .iter()
+            .map(|ext_path| dir.join(ext_path))
+            .filter(|resolved| resolved.exists())
+            .collect();
+        if !entries.is_empty() {
+            return Some(entries);
         }
     }
 
@@ -1030,10 +1028,10 @@ pub fn collect_auto_extension_entries(dir: &Path) -> Vec<PathBuf> {
 
         if metadata.is_file() && (name.ends_with(".ts") || name.ends_with(".js")) {
             entries.push(full_path);
-        } else if metadata.is_dir() {
-            if let Some(resolved_entries) = resolve_extension_entries(&full_path) {
-                entries.extend(resolved_entries);
-            }
+        } else if metadata.is_dir()
+            && let Some(resolved_entries) = resolve_extension_entries(&full_path)
+        {
+            entries.extend(resolved_entries);
         }
     }
 
@@ -1662,10 +1660,9 @@ impl DefaultPackageManager {
         let npm_command = self.get_npm_command()?;
         let command_key = npm_command.join("\0");
         if let Some((cached_key, cached_root)) = self.global_npm_root_cache.lock().unwrap().clone()
+            && cached_key == command_key
         {
-            if cached_key == command_key {
-                return Ok(PathBuf::from(cached_root));
-            }
+            return Ok(PathBuf::from(cached_root));
         }
         let root = if self.get_package_manager_name()? == "bun" {
             let bin_dir = self.run_npm_command_sync(&["pm", "bin", "-g"])?.to_string();
@@ -2099,27 +2096,27 @@ impl DefaultPackageManager {
         );
         if let Ok(upstream) = upstream_result {
             let trimmed = upstream.trim().to_string();
-            if let Some(branch) = trimmed.strip_prefix("origin/") {
-                if !branch.is_empty() {
-                    let head = self.run_command_capture(
-                        "git",
-                        &["rev-parse".to_string(), "@{upstream}".to_string()],
-                        Some(installed_path),
-                        None,
-                    )?;
-                    return Ok((
-                        "@{upstream}".to_string(),
-                        head,
-                        [
-                            "fetch".to_string(),
-                            "--prune".to_string(),
-                            "--no-tags".to_string(),
-                            "origin".to_string(),
-                            format!("+refs/heads/{branch}:refs/remotes/origin/{branch}"),
-                        ]
-                        .to_vec(),
-                    ));
-                }
+            if let Some(branch) = trimmed.strip_prefix("origin/")
+                && !branch.is_empty()
+            {
+                let head = self.run_command_capture(
+                    "git",
+                    &["rev-parse".to_string(), "@{upstream}".to_string()],
+                    Some(installed_path),
+                    None,
+                )?;
+                return Ok((
+                    "@{upstream}".to_string(),
+                    head,
+                    [
+                        "fetch".to_string(),
+                        "--prune".to_string(),
+                        "--no-tags".to_string(),
+                        "origin".to_string(),
+                        format!("+refs/heads/{branch}:refs/remotes/origin/{branch}"),
+                    ]
+                    .to_vec(),
+                ));
             }
             return Err(format!("Unsupported upstream remote: {trimmed}"));
         }
@@ -2569,10 +2566,10 @@ impl DefaultPackageManager {
 
         for pkg in Self::packages_of(&global) {
             let source_str = package_source_string(&pkg);
-            if let Some(identity) = &identity {
-                if self.get_package_identity(&source_str, Some(SourceScope::User)) != *identity {
-                    continue;
-                }
+            if let Some(identity) = &identity
+                && self.get_package_identity(&source_str, Some(SourceScope::User)) != *identity
+            {
+                continue;
             }
             matched = true;
             update_sources.push(ConfiguredUpdateSource {
@@ -2582,10 +2579,10 @@ impl DefaultPackageManager {
         }
         for pkg in Self::packages_of(&project) {
             let source_str = package_source_string(&pkg);
-            if let Some(identity) = &identity {
-                if self.get_package_identity(&source_str, Some(SourceScope::Project)) != *identity {
-                    continue;
-                }
+            if let Some(identity) = &identity
+                && self.get_package_identity(&source_str, Some(SourceScope::Project)) != *identity
+            {
+                continue;
             }
             matched = true;
             update_sources.push(ConfiguredUpdateSource {
@@ -2594,12 +2591,12 @@ impl DefaultPackageManager {
             });
         }
 
-        if let Some(source) = source {
-            if !matched {
-                let mut configured = Self::packages_of(&global);
-                configured.extend(Self::packages_of(&project));
-                return Err(self.build_no_matching_package_message(source, &configured));
-            }
+        if let Some(source) = source
+            && !matched
+        {
+            let mut configured = Self::packages_of(&global);
+            configured.extend(Self::packages_of(&project));
+            return Err(self.build_no_matching_package_message(source, &configured));
         }
 
         self.update_configured_sources(&update_sources)
@@ -3334,22 +3331,21 @@ impl DefaultPackageManager {
         if let Some(entries) = manifest
             .as_ref()
             .and_then(|m| manifest_entries(m, resource_type))
+            && !entries.is_empty()
         {
-            if !entries.is_empty() {
-                let all_files =
-                    self.collect_files_from_manifest_entries(entries, package_root, resource_type);
-                let manifest_patterns: Vec<String> = entries
-                    .iter()
-                    .filter(|e| is_override_pattern(e))
-                    .cloned()
-                    .collect();
-                if manifest_patterns.is_empty() {
-                    return all_files;
-                }
-                return apply_patterns(&all_files, &manifest_patterns, package_root)
-                    .into_iter()
-                    .collect();
+            let all_files =
+                self.collect_files_from_manifest_entries(entries, package_root, resource_type);
+            let manifest_patterns: Vec<String> = entries
+                .iter()
+                .filter(|e| is_override_pattern(e))
+                .cloned()
+                .collect();
+            if manifest_patterns.is_empty() {
+                return all_files;
             }
+            return apply_patterns(&all_files, &manifest_patterns, package_root)
+                .into_iter()
+                .collect();
         }
 
         let convention_dir = package_root.join(resource_type_name(resource_type));

@@ -244,10 +244,10 @@ async fn run_proxy_request(
 
     if response.status >= 400 {
         let mut message = format!("Proxy error: {}", response.status);
-        if let Ok(body) = response.json().await {
-            if let Some(error_text) = body.get("error").and_then(Value::as_str) {
-                message = format!("Proxy error: {error_text}");
-            }
+        if let Ok(body) = response.json().await
+            && let Some(error_text) = body.get("error").and_then(Value::as_str)
+        {
+            message = format!("Proxy error: {error_text}");
         }
         return Err(message);
     }
@@ -280,12 +280,11 @@ async fn run_proxy_request(
     }
 
     // Flush any final complete line left in the buffer.
-    if let Some(data) = buffer.strip_prefix("data: ") {
-        if let Ok(proxy_event) = serde_json::from_str::<ProxyAssistantMessageEvent>(data) {
-            if let Some(event) = process_proxy_event(proxy_event, partial) {
-                stream.push(event);
-            }
-        }
+    if let Some(data) = buffer.strip_prefix("data: ")
+        && let Ok(proxy_event) = serde_json::from_str::<ProxyAssistantMessageEvent>(data)
+        && let Some(event) = process_proxy_event(proxy_event, partial)
+    {
+        stream.push(event);
     }
 
     if options.signal.as_ref().is_some_and(|s| s.is_aborted()) {
@@ -501,10 +500,10 @@ fn process_proxy_event(
                         .get("name")
                         .and_then(Value::as_str)
                         .map(str::to_owned);
-                    if let Some(incoming) = tool_call.get("arguments") {
-                        if incoming.is_object() {
-                            *arguments = incoming.clone();
-                        }
+                    if let Some(incoming) = tool_call.get("arguments")
+                        && incoming.is_object()
+                    {
+                        *arguments = incoming.clone();
                     }
                     if let Some(incoming) = tool_call.get("namespace").and_then(Value::as_str) {
                         *namespace = Some(incoming.to_owned());

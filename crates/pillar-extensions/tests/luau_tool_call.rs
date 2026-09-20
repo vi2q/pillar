@@ -13,8 +13,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use luaur_rt::Function;
-use pillar_ai::types::Content;
 use pillar_agent::abort::AbortSignal;
+use pillar_ai::types::Content;
 use pillar_extensions::runtime::{ExtensionRuntime, HostApi, ToolStep, VmBudget};
 use pillar_extensions_contract::{
     ExecOptions, ExecResult, ExtensionContextFacts, ExtensionCustomSurface, ExtensionMode,
@@ -572,16 +572,18 @@ fn a_tools_fs_read_returns_the_string_through_the_sync_driver() {
 fn a_tools_fs_calls_run_through_the_host_call_runner() {
     use pillar_extensions::bridge::{HostCallRunner, bridge_to_agent_tools_with};
 
-    let runtime = Arc::new(Mutex::new(runtime_with_exec(Arc::new(Mutex::new(Vec::new())))));
+    let runtime = Arc::new(Mutex::new(runtime_with_exec(Arc::new(Mutex::new(
+        Vec::new(),
+    )))));
     runtime.lock().unwrap().set_host_api(HostApi {
-        fs: Some(Arc::new(|op: &str, path: &str, _content: Option<&str>| {
-            match (op, path) {
+        fs: Some(Arc::new(
+            |op: &str, path: &str, _content: Option<&str>| match (op, path) {
                 ("read", "notes.txt") => Ok(serde_json::json!("file content")),
                 ("exists", "notes.txt") => Ok(serde_json::json!(true)),
                 ("read", "gone.txt") => Ok(serde_json::Value::Null),
                 _ => Err(format!("no such path: {path}")),
-            }
-        })),
+            },
+        )),
         ..Default::default()
     });
     runtime.lock().unwrap().load_extension(
@@ -641,7 +643,10 @@ fn a_tools_fs_calls_run_through_the_host_call_runner() {
         other => panic!("unexpected content {other:?}"),
     };
     assert!(text.starts_with("file content/nil/"), "{text}");
-    assert!(text.contains("no such path"), "the host error reached the tool: {text}");
+    assert!(
+        text.contains("no such path"),
+        "the host error reached the tool: {text}"
+    );
     assert_eq!(
         seen.lock().unwrap().as_slice(),
         &[

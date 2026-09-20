@@ -188,7 +188,7 @@ fn build_session_tree(sessions: Vec<SessionInfo>) -> Vec<SessionTreeNode> {
             }
             children.push(materialize(child, child_indices, infos, visited));
         }
-        children.sort_by(|a, b| b.latest_activity.cmp(&a.latest_activity));
+        children.sort_by_key(|a| std::cmp::Reverse(a.latest_activity));
         SessionTreeNode {
             latest_activity: infos[index].modified_ms.max(
                 children
@@ -208,7 +208,7 @@ fn build_session_tree(sessions: Vec<SessionInfo>) -> Vec<SessionTreeNode> {
         .map(|index| materialize(index, &child_indices, &infos, &mut visited))
         .collect();
     let _ = latest;
-    roots.sort_by(|a, b| b.latest_activity.cmp(&a.latest_activity));
+    roots.sort_by_key(|a| std::cmp::Reverse(a.latest_activity));
     roots
 }
 
@@ -374,12 +374,12 @@ impl SessionSelectorComponent {
     /// Expire a timed status message (upstream the `setTimeout` in
     /// `setStatusMessage`). Returns whether anything changed.
     pub fn tick(&mut self, now: Instant) -> bool {
-        if let Some(deadline) = self.status_expires_at {
-            if now >= deadline {
-                self.status_expires_at = None;
-                self.status = None;
-                return true;
-            }
+        if let Some(deadline) = self.status_expires_at
+            && now >= deadline
+        {
+            self.status_expires_at = None;
+            self.status = None;
+            return true;
         }
         false
     }
@@ -795,7 +795,12 @@ impl SessionSelectorComponent {
     fn render_rows(&mut self, width: usize) -> Vec<String> {
         let theme_handle = theme();
         let mut lines: Vec<String> = Vec::new();
-        lines.extend(self.search_input.render(width).iter().map(|line| line.to_string()));
+        lines.extend(
+            self.search_input
+                .render(width)
+                .iter()
+                .map(|line| line.to_string()),
+        );
         lines.push(String::new());
 
         if self.filtered_sessions.is_empty() {
@@ -943,7 +948,12 @@ impl SessionSelectorComponent {
                 .map(|line| theme_handle.bold(line)),
         );
         lines.push(String::new());
-        lines.extend(self.rename_input.render(width).iter().map(|line| line.to_string()));
+        lines.extend(
+            self.rename_input
+                .render(width)
+                .iter()
+                .map(|line| line.to_string()),
+        );
         lines.push(String::new());
         lines.extend(
             pillar_tui::components::Text::new(
@@ -956,8 +966,8 @@ impl SessionSelectorComponent {
                 0,
             )
             .render(width)
-                .iter()
-                .map(|line| theme_handle.fg("muted", line)),
+            .iter()
+            .map(|line| theme_handle.fg("muted", line)),
         );
         lines
     }
@@ -975,7 +985,10 @@ impl Component for SessionSelectorComponent {
         let mut lines: Vec<String> = Vec::new();
         lines.push(String::new());
         lines.extend(
-            DynamicBorder::with_color(Box::new(|text| theme().fg("accent", text))).render(width).iter().map(|line| line.to_string()),
+            DynamicBorder::with_color(Box::new(|text| theme().fg("accent", text)))
+                .render(width)
+                .iter()
+                .map(|line| line.to_string()),
         );
         lines.push(String::new());
         if self.rename_active {
@@ -987,7 +1000,10 @@ impl Component for SessionSelectorComponent {
         }
         lines.push(String::new());
         lines.extend(
-            DynamicBorder::with_color(Box::new(|text| theme().fg("accent", text))).render(width).iter().map(|line| line.to_string()),
+            DynamicBorder::with_color(Box::new(|text| theme().fg("accent", text)))
+                .render(width)
+                .iter()
+                .map(|line| line.to_string()),
         );
         render_lines(lines)
     }

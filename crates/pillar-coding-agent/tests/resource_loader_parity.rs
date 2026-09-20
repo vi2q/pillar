@@ -192,7 +192,11 @@ fn loader_context_files_and_system_prompt_discovery() {
     std::fs::create_dir_all(cwd.join(".pillar")).unwrap();
     // Context files live at directory roots (not inside .pillar).
     std::fs::write(cwd.join("AGENTS.md"), "project context").unwrap();
-    std::fs::write(cwd.join(".pillar").join("SYSTEM.md"), "project system prompt").unwrap();
+    std::fs::write(
+        cwd.join(".pillar").join("SYSTEM.md"),
+        "project system prompt",
+    )
+    .unwrap();
 
     let settings = make_settings(&cwd, &agent_dir);
     let mut loader = ResourceLoader::new(
@@ -530,7 +534,9 @@ fn a_missing_package_source_is_skipped_not_installed() {
         Arc::clone(&settings),
     );
 
-    loader.reload(None).expect("a missing package does not fail the load");
+    loader
+        .reload(None)
+        .expect("a missing package does not fail the load");
     assert_eq!(
         loader.skipped_package_sources(),
         ["npm:pillar-not-installed-anywhere@9.9.9"],

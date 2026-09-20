@@ -757,28 +757,25 @@ fn migrate_v1_to_v2(entries: &mut [FileEntry]) {
                 e.base_mut().id = new_id.clone();
                 e.base_mut().parent_id = prev_id.clone();
                 prev_id = Some(new_id);
-                if let Entry::Compaction(compaction) = e {
-                    if let Some(value) = &compaction.details {
-                        if let Some(first_kept) = value.get("firstKeptEntryIndex") {
-                            if let Some(i) = first_kept.as_u64() {
-                                first_kept_index = Some((index, i as usize));
-                            }
-                        }
-                    }
+                if let Entry::Compaction(compaction) = e
+                    && let Some(value) = &compaction.details
+                    && let Some(first_kept) = value.get("firstKeptEntryIndex")
+                    && let Some(i) = first_kept.as_u64()
+                {
+                    first_kept_index = Some((index, i as usize));
                 }
             }
         }
     }
 
     // Convert firstKeptEntryIndex to firstKeptEntryId.
-    if let Some((entry_index, kept_index)) = first_kept_index {
-        if let Some(FileEntry::Entry(target)) = entries.get(kept_index) {
-            let target_id = target.id().to_string();
-            if let Some(FileEntry::Entry(Entry::Compaction(compaction))) =
-                entries.get_mut(entry_index)
-            {
-                compaction.first_kept_entry_id = target_id;
-            }
+    if let Some((entry_index, kept_index)) = first_kept_index
+        && let Some(FileEntry::Entry(target)) = entries.get(kept_index)
+    {
+        let target_id = target.id().to_string();
+        if let Some(FileEntry::Entry(Entry::Compaction(compaction))) = entries.get_mut(entry_index)
+        {
+            compaction.first_kept_entry_id = target_id;
         }
     }
 }
@@ -789,11 +786,11 @@ fn migrate_v2_to_v3(entries: &mut [FileEntry]) {
             header.version = Some(3);
             continue;
         }
-        if let FileEntry::Entry(Entry::Message(message_entry)) = entry {
-            if let CodingAgentMessage::Custom(custom) = &mut message_entry.message {
-                // v2 hook messages became custom messages (role rename only).
-                let _ = custom;
-            }
+        if let FileEntry::Entry(Entry::Message(message_entry)) = entry
+            && let CodingAgentMessage::Custom(custom) = &mut message_entry.message
+        {
+            // v2 hook messages became custom messages (role rename only).
+            let _ = custom;
         }
     }
 }
@@ -1765,10 +1762,10 @@ impl SessionManager {
         from_hook: bool,
         usage: Option<Usage>,
     ) -> Result<String, String> {
-        if let Some(branch_from_id) = branch_from_id {
-            if !self.by_id.contains_key(branch_from_id) {
-                return Err(format!("Entry {branch_from_id} not found"));
-            }
+        if let Some(branch_from_id) = branch_from_id
+            && !self.by_id.contains_key(branch_from_id)
+        {
+            return Err(format!("Entry {branch_from_id} not found"));
         }
         let from_id = self.leaf_id.clone().unwrap_or_else(|| "root".to_string());
         self.leaf_id = branch_from_id.map(str::to_string);
@@ -1809,10 +1806,11 @@ impl SessionManager {
         cwd_override: Option<&str>,
     ) -> Result<Self, String> {
         let mut header_cwd: Option<String> = None;
-        if cwd_override.is_none() && path.exists() {
-            if let Some(FileEntry::Header(header)) = load_entries_from_file(path).first().cloned() {
-                header_cwd = Some(header.cwd);
-            }
+        if cwd_override.is_none()
+            && path.exists()
+            && let Some(FileEntry::Header(header)) = load_entries_from_file(path).first().cloned()
+        {
+            header_cwd = Some(header.cwd);
         }
         let cwd = cwd_override
             .map(str::to_string)
@@ -1859,7 +1857,7 @@ impl SessionManager {
                 !filter_cwd || session_cwd_matches(&session.cwd, &resolved_cwd.to_string_lossy())
             })
             .collect();
-        sessions.sort_by(|a, b| b.modified_ms.cmp(&a.modified_ms));
+        sessions.sort_by_key(|a| std::cmp::Reverse(a.modified_ms));
         sessions
     }
 
@@ -1872,7 +1870,7 @@ impl SessionManager {
     ) -> Vec<SessionInfo> {
         if let Some(dir) = session_dir {
             let mut sessions = list_sessions_from_dir(dir, progress);
-            sessions.sort_by(|a, b| b.modified_ms.cmp(&a.modified_ms));
+            sessions.sort_by_key(|a| std::cmp::Reverse(a.modified_ms));
             return sessions;
         }
         let sessions_root = default_sessions_root();
@@ -1912,7 +1910,7 @@ impl SessionManager {
             }) as SessionListProgress
         });
         let mut sessions = load_session_infos(&files, combined_progress.as_ref());
-        sessions.sort_by(|a, b| b.modified_ms.cmp(&a.modified_ms));
+        sessions.sort_by_key(|a| std::cmp::Reverse(a.modified_ms));
         sessions
     }
 
@@ -2280,10 +2278,10 @@ pub fn build_session_info(file_path: &Path) -> Option<SessionInfo> {
                 let Some(text) = extract_text_content(&message_entry.message) else {
                     continue;
                 };
-                if first_message.is_empty() {
-                    if let CodingAgentMessage::Base(Message::User { .. }) = &message_entry.message {
-                        first_message = text.clone();
-                    }
+                if first_message.is_empty()
+                    && let CodingAgentMessage::Base(Message::User { .. }) = &message_entry.message
+                {
+                    first_message = text.clone();
                 }
                 all_messages.push(text);
             }

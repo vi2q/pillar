@@ -101,10 +101,10 @@ fn get_assistant_usage(message: &AgentMessage) -> Option<&Usage> {
 /// `getLastAssistantUsage`).
 pub fn get_last_assistant_usage(entries: &[Entry]) -> Option<&Usage> {
     for entry in entries.iter().rev() {
-        if let EntryPayload::Message { message, .. } = &entry.payload {
-            if let Some(usage) = get_assistant_usage(message) {
-                return Some(usage);
-            }
+        if let EntryPayload::Message { message, .. } = &entry.payload
+            && let Some(usage) = get_assistant_usage(message)
+        {
+            return Some(usage);
         }
     }
     None
@@ -219,10 +219,10 @@ pub fn find_turn_start_index(
         if entry.kind() == "branch_summary" {
             return Some(i);
         }
-        if let EntryPayload::Message { message, .. } = &entry.payload {
-            if message_role_is_turn_start(message) {
-                return Some(i);
-            }
+        if let EntryPayload::Message { message, .. } = &entry.payload
+            && message_role_is_turn_start(message)
+        {
+            return Some(i);
         }
         if i == start_index {
             return None;
@@ -515,19 +515,16 @@ fn extract_file_operations(
     prev_compaction_index: Option<usize>,
 ) -> FileOperations {
     let mut file_ops = super::utils::create_file_ops();
-    if let Some(prev_compaction_index) = prev_compaction_index {
-        if let EntryPayload::Compaction { details, .. } = &entries[prev_compaction_index].payload {
-            if let Some(details) = details
-                && let Ok(compaction_details) =
-                    serde_json::from_value::<CompactionDetails>(details.clone())
-            {
-                for file in compaction_details.read_files {
-                    file_ops.read.insert(file);
-                }
-                for file in compaction_details.modified_files {
-                    file_ops.edited.insert(file);
-                }
-            }
+    if let Some(prev_compaction_index) = prev_compaction_index
+        && let EntryPayload::Compaction { details, .. } = &entries[prev_compaction_index].payload
+        && let Some(details) = details
+        && let Ok(compaction_details) = serde_json::from_value::<CompactionDetails>(details.clone())
+    {
+        for file in compaction_details.read_files {
+            file_ops.read.insert(file);
+        }
+        for file in compaction_details.modified_files {
+            file_ops.edited.insert(file);
         }
     }
     for msg in messages {

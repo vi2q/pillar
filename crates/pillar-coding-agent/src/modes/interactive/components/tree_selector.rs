@@ -113,18 +113,17 @@ fn render_horizontal_viewport(rows: &[HorizontalViewportRow], width: usize) -> V
     let selected_row = rows.iter().find(|row| row.is_selected);
 
     let mut horizontal_scroll = 0usize;
-    if let Some(selected_row) = selected_row {
-        if max_horizontal_scroll > 0 {
-            let min_visible_anchor_content_width = MAX_VISIBLE_ANCHOR_CONTENT_WIDTH
-                .min(MIN_VISIBLE_ANCHOR_CONTENT_WIDTH.max(viewport_width / 3));
-            if selected_row.anchor_col
-                > viewport_width.saturating_sub(min_visible_anchor_content_width)
-            {
-                let anchor_context_width =
-                    MAX_ANCHOR_CONTEXT_WIDTH.min(MIN_ANCHOR_CONTEXT_WIDTH.max(viewport_width / 4));
-                horizontal_scroll = max_horizontal_scroll
-                    .min(selected_row.anchor_col.saturating_sub(anchor_context_width));
-            }
+    if let Some(selected_row) = selected_row
+        && max_horizontal_scroll > 0
+    {
+        let min_visible_anchor_content_width = MAX_VISIBLE_ANCHOR_CONTENT_WIDTH
+            .min(MIN_VISIBLE_ANCHOR_CONTENT_WIDTH.max(viewport_width / 3));
+        if selected_row.anchor_col > viewport_width.saturating_sub(min_visible_anchor_content_width)
+        {
+            let anchor_context_width =
+                MAX_ANCHOR_CONTEXT_WIDTH.min(MIN_ANCHOR_CONTEXT_WIDTH.max(viewport_width / 4));
+            horizontal_scroll = max_horizontal_scroll
+                .min(selected_row.anchor_col.saturating_sub(anchor_context_width));
         }
     }
 
@@ -199,10 +198,10 @@ fn normalize(s: &str) -> String {
 /// Upstream `shortenPath` (HOME → `~`).
 fn shorten_path(path: &str) -> String {
     let home = std::env::var("HOME").unwrap_or_default();
-    if !home.is_empty() {
-        if let Some(rest) = path.strip_prefix(&home) {
-            return format!("~{rest}");
-        }
+    if !home.is_empty()
+        && let Some(rest) = path.strip_prefix(&home)
+    {
+        return format!("~{rest}");
     }
     path.to_string()
 }
@@ -530,26 +529,25 @@ impl TreeList {
         )) = stack.pop()
         {
             let entry = &node.entry;
-            if let SessionEntry::Message(message_entry) = entry {
-                if let CodingAgentMessage::Base(Message::Assistant(assistant)) =
+            if let SessionEntry::Message(message_entry) = entry
+                && let CodingAgentMessage::Base(Message::Assistant(assistant)) =
                     &message_entry.message
-                {
-                    for block in &assistant.content {
-                        if let Content::ToolCall {
-                            id,
-                            name,
-                            arguments,
-                            ..
-                        } = block
-                        {
-                            self.tool_call_map.insert(
-                                id.clone(),
-                                ToolCallInfo {
-                                    name: name.clone(),
-                                    arguments: arguments.clone(),
-                                },
-                            );
-                        }
+            {
+                for block in &assistant.content {
+                    if let Content::ToolCall {
+                        id,
+                        name,
+                        arguments,
+                        ..
+                    } = block
+                    {
+                        self.tool_call_map.insert(
+                            id.clone(),
+                            ToolCallInfo {
+                                name: name.clone(),
+                                arguments: arguments.clone(),
+                            },
+                        );
                     }
                 }
             }
@@ -648,24 +646,21 @@ impl TreeList {
 
             // Hide assistant messages with only tool calls (no text) unless
             // error/aborted; always show the current leaf.
-            if let SessionEntry::Message(message_entry) = entry {
-                if let CodingAgentMessage::Base(Message::Assistant(assistant)) =
+            if let SessionEntry::Message(message_entry) = entry
+                && let CodingAgentMessage::Base(Message::Assistant(assistant)) =
                     &message_entry.message
-                {
-                    if !is_current_leaf {
-                        let has_text = assistant.content.iter().any(|block| match block {
-                            Content::Text { text, .. } => !text.trim().is_empty(),
-                            _ => false,
-                        });
-                        let is_error_or_aborted = !matches!(
-                            assistant.stop_reason,
-                            pillar_ai::types::StopReason::Stop
-                                | pillar_ai::types::StopReason::ToolUse
-                        );
-                        if !has_text && !is_error_or_aborted {
-                            continue;
-                        }
-                    }
+                && !is_current_leaf
+            {
+                let has_text = assistant.content.iter().any(|block| match block {
+                    Content::Text { text, .. } => !text.trim().is_empty(),
+                    _ => false,
+                });
+                let is_error_or_aborted = !matches!(
+                    assistant.stop_reason,
+                    pillar_ai::types::StopReason::Stop | pillar_ai::types::StopReason::ToolUse
+                );
+                if !has_text && !is_error_or_aborted {
+                    continue;
                 }
             }
 
@@ -712,10 +707,10 @@ impl TreeList {
                     flat_node.node.entry.id().to_string(),
                     flat_node.node.entry.parent_id().map(str::to_string),
                 );
-                if let Some(parent_id) = parent_id {
-                    if self.folded_nodes.contains(&parent_id) || skip_set.contains(&parent_id) {
-                        skip_set.insert(id);
-                    }
+                if let Some(parent_id) = parent_id
+                    && (self.folded_nodes.contains(&parent_id) || skip_set.contains(&parent_id))
+                {
+                    skip_set.insert(id);
                 }
             }
             indices.retain(|&index| !skip_set.contains(self.entry_id(index)));
@@ -1125,15 +1120,14 @@ impl TreeList {
         let text = match text {
             Some(text) if !text.is_empty() => Some(text),
             _ => {
-                if let SessionEntry::Message(message_entry) = entry {
-                    if let CodingAgentMessage::Base(Message::Assistant(assistant)) =
+                if let SessionEntry::Message(message_entry) = entry
+                    && let CodingAgentMessage::Base(Message::Assistant(assistant)) =
                         &message_entry.message
-                    {
-                        return assistant
-                            .error_message
-                            .clone()
-                            .filter(|text| !text.trim().is_empty());
-                    }
+                {
+                    return assistant
+                        .error_message
+                        .clone()
+                        .filter(|text| !text.trim().is_empty());
                 }
                 None
             }
@@ -1637,7 +1631,12 @@ impl LabelInput {
             "",
             false,
         ));
-        for line in self.input.render(available_width).iter().map(|line| line.to_string()) {
+        for line in self
+            .input
+            .render(available_width)
+            .iter()
+            .map(|line| line.to_string())
+        {
             lines.push(truncate_to_width(
                 &format!("{indent}{line}"),
                 width,
@@ -1915,10 +1914,17 @@ impl Component for TreeSelectorComponent {
         let mut lines: Vec<String> = Vec::new();
 
         lines.push(String::new());
-        lines.extend(DynamicBorder::new().render(width).iter().map(|line| line.to_string()));
+        lines.extend(
+            DynamicBorder::new()
+                .render(width)
+                .iter()
+                .map(|line| line.to_string()),
+        );
         lines.extend(
             pillar_tui::components::Text::new(&theme_handle.bold("  Session Tree"), 1, 0)
-                .render(width).iter().map(|line| line.to_string()),
+                .render(width)
+                .iter()
+                .map(|line| line.to_string()),
         );
         lines.extend(render_tree_help(width));
 
@@ -1935,18 +1941,38 @@ impl Component for TreeSelectorComponent {
         };
         lines.push(truncate_to_width(&search_line, width, "", false));
 
-        lines.extend(DynamicBorder::new().render(width).iter().map(|line| line.to_string()));
+        lines.extend(
+            DynamicBorder::new()
+                .render(width)
+                .iter()
+                .map(|line| line.to_string()),
+        );
         lines.push(String::new());
 
         // Tree list or label input.
         if let Some(label_input) = &self.label_input {
-            lines.extend(label_input.render(width).iter().map(|line| line.to_string()));
+            lines.extend(
+                label_input
+                    .render(width)
+                    .iter()
+                    .map(|line| line.to_string()),
+            );
         } else {
-            lines.extend(self.tree_list.render(width).iter().map(|line| line.to_string()));
+            lines.extend(
+                self.tree_list
+                    .render(width)
+                    .iter()
+                    .map(|line| line.to_string()),
+            );
         }
 
         lines.push(String::new());
-        lines.extend(DynamicBorder::new().render(width).iter().map(|line| line.to_string()));
+        lines.extend(
+            DynamicBorder::new()
+                .render(width)
+                .iter()
+                .map(|line| line.to_string()),
+        );
         render_lines(lines)
     }
 }

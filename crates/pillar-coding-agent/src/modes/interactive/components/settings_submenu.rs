@@ -180,10 +180,10 @@ fn build_select_list(
         options.len().min(10),
         layout.to_select_list_layout(),
     );
-    if let Some(preselect) = preselect {
-        if let Some(index) = options.iter().position(|option| option.value == preselect) {
-            list.set_selected_index(index);
-        }
+    if let Some(preselect) = preselect
+        && let Some(index) = options.iter().position(|option| option.value == preselect)
+    {
+        list.set_selected_index(index);
     }
     list
 }
@@ -198,12 +198,17 @@ impl Component for SelectSubmenu {
                 0,
                 0,
             )
-            .render(width).iter().map(|line| line.to_string()),
+            .render(width)
+            .iter()
+            .map(|line| line.to_string()),
         );
         if !self.description.is_empty() {
             lines.push(String::new());
             lines.extend(
-                Text::new(&theme_handle.fg("muted", &self.description), 0, 0).render(width).iter().map(|line| line.to_string()),
+                Text::new(&theme_handle.fg("muted", &self.description), 0, 0)
+                    .render(width)
+                    .iter()
+                    .map(|line| line.to_string()),
             );
         }
         if let Some(input) = self.search_input.as_mut() {
@@ -211,14 +216,24 @@ impl Component for SelectSubmenu {
             lines.extend(input.render(width).iter().map(|line| line.to_string()));
         }
         lines.push(String::new());
-        lines.extend(self.list.render(width, &get_select_list_theme()).iter().map(|line| line.to_string()));
+        lines.extend(
+            self.list
+                .render(width, &get_select_list_theme())
+                .iter()
+                .map(|line| line.to_string()),
+        );
         lines.push(String::new());
         let hint = if self.searchable {
             "  Type to filter · Enter to select · Esc to go back"
         } else {
             "  Enter to select · Esc to go back"
         };
-        lines.extend(Text::new(&theme_handle.fg("dim", hint), 0, 0).render(width).iter().map(|line| line.to_string()));
+        lines.extend(
+            Text::new(&theme_handle.fg("dim", hint), 0, 0)
+                .render(width)
+                .iter()
+                .map(|line| line.to_string()),
+        );
         render_lines(lines)
     }
 }

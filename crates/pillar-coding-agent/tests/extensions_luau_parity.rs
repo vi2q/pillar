@@ -127,10 +127,10 @@ fn fake_loader() -> impl LuauExtensionLoader {
             tools: BTreeMap::new(),
             flags: BTreeMap::new(),
             shortcuts: BTreeMap::new(),
-                message_renderers: Default::default(),
-        entry_renderers: Default::default(),
-        markdown_transformer: None,
-}))
+            message_renderers: Default::default(),
+            entry_renderers: Default::default(),
+            markdown_transformer: None,
+        }))
     }
 }
 
@@ -190,10 +190,10 @@ fn build_runner_cache_skips_loader_for_duplicate_paths() {
                 tools: BTreeMap::new(),
                 flags: BTreeMap::new(),
                 shortcuts: BTreeMap::new(),
-                    message_renderers: Default::default(),
-        entry_renderers: Default::default(),
-        markdown_transformer: None,
-}))
+                message_renderers: Default::default(),
+                entry_renderers: Default::default(),
+                markdown_transformer: None,
+            }))
         }
     };
 

@@ -417,10 +417,7 @@ fn the_embedding_core_keeps_os_capabilities_behind_features() {
             "crates/pillar-agent/src/harness/session/jsonl/mod.rs",
             "feature = \"session-files\"",
         ),
-        (
-            "crates/pillar-agent/src/lib.rs",
-            "feature = \"search\"",
-        ),
+        ("crates/pillar-agent/src/lib.rs", "feature = \"search\""),
     ];
     for (path, needle) in gated_declarations {
         let source = std::fs::read_to_string(root.join(path)).expect("read the module declaration");
@@ -461,10 +458,7 @@ fn the_embedding_core_keeps_os_capabilities_behind_features() {
                 .expect("a path under the repo root")
                 .to_string_lossy()
                 .replace('\\', "/");
-            if allowed
-                .iter()
-                .any(|prefix| relative.starts_with(prefix))
-            {
+            if allowed.iter().any(|prefix| relative.starts_with(prefix)) {
                 continue;
             }
             let source = std::fs::read_to_string(&file).expect("read a source file");
@@ -533,7 +527,10 @@ fn the_host_driven_core_is_free_of_timers_sockets_and_raw_spawning() {
                 }
             }
             if line.contains("tokio::spawn") && !file.ends_with("spawn.rs") {
-                offenders.push(format!("{file}:{}: tokio::spawn (use crate::spawn)", number + 1));
+                offenders.push(format!(
+                    "{file}:{}: tokio::spawn (use crate::spawn)",
+                    number + 1
+                ));
             }
         }
     }

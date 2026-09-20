@@ -193,10 +193,10 @@ async fn run_stream_inner(
     let transformed = transform_messages(context.messages.clone(), model, Some(&normalize_id));
 
     let mut payload = build_chat_payload(model, context, &transformed, options);
-    if let Some(on_payload) = &options.on_payload {
-        if let Some(next) = on_payload(model, payload.clone()).await {
-            payload = next;
-        }
+    if let Some(on_payload) = &options.on_payload
+        && let Some(next) = on_payload(model, payload.clone()).await
+    {
+        payload = next;
     }
 
     let url = format!(
@@ -371,10 +371,11 @@ fn build_mistral_headers(
 
     let has_explicit_affinity = has_header_override(model.headers.as_ref(), "x-affinity")
         || has_header_override(options.headers.as_ref(), "x-affinity");
-    if should_use_prompt_caching(options) && !has_explicit_affinity {
-        if let Some(session_id) = &options.session_id {
-            defaults.push(("x-affinity".to_string(), session_id.clone()));
-        }
+    if should_use_prompt_caching(options)
+        && !has_explicit_affinity
+        && let Some(session_id) = &options.session_id
+    {
+        defaults.push(("x-affinity".to_string(), session_id.clone()));
     }
 
     merge_request_headers(defaults, model.headers.as_ref(), options.headers.as_ref())
@@ -425,14 +426,14 @@ pub fn to_mistral_wire_payload(payload: &Value) -> Value {
         obj.insert("messages".to_string(), Value::Array(wire_messages));
     }
 
-    if let Some(response_format) = obj.get_mut("response_format") {
-        if let Some(rf_obj) = response_format.as_object_mut() {
-            remap_property(rf_obj, "jsonSchema", "json_schema");
-            if let Some(json_schema) = rf_obj.get_mut("json_schema") {
-                if let Some(js_obj) = json_schema.as_object_mut() {
-                    remap_property(js_obj, "schemaDefinition", "schema");
-                }
-            }
+    if let Some(response_format) = obj.get_mut("response_format")
+        && let Some(rf_obj) = response_format.as_object_mut()
+    {
+        remap_property(rf_obj, "jsonSchema", "json_schema");
+        if let Some(json_schema) = rf_obj.get_mut("json_schema")
+            && let Some(js_obj) = json_schema.as_object_mut()
+        {
+            remap_property(js_obj, "schemaDefinition", "schema");
         }
     }
 
@@ -444,16 +445,16 @@ fn to_mistral_wire_message(message: &Value) -> Value {
     if let Some(obj) = wire.as_object_mut() {
         remap_property(obj, "toolCalls", "tool_calls");
         remap_property(obj, "toolCallId", "tool_call_id");
-        if let Some(content) = obj.get("content") {
-            if content.is_array() {
-                let chunks: Vec<Value> = content
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(to_mistral_wire_content_chunk)
-                    .collect();
-                obj.insert("content".to_string(), Value::Array(chunks));
-            }
+        if let Some(content) = obj.get("content")
+            && content.is_array()
+        {
+            let chunks: Vec<Value> = content
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(to_mistral_wire_content_chunk)
+                .collect();
+            obj.insert("content".to_string(), Value::Array(chunks));
         }
     }
     wire
@@ -511,10 +512,7 @@ async fn read_mistral_events(
         let Some(chunk) = chunk else { break };
         buffer.extend_from_slice(&chunk);
 
-        loop {
-            let Some((index, length)) = find_mistral_event_boundary(&buffer) else {
-                break;
-            };
+        while let Some((index, length)) = find_mistral_event_boundary(&buffer) {
             let raw = String::from_utf8_lossy(&buffer[..index]).to_string();
             buffer.drain(..index + length);
             match parse_mistral_event(&raw)? {
@@ -686,25 +684,25 @@ fn build_chat_payload(
     if let Some(effort) = &options.reasoning_effort {
         payload.insert("reasoningEffort".to_string(), json!(effort));
     }
-    if should_use_prompt_caching(options) {
-        if let Some(session_id) = &options.session_id {
-            payload.insert("promptCacheKey".to_string(), json!(session_id));
-        }
+    if should_use_prompt_caching(options)
+        && let Some(session_id) = &options.session_id
+    {
+        payload.insert("promptCacheKey".to_string(), json!(session_id));
     }
 
-    if let Some(system_prompt) = &context.system_prompt {
-        if !system_prompt.is_empty() {
-            let mut messages_arr: Vec<Value> = payload
-                .get("messages")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
-            messages_arr.insert(
-                0,
-                json!({ "role": "system", "content": sanitize_surrogates(system_prompt) }),
-            );
-            payload.insert("messages".to_string(), Value::Array(messages_arr));
-        }
+    if let Some(system_prompt) = &context.system_prompt
+        && !system_prompt.is_empty()
+    {
+        let mut messages_arr: Vec<Value> = payload
+            .get("messages")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        messages_arr.insert(
+            0,
+            json!({ "role": "system", "content": sanitize_surrogates(system_prompt) }),
+        );
+        payload.insert("messages".to_string(), Value::Array(messages_arr));
     }
 
     Value::Object(payload)
@@ -757,13 +755,11 @@ fn to_chat_messages(messages: &[crate::types::Message], supports_images: bool) -
                             }
                             Content::Image {
                                 data, mime_type, ..
-                            } => {
-                                if supports_images {
-                                    chunks.push(json!({
-                                        "type": "image_url",
-                                        "imageUrl": format!("data:{};base64,{}", mime_type, data),
-                                    }));
-                                }
+                            } if supports_images => {
+                                chunks.push(json!({
+                                    "type": "image_url",
+                                    "imageUrl": format!("data:{};base64,{}", mime_type, data),
+                                }));
                             }
                             _ => {}
                         }
@@ -933,14 +929,13 @@ fn consume_chat_stream(
 
     for chunk in events {
         // Keep the first non-empty id (upstream `output.responseId ||= chunk.id`).
-        if output.response_id.is_none() {
-            if let Some(id) = chunk
+        if output.response_id.is_none()
+            && let Some(id) = chunk
                 .get("id")
                 .and_then(Value::as_str)
                 .filter(|s| !s.is_empty())
-            {
-                output.response_id = Some(id.to_string());
-            }
+        {
+            output.response_id = Some(id.to_string());
         }
 
         if let Some(usage) = chunk.get("usage").filter(|u| u.is_object()) {
@@ -981,16 +976,15 @@ fn consume_chat_stream(
 
         // Upstream: `if (choice.finish_reason)` — null/absent is falsy and
         // does NOT set the stop reason (the stream may continue).
-        if let Some(finish_reason) = choice.get("finish_reason") {
-            if !finish_reason.is_null() {
-                if let Some(reason) = finish_reason.as_str() {
-                    output.raw_stop_reason = Some(reason.to_string());
-                    let mapped = map_chat_stop_reason(Some(reason));
-                    output.stop_reason = mapped.0;
-                    if let Some(err) = mapped.1 {
-                        output.error_message = Some(err);
-                    }
-                }
+        if let Some(finish_reason) = choice.get("finish_reason")
+            && !finish_reason.is_null()
+            && let Some(reason) = finish_reason.as_str()
+        {
+            output.raw_stop_reason = Some(reason.to_string());
+            let mapped = map_chat_stop_reason(Some(reason));
+            output.stop_reason = mapped.0;
+            if let Some(err) = mapped.1 {
+                output.error_message = Some(err);
             }
         }
 
@@ -999,124 +993,123 @@ fn consume_chat_stream(
         };
 
         // Content: string | chunk array | null.
-        if let Some(content) = delta.get("content") {
-            if !content.is_null() {
-                let items: Vec<Value> = if let Some(text) = content.as_str() {
-                    vec![json!(text)]
-                } else {
-                    content.as_array().cloned().unwrap_or_default()
-                };
-                for item in &items {
-                    if let Some(text_delta) = item.as_str() {
-                        let text_delta = sanitize_surrogates(text_delta);
-                        if current_kind != Some(BlockKind::Text) {
-                            finish_current_block(
-                                output,
-                                stream,
-                                current_kind,
-                                &current_text,
-                                &current_thinking,
-                            );
-                            current_kind = Some(BlockKind::Text);
-                            current_text = String::new();
-                            current_thinking = String::new();
-                            output.content.push(Content::Text {
-                                text: String::new(),
-                                text_signature: None,
-                            });
-                            stream.push(AssistantMessageEvent::TextStart {
-                                content_index: block_index(output),
-                                partial: output.clone(),
-                            });
-                        }
-                        current_text.push_str(&text_delta);
-                        stream.push(AssistantMessageEvent::TextDelta {
-                            content_index: block_index(output),
-                            delta: text_delta,
-                            partial: output.clone(),
-                        });
-                        continue;
-                    }
-
-                    let item_type = item.get("type").and_then(Value::as_str).unwrap_or("");
-                    if item_type == "thinking" {
-                        let delta_text = item
-                            .get("thinking")
-                            .and_then(Value::as_array)
-                            .map(|parts| {
-                                parts
-                                    .iter()
-                                    .filter_map(|p| p.get("text").and_then(Value::as_str))
-                                    .filter(|t| !t.is_empty())
-                                    .collect::<Vec<_>>()
-                                    .join("")
-                            })
-                            .unwrap_or_default();
-                        let thinking_delta = sanitize_surrogates(&delta_text);
-                        if thinking_delta.is_empty() {
-                            continue;
-                        }
-                        if current_kind != Some(BlockKind::Thinking) {
-                            finish_current_block(
-                                output,
-                                stream,
-                                current_kind,
-                                &current_text,
-                                &current_thinking,
-                            );
-                            current_kind = Some(BlockKind::Thinking);
-                            current_text = String::new();
-                            current_thinking = String::new();
-                            output.content.push(Content::Thinking {
-                                thinking: String::new(),
-                                thinking_signature: None,
-                                redacted: None,
-                            });
-                            stream.push(AssistantMessageEvent::ThinkingStart {
-                                content_index: block_index(output),
-                                partial: output.clone(),
-                            });
-                        }
-                        current_thinking.push_str(&thinking_delta);
-                        stream.push(AssistantMessageEvent::ThinkingDelta {
-                            content_index: block_index(output),
-                            delta: thinking_delta,
-                            partial: output.clone(),
-                        });
-                        continue;
-                    }
-
-                    if item_type == "text" {
-                        let text_delta = sanitize_surrogates(
-                            item.get("text").and_then(Value::as_str).unwrap_or(""),
+        if let Some(content) = delta.get("content")
+            && !content.is_null()
+        {
+            let items: Vec<Value> = if let Some(text) = content.as_str() {
+                vec![json!(text)]
+            } else {
+                content.as_array().cloned().unwrap_or_default()
+            };
+            for item in &items {
+                if let Some(text_delta) = item.as_str() {
+                    let text_delta = sanitize_surrogates(text_delta);
+                    if current_kind != Some(BlockKind::Text) {
+                        finish_current_block(
+                            output,
+                            stream,
+                            current_kind,
+                            &current_text,
+                            &current_thinking,
                         );
-                        if current_kind != Some(BlockKind::Text) {
-                            finish_current_block(
-                                output,
-                                stream,
-                                current_kind,
-                                &current_text,
-                                &current_thinking,
-                            );
-                            current_kind = Some(BlockKind::Text);
-                            current_text = String::new();
-                            current_thinking = String::new();
-                            output.content.push(Content::Text {
-                                text: String::new(),
-                                text_signature: None,
-                            });
-                            stream.push(AssistantMessageEvent::TextStart {
-                                content_index: block_index(output),
-                                partial: output.clone(),
-                            });
-                        }
-                        current_text.push_str(&text_delta);
-                        stream.push(AssistantMessageEvent::TextDelta {
+                        current_kind = Some(BlockKind::Text);
+                        current_text = String::new();
+                        current_thinking = String::new();
+                        output.content.push(Content::Text {
+                            text: String::new(),
+                            text_signature: None,
+                        });
+                        stream.push(AssistantMessageEvent::TextStart {
                             content_index: block_index(output),
-                            delta: text_delta,
                             partial: output.clone(),
                         });
                     }
+                    current_text.push_str(&text_delta);
+                    stream.push(AssistantMessageEvent::TextDelta {
+                        content_index: block_index(output),
+                        delta: text_delta,
+                        partial: output.clone(),
+                    });
+                    continue;
+                }
+
+                let item_type = item.get("type").and_then(Value::as_str).unwrap_or("");
+                if item_type == "thinking" {
+                    let delta_text = item
+                        .get("thinking")
+                        .and_then(Value::as_array)
+                        .map(|parts| {
+                            parts
+                                .iter()
+                                .filter_map(|p| p.get("text").and_then(Value::as_str))
+                                .filter(|t| !t.is_empty())
+                                .collect::<Vec<_>>()
+                                .join("")
+                        })
+                        .unwrap_or_default();
+                    let thinking_delta = sanitize_surrogates(&delta_text);
+                    if thinking_delta.is_empty() {
+                        continue;
+                    }
+                    if current_kind != Some(BlockKind::Thinking) {
+                        finish_current_block(
+                            output,
+                            stream,
+                            current_kind,
+                            &current_text,
+                            &current_thinking,
+                        );
+                        current_kind = Some(BlockKind::Thinking);
+                        current_text = String::new();
+                        current_thinking = String::new();
+                        output.content.push(Content::Thinking {
+                            thinking: String::new(),
+                            thinking_signature: None,
+                            redacted: None,
+                        });
+                        stream.push(AssistantMessageEvent::ThinkingStart {
+                            content_index: block_index(output),
+                            partial: output.clone(),
+                        });
+                    }
+                    current_thinking.push_str(&thinking_delta);
+                    stream.push(AssistantMessageEvent::ThinkingDelta {
+                        content_index: block_index(output),
+                        delta: thinking_delta,
+                        partial: output.clone(),
+                    });
+                    continue;
+                }
+
+                if item_type == "text" {
+                    let text_delta =
+                        sanitize_surrogates(item.get("text").and_then(Value::as_str).unwrap_or(""));
+                    if current_kind != Some(BlockKind::Text) {
+                        finish_current_block(
+                            output,
+                            stream,
+                            current_kind,
+                            &current_text,
+                            &current_thinking,
+                        );
+                        current_kind = Some(BlockKind::Text);
+                        current_text = String::new();
+                        current_thinking = String::new();
+                        output.content.push(Content::Text {
+                            text: String::new(),
+                            text_signature: None,
+                        });
+                        stream.push(AssistantMessageEvent::TextStart {
+                            content_index: block_index(output),
+                            partial: output.clone(),
+                        });
+                    }
+                    current_text.push_str(&text_delta);
+                    stream.push(AssistantMessageEvent::TextDelta {
+                        content_index: block_index(output),
+                        delta: text_delta,
+                        partial: output.clone(),
+                    });
                 }
             }
         }

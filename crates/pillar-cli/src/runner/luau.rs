@@ -435,9 +435,11 @@ fn install_host_api(
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
                 let manager = cached.get_or_insert_with(|| {
-                    Arc::new(pillar_coding_agent::core::keybindings::KeybindingsManager::create(
-                        agent_dir.as_deref().unwrap_or(Path::new(".")),
-                    ))
+                    Arc::new(
+                        pillar_coding_agent::core::keybindings::KeybindingsManager::create(
+                            agent_dir.as_deref().unwrap_or(Path::new(".")),
+                        ),
+                    )
                 });
                 manager.matches(data, name)
             }))
@@ -686,20 +688,19 @@ impl ExtensionWiring {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .host_services();
-        let runner: pillar_extensions::bridge::HostCallRunner =
-            Arc::new(move |request, abort| {
-                let services = services.clone();
-                Box::pin(async move {
-                    // Outside a tokio context (a host driving the runner itself)
-                    // the work runs inline instead of panicking.
-                    if tokio::runtime::Handle::try_current().is_err() {
-                        return request.run_with(&services, abort);
-                    }
-                    tokio::task::spawn_blocking(move || request.run_with(&services, abort))
-                        .await
-                        .map_err(|error| format!("the host call task failed: {error}"))?
-                })
-            });
+        let runner: pillar_extensions::bridge::HostCallRunner = Arc::new(move |request, abort| {
+            let services = services.clone();
+            Box::pin(async move {
+                // Outside a tokio context (a host driving the runner itself)
+                // the work runs inline instead of panicking.
+                if tokio::runtime::Handle::try_current().is_err() {
+                    return request.run_with(&services, abort);
+                }
+                tokio::task::spawn_blocking(move || request.run_with(&services, abort))
+                    .await
+                    .map_err(|error| format!("the host call task failed: {error}"))?
+            })
+        });
         pillar_extensions::bridge::bridge_to_agent_tools_with(&self.runtime, Some(runner))
     }
 

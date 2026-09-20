@@ -221,37 +221,37 @@ impl SelectList {
         let prefix = if is_selected { "→ " } else { "  " };
         let prefix_width = visible_width(prefix);
 
-        if let Some(description) = description_single_line {
-            if width > 40 {
-                let effective_primary_column_width = primary_column_width
-                    .min(width.saturating_sub(prefix_width + 4))
-                    .max(1);
-                let max_primary_width = (effective_primary_column_width - 1).max(1);
-                let truncated_value = self.truncate_primary(
-                    item,
-                    is_selected,
-                    max_primary_width,
-                    effective_primary_column_width,
-                );
-                let truncated_value_width = visible_width(&truncated_value);
-                let spacing = " ".repeat(
-                    effective_primary_column_width
-                        .saturating_sub(truncated_value_width)
-                        .max(1),
-                );
-                let description_start = prefix_width + truncated_value_width + spacing.len();
-                let remaining_width = width.saturating_sub(description_start + 2); // -2 for safety
+        if let Some(description) = description_single_line
+            && width > 40
+        {
+            let effective_primary_column_width = primary_column_width
+                .min(width.saturating_sub(prefix_width + 4))
+                .max(1);
+            let max_primary_width = (effective_primary_column_width - 1).max(1);
+            let truncated_value = self.truncate_primary(
+                item,
+                is_selected,
+                max_primary_width,
+                effective_primary_column_width,
+            );
+            let truncated_value_width = visible_width(&truncated_value);
+            let spacing = " ".repeat(
+                effective_primary_column_width
+                    .saturating_sub(truncated_value_width)
+                    .max(1),
+            );
+            let description_start = prefix_width + truncated_value_width + spacing.len();
+            let remaining_width = width.saturating_sub(description_start + 2); // -2 for safety
 
-                if remaining_width > MIN_DESCRIPTION_WIDTH {
-                    let truncated_desc = truncate_to_width(description, remaining_width, "", false);
-                    if is_selected {
-                        return (theme.selected_text)(&format!(
-                            "{prefix}{truncated_value}{spacing}{truncated_desc}"
-                        ));
-                    }
-                    let desc_text = (theme.description)(&format!("{spacing}{truncated_desc}"));
-                    return format!("{prefix}{truncated_value}{desc_text}");
+            if remaining_width > MIN_DESCRIPTION_WIDTH {
+                let truncated_desc = truncate_to_width(description, remaining_width, "", false);
+                if is_selected {
+                    return (theme.selected_text)(&format!(
+                        "{prefix}{truncated_value}{spacing}{truncated_desc}"
+                    ));
                 }
+                let desc_text = (theme.description)(&format!("{spacing}{truncated_desc}"));
+                return format!("{prefix}{truncated_value}{desc_text}");
             }
         }
 

@@ -327,28 +327,45 @@ impl Component for LoginDialogComponent {
     fn render(&mut self, width: usize) -> RenderLines {
         let theme_handle = theme();
         let mut lines: Vec<String> = Vec::new();
-        lines.extend(DynamicBorder::new().render(width).iter().map(|line| line.to_string()));
+        lines.extend(
+            DynamicBorder::new()
+                .render(width)
+                .iter()
+                .map(|line| line.to_string()),
+        );
         lines.extend(
             Text::new(
                 &theme_handle.fg("accent", &theme_handle.bold(&self.title)),
                 1,
                 0,
             )
-            .render(width).iter().map(|line| line.to_string()),
+            .render(width)
+            .iter()
+            .map(|line| line.to_string()),
         );
         let input_lines = self.input.render(width);
         for content in &self.content {
             match content {
                 DialogContent::Blank => lines.push(String::new()),
                 DialogContent::Text { text, padding_x } => {
-                    lines.extend(Text::new(text, *padding_x, 0).render(width).iter().map(|line| line.to_string()));
+                    lines.extend(
+                        Text::new(text, *padding_x, 0)
+                            .render(width)
+                            .iter()
+                            .map(|line| line.to_string()),
+                    );
                 }
                 DialogContent::Input => {
                     lines.extend(input_lines.iter().map(|line| line.to_string()))
                 }
             }
         }
-        lines.extend(DynamicBorder::new().render(width).iter().map(|line| line.to_string()));
+        lines.extend(
+            DynamicBorder::new()
+                .render(width)
+                .iter()
+                .map(|line| line.to_string()),
+        );
         render_lines(lines)
     }
 }

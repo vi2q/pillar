@@ -128,8 +128,8 @@ async fn run_json_mode(
     }));
 
     let mut run_result: Result<(), String> = Ok(());
-    if let Some(initial) = &options.initial_message {
-        if let Err(error) = session
+    if let Some(initial) = &options.initial_message
+        && let Err(error) = session
             .prompt(
                 initial,
                 Some(&PromptOptions {
@@ -138,9 +138,8 @@ async fn run_json_mode(
                 }),
             )
             .await
-        {
-            run_result = Err(error);
-        }
+    {
+        run_result = Err(error);
     }
     if run_result.is_ok() {
         for message in &options.messages {

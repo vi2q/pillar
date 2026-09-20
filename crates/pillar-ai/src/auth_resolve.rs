@@ -187,10 +187,10 @@ struct OverlayEnvAuthContext<'a> {
 #[async_trait]
 impl AuthContext for OverlayEnvAuthContext<'_> {
     async fn env(&self, name: &str) -> Option<String> {
-        if let Some(value) = self.env.get(name) {
-            if !value.is_empty() {
-                return Some(value.clone());
-            }
+        if let Some(value) = self.env.get(name)
+            && !value.is_empty()
+        {
+            return Some(value.clone());
         }
         self.base.env(name).await
     }

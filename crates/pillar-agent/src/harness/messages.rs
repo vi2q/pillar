@@ -34,12 +34,12 @@ pub fn bash_execution_to_text(msg: &BashExecutionMessage) -> String {
     } else if let Some(exit_code) = msg.exit_code.filter(|code| *code != 0) {
         text.push_str(&format!("\n\nCommand exited with code {exit_code}"));
     }
-    if msg.truncated {
-        if let Some(full_output_path) = &msg.full_output_path {
-            text.push_str(&format!(
-                "\n\n[Output truncated. Full output: {full_output_path}]"
-            ));
-        }
+    if msg.truncated
+        && let Some(full_output_path) = &msg.full_output_path
+    {
+        text.push_str(&format!(
+            "\n\n[Output truncated. Full output: {full_output_path}]"
+        ));
     }
     text
 }

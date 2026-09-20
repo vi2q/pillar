@@ -240,10 +240,10 @@ impl AuthInteraction for ScriptedInteraction {
 
     async fn prompt(&self, prompt: &AuthPrompt) -> Result<String, pillar_ai::error::AiError> {
         self.prompts.lock().unwrap().push(prompt.clone());
-        if self.abort_on_prompt {
-            if let Some(signal) = &self.signal {
-                signal.abort(Some(AbortReason::Aborted));
-            }
+        if self.abort_on_prompt
+            && let Some(signal) = &self.signal
+        {
+            signal.abort(Some(AbortReason::Aborted));
         }
         self.answers
             .lock()

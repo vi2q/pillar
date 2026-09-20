@@ -659,9 +659,7 @@ fn clicking_an_osc8_link_activates_it() {
         },
     );
     screen.base_mut().add_child(Box::new(Lines {
-        lines: vec![format!(
-            "\u{1b}]8;;https://example.com\u{7}link\u{1b}]8;;\u{7} tail"
-        )],
+        lines: vec!["\u{1b}]8;;https://example.com\u{7}link\u{1b}]8;;\u{7} tail".to_string()],
     }));
     screen.start();
     screen.do_render().expect("frame");

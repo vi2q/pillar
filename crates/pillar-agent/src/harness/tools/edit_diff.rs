@@ -513,12 +513,13 @@ fn diff_lines<'a>(old_content: &'a str, new_content: &'a str) -> Vec<DiffPart<'a
     ops.reverse();
 
     let push_part = |parts: &mut Vec<DiffPart<'a>>, added: bool, removed: bool, value: &'a str| {
-        if let Some(last) = parts.last_mut() {
-            if last.added == added && last.removed == removed {
-                // Merge adjacent same-kind parts (upstream does the same).
-                last.value = Cow::Owned(format!("{}{}", last.value, value));
-                return;
-            }
+        if let Some(last) = parts.last_mut()
+            && last.added == added
+            && last.removed == removed
+        {
+            // Merge adjacent same-kind parts (upstream does the same).
+            last.value = Cow::Owned(format!("{}{}", last.value, value));
+            return;
         }
         parts.push(DiffPart {
             added,

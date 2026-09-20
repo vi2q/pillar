@@ -223,10 +223,10 @@ fn single_mode_theme_items(available_themes: &[String]) -> Vec<SelectItem> {
 
 /// Upstream `preferredTheme`.
 fn preferred_theme(available_themes: &[String], preferred: Option<&str>, fallback: &str) -> String {
-    if let Some(preferred) = preferred {
-        if available_themes.iter().any(|theme| theme == preferred) {
-            return preferred.to_string();
-        }
+    if let Some(preferred) = preferred
+        && available_themes.iter().any(|theme| theme == preferred)
+    {
+        return preferred.to_string();
     }
     if available_themes.iter().any(|theme| theme == fallback) {
         return fallback.to_string();
@@ -307,16 +307,16 @@ impl WarningSettingsSubmenu {
             let activation = self.list.activate_selected(&mut |id, value| {
                 changes.push((id.to_string(), value.to_string()));
             });
-            if let SettingsActivation::Cycled { .. } = activation {
-                if let Some((_, value)) = changes.first() {
-                    if let Some(object) = self.state.as_object_mut() {
-                        object.insert(
-                            "anthropicExtraUsage".to_string(),
-                            serde_json::Value::Bool(value == "true"),
-                        );
-                    }
-                    return WarningsOutcome::Changed(self.state.clone());
+            if let SettingsActivation::Cycled { .. } = activation
+                && let Some((_, value)) = changes.first()
+            {
+                if let Some(object) = self.state.as_object_mut() {
+                    object.insert(
+                        "anthropicExtraUsage".to_string(),
+                        serde_json::Value::Bool(value == "true"),
+                    );
                 }
+                return WarningsOutcome::Changed(self.state.clone());
             }
         }
         WarningsOutcome::Consumed
@@ -620,7 +620,9 @@ impl ThemeSubmenu {
                 0,
                 0,
             )
-            .render(width).iter().map(|line| line.to_string()),
+            .render(width)
+            .iter()
+            .map(|line| line.to_string()),
         );
         lines.push(String::new());
         lines.extend(
@@ -632,7 +634,9 @@ impl ThemeSubmenu {
                 0,
                 0,
             )
-            .render(width).iter().map(|line| line.to_string()),
+            .render(width)
+            .iter()
+            .map(|line| line.to_string()),
         );
         lines.extend(
             Text::new(
@@ -640,10 +644,17 @@ impl ThemeSubmenu {
                 0,
                 0,
             )
-            .render(width).iter().map(|line| line.to_string()),
+            .render(width)
+            .iter()
+            .map(|line| line.to_string()),
         );
         lines.push(String::new());
-        lines.extend(self.automatic.render(width, &get_settings_list_theme()).iter().map(|line| line.to_string()));
+        lines.extend(
+            self.automatic
+                .render(width, &get_settings_list_theme())
+                .iter()
+                .map(|line| line.to_string()),
+        );
         render_lines(lines)
     }
 }
@@ -1023,7 +1034,12 @@ impl SettingsSelectorComponent {
 impl Component for SettingsSelectorComponent {
     fn render(&mut self, width: usize) -> RenderLines {
         let mut lines: Vec<String> = Vec::new();
-        lines.extend(DynamicBorder::new().render(width).iter().map(|line| line.to_string()));
+        lines.extend(
+            DynamicBorder::new()
+                .render(width)
+                .iter()
+                .map(|line| line.to_string()),
+        );
         let submenu_lines = match &mut self.active_submenu {
             Some(ActiveSubmenu::Theme(submenu)) => submenu.render(width),
             Some(ActiveSubmenu::Warnings(submenu)) => submenu.render(width),
@@ -1031,7 +1047,12 @@ impl Component for SettingsSelectorComponent {
             None => render_lines(self.list.render(width, &get_settings_list_theme())),
         };
         lines.extend(submenu_lines.iter().map(|line| line.to_string()));
-        lines.extend(DynamicBorder::new().render(width).iter().map(|line| line.to_string()));
+        lines.extend(
+            DynamicBorder::new()
+                .render(width)
+                .iter()
+                .map(|line| line.to_string()),
+        );
         render_lines(lines)
     }
 }

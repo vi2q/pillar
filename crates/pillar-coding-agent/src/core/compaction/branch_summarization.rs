@@ -139,21 +139,17 @@ pub fn prepare_branch_entries(entries: &[SessionEntry], token_budget: u64) -> Br
     // token budget) so cumulative file tracking from nested branch summaries
     // is captured. Only pi-generated summaries (from_hook == false).
     for entry in entries {
-        if let SessionEntry::BranchSummary(branch) = entry {
-            if !branch.from_hook {
-                if let Some(details) = &branch.details {
-                    if let Ok(parsed) =
-                        serde_json::from_value::<BranchSummaryDetails>(details.clone())
-                    {
-                        for file in parsed.read_files {
-                            file_ops.read.insert(file);
-                        }
-                        // Modified files go into edited for deduplication.
-                        for file in parsed.modified_files {
-                            file_ops.edited.insert(file);
-                        }
-                    }
-                }
+        if let SessionEntry::BranchSummary(branch) = entry
+            && !branch.from_hook
+            && let Some(details) = &branch.details
+            && let Ok(parsed) = serde_json::from_value::<BranchSummaryDetails>(details.clone())
+        {
+            for file in parsed.read_files {
+                file_ops.read.insert(file);
+            }
+            // Modified files go into edited for deduplication.
+            for file in parsed.modified_files {
+                file_ops.edited.insert(file);
             }
         }
     }

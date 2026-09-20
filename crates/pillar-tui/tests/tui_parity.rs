@@ -6,11 +6,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use pillar_tui::process_terminal::Terminal;
-use pillar_tui::tui::{RenderLines, render_lines, 
-
+use pillar_tui::tui::{
     Component, ComponentId, Container, Focusable, InputListenerResult, OverlayAnchor,
-    OverlayMargin, OverlayOptions, SizeValue, TuiBase, TuiMode, TuiStopOptions, is_focusable,
-    is_key_release,
+    OverlayMargin, OverlayOptions, RenderLines, SizeValue, TuiBase, TuiMode, TuiStopOptions,
+    is_focusable, is_key_release, render_lines,
 };
 
 /// The shared frame as owned lines (the parity assertions compare strings).

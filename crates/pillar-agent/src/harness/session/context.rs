@@ -128,10 +128,10 @@ pub fn session_entry_to_context_messages(
         EntryPayload::Message { message, .. } => {
             // Deferred assistant handles are placeholders; they carry no
             // context until the deferred fetch resolves.
-            if let Some(pillar_ai::types::Message::Assistant(assistant)) = message.as_message() {
-                if assistant.stop_reason == StopReason::Deferred {
-                    return Vec::new();
-                }
+            if let Some(pillar_ai::types::Message::Assistant(assistant)) = message.as_message()
+                && assistant.stop_reason == StopReason::Deferred
+            {
+                return Vec::new();
             }
             vec![message.clone()]
         }

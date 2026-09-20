@@ -175,10 +175,10 @@ impl CombinedAutocompleteProvider {
 
     /// Extract the @-prefixed token (upstream `extractAtPrefix`).
     pub fn extract_at_prefix(text: &str) -> Option<String> {
-        if let Some(quoted) = extract_quoted_prefix(text) {
-            if quoted.starts_with("@\"") {
-                return Some(quoted);
-            }
+        if let Some(quoted) = extract_quoted_prefix(text)
+            && quoted.starts_with("@\"")
+        {
+            return Some(quoted);
         }
         let last_delimiter = find_last_delimiter(text);
         let token_start = if last_delimiter == -1 {

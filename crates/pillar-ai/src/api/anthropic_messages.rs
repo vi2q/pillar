@@ -452,15 +452,15 @@ pub fn to_claude_code_name(name: &str) -> String {
 }
 
 pub fn from_claude_code_name(name: &str, tools: Option<&[Tool]>) -> String {
-    if let Some(tools) = tools {
-        if !tools.is_empty() {
-            let lowered = name.to_lowercase();
-            if let Some(matched) = tools
-                .iter()
-                .find(|tool| tool.name.to_lowercase() == lowered)
-            {
-                return matched.name.clone();
-            }
+    if let Some(tools) = tools
+        && !tools.is_empty()
+    {
+        let lowered = name.to_lowercase();
+        if let Some(matched) = tools
+            .iter()
+            .find(|tool| tool.name.to_lowercase() == lowered)
+        {
+            return matched.name.clone();
         }
     }
     name.to_string()
@@ -764,27 +764,22 @@ pub fn convert_messages(
     }
 
     // Add cache_control to the last user message to cache conversation history
-    if let Some(cache_control) = cache_control {
-        if let Some(last_message) = params.last_mut() {
-            if last_message["role"] == json!("user") {
-                if let Some(content) = last_message.get_mut("content") {
-                    if content.is_array() {
-                        if let Some(last_block) = content.as_array_mut().unwrap().last_mut() {
-                            let block_type = last_block["type"].as_str().unwrap_or("");
-                            if block_type == "text"
-                                || block_type == "image"
-                                || block_type == "tool_result"
-                            {
-                                if let Some(block_obj) = last_block.as_object_mut() {
-                                    block_obj.insert("cache_control".to_string(), cache_control);
-                                }
-                            }
-                        }
-                    } else if let Some(text) = content.as_str().map(str::to_string) {
-                        *content = json!([{ "type": "text", "text": text, "cache_control": cache_control }]);
-                    }
+    if let Some(cache_control) = cache_control
+        && let Some(last_message) = params.last_mut()
+        && last_message["role"] == json!("user")
+        && let Some(content) = last_message.get_mut("content")
+    {
+        if content.is_array() {
+            if let Some(last_block) = content.as_array_mut().unwrap().last_mut() {
+                let block_type = last_block["type"].as_str().unwrap_or("");
+                if (block_type == "text" || block_type == "image" || block_type == "tool_result")
+                    && let Some(block_obj) = last_block.as_object_mut()
+                {
+                    block_obj.insert("cache_control".to_string(), cache_control);
                 }
             }
+        } else if let Some(text) = content.as_str().map(str::to_string) {
+            *content = json!([{ "type": "text", "text": text, "cache_control": cache_control }]);
         }
     }
 
@@ -853,10 +848,10 @@ pub fn convert_tools(
             if defer_loading {
                 tool_json.insert("defer_loading".to_string(), Value::Bool(true));
             }
-            if let Some(cache_control) = cache_control {
-                if index == tools.len() - 1 {
-                    tool_json.insert("cache_control".to_string(), cache_control.clone());
-                }
+            if let Some(cache_control) = cache_control
+                && index == tools.len() - 1
+            {
+                tool_json.insert("cache_control".to_string(), cache_control.clone());
             }
             Value::Object(tool_json)
         })
@@ -984,15 +979,16 @@ pub fn build_params(
 
     // Temperature is incompatible with extended thinking and unsupported on
     // Claude Opus 4.7+.
-    if let Some(temperature) = options.temperature {
-        if options.thinking_enabled != Some(true) && compat.supports_temperature {
-            params.insert(
-                "temperature".to_string(),
-                serde_json::Number::from_f64(temperature)
-                    .map(Value::Number)
-                    .unwrap_or(Value::Null),
-            );
-        }
+    if let Some(temperature) = options.temperature
+        && options.thinking_enabled != Some(true)
+        && compat.supports_temperature
+    {
+        params.insert(
+            "temperature".to_string(),
+            serde_json::Number::from_f64(temperature)
+                .map(Value::Number)
+                .unwrap_or(Value::Null),
+        );
     }
 
     if !immediate_tools.is_empty() || !deferred_tools.is_empty() {
@@ -1058,10 +1054,10 @@ pub fn build_params(
         }
     }
 
-    if let Some(metadata) = &options.metadata {
-        if let Some(user_id) = metadata.get("user_id").and_then(Value::as_str) {
-            params.insert("metadata".to_string(), json!({ "user_id": user_id }));
-        }
+    if let Some(metadata) = &options.metadata
+        && let Some(user_id) = metadata.get("user_id").and_then(Value::as_str)
+    {
+        params.insert("metadata".to_string(), json!({ "user_id": user_id }));
     }
 
     if let Some(tool_choice) = &options.tool_choice {
@@ -1554,18 +1550,16 @@ fn process_anthropic_event(
                 output.content.get(content_index),
                 Some(Content::ToolCall { .. })
             );
-            if is_tool_call {
-                if let Some(block) = state.blocks.get_mut(position) {
-                    if let Some(Content::ToolCall { arguments, .. }) =
-                        output.content.get_mut(content_index)
-                    {
-                        // Finalize in-place and strip the scratch buffer.
-                        let parsed =
-                            crate::json_parse::parse_streaming_json(block.partial_json.as_deref());
-                        *arguments = parsed;
-                    }
-                    block.partial_json = None;
+            if is_tool_call && let Some(block) = state.blocks.get_mut(position) {
+                if let Some(Content::ToolCall { arguments, .. }) =
+                    output.content.get_mut(content_index)
+                {
+                    // Finalize in-place and strip the scratch buffer.
+                    let parsed =
+                        crate::json_parse::parse_streaming_json(block.partial_json.as_deref());
+                    *arguments = parsed;
                 }
+                block.partial_json = None;
             }
             match output.content.get(content_index) {
                 Some(Content::Text { text, .. }) => {
@@ -1807,10 +1801,10 @@ async fn run_stream_inner(
     );
 
     let mut params = build_params(model, context, is_oauth, options);
-    if let Some(on_payload) = &options.on_payload {
-        if let Some(next_params) = on_payload(model, params.clone()).await {
-            params = next_params;
-        }
+    if let Some(on_payload) = &options.on_payload
+        && let Some(next_params) = on_payload(model, params.clone()).await
+    {
+        params = next_params;
     }
 
     let fetch = options.fetch.clone().unwrap_or_else(default_fetch);

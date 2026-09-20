@@ -469,11 +469,9 @@ pub fn get_scrollbar_geometry(box_: &LayoutBox<'_>) -> Option<ScrollbarGeometry>
         .min(track_height);
     let max_scroll_top = content_height.saturating_sub(track_height);
     let max_thumb_top = track_height - thumb_height;
-    let thumb_offset = if max_scroll_top == 0 {
-        0
-    } else {
-        (scroll_view.scroll_top() * max_thumb_top + max_scroll_top / 2) / max_scroll_top
-    };
+    let thumb_offset = (scroll_view.scroll_top() * max_thumb_top + max_scroll_top / 2)
+        .checked_div(max_scroll_top)
+        .unwrap_or(0);
     let column = box_.rect.x + box_.rect.width - 1;
     if column < box_.clip.x || column >= box_.clip.x + box_.clip.width {
         return None;
@@ -629,10 +627,10 @@ pub fn get_scroll_views_at<'a>(
         if !contains_point(box_.clip, x, y) {
             return;
         }
-        if let Some(scroll_view) = box_.scroll_view {
-            if contains_point(box_.rect, x, y) {
-                out.push(scroll_view);
-            }
+        if let Some(scroll_view) = box_.scroll_view
+            && contains_point(box_.rect, x, y)
+        {
+            out.push(scroll_view);
         }
         for child in &box_.children {
             visit(child, x, y, out);

@@ -236,7 +236,7 @@ fn is_valid_thought_signature(signature: &str) -> bool {
     if signature.is_empty() {
         return false;
     }
-    if signature.len() % 4 != 0 {
+    if !signature.len().is_multiple_of(4) {
         return false;
     }
     // Check pattern: /^[A-Za-z0-9+/]+={0,2}$/
@@ -277,10 +277,8 @@ fn get_gemini_major_version(model_id: &str) -> Option<u64> {
     let lower = model_id.to_lowercase();
     let rest = if let Some(r) = lower.strip_prefix("gemini-live-") {
         r
-    } else if let Some(r) = lower.strip_prefix("gemini-") {
-        r
     } else {
-        return None;
+        lower.strip_prefix("gemini-")?
     };
     let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
     if digits.is_empty() {
@@ -671,10 +669,10 @@ pub fn resolve_google_function_calling_mode(
         }
     }
 
-    if let Some(choice) = tool_choice {
-        if choice == "none" || choice == "any" {
-            return Ok(Some(map_tool_choice(choice)));
-        }
+    if let Some(choice) = tool_choice
+        && (choice == "none" || choice == "any")
+    {
+        return Ok(Some(map_tool_choice(choice)));
     }
     if use_strict_mode {
         return Ok(Some(FunctionCallingConfigMode::Validated));

@@ -109,13 +109,12 @@ pub fn remote_models(
     let Some(entry) = entry else {
         return Vec::new();
     };
-    if let Some(local) = local_generated_at {
-        if entry
+    if let Some(local) = local_generated_at
+        && entry
             .last_modified
             .is_none_or(|last_modified| last_modified <= local)
-        {
-            return Vec::new();
-        }
+    {
+        return Vec::new();
     }
     entry.models.clone()
 }

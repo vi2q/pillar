@@ -232,12 +232,12 @@ async fn load_template_from_file(
 
     let first_line = parsed.body.lines().find(|line| !line.trim().is_empty());
     let mut description = parsed.get("description").unwrap_or_default().to_owned();
-    if description.is_empty() {
-        if let Some(first_line) = first_line {
-            description = first_line.chars().take(60).collect();
-            if first_line.chars().count() > 60 {
-                description.push_str("...");
-            }
+    if description.is_empty()
+        && let Some(first_line) = first_line
+    {
+        description = first_line.chars().take(60).collect();
+        if first_line.chars().count() > 60 {
+            description.push_str("...");
         }
     }
     let name = file_name
@@ -365,29 +365,31 @@ fn substitute_slices(content: &str, args: &[String]) -> String {
     let bytes = content.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'$' && i + 1 < bytes.len() && bytes[i + 1] == b'{' {
-            if let Some(end) = content[i + 2..].find('}').map(|offset| i + 2 + offset) {
-                let inner = &content[i + 2..end];
-                if let Some(rest) = inner.strip_prefix("@:") {
-                    let mut parts = rest.splitn(2, ':');
-                    let start_str = parts.next().unwrap_or("");
-                    let length_str = parts.next();
-                    if let Ok(start) = start_str.parse::<i64>() {
-                        let start = (start - 1).max(0) as usize;
-                        let selected: Vec<String> = match length_str {
-                            Some(length) => {
-                                if let Ok(length) = length.parse::<usize>() {
-                                    args.iter().skip(start).take(length).cloned().collect()
-                                } else {
-                                    args.iter().skip(start).cloned().collect()
-                                }
+        if bytes[i] == b'$'
+            && i + 1 < bytes.len()
+            && bytes[i + 1] == b'{'
+            && let Some(end) = content[i + 2..].find('}').map(|offset| i + 2 + offset)
+        {
+            let inner = &content[i + 2..end];
+            if let Some(rest) = inner.strip_prefix("@:") {
+                let mut parts = rest.splitn(2, ':');
+                let start_str = parts.next().unwrap_or("");
+                let length_str = parts.next();
+                if let Ok(start) = start_str.parse::<i64>() {
+                    let start = (start - 1).max(0) as usize;
+                    let selected: Vec<String> = match length_str {
+                        Some(length) => {
+                            if let Ok(length) = length.parse::<usize>() {
+                                args.iter().skip(start).take(length).cloned().collect()
+                            } else {
+                                args.iter().skip(start).cloned().collect()
                             }
-                            None => args.iter().skip(start).cloned().collect(),
-                        };
-                        result.push_str(&selected.join(" "));
-                        i = end + 1;
-                        continue;
-                    }
+                        }
+                        None => args.iter().skip(start).cloned().collect(),
+                    };
+                    result.push_str(&selected.join(" "));
+                    i = end + 1;
+                    continue;
                 }
             }
         }
@@ -408,12 +410,12 @@ pub fn template_from_content(file_name: &str, content: &str) -> PromptTemplate {
     let parsed = parse_frontmatter(content);
     let first_line = parsed.body.lines().find(|line| !line.trim().is_empty());
     let mut description = parsed.get("description").unwrap_or_default().to_owned();
-    if description.is_empty() {
-        if let Some(first_line) = first_line {
-            description = first_line.chars().take(60).collect();
-            if first_line.chars().count() > 60 {
-                description.push_str("...");
-            }
+    if description.is_empty()
+        && let Some(first_line) = first_line
+    {
+        description = first_line.chars().take(60).collect();
+        if first_line.chars().count() > 60 {
+            description.push_str("...");
         }
     }
     PromptTemplate {

@@ -499,20 +499,18 @@ impl TuiBase {
         if self.focused == id {
             return;
         }
-        if let Some(previous) = self.focused {
-            if let Some(component) = self.component_mut(previous) {
-                if let Some(focusable) = component.as_focusable() {
-                    focusable.set_focused(false);
-                }
-            }
+        if let Some(previous) = self.focused
+            && let Some(component) = self.component_mut(previous)
+            && let Some(focusable) = component.as_focusable()
+        {
+            focusable.set_focused(false);
         }
         self.focused = id;
-        if let Some(next) = id {
-            if let Some(component) = self.component_mut(next) {
-                if let Some(focusable) = component.as_focusable() {
-                    focusable.set_focused(true);
-                }
-            }
+        if let Some(next) = id
+            && let Some(component) = self.component_mut(next)
+            && let Some(focusable) = component.as_focusable()
+        {
+            focusable.set_focused(true);
         }
     }
 

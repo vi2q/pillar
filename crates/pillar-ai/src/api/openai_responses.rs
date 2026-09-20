@@ -282,10 +282,10 @@ async fn run_stream_inner(
         &compat,
         &grammar_tool_input_properties,
     );
-    if let Some(on_payload) = &options.on_payload {
-        if let Some(next_params) = on_payload(model, params.clone()).await {
-            params = next_params;
-        }
+    if let Some(on_payload) = &options.on_payload
+        && let Some(next_params) = on_payload(model, params.clone()).await
+    {
+        params = next_params;
     }
 
     let request = crate::transport::FetchRequest {
@@ -514,10 +514,10 @@ pub fn build_params(
     params.insert("model".to_string(), Value::String(model.id.clone()));
     params.insert("input".to_string(), Value::Array(messages));
     params.insert("stream".to_string(), Value::Bool(true));
-    if cache_retention != CacheRetention::None {
-        if let Some(key) = clamp_openai_prompt_cache_key(options.session_id.as_deref()) {
-            params.insert("prompt_cache_key".to_string(), Value::String(key));
-        }
+    if cache_retention != CacheRetention::None
+        && let Some(key) = clamp_openai_prompt_cache_key(options.session_id.as_deref())
+    {
+        params.insert("prompt_cache_key".to_string(), Value::String(key));
     }
     if let Some(retention) = get_prompt_cache_retention(compat, cache_retention) {
         params.insert(

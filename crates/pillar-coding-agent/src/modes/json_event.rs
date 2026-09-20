@@ -224,18 +224,18 @@ fn agent_message_to_json(message: &AgentMessage) -> Value {
             serde_json::to_value(message.as_ref()).unwrap_or(Value::Null)
         }
     };
-    if let Value::Object(map) = &mut value {
-        if !map.contains_key("role") {
-            let role = match message {
-                AgentMessage::Message(_) => None,
-                AgentMessage::BashExecution(_) => Some("bashExecution"),
-                AgentMessage::Custom(_) => Some("custom"),
-                AgentMessage::BranchSummary(_) => Some("branchSummary"),
-                AgentMessage::CompactionSummary(_) => Some("compactionSummary"),
-            };
-            if let Some(role) = role {
-                map.insert("role".to_string(), json!(role));
-            }
+    if let Value::Object(map) = &mut value
+        && !map.contains_key("role")
+    {
+        let role = match message {
+            AgentMessage::Message(_) => None,
+            AgentMessage::BashExecution(_) => Some("bashExecution"),
+            AgentMessage::Custom(_) => Some("custom"),
+            AgentMessage::BranchSummary(_) => Some("branchSummary"),
+            AgentMessage::CompactionSummary(_) => Some("compactionSummary"),
+        };
+        if let Some(role) = role {
+            map.insert("role".to_string(), json!(role));
         }
     }
     value

@@ -307,21 +307,21 @@ fn model_from_json(
             provider_id
         )));
     };
-    if let Some(context_window) = definition.context_window {
-        if context_window <= 0.0 {
-            return Err(ComposeError(format!(
-                "Provider {}, model {}: invalid contextWindow",
-                provider_id, definition.id
-            )));
-        }
+    if let Some(context_window) = definition.context_window
+        && context_window <= 0.0
+    {
+        return Err(ComposeError(format!(
+            "Provider {}, model {}: invalid contextWindow",
+            provider_id, definition.id
+        )));
     }
-    if let Some(max_tokens) = definition.max_tokens {
-        if max_tokens <= 0.0 {
-            return Err(ComposeError(format!(
-                "Provider {}, model {}: invalid maxTokens",
-                provider_id, definition.id
-            )));
-        }
+    if let Some(max_tokens) = definition.max_tokens
+        && max_tokens <= 0.0
+    {
+        return Err(ComposeError(format!(
+            "Provider {}, model {}: invalid maxTokens",
+            provider_id, definition.id
+        )));
     }
     let compat = merge_compat(None, provider_config.compat.as_ref());
     let compat = merge_compat(compat.as_ref(), definition.compat.as_ref());
@@ -701,9 +701,7 @@ impl pillar_ai::auth_types::ApiKeyAuth for ComposedApiKeyAuth {
     }
 
     fn has_login(&self) -> bool {
-        self.inherited
-            .as_ref()
-            .is_none_or(|auth| auth.has_login())
+        self.inherited.as_ref().is_none_or(|auth| auth.has_login())
     }
 
     async fn check(
@@ -845,34 +843,30 @@ fn raw_model_headers(
 ) -> Option<BTreeMap<String, String>> {
     let mut headers: BTreeMap<String, String> = BTreeMap::new();
     if let Some(config) = config {
-        if let Some(overrides) = &config.model_overrides {
-            if let Some(override_cfg) = overrides.get(&model.id) {
-                if let Some(model_headers) = &override_cfg.headers {
-                    for (key, value) in model_headers {
-                        headers.insert(key.clone(), value.clone());
-                    }
-                }
+        if let Some(overrides) = &config.model_overrides
+            && let Some(override_cfg) = overrides.get(&model.id)
+            && let Some(model_headers) = &override_cfg.headers
+        {
+            for (key, value) in model_headers {
+                headers.insert(key.clone(), value.clone());
             }
         }
-        if let Some(definitions) = &config.models {
-            if let Some(definition) = definitions.iter().find(|entry| entry.id == model.id) {
-                if let Some(model_headers) = &definition.headers {
-                    for (key, value) in model_headers {
-                        headers.insert(key.clone(), value.clone());
-                    }
-                }
+        if let Some(definitions) = &config.models
+            && let Some(definition) = definitions.iter().find(|entry| entry.id == model.id)
+            && let Some(model_headers) = &definition.headers
+        {
+            for (key, value) in model_headers {
+                headers.insert(key.clone(), value.clone());
             }
         }
     }
-    if let Some(extension) = extension {
-        if let Some(models) = &extension.models {
-            if let Some(extension_model) = models.iter().find(|entry| entry.id == model.id) {
-                if let Some(model_headers) = &extension_model.headers {
-                    for (key, value) in model_headers {
-                        headers.insert(key.clone(), value.clone());
-                    }
-                }
-            }
+    if let Some(extension) = extension
+        && let Some(models) = &extension.models
+        && let Some(extension_model) = models.iter().find(|entry| entry.id == model.id)
+        && let Some(model_headers) = &extension_model.headers
+    {
+        for (key, value) in model_headers {
+            headers.insert(key.clone(), value.clone());
         }
     }
     (!headers.is_empty()).then_some(headers)

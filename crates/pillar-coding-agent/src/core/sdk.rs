@@ -180,12 +180,11 @@ pub fn resolve_thinking_level(inputs: ThinkingLevelInputs<'_>, model: Option<&Mo
     } else {
         None
     };
-    if level.is_none() {
-        if let Some(per_model) = inputs.per_model_override {
-            if model.is_some() {
-                level = Some(per_model.to_string());
-            }
-        }
+    if level.is_none()
+        && let Some(per_model) = inputs.per_model_override
+        && model.is_some()
+    {
+        level = Some(per_model.to_string());
     }
     if level.is_none() {
         level = Some(
@@ -504,17 +503,17 @@ pub async fn create_agent_session(
 
     let mut model_fallback_message: Option<String> = None;
     let mut model = options.model.clone();
-    if model.is_none() && has_existing_session {
-        if let Some((provider, model_id)) = &context.model {
-            let restored = model_runtime
-                .get_model(provider, model_id)
-                .filter(|candidate| model_runtime.has_configured_auth(&candidate.provider));
-            if restored.is_none() {
-                model_fallback_message =
-                    Some(format!("Could not restore model {provider}/{model_id}"));
-            } else {
-                model = restored;
-            }
+    if model.is_none()
+        && has_existing_session
+        && let Some((provider, model_id)) = &context.model
+    {
+        let restored = model_runtime
+            .get_model(provider, model_id)
+            .filter(|candidate| model_runtime.has_configured_auth(&candidate.provider));
+        if restored.is_none() {
+            model_fallback_message = Some(format!("Could not restore model {provider}/{model_id}"));
+        } else {
+            model = restored;
         }
     }
     if model.is_none() {

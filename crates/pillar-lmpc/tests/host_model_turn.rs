@@ -514,7 +514,10 @@ fn a_stale_answer_is_rejected() {
     let host = Arc::new(pillar_lmpc::FrameHost::new());
     let mut session = pillar_lmpc::HostModelSession::start(&host, "hello", Vec::new());
 
-    assert_eq!(session.poll(Duration::from_millis(1)), HostModelState::NeedsModel);
+    assert_eq!(
+        session.poll(Duration::from_millis(1)),
+        HostModelState::NeedsModel
+    );
     let first = session.request_ticket().expect("a published request");
 
     // Cancelling voids the published request: its ticket is gone.
@@ -534,9 +537,15 @@ fn a_stale_answer_is_rejected() {
         }
     }
     session.say("again").expect("the next turn starts");
-    assert_eq!(session.poll(Duration::from_millis(1)), HostModelState::NeedsModel);
+    assert_eq!(
+        session.poll(Duration::from_millis(1)),
+        HostModelState::NeedsModel
+    );
     let second = session.request_ticket().expect("the new request");
-    assert!(second > first, "tickets keep increasing: {first} then {second}");
+    assert!(
+        second > first,
+        "tickets keep increasing: {first} then {second}"
+    );
     assert!(
         session
             .reply_to(first, r#"[{"type":"text","text":"stale"}]"#)
@@ -544,9 +553,7 @@ fn a_stale_answer_is_rejected() {
         "the previous turn's ticket must not answer this request"
     );
     assert!(
-        session
-            .stream_delta_to(first, "stale")
-            .is_err(),
+        session.stream_delta_to(first, "stale").is_err(),
         "a stale stream delta must be refused too"
     );
     session
@@ -606,7 +613,8 @@ fn a_tool_result_is_accepted_once() {
 #[test]
 fn two_host_actions_run_in_parallel_and_answer_out_of_order() {
     let host = Arc::new(pillar_lmpc::FrameHost::new());
-    let mut session = pillar_lmpc::HostModelSession::start_with_host_tools(&host, "two", Vec::new());
+    let mut session =
+        pillar_lmpc::HostModelSession::start_with_host_tools(&host, "two", Vec::new());
 
     let two_calls = r#"[{"type":"toolCall","id":"call-1","name":"host_action","arguments":{"do":"first","value":"1"}},
         {"type":"toolCall","id":"call-2","name":"host_action","arguments":{"do":"second","value":"2"}}]"#;
@@ -688,7 +696,10 @@ fn two_host_actions_run_in_parallel_and_answer_out_of_order() {
         "each result reached its own call: {:?}",
         trace.messages
     );
-    assert_eq!(trace.messages.last().map(|(_, text)| text.as_str()), Some("both done"));
+    assert_eq!(
+        trace.messages.last().map(|(_, text)| text.as_str()),
+        Some("both done")
+    );
 }
 
 /// A stored conversation can only be installed before the turn is driven: after
@@ -700,7 +711,10 @@ fn a_restore_after_the_first_poll_is_refused() {
     let mut session = pillar_lmpc::HostModelSession::start(&host, "remember this", Vec::new());
     assert!(session.can_restore(), "nothing is published yet");
 
-    assert_eq!(session.poll(Duration::from_millis(1)), HostModelState::NeedsModel);
+    assert_eq!(
+        session.poll(Duration::from_millis(1)),
+        HostModelState::NeedsModel
+    );
     assert!(!session.can_restore(), "the first request is published");
     assert!(
         session.restore("[]").is_err(),
@@ -733,7 +747,9 @@ fn a_restore_after_the_first_poll_is_refused() {
         2,
         "the user message and the answer"
     );
-    resumed.begin_turn("what is my name?").expect("then the turn");
+    resumed
+        .begin_turn("what is my name?")
+        .expect("then the turn");
     assert_eq!(
         resumed.poll(Duration::from_millis(1)),
         HostModelState::NeedsModel

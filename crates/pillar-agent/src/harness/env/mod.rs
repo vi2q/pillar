@@ -300,10 +300,10 @@ impl FileSystem for StdFsExecutionEnv {
         max_lines: Option<usize>,
     ) -> Result<Vec<String>, FileError> {
         let resolved = resolve_path(&self.cwd, path);
-        if let Some(max_lines) = max_lines {
-            if max_lines == 0 {
-                return Ok(Vec::new());
-            }
+        if let Some(max_lines) = max_lines
+            && max_lines == 0
+        {
+            return Ok(Vec::new());
         }
         let content = tokio::fs::read_to_string(&resolved)
             .await
@@ -311,10 +311,10 @@ impl FileSystem for StdFsExecutionEnv {
         let mut lines: Vec<String> = Vec::new();
         for line in content.split('\n') {
             lines.push(line.to_owned());
-            if let Some(max_lines) = max_lines {
-                if lines.len() >= max_lines {
-                    break;
-                }
+            if let Some(max_lines) = max_lines
+                && lines.len() >= max_lines
+            {
+                break;
             }
         }
         Ok(lines)
@@ -499,12 +499,11 @@ impl Shell for StdFsExecutionEnv {
         command: &str,
         options: Option<ShellExecOptions>,
     ) -> Result<ShellOutput, ExecutionError> {
-        if let Some(options) = &options {
-            if let Some(signal) = &options.abort_signal {
-                if signal.is_aborted() {
-                    return Err(ExecutionError::new(ExecutionErrorCode::Aborted, "aborted"));
-                }
-            }
+        if let Some(options) = &options
+            && let Some(signal) = &options.abort_signal
+            && signal.is_aborted()
+        {
+            return Err(ExecutionError::new(ExecutionErrorCode::Aborted, "aborted"));
         }
         let timeout_ms = resolve_timeout_seconds(options.as_ref().and_then(|o| o.timeout))?;
 
@@ -592,10 +591,10 @@ impl Shell for StdFsExecutionEnv {
                                 .expect("stdout buffer lock")
                                 .0
                                 .extend_from_slice(&chunk[..n]);
-                            if let Some(callback) = &stdout_callback {
-                                if let Ok(text) = std::str::from_utf8(&chunk[..n]) {
-                                    callback(text);
-                                }
+                            if let Some(callback) = &stdout_callback
+                                && let Ok(text) = std::str::from_utf8(&chunk[..n])
+                            {
+                                callback(text);
                             }
                         }
                     }
@@ -614,10 +613,10 @@ impl Shell for StdFsExecutionEnv {
                                 .expect("stderr buffer lock")
                                 .1
                                 .extend_from_slice(&chunk[..n]);
-                            if let Some(callback) = &stderr_callback {
-                                if let Ok(text) = std::str::from_utf8(&chunk[..n]) {
-                                    callback(text);
-                                }
+                            if let Some(callback) = &stderr_callback
+                                && let Ok(text) = std::str::from_utf8(&chunk[..n])
+                            {
+                                callback(text);
                             }
                         }
                     }

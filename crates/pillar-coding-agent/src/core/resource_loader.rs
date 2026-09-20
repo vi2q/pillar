@@ -205,11 +205,12 @@ pub fn load_project_context_files(cwd: &str, agent_dir: &str) -> Vec<(PathBuf, S
             .as_ref()
             .zip(context_file.as_ref())
             .is_some_and(|(shadowed, (path, _))| &canonicalize(path) == shadowed);
-        if let Some((path, content)) = context_file {
-            if !is_shadowed && !seen_paths.contains(&path) {
-                ancestor_context_files.insert(0, (path.clone(), content));
-                seen_paths.insert(path);
-            }
+        if let Some((path, content)) = context_file
+            && !is_shadowed
+            && !seen_paths.contains(&path)
+        {
+            ancestor_context_files.insert(0, (path.clone(), content));
+            seen_paths.insert(path);
         }
 
         let Some(parent_dir) = current_dir.parent() else {

@@ -482,7 +482,10 @@ fn match_lines(text: &str) -> Vec<String> {
 /// the capture has to reproduce.
 #[test]
 fn grep_context_window_is_per_match_and_clamped_at_the_edges() {
-    let (dir, cwd) = setup_repo("grep-ctx-window", &[("a.txt", "one\ntwo\nhit\nhit\nfive\nsix\n")]);
+    let (dir, cwd) = setup_repo(
+        "grep-ctx-window",
+        &[("a.txt", "one\ntwo\nhit\nhit\nfive\nsix\n")],
+    );
     let result = grep_files(
         "hit",
         &dir.to_string_lossy(),

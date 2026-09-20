@@ -175,10 +175,8 @@ pub async fn get_provider_credential(
         .read(provider_id, None)
         .await
         .map_err(|e| e.to_string())?;
-    if !refresh {
-        if let Some(Credential::OAuth(oauth)) = credential {
-            return Ok(Some(oauth.access));
-        }
+    if !refresh && let Some(Credential::OAuth(oauth)) = credential {
+        return Ok(Some(oauth.access));
     }
     let auth = model_runtime
         .get_auth(AuthTarget::Provider(provider_id.to_string()), None)

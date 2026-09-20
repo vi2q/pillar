@@ -5,6 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use pillar_coding_agent::core::effects::{EffectDecision, EffectIntent, allow_all};
 use pillar_coding_agent::core::package_manager::{
     DefaultPackageManager, GitSource, MissingSourceAction, NpmSource, ParsedSource, ProgressAction,
     ProgressKind, ResourceOrigin, ResourceType, SourceScope, apply_autoload_disabled_patterns,
@@ -13,7 +14,6 @@ use pillar_coding_agent::core::package_manager::{
     matches_any_exact_pattern, matches_any_pattern, package_filter_of, package_source_string,
     parse_git_url, parse_npm_source, parse_npm_spec, parse_source, resource_precedence_rank,
 };
-use pillar_coding_agent::core::effects::{EffectDecision, EffectIntent, allow_all};
 use pillar_coding_agent::core::settings_manager::{
     PackageSource, SettingsManager, SettingsManagerCreateOptions,
 };

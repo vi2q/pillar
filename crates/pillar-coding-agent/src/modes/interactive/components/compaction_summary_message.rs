@@ -9,7 +9,7 @@ use crate::modes::interactive::components::markdown_transform::{
 use crate::modes::interactive::theme::theme;
 use pillar_tui::components::{BoxComponent, Spacer, Text};
 use pillar_tui::markdown::{DefaultTextStyle, Markdown};
-use pillar_tui::tui::{RenderLines, Component};
+use pillar_tui::tui::{Component, RenderLines};
 
 /// A compaction summary message (upstream `CompactionSummaryMessageComponent`).
 pub struct CompactionSummaryMessageComponent {
@@ -24,7 +24,7 @@ fn format_tokens(tokens: u64) -> String {
     let digits = tokens.to_string();
     let mut out = String::new();
     for (index, ch) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index) % 3 == 0 {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
             out.push(',');
         }
         out.push(ch);

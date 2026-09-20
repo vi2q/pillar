@@ -973,10 +973,10 @@ async fn process_event(
                 agent_state.pending_tool_calls.remove(tool_call_id);
             }
             AgentEvent::TurnEnd { message, .. } => {
-                if let AgentMessage::Message(Message::Assistant(assistant)) = message.as_ref() {
-                    if let Some(error) = &assistant.error_message {
-                        agent_state.error_message = Some(error.clone());
-                    }
+                if let AgentMessage::Message(Message::Assistant(assistant)) = message.as_ref()
+                    && let Some(error) = &assistant.error_message
+                {
+                    agent_state.error_message = Some(error.clone());
                 }
             }
             AgentEvent::AgentEnd { .. } => {

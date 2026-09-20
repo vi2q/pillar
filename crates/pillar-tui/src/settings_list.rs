@@ -261,11 +261,11 @@ impl SettingsList {
     fn render_main_list(&self, width: usize, theme: &SettingsListTheme) -> Vec<String> {
         let mut lines: Vec<String> = Vec::new();
 
-        if self.search_enabled {
-            if let Some(input) = &self.search_input {
-                lines.extend(input.render(width).iter().map(|line| line.to_string()));
-                lines.push(String::new());
-            }
+        if self.search_enabled
+            && let Some(input) = &self.search_input
+        {
+            lines.extend(input.render(width).iter().map(|line| line.to_string()));
+            lines.push(String::new());
         }
 
         if self.items.is_empty() {
@@ -347,12 +347,12 @@ impl SettingsList {
             )));
         }
 
-        if let Some(selected) = display.get(self.selected_index) {
-            if let Some(description) = &self.items[*selected].description {
-                lines.push(String::new());
-                for line in wrap_text_with_ansi(description, width.saturating_sub(4)) {
-                    lines.push((theme.description)(&format!("  {line}")));
-                }
+        if let Some(selected) = display.get(self.selected_index)
+            && let Some(description) = &self.items[*selected].description
+        {
+            lines.push(String::new());
+            for line in wrap_text_with_ansi(description, width.saturating_sub(4)) {
+                lines.push((theme.description)(&format!("  {line}")));
             }
         }
 
