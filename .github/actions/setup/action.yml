@@ -1,0 +1,40 @@
+name: setup
+description: Checkout, pinned Rust toolchain, Node, cargo caches and a network fetch that makes the offline gate possible.
+runs:
+  using: composite
+  steps:
+    - uses: actions/checkout@v4
+
+    # The toolchain is pinned: the recorded baselines used 1.91.1, and a
+    # different compiler changes the artifact the comparison gate runs.
+    - uses: dtolnay/rust-toolchain@1.91.1
+      with:
+        targets: wasm32-unknown-unknown
+        components: clippy, rustfmt
+
+    - uses: actions/setup-node@v4
+      with:
+        node-version: "25"
+
+    # Cache only the cargo caches: `target/` is larger than the GitHub cache
+    # budget. scripts/ci.sh sets CARGO_NET_OFFLINE, so a dependency missing from
+    # the lockfile or the cache must fail rather than download quietly.
+    - uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+
+    # Warm the caches with the network on: the pinned luaur dependency is a git
+    # checkout, not a registry crate, so a cold runner cannot resolve it under
+    # CARGO_NET_OFFLINE.
+    - name: fetch (network)
+      shell: bash
+      env:
+        CARGO_NET_OFFLINE: "false"
+      run: |
+        cargo fetch --locked
+        cargo fetch --locked --target wasm32-unknown-unknown

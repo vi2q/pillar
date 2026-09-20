@@ -1,5 +1,7 @@
-# The CI gate (docs/DEVELOPMENT.md § CI): the same script a developer runs, with
-# the toolchain pinned so the Wasm artifact and the baselines stay comparable.
+# The CI gate (docs/DEVELOPMENT.md § CI): the same commands a developer runs
+# through scripts/ci.sh, split across jobs so each phase gets a fresh runner and
+# its own log. One job running the whole gate was killed by the hosted runner
+# ("the hosted runner lost communication") after ~47 minutes.
 name: ci
 
 on:
@@ -8,51 +10,51 @@ on:
   pull_request:
   workflow_dispatch:
 
+env:
+  # scripts/ci.sh runs offline to catch a lockfile/cache miss; every job keeps
+  # that policy (the setup action's fetch step overrides it once).
+  CARGO_NET_OFFLINE: "true"
+  # Keep the build artifacts small enough for a hosted runner: with full debug
+  # info and incremental state the workspace `target/` is ~28 GB locally.
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+
 jobs:
-  check:
+  build:
     runs-on: ubuntu-latest
-    env:
-      # Keep the build artifacts small enough for a hosted runner. With full
-      # debug info the workspace `target/` is ~28 GB locally, past the runner's
-      # disk, and the job dies with "the hosted runner lost communication".
-      CARGO_INCREMENTAL: "0"
-      CARGO_PROFILE_DEV_DEBUG: "0"
-      CARGO_PROFILE_TEST_DEBUG: "0"
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      # scripts/check.sh --quick is the build / no-Luau build / clippy -D warnings
+      # / sandboxed smoke half of the gate (the test and Wasm phases are their
+      # own jobs).
+      - name: build, lint and smoke
+        run: bash scripts/check.sh --quick
 
-      # The toolchain is pinned: the recorded baselines used 1.91.1, and a
-      # different compiler changes the artifact the comparison gate runs.
-      - uses: dtolnay/rust-toolchain@1.91.1
-        with:
-          targets: wasm32-unknown-unknown
-          components: clippy, rustfmt
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: ./.github/actions/setup
+      - name: tests
+        run: cargo test --locked --workspace
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "25"
-
-      # Cache only the cargo caches: `target/` is far larger than the GitHub
-      # cache budget (10 GB). `scripts/ci.sh` sets CARGO_NET_OFFLINE, so a
-      # dependency missing from the lockfile or the cache must fail here rather
-      # than download quietly.
-      - name: cache (cargo)
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-
-      # Warm the caches with the network on before the offline gate: the pinned
-      # luaur dependency is a git checkout, not a registry crate, so a cold
-      # runner cannot resolve it under CARGO_NET_OFFLINE.
-      - name: fetch (network)
+  wasm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      # A missing host or target must fail this job, not skip it.
+      PILLAR_REQUIRE_WASM_COMPARE: "1"
+    steps:
+      - uses: ./.github/actions/setup
+      # The compile axis and the §5-7 native/Wasm comparison (scripts/check.sh
+      # runs the same lines when it is invoked in full).
+      - name: wasm checks
         run: |
-          cargo fetch --locked
-          cargo fetch --locked --target wasm32-unknown-unknown
-
-      - name: gate
-        run: bash scripts/ci.sh
+          cargo check --locked -p pillar-agent -p pillar-extensions --target wasm32-unknown-unknown
+          cargo check --locked -p pillar-lmpc --target wasm32-unknown-unknown
+          cargo check --locked -p pillar-agent --no-default-features
+          cargo check --locked -p pillar-agent --no-default-features --target wasm32-unknown-unknown
+      - name: wasm comparison
+        run: bash scripts/wasm_compare.sh
