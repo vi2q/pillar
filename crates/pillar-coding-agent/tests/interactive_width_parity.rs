@@ -97,7 +97,7 @@ fn cjk_and_multiline_tool_output_fit_the_width() {
                     thinking_signature: None,
                     redacted: None,
                 },
-                Content::text("はい、応答できます！\n\n現在 /Users/vie/Desktop/pillar というディレクトリで作業できる状態です。ファイルの読み書き・編集、コマンド実行などが可能です。\n\n何かお手伝いできることはありますか？"),
+                Content::text("はい、応答できます！\n\n現在 /home/user/pillar というディレクトリで作業できる状態です。ファイルの読み書き・編集、コマンド実行などが可能です。\n\n何かお手伝いできることはありますか？"),
                 Content::ToolCall {
                     id: "tc-1".to_string(),
                     name: "bash".to_string(),
@@ -109,7 +109,7 @@ fn cjk_and_multiline_tool_output_fit_the_width() {
                     id: "tc-2".to_string(),
                     name: "write".to_string(),
                     arguments: serde_json::json!({
-                        "file_path": "/Users/vie/Desktop/pillar/docs/自己モデル紹介.md",
+                        "file_path": "/home/user/pillar/docs/自己モデル紹介.md",
                         "content": "# 自己モデル紹介\n\n私は **Omen Alpha** が動作しているコーディングアシスタントです。ファイルの読み書き・編集、コマンド実行などを通じて開発を支援します。\n\n日本語でのやり取りにも対応しています。\n"
                     }),
                     thought_signature: None,
