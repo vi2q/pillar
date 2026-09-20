@@ -456,7 +456,7 @@ pub fn generate_unified_patch(path: &str, old_content: &str, new_content: &str) 
 /// The borrow must outlive the diff's own lifetime parameters (`similar`'s
 /// `Display for UnifiedDiff` requires `'diff: 'old + 'new + 'bufs`), so the
 /// caller passes a diff whose lifetimes were inferred at its own call site.
-fn render_unified_patch<'a>(path: &str, diff: &'a TextDiff<'a, 'a, 'a, str>) -> String {
+fn render_unified_patch<'a>(path: &str, diff: &'a TextDiff<'a, 'a, str>) -> String {
     let mut patch = String::new();
     patch.push_str(&format!("--- {path}\n"));
     patch.push_str(&format!("+++ {path}\n"));
@@ -477,7 +477,7 @@ struct DiffPart {
 }
 
 /// Split a diff into parts grouped by tag (upstream Diff.diffLines parts).
-fn diff_line_parts<'a>(diff: &'a TextDiff<'a, 'a, 'a, str>) -> Vec<DiffPart> {
+fn diff_line_parts<'a>(diff: &'a TextDiff<'a, 'a, str>) -> Vec<DiffPart> {
     let mut parts: Vec<DiffPart> = Vec::new();
     for change in diff.iter_all_changes() {
         let (kind, text) = match change.tag() {

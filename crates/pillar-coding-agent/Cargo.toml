@@ -19,7 +19,7 @@ async-trait = "0.1"
 base64 = "0.23"
 globset = "0.4.19"
 ignore = "0.4"
-similar = "2"
+similar = "3"
 semver = "1"
 tokio = { version = "1.47", features = ["sync", "time"] }
 
