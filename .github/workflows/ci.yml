@@ -11,6 +11,13 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    env:
+      # Keep the build artifacts small enough for a hosted runner. With full
+      # debug info the workspace `target/` is ~28 GB locally, past the runner's
+      # disk, and the job dies with "the hosted runner lost communication".
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
     steps:
       - uses: actions/checkout@v4
 
@@ -25,22 +32,23 @@ jobs:
         with:
           node-version: "25"
 
-      # Everything the run needs is in the lockfile; `scripts/ci.sh` sets
-      # CARGO_NET_OFFLINE, so a missing cached dependency fails here rather
-      # than downloading quietly.
+      # Cache only the cargo caches: `target/` is far larger than the GitHub
+      # cache budget (10 GB). `scripts/ci.sh` sets CARGO_NET_OFFLINE, so a
+      # dependency missing from the lockfile or the cache must fail here rather
+      # than download quietly.
       - name: cache (cargo)
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
           key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
 
       # Warm the caches with the network on before the offline gate: the pinned
       # luaur dependency is a git checkout, not a registry crate, so a cold
-      # runner cannot resolve it under CARGO_NET_OFFLINE. Fetching here also
-      # fills the cache above for later runs.
+      # runner cannot resolve it under CARGO_NET_OFFLINE.
       - name: fetch (network)
         run: |
           cargo fetch --locked
