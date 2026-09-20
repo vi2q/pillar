@@ -157,9 +157,9 @@ fn does_not_recursively_substitute_argument_values() {
 fn loads_templates_from_global_and_project_dirs() {
     let global = temp_dir("global");
     let project = temp_dir("project");
-    // Loader reads agentDir/prompts and cwd/pi/prompts.
+    // Loader reads agentDir/prompts and cwd/.pillar/prompts.
     let global_prompts = global.join("prompts");
-    let project_prompts = project.join("pi").join("prompts");
+    let project_prompts = project.join(".pillar").join("prompts");
     std::fs::create_dir_all(&global_prompts).expect("create global prompts dir");
     std::fs::create_dir_all(&project_prompts).expect("create project prompts dir");
     write_file(
@@ -194,7 +194,7 @@ fn include_defaults_false_skips_default_directories() {
     let global = temp_dir("global2");
     let project = temp_dir("project2");
     let global_prompts = global.join("prompts");
-    let project_prompts = project.join("pi").join("prompts");
+    let project_prompts = project.join(".pillar").join("prompts");
     std::fs::create_dir_all(&global_prompts).expect("create global prompts dir");
     std::fs::create_dir_all(&project_prompts).expect("create project prompts dir");
     write_file(&global_prompts, "deploy.md", "Deploy body");

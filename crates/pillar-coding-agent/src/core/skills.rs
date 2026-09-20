@@ -16,6 +16,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use super::system_prompt::{Skill, validate_skill_description, validate_skill_name};
+use crate::core::settings_manager::CONFIG_DIR_NAME;
 
 /// Max name length per spec.
 const MAX_NAME_LENGTH: usize = 64;
@@ -578,7 +579,7 @@ pub fn load_skills(options: &LoadSkillsOptions) -> LoadSkillsResult {
         );
         add_skills(
             load_skills_from_dir_internal(
-                &resolved_cwd.join("pi").join("skills"),
+                &resolved_cwd.join(CONFIG_DIR_NAME).join("skills"),
                 "project",
                 true,
                 None,

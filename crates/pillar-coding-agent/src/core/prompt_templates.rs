@@ -11,6 +11,8 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use crate::core::settings_manager::CONFIG_DIR_NAME;
+
 /// A prompt template loaded from a markdown file (upstream `PromptTemplate`).
 #[derive(Debug, Clone, Default)]
 pub struct PromptTemplate {
@@ -254,7 +256,7 @@ pub fn load_prompt_templates(options: &LoadPromptTemplatesOptions) -> Vec<Prompt
     let mut templates: Vec<PromptTemplate> = Vec::new();
 
     let global_prompts_dir = resolved_agent_dir.join("prompts");
-    let project_prompts_dir = resolved_cwd.join("pi").join("prompts");
+    let project_prompts_dir = resolved_cwd.join(CONFIG_DIR_NAME).join("prompts");
 
     if include_defaults {
         templates.extend(load_templates_from_dir(&global_prompts_dir));

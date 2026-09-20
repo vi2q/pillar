@@ -4,7 +4,8 @@
 use std::path::{Path, PathBuf};
 
 use pillar_coding_agent::core::skills::{
-    LoadSkillsFromDirOptions, ResourceDiagnostic, load_skills_from_dir,
+    LoadSkillsFromDirOptions, LoadSkillsOptions, ResourceDiagnostic, load_skills,
+    load_skills_from_dir,
 };
 use pillar_coding_agent::core::system_prompt::{Skill, format_skills_for_prompt};
 
@@ -32,6 +33,34 @@ fn load(dir: &Path) -> (Vec<Skill>, Vec<ResourceDiagnostic>) {
         source: "test",
     });
     (result.skills, result.diagnostics)
+}
+
+/// The project-local default is `<cwd>/.pillar/skills` (the port's
+/// `CONFIG_DIR_NAME`), not the old `<cwd>/pi/skills`.
+#[test]
+fn discovers_project_local_skills_under_the_pillar_config_dir() {
+    let cwd = temp_dir("project-cwd");
+    let agent_dir = temp_dir("project-agent");
+    write_skill(
+        &cwd.join(".pillar").join("skills").join("proj-skill"),
+        "SKILL.md",
+        "---\nname: proj-skill\ndescription: A project skill\n---\nbody",
+    );
+    write_skill(
+        &cwd.join("pi").join("skills").join("wrong-skill"),
+        "SKILL.md",
+        "---\nname: wrong-skill\ndescription: the old path\n---\nbody",
+    );
+
+    let result = load_skills(&LoadSkillsOptions {
+        cwd: &cwd,
+        agent_dir: &agent_dir,
+        skill_paths: &[],
+        include_defaults: true,
+    });
+    let names: Vec<&str> = result.skills.iter().map(|skill| skill.name.as_str()).collect();
+    assert!(names.contains(&"proj-skill"), "{names:?}");
+    assert!(!names.contains(&"wrong-skill"), "{names:?}");
 }
 
 #[test]
