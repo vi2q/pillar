@@ -996,9 +996,9 @@ pub fn add_usage_to_stats(
              WHERE session_id = ?1",
             rusqlite::params![
                 session_id,
-                cache_read,
-                uncached_tokens,
-                total_tokens,
+                cache_read as i64,
+                uncached_tokens as i64,
+                total_tokens as i64,
                 cost_total
             ],
         )
