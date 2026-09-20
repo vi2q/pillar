@@ -6,9 +6,16 @@ use pillar_tui::editor_autocomplete::create_autocomplete_list;
 use pillar_tui::input::CURSOR_MARKER;
 use pillar_tui::select_list::{SelectList, SelectListTheme};
 use pillar_tui::text_utils::visible_width;
+use pillar_tui::tui::RenderLines;
 use pillar_tui::tui::{Component, Focusable};
 
+
 /// Drop every escape sequence (for border comparisons).
+/// The shared frame as owned lines (the parity assertions compare strings).
+fn to_vec(lines: RenderLines) -> Vec<String> {
+    lines.iter().map(|line| line.to_string()).collect()
+}
+
 fn strip_ansi(text: &str) -> String {
     pillar_tui::text_utils::strip_terminal_sequences(text)
 }
@@ -22,7 +29,7 @@ fn editor_with(text: &str) -> Editor {
 #[test]
 fn render_draws_a_bordered_frame_padded_to_width() {
     let mut editor = editor_with("hello");
-    let lines = editor.render(10);
+    let lines = to_vec(editor.render(10));
     // Top rule, one content line, bottom rule.
     assert_eq!(lines.len(), 3, "{lines:?}");
     assert_eq!(lines[0], "─".repeat(10));
@@ -36,7 +43,7 @@ fn render_draws_a_bordered_frame_padded_to_width() {
     // Every rendered line keeps the exact width.
     let mut editor = editor_with("hello world this wraps");
     for width in [6usize, 12, 30] {
-        for line in editor.render(width) {
+        for line in to_vec(editor.render(width)) {
             assert_eq!(visible_width(&line), width, "width {width}: {line:?}");
         }
     }
@@ -45,12 +52,12 @@ fn render_draws_a_bordered_frame_padded_to_width() {
 #[test]
 fn render_marks_the_hardware_cursor_only_when_focused() {
     let mut editor = editor_with("abc");
-    let unfocused = editor.render(10);
+    let unfocused = to_vec(editor.render(10));
     assert!(!unfocused[1].contains(CURSOR_MARKER), "{:?}", unfocused[1]);
 
     editor.set_focused(true);
     assert!(editor.is_focused());
-    let focused = editor.render(10);
+    let focused = to_vec(editor.render(10));
     assert!(focused[1].contains(CURSOR_MARKER), "{:?}", focused[1]);
     assert!(
         focused[1].starts_with(&format!("abc{CURSOR_MARKER}\u{1b}[7m")),
@@ -65,10 +72,10 @@ fn render_replaces_the_character_under_the_cursor() {
     // The cursor column addresses the grapheme it highlights, so one step
     // left from the end lands on "c" and two steps land on "b".
     editor.move_cursor(0, -1);
-    let lines = editor.render(10);
+    let lines = to_vec(editor.render(10));
     assert_eq!(lines[1], "ab\u{1b}[7mc\u{1b}[0m       ", "{:?}", lines[1]);
     editor.move_cursor(0, -1);
-    let lines = editor.render(10);
+    let lines = to_vec(editor.render(10));
     assert_eq!(lines[1], "a\u{1b}[7mb\u{1b}[0mc       ", "{:?}", lines[1]);
     // Replacing (not inserting) keeps the line width.
     assert_eq!(visible_width(&lines[1]), 10);
@@ -77,10 +84,10 @@ fn render_replaces_the_character_under_the_cursor() {
     // another highlights the two-column "日".
     let mut editor = editor_with("日x");
     editor.move_cursor(0, -1);
-    let lines = editor.render(10);
+    let lines = to_vec(editor.render(10));
     assert_eq!(lines[1], "日\u{1b}[7mx\u{1b}[0m       ", "{:?}", lines[1]);
     editor.move_cursor(0, -1);
-    let lines = editor.render(10);
+    let lines = to_vec(editor.render(10));
     assert_eq!(lines[1], "\u{1b}[7m日\u{1b}[0mx       ", "{:?}", lines[1]);
     assert_eq!(visible_width(&lines[1]), 10);
 }
@@ -89,7 +96,7 @@ fn render_replaces_the_character_under_the_cursor() {
 fn render_reserves_a_column_without_padding_and_uses_padding_with_it() {
     // No padding: the last column is reserved for the cursor.
     let mut editor = editor_with("abcdefghij");
-    let lines = editor.render(8);
+    let lines = to_vec(editor.render(8));
     // layoutWidth = 8 - 1 = 7, so the word wraps into two layout lines.
     assert_eq!(lines.len(), 4, "{lines:?}");
 
@@ -97,7 +104,7 @@ fn render_reserves_a_column_without_padding_and_uses_padding_with_it() {
     let mut editor = editor_with("abcdef");
     editor.set_padding_x(2);
     assert_eq!(editor.get_padding_x(), 2);
-    let lines = editor.render(10);
+    let lines = to_vec(editor.render(10));
     assert_eq!(lines[0], "─".repeat(10));
     // The cursor overflows into the right padding, so only one pad column
     // remains and the line still fills the width exactly.
@@ -106,7 +113,7 @@ fn render_reserves_a_column_without_padding_and_uses_padding_with_it() {
 
     // The padding is clamped to half the width.
     editor.set_padding_x(99);
-    let lines = editor.render(10);
+    let lines = to_vec(editor.render(10));
     assert_eq!(visible_width(&lines[1]), 10);
     let leading = lines[1].chars().take_while(|c| *c == ' ').count();
     assert_eq!(leading, 4, "clamped to (width - 1) / 2: {:?}", lines[1]);
@@ -132,7 +139,7 @@ fn render_scroll_indicators_stay_within_width_and_keep_their_color() {
         editor.move_cursor(-1, 0);
     }
 
-    let lines = editor.render(width);
+    let lines = to_vec(editor.render(width));
     let top = lines.first().expect("top border");
     let bottom = lines.last().expect("bottom border");
     assert!(strip_ansi(top).contains("─── ↑"), "top indicator: {top:?}");
@@ -160,7 +167,7 @@ fn render_scroll_indicators_stay_within_width_and_keep_their_color() {
     // visible lines, the cursor rests on line 9, so 9 lines are hidden above
     // and 4 below.
     assert_eq!(editor.scroll_offset(), 9);
-    let lines = editor.render(24);
+    let lines = to_vec(editor.render(24));
     let top = strip_ansi(lines.first().expect("top"));
     let bottom = strip_ansi(lines.last().expect("bottom"));
     assert_eq!(
@@ -185,13 +192,13 @@ fn render_limits_visible_lines_to_thirty_percent_of_the_terminal() {
             .collect::<Vec<_>>()
             .join("\n"),
     );
-    let lines = editor.render(20);
+    let lines = to_vec(editor.render(20));
     // 30% of 40 rows = 12 visible lines, plus two borders.
     assert_eq!(lines.len(), 14, "{lines:?}");
 
     // A short terminal never drops below five lines.
     editor.terminal_rows = 8;
-    let lines = editor.render(20);
+    let lines = to_vec(editor.render(20));
     assert_eq!(lines.len(), 7, "{lines:?}");
 }
 
@@ -217,7 +224,7 @@ fn render_composites_the_autocomplete_dropdown() {
     assert!(editor.autocomplete_list().is_some());
 
     let width = 60;
-    let lines = editor.render(width);
+    let lines = to_vec(editor.render(width));
     // frame (border + 1 content + border) + dropdown rows.
     assert!(lines.len() > 3, "{lines:?}");
     let dropdown = &lines[3..];
@@ -243,7 +250,7 @@ fn render_composites_the_autocomplete_dropdown() {
             ..SelectListTheme::default()
         },
     });
-    let lines = editor.render(width);
+    let lines = to_vec(editor.render(width));
     // The selected row is styled as a whole (prefix + value + description).
     assert!(
         lines.iter().any(|line| line.contains("[→ /model")),

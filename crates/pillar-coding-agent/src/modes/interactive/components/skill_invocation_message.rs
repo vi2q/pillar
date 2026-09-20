@@ -9,7 +9,7 @@ use crate::modes::interactive::components::markdown_transform::{
 use crate::modes::interactive::theme::theme;
 use pillar_tui::components::{BoxComponent, Text};
 use pillar_tui::markdown::{DefaultTextStyle, Markdown};
-use pillar_tui::tui::Component;
+use pillar_tui::tui::{RenderLines, Component};
 
 /// A skill invocation message (upstream `SkillInvocationMessageComponent`).
 pub struct SkillInvocationMessageComponent {
@@ -89,7 +89,7 @@ impl SkillInvocationMessageComponent {
 }
 
 impl Component for SkillInvocationMessageComponent {
-    fn render(&mut self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> RenderLines {
         self.box_component.render(width)
     }
 

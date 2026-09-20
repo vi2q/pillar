@@ -20,7 +20,7 @@ use pillar_tui::input::{Input, dispatch_input_keybinding};
 use pillar_tui::keybindings::with_global_keybindings;
 use pillar_tui::stack_layout::slice_by_column;
 use pillar_tui::text_utils::{truncate_to_width, visible_width, wrap_text_with_ansi};
-use pillar_tui::tui::{Component, Focusable};
+use pillar_tui::tui::{Component, Focusable, RenderLines, render_lines};
 
 use crate::core::messages::{CodingAgentMessage, CustomContent};
 use crate::core::session_entries::SessionEntry;
@@ -1402,7 +1402,7 @@ enum BranchDirection {
 }
 
 impl Component for TreeList {
-    fn render(&mut self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> RenderLines {
         let theme_handle = theme();
         let mut lines: Vec<String> = Vec::new();
 
@@ -1419,7 +1419,7 @@ impl Component for TreeList {
                 "",
                 false,
             ));
-            return lines;
+            return render_lines(lines);
         }
 
         let start_index = if self.selected_index >= self.max_visible_lines / 2 {
@@ -1577,7 +1577,7 @@ impl Component for TreeList {
             false,
         ));
 
-        lines
+        render_lines(lines)
     }
 }
 
@@ -1637,7 +1637,7 @@ impl LabelInput {
             "",
             false,
         ));
-        for line in self.input.render(available_width) {
+        for line in self.input.render(available_width).iter().map(|line| line.to_string()) {
             lines.push(truncate_to_width(
                 &format!("{indent}{line}"),
                 width,
@@ -1910,15 +1910,15 @@ impl TreeSelectorComponent {
 }
 
 impl Component for TreeSelectorComponent {
-    fn render(&mut self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> RenderLines {
         let theme_handle = theme();
         let mut lines: Vec<String> = Vec::new();
 
         lines.push(String::new());
-        lines.extend(DynamicBorder::new().render(width));
+        lines.extend(DynamicBorder::new().render(width).iter().map(|line| line.to_string()));
         lines.extend(
             pillar_tui::components::Text::new(&theme_handle.bold("  Session Tree"), 1, 0)
-                .render(width),
+                .render(width).iter().map(|line| line.to_string()),
         );
         lines.extend(render_tree_help(width));
 
@@ -1935,19 +1935,19 @@ impl Component for TreeSelectorComponent {
         };
         lines.push(truncate_to_width(&search_line, width, "", false));
 
-        lines.extend(DynamicBorder::new().render(width));
+        lines.extend(DynamicBorder::new().render(width).iter().map(|line| line.to_string()));
         lines.push(String::new());
 
         // Tree list or label input.
         if let Some(label_input) = &self.label_input {
-            lines.extend(label_input.render(width));
+            lines.extend(label_input.render(width).iter().map(|line| line.to_string()));
         } else {
-            lines.extend(self.tree_list.render(width));
+            lines.extend(self.tree_list.render(width).iter().map(|line| line.to_string()));
         }
 
         lines.push(String::new());
-        lines.extend(DynamicBorder::new().render(width));
-        lines
+        lines.extend(DynamicBorder::new().render(width).iter().map(|line| line.to_string()));
+        render_lines(lines)
     }
 }
 

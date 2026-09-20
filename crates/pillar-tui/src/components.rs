@@ -9,10 +9,12 @@
 
 type BgFn = Box<dyn Fn(&str) -> String + Send + Sync>;
 
+use std::sync::Arc;
+
 use crate::text_utils::{
     apply_background_to_line, truncate_to_width, visible_width, wrap_text_with_ansi,
 };
-use crate::tui::Component;
+use crate::tui::{Component, RenderLines, empty_lines, render_lines};
 
 // ============================================================================
 // Text
@@ -25,7 +27,7 @@ pub struct Text {
     padding_x: usize,
     padding_y: usize,
     bg_fn: Option<BgFn>,
-    cache: Option<(String, usize, Vec<String>)>,
+    cache: Option<(String, usize, RenderLines)>,
 }
 
 impl Text {
@@ -68,15 +70,16 @@ impl Text {
         self.cache = None;
     }
 
-    pub fn render(&mut self, width: usize) -> Vec<String> {
+    pub fn render(&mut self, width: usize) -> RenderLines {
         if let Some((cached_text, cached_width, lines)) = &self.cache {
             if cached_text == &self.text && *cached_width == width {
-                return lines.clone();
+                return Arc::clone(lines);
             }
         }
         if self.text.trim().is_empty() {
-            self.cache = Some((self.text.clone(), width, Vec::new()));
-            return Vec::new();
+            let empty: RenderLines = render_lines(Vec::new());
+            self.cache = Some((self.text.clone(), width, Arc::clone(&empty)));
+            return empty;
         }
 
         // Tabs become 3 spaces.
@@ -126,12 +129,13 @@ impl Text {
             result.push(line);
         }
 
-        self.cache = Some((self.text.clone(), width, result.clone()));
-        if result.is_empty() {
-            vec![String::new()]
+        let lines = if result.is_empty() {
+            render_lines(vec![String::new()])
         } else {
-            result
-        }
+            render_lines(result)
+        };
+        self.cache = Some((self.text.clone(), width, Arc::clone(&lines)));
+        lines
     }
 }
 
@@ -154,8 +158,8 @@ impl Spacer {
         self.lines = lines;
     }
 
-    pub fn render(&self, _width: usize) -> Vec<String> {
-        vec![String::new(); self.lines]
+    pub fn render(&self, _width: usize) -> RenderLines {
+        render_lines(vec![String::new(); self.lines])
     }
 }
 
@@ -174,10 +178,10 @@ pub struct BoxComponent {
 }
 
 struct CacheEntry {
-    child_lines: Vec<String>,
+    child_frames: Vec<RenderLines>,
     width: usize,
     bg_sample: Option<String>,
-    lines: Vec<String>,
+    lines: RenderLines,
 }
 
 impl BoxComponent {
@@ -221,31 +225,42 @@ impl BoxComponent {
         }
     }
 
-    pub fn render(&mut self, width: usize) -> Vec<String> {
+    pub fn render(&mut self, width: usize) -> RenderLines {
         if self.children.is_empty() {
-            return Vec::new();
+            return empty_lines();
         }
         let content_width = (width.saturating_sub(self.padding_x * 2)).max(1);
         let left_pad = " ".repeat(self.padding_x);
 
-        let mut child_lines: Vec<String> = Vec::new();
+        // The children's frames are compared by pointer below: a child that
+        // did not change hands back the same `Arc`, so the background/padding
+        // pass is skipped without re-wrapping anything.
+        let mut child_frames: Vec<RenderLines> = Vec::with_capacity(self.children.len());
         for child in self.children.iter_mut() {
-            for line in child.render(content_width) {
-                child_lines.push(format!("{left_pad}{line}"));
-            }
+            child_frames.push(child.render(content_width));
         }
-        if child_lines.is_empty() {
-            return Vec::new();
+        if child_frames.iter().all(|lines| lines.is_empty()) {
+            return empty_lines();
         }
 
         let bg_sample = self.bg_fn.as_ref().map(|bg_fn| bg_fn("test"));
 
         if let Some(cache) = &self.cache {
-            if cache.width == width
-                && cache.bg_sample == bg_sample
-                && cache.child_lines == child_lines
-            {
-                return cache.lines.clone();
+            let same_children = cache.child_frames.len() == child_frames.len()
+                && cache
+                    .child_frames
+                    .iter()
+                    .zip(child_frames.iter())
+                    .all(|(old, new)| Arc::ptr_eq(old, new));
+            if cache.width == width && cache.bg_sample == bg_sample && same_children {
+                return Arc::clone(&cache.lines);
+            }
+        }
+
+        let mut child_lines: Vec<String> = Vec::new();
+        for lines in &child_frames {
+            for line in lines.iter() {
+                child_lines.push(format!("{left_pad}{line}"));
             }
         }
 
@@ -260,13 +275,14 @@ impl BoxComponent {
             result.push(self.apply_bg("", width));
         }
 
+        let lines = render_lines(result);
         self.cache = Some(CacheEntry {
-            child_lines,
+            child_frames,
             width,
             bg_sample,
-            lines: result.clone(),
+            lines: Arc::clone(&lines),
         });
-        result
+        lines
     }
 }
 
@@ -292,7 +308,7 @@ impl TruncatedText {
         }
     }
 
-    pub fn render(&self, width: usize) -> Vec<String> {
+    pub fn render(&self, width: usize) -> RenderLines {
         let mut result: Vec<String> = Vec::new();
         let empty_line = " ".repeat(width);
         for _ in 0..self.padding_y {
@@ -314,7 +330,7 @@ impl TruncatedText {
         for _ in 0..self.padding_y {
             result.push(empty_line.clone());
         }
-        result
+        render_lines(result)
     }
 }
 
@@ -345,7 +361,7 @@ pub struct Image {
     theme: ImageTheme,
     options: ImageOptions,
     image_id: Option<u32>,
-    cached_lines: Option<Vec<String>>,
+    cached_lines: Option<RenderLines>,
     cached_width: Option<usize>,
 }
 
@@ -387,10 +403,10 @@ impl Image {
         self.cached_width = None;
     }
 
-    pub fn render(&mut self, width: usize) -> Vec<String> {
+    pub fn render(&mut self, width: usize) -> RenderLines {
         if let (Some(lines), Some(cached_width)) = (&self.cached_lines, self.cached_width) {
             if cached_width == width {
-                return lines.clone();
+                return Arc::clone(lines);
             }
         }
 
@@ -466,7 +482,8 @@ impl Image {
             }
         };
 
-        self.cached_lines = Some(lines.clone());
+        let lines = render_lines(lines);
+        self.cached_lines = Some(Arc::clone(&lines));
         self.cached_width = Some(width);
         lines
     }
@@ -477,7 +494,7 @@ impl Image {
 // ============================================================================
 
 impl Component for Text {
-    fn render(&mut self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> RenderLines {
         Text::render(self, width)
     }
 
@@ -487,13 +504,13 @@ impl Component for Text {
 }
 
 impl Component for Spacer {
-    fn render(&mut self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> RenderLines {
         Spacer::render(self, width)
     }
 }
 
 impl Component for BoxComponent {
-    fn render(&mut self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> RenderLines {
         BoxComponent::render(self, width)
     }
 
@@ -503,13 +520,13 @@ impl Component for BoxComponent {
 }
 
 impl Component for TruncatedText {
-    fn render(&mut self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> RenderLines {
         TruncatedText::render(self, width)
     }
 }
 
 impl Component for Image {
-    fn render(&mut self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> RenderLines {
         Image::render(self, width)
     }
 

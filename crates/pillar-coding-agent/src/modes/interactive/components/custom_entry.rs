@@ -5,7 +5,7 @@ use crate::core::extensions_types::{EntryRenderOptions, EntryRenderer};
 use crate::core::session_entries::CustomEntry;
 use crate::modes::interactive::theme::theme;
 use pillar_tui::components::{BoxComponent, Spacer, Text};
-use pillar_tui::tui::{Component, Container};
+use pillar_tui::tui::{Component, Container, RenderLines};
 
 /// A custom entry plus its renderer (upstream `CustomEntryComponent`).
 ///
@@ -95,7 +95,7 @@ impl CustomEntryComponent {
 }
 
 impl Component for CustomEntryComponent {
-    fn render(&mut self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> RenderLines {
         self.container.render(width)
     }
 

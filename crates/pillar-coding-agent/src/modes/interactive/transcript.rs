@@ -34,7 +34,7 @@ use std::sync::{Arc, Mutex};
 
 use pillar_ai::types::{Content, StopReason};
 use pillar_tui::components::{Spacer, Text};
-use pillar_tui::tui::{Component, Container, Focusable};
+use pillar_tui::tui::{Component, Container, Focusable, RenderLines};
 
 use crate::core::agent_session::parse_skill_block;
 use crate::core::agent_session_class::{AgentSessionEvent, agent_message_to_coding};
@@ -138,7 +138,7 @@ impl<C> Clone for Shared<C> {
 }
 
 impl<C: Component + 'static> Component for Shared<C> {
-    fn render(&mut self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> RenderLines {
         self.lock().render(width)
     }
 
@@ -181,7 +181,7 @@ impl<C> FocusHandle<C> {
 }
 
 impl<C: Component + Focusable + 'static> Component for FocusHandle<C> {
-    fn render(&mut self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> RenderLines {
         self.0.lock().render(width)
     }
 
@@ -1100,7 +1100,7 @@ fn tool_result_to_render_result(
 }
 
 impl Component for InteractiveTranscript {
-    fn render(&mut self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> RenderLines {
         self.chat.render(width)
     }
 

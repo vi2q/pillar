@@ -32,7 +32,10 @@ pub fn truncate_to_visual_lines(
     }
 
     let mut temp_text = Text::new(text, padding_x, 0);
-    let all_visual_lines = Component::render(&mut temp_text, width);
+    let all_visual_lines: Vec<String> = Component::render(&mut temp_text, width)
+        .iter()
+        .map(|line| line.to_string())
+        .collect();
 
     if all_visual_lines.len() <= max_visual_lines {
         return VisualTruncateResult {

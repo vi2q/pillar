@@ -38,7 +38,7 @@ fn opts() -> MarkdownOptions {
 
 fn render(text: &str, width: usize) -> Vec<String> {
     let mut md = Markdown::new(text, 0, 0, theme(), None, opts());
-    md.render(width)
+    md.render(width).iter().map(|line| line.to_string()).collect()
 }
 
 fn plain(lines: &[String]) -> Vec<String> {
@@ -137,7 +137,7 @@ fn code_block_custom_indent() {
     let mut theme = theme();
     theme.code_block_indent = Some("    ".to_string());
     let mut md = Markdown::new("```\ncode\n```", 0, 0, theme, None, opts());
-    let lines = md.render(40);
+    let lines: Vec<String> = md.render(40).iter().map(|line| line.to_string()).collect();
     let p = plain(&lines);
     assert!(p[1].starts_with("    code"), "{p:?}");
 }
@@ -149,7 +149,7 @@ fn code_block_highlight_hook() {
         code.split('\n').map(|l| format!("[{lang:?}]{l}")).collect()
     }));
     let mut md = Markdown::new("```rust\nfn main() {}\n```", 0, 0, theme, None, opts());
-    let lines = md.render(60);
+    let lines: Vec<String> = md.render(60).iter().map(|line| line.to_string()).collect();
     let p = plain(&lines);
     assert!(p[1].contains("[Some(\"rust\")]fn main() {}"), "{p:?}");
 }
@@ -200,7 +200,7 @@ fn preserve_ordered_list_markers_option() {
         ..opts()
     };
     let mut md = Markdown::new("1. first\n2. second", 0, 0, theme(), None, options);
-    let lines = md.render(40);
+    let lines: Vec<String> = md.render(40).iter().map(|line| line.to_string()).collect();
     let p = plain(&lines);
     assert!(p[0].starts_with("1. first"), "{p:?}");
 }
@@ -286,7 +286,7 @@ fn table_header_is_bold() {
     let mut theme = theme();
     theme.bold = Box::new(|t| format!("<b>{t}</b>"));
     let mut md = Markdown::new(table, 0, 0, theme, None, opts());
-    let lines = md.render(40);
+    let lines: Vec<String> = md.render(40).iter().map(|line| line.to_string()).collect();
     assert!(
         lines
             .iter()
@@ -327,7 +327,7 @@ fn latex_disabled_option_passes_through() {
         ..opts()
     };
     let mut md = Markdown::new("value $x$ here", 0, 0, theme(), None, options);
-    let lines = md.render(40);
+    let lines: Vec<String> = md.render(40).iter().map(|line| line.to_string()).collect();
     let p = plain(&lines);
     assert!(p[0].contains("$x$"), "{p:?}");
 }
@@ -337,7 +337,7 @@ fn latex_disabled_option_passes_through() {
 #[test]
 fn horizontal_padding_wraps_content() {
     let mut md = Markdown::new("hello", 2, 0, theme(), None, opts());
-    let lines = md.render(20);
+    let lines: Vec<String> = md.render(20).iter().map(|line| line.to_string()).collect();
     assert!(lines[0].starts_with("  hello"), "{:?}", lines[0]);
     // Padded to full width with the right margin.
     assert_eq!(pillar_tui::text_utils::visible_width(&lines[0]), 20);
@@ -346,7 +346,7 @@ fn horizontal_padding_wraps_content() {
 #[test]
 fn vertical_padding_adds_empty_lines() {
     let mut md = Markdown::new("hello", 0, 2, theme(), None, opts());
-    let lines = md.render(20);
+    let lines: Vec<String> = md.render(20).iter().map(|line| line.to_string()).collect();
     assert_eq!(lines.len(), 5, "{lines:?}");
     assert_eq!(lines[0], " ".repeat(20));
     assert_eq!(lines[4], " ".repeat(20));
@@ -365,7 +365,7 @@ fn background_applied_to_content_and_padding() {
         ..DefaultTextStyle::default()
     };
     let mut md = Markdown::new("hi", 1, 1, theme(), Some(style), opts());
-    let lines = md.render(10);
+    let lines: Vec<String> = md.render(10).iter().map(|line| line.to_string()).collect();
     assert!(lines.iter().all(|l| l.contains("[bg]")), "{lines:?}");
 }
 
@@ -400,7 +400,7 @@ fn set_text_invalidates_cache() {
     let mut md = Markdown::new("old", 0, 0, theme(), None, opts());
     let _ = md.render(40);
     md.set_text("new");
-    let lines = md.render(40);
+    let lines: Vec<String> = md.render(40).iter().map(|line| line.to_string()).collect();
     let p = plain(&lines);
     assert!(p[0].contains("new"), "{p:?}");
 }
@@ -414,7 +414,7 @@ fn transform_hook_receives_content_width() {
         ..opts()
     };
     let mut md = Markdown::new("body", 0, 0, theme(), None, options);
-    let lines = md.render(50);
+    let lines: Vec<String> = md.render(50).iter().map(|line| line.to_string()).collect();
     let p = plain(&lines);
     assert!(p[0].contains("50::body"), "{p:?}");
 }
@@ -428,7 +428,7 @@ fn default_style_applied_to_paragraphs() {
         ..DefaultTextStyle::default()
     };
     let mut md = Markdown::new("plain", 0, 0, theme(), Some(style), opts());
-    let lines = md.render(40);
+    let lines: Vec<String> = md.render(40).iter().map(|line| line.to_string()).collect();
     assert!(lines[0].contains("[c]plain"), "{:?}", lines[0]);
 }
 
@@ -439,7 +439,7 @@ fn default_style_not_applied_inside_blockquote() {
         ..DefaultTextStyle::default()
     };
     let mut md = Markdown::new("> quoted", 0, 0, theme(), Some(style), opts());
-    let lines = md.render(40);
+    let lines: Vec<String> = md.render(40).iter().map(|line| line.to_string()).collect();
     // Quote line contains the text but not the default color wrap.
     assert!(!lines[0].contains("[c]"), "{:?}", lines[0]);
 }

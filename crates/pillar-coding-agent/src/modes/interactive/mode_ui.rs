@@ -12,7 +12,7 @@
 //! host-driven and omitted.
 
 use pillar_tui::components::{Spacer, Text, TruncatedText};
-use pillar_tui::tui::{Component, Container, TuiMode};
+use pillar_tui::tui::{Component, Container, RenderLines, TuiMode};
 
 use crate::core::extensions_types::WorkingIndicatorOptions;
 use crate::modes::interactive::components::keybinding_hints::key_display_text;
@@ -376,7 +376,7 @@ impl InteractiveTranscript {
 }
 
 impl Component for StatusUi {
-    fn render(&mut self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> RenderLines {
         self.status.render(width)
     }
 
@@ -386,7 +386,7 @@ impl Component for StatusUi {
 }
 
 impl Component for PendingMessagesUi {
-    fn render(&mut self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> RenderLines {
         self.container.render(width)
     }
 

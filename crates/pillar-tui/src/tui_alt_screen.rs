@@ -1941,7 +1941,14 @@ impl TuiAltScreen {
     /// (upstream `renderLayoutFrame` + `getScrollViewBox`) and record the
     /// primary scroll view's hit-test geometry.
     fn render_frame(&mut self, width: usize, height: usize) -> Vec<String> {
-        let content = self.base.render(width);
+        // The fullscreen pipeline still works on owned lines; convert the
+        // shared frame once at this boundary (docs/PERF-BASELINE.md).
+        let content: Vec<String> = self
+            .base
+            .render(width)
+            .iter()
+            .map(|line| line.to_string())
+            .collect();
         self.last_content_lines = content.clone();
 
         let mut node = LayoutNode::Scroll {
@@ -1989,7 +1996,11 @@ impl TuiAltScreen {
             let Some(component) = self.base.overlay_component_mut(id) else {
                 continue;
             };
-            let overlay_lines = component.render(overlay_width);
+            let overlay_lines: Vec<String> = component
+                .render(overlay_width)
+                .iter()
+                .map(|line| line.to_string())
+                .collect();
             overlays.push(prepare_overlay(
                 Some(&options),
                 overlay_lines,

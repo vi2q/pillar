@@ -1,15 +1,21 @@
 //! Parity tests for tui components: Text, Spacer, Box, TruncatedText
 //! (pi v0.84.3).
 
+use pillar_tui::tui::RenderLines;
 use pillar_tui::components::{BoxComponent, Spacer, Text, TruncatedText};
 use pillar_tui::text_utils::visible_width;
 
 // --- Text ---------------------------------------------------------------------------------------
 
+/// The shared frame as owned lines (the parity assertions compare strings).
+fn to_vec(lines: RenderLines) -> Vec<String> {
+    lines.iter().map(|line| line.to_string()).collect()
+}
+
 #[test]
 fn text_wraps_and_pads() {
     let mut text = Text::new("hello world foo", 1, 1);
-    let lines = text.render(15);
+    let lines = to_vec(text.render(15));
     // paddingY(1) + 2 content lines + paddingY(1)
     assert_eq!(lines.len(), 4, "{lines:?}");
     assert_eq!(lines[0], " ".repeat(15));
@@ -23,7 +29,7 @@ fn text_wraps_and_pads() {
 fn text_reduces_padding_to_fit() {
     // width 7, paddingX 2 → content width 3: the word hard-breaks.
     let mut text = Text::new("hello", 2, 0);
-    let lines = text.render(7);
+    let lines = to_vec(text.render(7));
     assert_eq!(lines, vec!["  hel  ", "  lo   "]);
 }
 
@@ -38,29 +44,29 @@ fn text_empty_renders_nothing() {
 #[test]
 fn text_preserves_explicit_newlines() {
     let mut text = Text::new("a\nb", 0, 0);
-    let lines = text.render(10);
+    let lines = to_vec(text.render(10));
     assert_eq!(lines, vec!["a         ", "b         "]);
 }
 
 #[test]
 fn text_tabs_become_three_spaces() {
     let mut text = Text::new("a\tb", 0, 0);
-    let lines = text.render(10);
+    let lines = to_vec(text.render(10));
     assert_eq!(lines[0], "a   b     ");
 }
 
 #[test]
 fn text_cache_invalidates_on_set_text() {
     let mut text = Text::new("first", 0, 0);
-    assert_eq!(text.render(10), vec!["first     "]);
+    assert_eq!(to_vec(text.render(10)), vec!["first     "]);
     text.set_text("second");
-    assert_eq!(text.render(10), vec!["second    "]);
+    assert_eq!(to_vec(text.render(10)), vec!["second    "]);
 }
 
 #[test]
 fn text_background_applied_and_padded() {
     let mut text = Text::with_bg("ab", 0, 0, Box::new(|t| format!("<{t}>")));
-    let lines = text.render(5);
+    let lines = to_vec(text.render(5));
     assert_eq!(lines, vec!["<ab   >"]);
 }
 
@@ -69,9 +75,9 @@ fn text_background_applied_and_padded() {
 #[test]
 fn spacer_renders_empty_lines() {
     let mut spacer = Spacer::new(3);
-    assert_eq!(spacer.render(10), vec!["", "", ""]);
+    assert_eq!(to_vec(spacer.render(10)), vec!["", "", ""]);
     spacer.set_lines(1);
-    assert_eq!(spacer.render(10), vec![""]);
+    assert_eq!(to_vec(spacer.render(10)), vec![""]);
 }
 
 // --- Box ------------------------------------------------------------------------------------------
@@ -81,7 +87,7 @@ fn box_applies_padding_and_background() {
     let mut base = BoxComponent::new(1, 0);
     base.add_child(Box::new(Text::new("hello", 0, 0)));
     base.set_bg_fn(Some(Box::new(|t| format!("<{t}>"))));
-    let lines = base.render(11);
+    let lines = to_vec(base.render(11));
     assert_eq!(lines, vec!["< hello     >"]);
 }
 
@@ -89,7 +95,7 @@ fn box_applies_padding_and_background() {
 fn box_top_bottom_padding_and_children() {
     let mut base = BoxComponent::new(1, 1);
     base.add_child(Box::new(Text::new("content", 0, 0)));
-    let lines = base.render(12);
+    let lines = to_vec(base.render(12));
     // paddingY(1) top + content + paddingY(1) bottom; width 12 with
     // paddingX 1 → content width 10, " content  " + pad.
     assert_eq!(lines.len(), 3);
@@ -111,14 +117,14 @@ fn box_cache_tracks_bg_changes_by_sampling() {
     let mut base = BoxComponent::new(1, 0);
     base.add_child(Box::new(Text::new("x", 0, 0)));
     base.set_bg_fn(Some(Box::new(|t| format!("A{t}A"))));
-    let first = base.render(5);
+    let first = to_vec(base.render(5));
     assert_eq!(first, vec!["A x   A"]);
     // Same bg: cached output stays.
-    let cached = base.render(5);
+    let cached = to_vec(base.render(5));
     assert_eq!(cached, vec!["A x   A"]);
     // Changed bg: re-render picks it up (bg change detected by sampling).
     base.set_bg_fn(Some(Box::new(|t| format!("B{t}B"))));
-    let second = base.render(5);
+    let second = to_vec(base.render(5));
     assert_eq!(second, vec!["B x   B"]);
 }
 
@@ -127,7 +133,7 @@ fn box_cache_tracks_bg_changes_by_sampling() {
 #[test]
 fn truncated_text_truncates_with_ellipsis() {
     let component = TruncatedText::new("hello world", 0, 0);
-    let lines = component.render(8);
+    let lines = to_vec(component.render(8));
     // finalizeTruncatedResult appends the reset around the ellipsis.
     assert_eq!(lines, vec!["hello\u{1b}[0m...\u{1b}[0m"]);
 }
@@ -135,14 +141,14 @@ fn truncated_text_truncates_with_ellipsis() {
 #[test]
 fn truncated_text_stops_at_newline() {
     let component = TruncatedText::new("first\nsecond", 0, 0);
-    let lines = component.render(20);
+    let lines = to_vec(component.render(20));
     assert_eq!(lines, vec!["first               "]);
 }
 
 #[test]
 fn truncated_text_pads_and_applies_padding() {
     let component = TruncatedText::new("hi", 1, 1);
-    let lines = component.render(10);
+    let lines = to_vec(component.render(10));
     assert_eq!(lines.len(), 3);
     assert_eq!(lines[1], " hi       ");
 }
@@ -150,7 +156,7 @@ fn truncated_text_pads_and_applies_padding() {
 #[test]
 fn truncated_text_wide_chars() {
     let component = TruncatedText::new("日本語", 0, 0);
-    let lines = component.render(5);
+    let lines = to_vec(component.render(5));
     // width 5 - ellipsis(3) = 2 target → 日 only, then "..." (wrapped in
     // reset codes like the ASCII case).
     assert_eq!(lines[0], "日\u{1b}[0m...\u{1b}[0m");
@@ -160,6 +166,7 @@ fn truncated_text_wide_chars() {
 
 use pillar_tui::components::{Image, ImageOptions};
 use pillar_tui::terminal_image::{
+
     CellDimensions, ImageDimensions, ImageProtocol, TerminalCapabilities,
     calculate_image_cell_size, get_cell_dimensions, get_kitty_image_metadata, set_capabilities,
     set_cell_dimensions,
@@ -196,15 +203,15 @@ fn image_falls_back_without_a_protocol() {
             ..Default::default()
         },
     );
-    let lines = image.render(60);
+    let lines = to_vec(image.render(60));
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert_eq!(lines[0], "[Image: /tmp/shot.png [image/png] 800x600]");
 
     // The fallback is truncated to the requested width.
-    let lines = image.render(18);
+    let lines = to_vec(image.render(18));
     assert_eq!(visible_width(&lines[0]), 18, "{:?}", lines[0]);
     // Same width answers the cached lines; a new width re-renders.
-    let cached = image.render(18);
+    let cached = to_vec(image.render(18));
     assert_eq!(cached, lines);
     image.invalidate();
     assert_eq!(image.render(18).len(), 1);
@@ -224,7 +231,7 @@ fn kitty_image_reserves_its_rows() {
     let mut image = image(Some(dimensions), ImageOptions::default());
     assert!(image.image_id().is_none());
 
-    let lines = image.render(80);
+    let lines = to_vec(image.render(80));
     let expected = calculate_image_cell_size(dimensions, 60, None, get_cell_dimensions());
     assert_eq!(lines.len(), expected.rows, "{lines:?}");
     assert!(lines[0].starts_with("\u{1b}_G"), "{:?}", lines[0]);
@@ -253,7 +260,7 @@ fn iterm2_image_moves_the_cursor_back_up() {
         height_px: 100,
     };
     let mut image = image(Some(dimensions), ImageOptions::default());
-    let lines = image.render(80);
+    let lines = to_vec(image.render(80));
     let expected = calculate_image_cell_size(dimensions, 60, None, get_cell_dimensions());
     assert_eq!(lines.len(), expected.rows);
     // The first rows are blank; the last one moves up and draws the image.
@@ -286,7 +293,7 @@ fn image_respects_max_width_and_height_cells() {
             ..Default::default()
         },
     );
-    let lines = image.render(80);
+    let lines = to_vec(image.render(80));
     let expected = calculate_image_cell_size(dimensions, 12, Some(2), get_cell_dimensions());
     // The height cap wins for a square image: the cell count shrinks below
     // the width cap.

@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use pillar_tui::process_terminal::Terminal;
+use pillar_tui::tui::{RenderLines, render_lines};
 use pillar_tui::tui::{Component, TuiStopOptions};
 use pillar_tui::tui_main_screen::{TuiMainScreen, TuiMainScreenRenderState};
 
@@ -42,8 +43,8 @@ struct Lines {
 }
 
 impl Component for Lines {
-    fn render(&mut self, _width: usize) -> Vec<String> {
-        self.lines.clone()
+    fn render(&mut self, _width: usize) -> RenderLines {
+        render_lines(self.lines.clone())
     }
 }
 
@@ -287,14 +288,13 @@ fn render_state_is_captured_restored_and_reset() {
     // The segment reset is appended at the write site, so the stored lines
     // carry no suffix (docs/PERF-BASELINE.md) while the terminal still sees it.
     assert!(
-        terminal
-            .written()
-            .contains("alpha\u{1b}[0m\u{1b}]8;;\u{7}"),
+        terminal.written().contains("alpha\u{1b}[0m\u{1b}]8;;\u{7}"),
         "{:?}",
         terminal.written()
     );
     let state: TuiMainScreenRenderState = screen.capture_render_state();
-    assert_eq!(state.previous_lines.as_ref(), ["alpha".to_string()]);
+    assert_eq!(state.previous_lines.len(), 1);
+    assert_eq!(state.previous_lines[0].as_ref(), "alpha");
     assert_eq!(state.previous_width, 40);
     assert_eq!(state.previous_height, 10);
 

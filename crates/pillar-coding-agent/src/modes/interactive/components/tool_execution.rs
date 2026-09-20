@@ -23,7 +23,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use pillar_ai::types::Content;
 use pillar_tui::components::{BoxComponent, Image, ImageOptions, Spacer, Text};
 use pillar_tui::terminal_image::{ImageProtocol, get_capabilities};
-use pillar_tui::tui::{Component, Container};
+use pillar_tui::tui::{Component, Container, RenderLines, render_lines};
 
 use crate::core::tools::render_definitions::{
     ToolRenderContext, ToolRenderResult, ToolRenderResultOptions, ToolRenderShell, ToolRenderer,
@@ -69,7 +69,7 @@ pub struct ToolExecutionResult {
 struct StaticLines(Vec<String>);
 
 impl Component for StaticLines {
-    fn render(&mut self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> RenderLines {
         let mut lines = Vec::new();
         for stored in &self.0 {
             lines.extend(pillar_tui::text_utils::wrap_text_with_ansi(
@@ -77,7 +77,7 @@ impl Component for StaticLines {
                 width.max(1),
             ));
         }
-        lines
+        render_lines(lines)
     }
 }
 
@@ -576,8 +576,8 @@ impl ToolExecutionComponent {
     fn image_lines(&mut self, width: usize) -> Vec<String> {
         let mut lines = Vec::new();
         for i in 0..self.image_components.len() {
-            lines.extend(self.image_spacers[i].render(width));
-            lines.extend(self.image_components[i].render(width));
+            lines.extend(self.image_spacers[i].render(width).iter().map(|line| line.to_string()));
+            lines.extend(self.image_components[i].render(width).iter().map(|line| line.to_string()));
         }
         lines
     }
@@ -590,13 +590,13 @@ fn background_fn(key: &'static str) -> Box<dyn Fn(&str) -> String + Send + Sync>
 }
 
 impl Component for ToolExecutionComponent {
-    fn render(&mut self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> RenderLines {
         if self.dirty || self.rendered_width != width {
             self.update_display(width);
         }
 
         if self.hide_component {
-            return Vec::new();
+            return render_lines(Vec::new());
         }
 
         if self.has_renderer_definition()
@@ -604,28 +604,33 @@ impl Component for ToolExecutionComponent {
         {
             let content_lines = self.self_render_container.render(width);
             if content_lines.is_empty() && self.image_components.is_empty() {
-                return Vec::new();
+                return render_lines(Vec::new());
             }
 
-            let mut lines = Vec::new();
+            let mut lines: Vec<String> = Vec::new();
             if !content_lines.is_empty() {
                 lines.push(String::new());
-                lines.extend(content_lines);
+                lines.extend(content_lines.iter().map(|line| line.to_string()));
             }
             lines.extend(self.image_lines(width));
-            return lines;
+            return render_lines(lines);
         }
 
         // Upstream `super.render(width)`: the container's children — the
         // leading spacer, the content box (or text), then the images.
-        let mut lines = self.spacer.render(width);
+        let mut lines: Vec<String> = self
+            .spacer
+            .render(width)
+            .iter()
+            .map(|line| line.to_string())
+            .collect();
         if self.uses_content_box {
-            lines.extend(self.content_box.render(width));
+            lines.extend(self.content_box.render(width).iter().map(|line| line.to_string()));
         } else {
-            lines.extend(self.content_text.render(width));
+            lines.extend(self.content_text.render(width).iter().map(|line| line.to_string()));
         }
         lines.extend(self.image_lines(width));
-        lines
+        render_lines(lines)
     }
 
     fn invalidate(&mut self) {

@@ -19,7 +19,7 @@ use pillar_tui::components::TruncatedText;
 use pillar_tui::fuzzy::fuzzy_filter_by;
 use pillar_tui::input::{Input, dispatch_input_keybinding};
 use pillar_tui::keybindings::with_global_keybindings;
-use pillar_tui::tui::{Component, Focusable};
+use pillar_tui::tui::{Component, Focusable, RenderLines, render_lines};
 
 use crate::modes::interactive::components::dynamic_border::DynamicBorder;
 use crate::modes::interactive::theme::theme;
@@ -299,10 +299,10 @@ impl OAuthSelectorComponent {
 }
 
 impl Component for OAuthSelectorComponent {
-    fn render(&mut self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> RenderLines {
         let theme_handle = theme();
         let mut lines: Vec<String> = Vec::new();
-        lines.extend(DynamicBorder::new().render(width));
+        lines.extend(DynamicBorder::new().render(width).iter().map(|line| line.to_string()));
         lines.push(String::new());
         lines.extend(
             TruncatedText::new(
@@ -310,10 +310,10 @@ impl Component for OAuthSelectorComponent {
                 1,
                 0,
             )
-            .render(width),
+            .render(width).iter().map(|line| line.to_string()),
         );
         lines.push(String::new());
-        lines.extend(self.search_input.render(width));
+        lines.extend(self.search_input.render(width).iter().map(|line| line.to_string()));
         lines.push(String::new());
 
         let (start, end) = self.viewport();
@@ -322,7 +322,7 @@ impl Component for OAuthSelectorComponent {
                 continue;
             };
             let line = self.provider_line(provider, index == self.selected_index);
-            lines.extend(TruncatedText::new(&line, 1, 0).render(width));
+            lines.extend(TruncatedText::new(&line, 1, 0).render(width).iter().map(|line| line.to_string()));
         }
 
         if start > 0 || end < self.filtered_providers.len() {
@@ -339,7 +339,7 @@ impl Component for OAuthSelectorComponent {
                     1,
                     0,
                 )
-                .render(width),
+                .render(width).iter().map(|line| line.to_string()),
             );
         }
 
@@ -351,13 +351,13 @@ impl Component for OAuthSelectorComponent {
             };
             lines.extend(
                 TruncatedText::new(&theme_handle.fg("muted", &format!("  {message}")), 1, 0)
-                    .render(width),
+                    .render(width).iter().map(|line| line.to_string()),
             );
         }
 
         lines.push(String::new());
-        lines.extend(DynamicBorder::new().render(width));
-        lines
+        lines.extend(DynamicBorder::new().render(width).iter().map(|line| line.to_string()));
+        render_lines(lines)
     }
 }
 

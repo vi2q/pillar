@@ -9,6 +9,7 @@
 use std::collections::VecDeque;
 use std::time::Instant;
 
+use crate::tui::{RenderLines, render_lines};
 use crate::text_utils::{truncate_to_width, visible_width};
 
 // ============================================================================
@@ -148,10 +149,10 @@ impl Loader {
     /// Render one line with a leading blank (upstream `render` returns
     /// ["", ...super.render(width)] — the leading blank is the Text
     /// component's top margin of 1).
-    pub fn render(&self, width: usize) -> Vec<String> {
+    pub fn render(&self, width: usize) -> RenderLines {
         let mut lines = vec![String::new()];
         lines.extend(render_text(&self.text, 1, 0, width));
-        lines
+        render_lines(lines)
     }
 }
 
@@ -585,13 +586,13 @@ fn _unused_visible_width(s: &str) -> usize {
 // ============================================================================
 
 impl crate::tui::Component for Loader {
-    fn render(&mut self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> RenderLines {
         Loader::render(self, width)
     }
 }
 
 impl crate::tui::Component for CancellableLoader {
-    fn render(&mut self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> RenderLines {
         Loader::render(self, width)
     }
 }

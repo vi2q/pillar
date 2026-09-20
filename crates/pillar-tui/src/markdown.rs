@@ -15,8 +15,11 @@
 
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
+use std::sync::Arc;
+
 use crate::latex::{RenderLatexOptions, render_latex};
 use crate::text_utils::{apply_background_to_line, visible_width, wrap_text_with_ansi};
+use crate::tui::{RenderLines, render_lines};
 
 /// Styling applied to all text unless overridden (upstream
 /// `DefaultTextStyle`). Background color is applied at the padding
@@ -82,7 +85,7 @@ pub struct Markdown {
     options: MarkdownOptions,
     cached_text: Option<String>,
     cached_width: Option<usize>,
-    cached_lines: Option<Vec<String>>,
+    cached_lines: Option<RenderLines>,
 }
 
 /// Inline style application context (upstream `InlineStyleContext`).
@@ -192,12 +195,12 @@ impl Markdown {
         }
     }
 
-    pub fn render(&mut self, width: usize) -> Vec<String> {
+    pub fn render(&mut self, width: usize) -> RenderLines {
         if let (Some(cached_lines), Some(cached_text), Some(cached_width)) =
             (&self.cached_lines, &self.cached_text, self.cached_width)
         {
             if *cached_text == self.text && cached_width == width {
-                return cached_lines.clone();
+                return Arc::clone(cached_lines);
             }
         }
 
@@ -210,8 +213,9 @@ impl Markdown {
         if text.trim().is_empty() {
             self.cached_text = Some(self.text.clone());
             self.cached_width = Some(width);
-            self.cached_lines = Some(Vec::new());
-            return Vec::new();
+            let empty = render_lines(Vec::new());
+            self.cached_lines = Some(Arc::clone(&empty));
+            return empty;
         }
 
         // Tabs → 3 spaces for consistent rendering (upstream).
@@ -284,10 +288,11 @@ impl Markdown {
         if result.is_empty() {
             result.push(String::new());
         }
+        let lines = render_lines(result);
         self.cached_text = Some(self.text.clone());
         self.cached_width = Some(width);
-        self.cached_lines = Some(result.clone());
-        result
+        self.cached_lines = Some(Arc::clone(&lines));
+        lines
     }
 
     fn render_block(
@@ -1277,7 +1282,7 @@ fn trim_partial_closing_fences(source: &str) -> String {
 }
 
 impl crate::tui::Component for Markdown {
-    fn render(&mut self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> RenderLines {
         Markdown::render(self, width)
     }
 }

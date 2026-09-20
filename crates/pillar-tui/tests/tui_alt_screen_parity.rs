@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use pillar_tui::process_terminal::Terminal;
-use pillar_tui::tui::{Component, TuiStopOptions};
+use pillar_tui::tui::{Component, RenderLines, TuiStopOptions, render_lines};
 use pillar_tui::tui_alt_screen::{
     SearchSelectionMode, TuiAltScreen, TuiAltScreenOptions, is_mouse_sequence,
     parse_sgr_mouse_event, parse_wheel_event,
@@ -39,8 +39,8 @@ struct Lines {
 }
 
 impl Component for Lines {
-    fn render(&mut self, _width: usize) -> Vec<String> {
-        self.lines.clone()
+    fn render(&mut self, _width: usize) -> RenderLines {
+        render_lines(self.lines.clone())
     }
 }
 
@@ -759,8 +759,8 @@ fn a_focused_overlay_defers_viewport_keybindings() {
     // With an unrelated overlay focused the viewport yields.
     struct Plain;
     impl Component for Plain {
-        fn render(&mut self, _width: usize) -> Vec<String> {
-            vec![]
+        fn render(&mut self, _width: usize) -> RenderLines {
+            render_lines(Vec::new())
         }
     }
     let id = screen.base_mut().show_overlay(

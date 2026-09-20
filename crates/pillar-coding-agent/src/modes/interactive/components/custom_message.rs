@@ -9,7 +9,7 @@ use crate::modes::interactive::components::markdown_transform::{
 use crate::modes::interactive::theme::theme;
 use pillar_tui::components::{BoxComponent, Spacer, Text};
 use pillar_tui::markdown::{DefaultTextStyle, Markdown};
-use pillar_tui::tui::{Component, Container};
+use pillar_tui::tui::{Component, Container, RenderLines};
 
 /// A custom message (upstream `CustomMessageComponent`).
 ///
@@ -137,7 +137,7 @@ pub fn custom_message_text(message: &CustomMessage) -> String {
 }
 
 impl Component for CustomMessageComponent {
-    fn render(&mut self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> RenderLines {
         self.container.render(width)
     }
 

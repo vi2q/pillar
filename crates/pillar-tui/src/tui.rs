@@ -23,6 +23,7 @@
 //!   re-evaluates it every render).
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub use crate::input::CURSOR_MARKER;
@@ -66,10 +67,39 @@ pub type TuiInputListener = Box<dyn FnMut(&str) -> Option<InputListenerResult> +
 /// `onTerminalColorSchemeChange`).
 pub type TerminalColorSchemeListener = Box<dyn FnMut(TerminalColorScheme) + Send>;
 
+/// One frame of rendered lines, shared per line.
+///
+/// divergence: upstream returns the cached `string[]` by reference, so a
+/// component that did not change hands its lines on for free. Rust has to
+/// return by value, and a flat `Vec<String>`/`Arc<[String]>` would deep-copy
+/// every line of every ancestor that rebuilds (an 8401-line transcript: 157 µs
+/// per ancestor rebuild). Sharing each line (`Arc<str>`) makes a rebuild a
+/// pointer copy (26 µs measured, docs/PERF-BASELINE.md) while keeping the flat,
+/// line-indexed frame the diff and the writers expect.
+pub type RenderLines = Arc<[Arc<str>]>;
+
+/// Wrap owned lines into a [`RenderLines`] frame (one `Arc<str>` per line).
+pub fn render_lines(lines: Vec<String>) -> RenderLines {
+    lines
+        .into_iter()
+        .map(Arc::<str>::from)
+        .collect::<Vec<Arc<str>>>()
+        .into()
+}
+
+/// An empty frame.
+pub fn empty_lines() -> RenderLines {
+    Arc::from(Vec::new())
+}
+
 /// A renderable UI component (upstream `Component`).
 pub trait Component: Send {
     /// Render the component to lines for the given viewport width.
-    fn render(&mut self, width: usize) -> Vec<String>;
+    ///
+    /// A component with a `(content, width)` cache returns its cached frame
+    /// (an `Arc` clone), which is what lets a container detect "this child did
+    /// not change" by pointer and reuse its own concatenation.
+    fn render(&mut self, width: usize) -> RenderLines;
 
     /// Handle keyboard input while focused (upstream `handleInput`).
     fn handle_input(&mut self, _data: &str) {}
@@ -115,17 +145,30 @@ pub fn is_focusable(component: Option<&mut dyn Component>) -> bool {
 #[derive(Default)]
 pub struct Container {
     children: Vec<Box<dyn Component>>,
+    /// The last frame plus the child frames it was built from. A child that
+    /// returns the same `Arc` as last time (its cache hit) did not change, so
+    /// the concatenation is reused instead of rebuilt — the port's stand-in for
+    /// upstream's by-reference arrays (see [`RenderLines`]).
+    cache: Option<ContainerCache>,
+}
+
+struct ContainerCache {
+    width: usize,
+    children: Vec<RenderLines>,
+    lines: RenderLines,
 }
 
 impl Container {
     pub fn new() -> Self {
         Self {
             children: Vec::new(),
+            cache: None,
         }
     }
 
     pub fn add_child(&mut self, component: Box<dyn Component>) {
         self.children.push(component);
+        self.cache = None;
     }
 
     /// Remove the child at `index` (upstream `removeChild` by identity).
@@ -133,6 +176,7 @@ impl Container {
         if index >= self.children.len() {
             return None;
         }
+        self.cache = None;
         Some(self.children.remove(index))
     }
 
@@ -140,10 +184,12 @@ impl Container {
     pub fn insert_child(&mut self, index: usize, component: Box<dyn Component>) {
         let index = index.min(self.children.len());
         self.children.insert(index, component);
+        self.cache = None;
     }
 
     pub fn clear(&mut self) {
         self.children.clear();
+        self.cache = None;
     }
 
     /// Mutable children access (upstream code indexes `children[i]`)
@@ -166,11 +212,35 @@ impl Container {
 }
 
 impl Component for Container {
-    fn render(&mut self, width: usize) -> Vec<String> {
-        let mut lines = Vec::new();
-        for child in &mut self.children {
-            lines.extend(child.render(width));
+    fn render(&mut self, width: usize) -> RenderLines {
+        let mut children: Vec<RenderLines> = Vec::with_capacity(self.children.len());
+        let mut unchanged = self.cache.as_ref().is_some_and(|cache| {
+            cache.width == width && cache.children.len() == self.children.len()
+        });
+        for (index, child) in self.children.iter_mut().enumerate() {
+            let lines = child.render(width);
+            if unchanged {
+                let cached = &self.cache.as_ref().expect("cache checked").children[index];
+                if !Arc::ptr_eq(cached, &lines) {
+                    unchanged = false;
+                }
+            }
+            children.push(lines);
         }
+        if unchanged {
+            return Arc::clone(&self.cache.as_ref().expect("cache checked").lines);
+        }
+        let total: usize = children.iter().map(|lines| lines.len()).sum();
+        let mut lines: Vec<Arc<str>> = Vec::with_capacity(total);
+        for child in &children {
+            lines.extend(child.iter().cloned());
+        }
+        let lines: RenderLines = lines.into();
+        self.cache = Some(ContainerCache {
+            width,
+            children,
+            lines: Arc::clone(&lines),
+        });
         lines
     }
 
@@ -181,6 +251,7 @@ impl Component for Container {
     }
 
     fn invalidate(&mut self) {
+        self.cache = None;
         for child in &mut self.children {
             child.invalidate();
         }
@@ -245,6 +316,9 @@ pub struct TuiBase {
     mode: TuiMode,
     next_id: ComponentId,
     roots: Vec<(ComponentId, Box<dyn Component>)>,
+    /// The last root frame and the root frames it was built from (see
+    /// [`TuiBase::render`]).
+    roots_cache: Option<ContainerCache>,
     overlay_components: HashMap<ComponentId, Box<dyn Component>>,
     /// Full overlay options, keyed like [`Self::overlay_components`].
     overlay_options: HashMap<ComponentId, OverlayOptions>,
@@ -275,6 +349,7 @@ impl TuiBase {
             mode,
             next_id: 1,
             roots: Vec::new(),
+            roots_cache: None,
             overlay_components: HashMap::new(),
             overlay_options: HashMap::new(),
             focus_machine: OverlayFocusMachine::new(),
@@ -348,6 +423,7 @@ impl TuiBase {
         let id = self.next_id;
         self.next_id += 1;
         self.roots.push((id, component));
+        self.roots_cache = None;
         id
     }
 
@@ -356,6 +432,7 @@ impl TuiBase {
             .roots
             .iter()
             .position(|(candidate, _)| *candidate == id)?;
+        self.roots_cache = None;
         Some(self.roots.remove(index).1)
     }
 
@@ -371,11 +448,13 @@ impl TuiBase {
             return false;
         };
         self.roots[index].1 = component;
+        self.roots_cache = None;
         true
     }
 
     pub fn clear(&mut self) {
         self.roots.clear();
+        self.roots_cache = None;
     }
 
     /// The mounted root component ids, in render order (upstream
@@ -389,6 +468,7 @@ impl TuiBase {
     }
 
     pub fn invalidate(&mut self) {
+        self.roots_cache = None;
         for (_, component) in &mut self.roots {
             component.invalidate();
         }
@@ -752,11 +832,39 @@ impl TuiBase {
     /// Render the mounted roots (upstream `TuiBase.render`). Overlays are
     /// composited and line resets applied by the screen renderer, exactly as
     /// upstream splits it.
-    pub fn render(&mut self, width: usize) -> Vec<String> {
-        let mut lines = Vec::new();
-        for (_, component) in &mut self.roots {
-            lines.extend(component.render(width));
+    pub fn render(&mut self, width: usize) -> RenderLines {
+        // Same pointer-comparison cache as `Container`: the roots are the chat
+        // transcript, the editor and the footer, so a keystroke or a streaming
+        // token must not re-concatenate the whole transcript
+        // (docs/PERF-BASELINE.md).
+        let mut children: Vec<RenderLines> = Vec::with_capacity(self.roots.len());
+        let mut unchanged = self.roots_cache.as_ref().is_some_and(|cache| {
+            cache.width == width && cache.children.len() == self.roots.len()
+        });
+        for (index, (_, component)) in self.roots.iter_mut().enumerate() {
+            let lines = component.render(width);
+            if unchanged {
+                let cached = &self.roots_cache.as_ref().expect("cache checked").children[index];
+                if !Arc::ptr_eq(cached, &lines) {
+                    unchanged = false;
+                }
+            }
+            children.push(lines);
         }
+        if unchanged {
+            return Arc::clone(&self.roots_cache.as_ref().expect("cache checked").lines);
+        }
+        let total: usize = children.iter().map(|lines| lines.len()).sum();
+        let mut lines: Vec<Arc<str>> = Vec::with_capacity(total);
+        for child in &children {
+            lines.extend(child.iter().cloned());
+        }
+        let lines: RenderLines = lines.into();
+        self.roots_cache = Some(ContainerCache {
+            width,
+            children,
+            lines: Arc::clone(&lines),
+        });
         lines
     }
 

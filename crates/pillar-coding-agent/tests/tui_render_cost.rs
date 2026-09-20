@@ -130,7 +130,9 @@ fn transcript(messages: usize) -> InteractiveTranscript {
         InteractiveTranscript::new(TranscriptSettings::default(), None, Vec::new(), "/tmp");
     for index in 0..messages {
         transcript.add_message_to_chat(
-            CodingAgentMessage::Base(Message::Assistant(Box::new(assistant(&message_text(index))))),
+            CodingAgentMessage::Base(Message::Assistant(Box::new(assistant(&message_text(
+                index,
+            ))))),
             false,
         );
     }
@@ -138,10 +140,7 @@ fn transcript(messages: usize) -> InteractiveTranscript {
 }
 
 /// A screen over `transcript` plus a status line the caller can tick.
-fn screen(
-    messages: usize,
-    written: Arc<AtomicU64>,
-) -> (TuiMainScreen, Shared<Text>) {
+fn screen(messages: usize, written: Arc<AtomicU64>) -> (TuiMainScreen, Shared<Text>) {
     let status = Shared::new(Text::new("status 0", 1, 0));
     let mut screen = TuiMainScreen::new(Box::new(ProcessTerminal::with_io(Box::new(CountingIo {
         written,
@@ -215,12 +214,13 @@ fn one_frame_costs_the_whole_transcript() {
     );
 
     println!("\n== stage cost on {} lines ==", rows[1].1);
-    let previous: Vec<String> = (0..rows[1].1)
-        .map(|index| format!("line {index} with a little text to compare"))
+    let previous: Vec<Arc<str>> = (0..rows[1].1)
+        .map(|index| Arc::<str>::from(format!("line {index} with a little text to compare").as_str()))
         .collect();
     let mut next = previous.clone();
     let tail = next.len() - 1;
-    next[tail] = "line tail changed".to_string();
+    next[tail] = Arc::from("line tail changed");
+    let next_owned: Vec<String> = next.iter().map(|line| line.to_string()).collect();
 
     let stage = |label: &str, iterations: usize, mut run: Box<dyn FnMut()>| {
         let start = Instant::now();
@@ -262,7 +262,7 @@ fn one_frame_costs_the_whole_transcript() {
         "apply_line_resets (fullscreen path only now)",
         200,
         Box::new(|| {
-            std::hint::black_box(apply_line_resets(next.clone()));
+            std::hint::black_box(apply_line_resets(next_owned.clone()));
         }),
     );
     stage(
@@ -272,6 +272,7 @@ fn one_frame_costs_the_whole_transcript() {
             std::hint::black_box(next.clone());
         }),
     );
+
     stage(
         "visible_width over every line",
         200,
@@ -311,6 +312,60 @@ fn one_frame_costs_the_whole_transcript() {
         if cfg!(debug_assertions) { 10 } else { 50 },
         Box::new(|| {
             std::hint::black_box(warm.render(80).len());
+        }),
+    );
+
+    // What one container rebuild costs in each representation of a frame.
+    // `Arc<[String]>` shares the *array*, not the line data, so every ancestor
+    // that rebuilds after a change copies all of the strings again; sharing per
+    // line is what makes an ancestor rebuild cheap.
+    let flat: Vec<String> = next_owned.clone();
+    let shared: Vec<Arc<str>> = flat.iter().map(|line| Arc::from(line.as_str())).collect();
+    stage(
+        "rebuild flat Vec<String> (deep copy)",
+        200,
+        Box::new(|| {
+            let mut out: Vec<String> = Vec::with_capacity(flat.len());
+            out.extend(flat.iter().cloned());
+            std::hint::black_box(out);
+        }),
+    );
+    stage(
+        "rebuild Arc<[String]> (deep copy + one alloc)",
+        200,
+        Box::new(|| {
+            let out: Arc<[String]> = flat.clone().into();
+            std::hint::black_box(out);
+        }),
+    );
+    stage(
+        "rebuild Vec<Arc<str>> (pointer copies)",
+        200,
+        Box::new(|| {
+            let mut out: Vec<Arc<str>> = Vec::with_capacity(shared.len());
+            out.extend(shared.iter().cloned());
+            std::hint::black_box(out);
+        }),
+    );
+    stage(
+        "rebuild Arc<[Arc<str>]> (pointer copies)",
+        200,
+        Box::new(|| {
+            let out: Arc<[Arc<str>]> = shared.clone().into();
+            std::hint::black_box(out);
+        }),
+    );
+    stage(
+        "diff scan over Arc<str> (ptr fast path)",
+        200,
+        Box::new(|| {
+            let mut changed = 0usize;
+            for (old, new) in shared.iter().zip(shared.iter()) {
+                if !Arc::ptr_eq(old, new) && old != new {
+                    changed += 1;
+                }
+            }
+            std::hint::black_box(changed);
         }),
     );
 

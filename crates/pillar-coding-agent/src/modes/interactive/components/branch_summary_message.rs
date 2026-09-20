@@ -9,7 +9,7 @@ use crate::modes::interactive::components::markdown_transform::{
 use crate::modes::interactive::theme::theme;
 use pillar_tui::components::{BoxComponent, Spacer, Text};
 use pillar_tui::markdown::{DefaultTextStyle, Markdown};
-use pillar_tui::tui::Component;
+use pillar_tui::tui::{RenderLines, Component};
 
 /// A branch summary message (upstream `BranchSummaryMessageComponent`).
 pub struct BranchSummaryMessageComponent {
@@ -84,7 +84,7 @@ impl BranchSummaryMessageComponent {
 }
 
 impl Component for BranchSummaryMessageComponent {
-    fn render(&mut self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> RenderLines {
         self.box_component.render(width)
     }
 

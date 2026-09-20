@@ -5,7 +5,7 @@ use crate::modes::interactive::components::countdown_timer::CountdownTimer;
 use crate::modes::interactive::components::keybinding_hints::key_text;
 use crate::modes::interactive::theme::theme;
 use pillar_tui::loaders::{Loader, LoaderIndicatorOptions};
-use pillar_tui::tui::Component;
+use pillar_tui::tui::{Component, RenderLines, render_lines};
 
 /// Which spinner row this is (upstream `StatusIndicatorKind`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,7 +68,7 @@ impl StatusIndicator {
 }
 
 impl Component for StatusIndicator {
-    fn render(&mut self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> RenderLines {
         self.loader.render(width)
     }
 }
@@ -184,7 +184,7 @@ impl RetryStatusIndicator {
 }
 
 impl Component for RetryStatusIndicator {
-    fn render(&mut self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> RenderLines {
         self.indicator.render(width)
     }
 }
@@ -234,8 +234,8 @@ pub fn branch_summary_status_indicator() -> StatusIndicator {
 pub struct IdleStatus;
 
 impl Component for IdleStatus {
-    fn render(&mut self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> RenderLines {
         let empty_line = " ".repeat(width);
-        vec![empty_line.clone(), empty_line]
+        render_lines(vec![empty_line.clone(), empty_line])
     }
 }

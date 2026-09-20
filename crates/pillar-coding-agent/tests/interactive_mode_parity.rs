@@ -24,12 +24,17 @@ use pillar_coding_agent::modes::interactive::interactive_mode::{
 use pillar_coding_agent::modes::interactive::mode_ui::QueueMode;
 use pillar_coding_agent::modes::interactive::theme;
 use pillar_coding_agent::modes::interactive::transcript::TranscriptSettings;
-use pillar_tui::tui::{Component as _, TuiMode};
+use pillar_tui::tui::{Component as _, RenderLines, TuiMode};
 
 static THEME_LOCK: Mutex<()> = Mutex::new(());
 
 /// In-memory credential store so the runtime's availability snapshot can be
 /// refreshed without touching a real auth file.
+
+/// The shared frame as owned lines (these assertions compare strings).
+fn to_vec(lines: RenderLines) -> Vec<String> {
+    lines.iter().map(|line| line.to_string()).collect()
+}
 #[derive(Default)]
 struct MemCredentials(Mutex<BTreeMap<String, Credential>>);
 
@@ -2714,7 +2719,7 @@ fn a_custom_component_forwarded_and_painted() {
 
     // The first render reports the width; the frame the loop painted shows.
     let mut mounted = mode.editor_slot_component();
-    assert_eq!(mounted.render(20), vec!["frame".to_string()]);
+    assert_eq!(to_vec(mounted.render(20)), vec!["frame".to_string()]);
     assert!(matches!(
         events_rx.try_recv(),
         Ok(ExtensionCustomEvent::Resize(20))

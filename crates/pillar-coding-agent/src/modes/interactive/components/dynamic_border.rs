@@ -2,7 +2,7 @@
 //! viewport width.
 
 use crate::modes::interactive::theme::theme;
-use pillar_tui::tui::Component;
+use pillar_tui::tui::{Component, RenderLines, render_lines};
 
 /// A full-width `─` rule (upstream `DynamicBorder`).
 ///
@@ -32,8 +32,8 @@ impl Default for DynamicBorder {
 }
 
 impl Component for DynamicBorder {
-    fn render(&mut self, width: usize) -> Vec<String> {
-        vec![(self.color)(&"─".repeat(width.max(1)))]
+    fn render(&mut self, width: usize) -> RenderLines {
+        render_lines(vec![(self.color)(&"─".repeat(width.max(1)))])
     }
 }
 

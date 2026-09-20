@@ -32,7 +32,7 @@ use pillar_ai::types::Model;
 use pillar_tui::keybindings::with_global_keybindings;
 use pillar_tui::keys::matches_key;
 use pillar_tui::text_utils::{truncate_to_width, visible_width};
-use pillar_tui::tui::Focusable;
+use pillar_tui::tui::{Focusable, RenderLines, render_lines};
 
 use crate::modes::interactive::theme::theme;
 
@@ -255,7 +255,7 @@ struct LeftRow {
 }
 
 impl pillar_tui::tui::Component for ModelPickerComponent {
-    fn render(&mut self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> RenderLines {
         let theme_handle = theme();
         let mut lines: Vec<String> = Vec::new();
 
@@ -424,7 +424,7 @@ impl pillar_tui::tui::Component for ModelPickerComponent {
                 false,
             ));
         }
-        lines
+        render_lines(lines)
     }
 }
 

@@ -15,7 +15,7 @@ use pillar_tui::input::{Input, dispatch_input_keybinding};
 use pillar_tui::keybindings::with_global_keybindings;
 use pillar_tui::keys::matches_key;
 use pillar_tui::text_utils::{truncate_to_width, visible_width};
-use pillar_tui::tui::{Component, Focusable};
+use pillar_tui::tui::{Component, Focusable, RenderLines, render_lines};
 
 use crate::core::session_manager::SessionInfo;
 use crate::modes::interactive::components::dynamic_border::DynamicBorder;
@@ -795,7 +795,7 @@ impl SessionSelectorComponent {
     fn render_rows(&mut self, width: usize) -> Vec<String> {
         let theme_handle = theme();
         let mut lines: Vec<String> = Vec::new();
-        lines.extend(self.search_input.render(width));
+        lines.extend(self.search_input.render(width).iter().map(|line| line.to_string()));
         lines.push(String::new());
 
         if self.filtered_sessions.is_empty() {
@@ -938,12 +938,12 @@ impl SessionSelectorComponent {
         let mut lines = Vec::new();
         lines.extend(
             pillar_tui::components::Text::new(" Rename Session", 1, 0)
-                .render(width)
+                .render(width).iter().map(|line| line.to_string())
                 .into_iter()
                 .map(|line| theme_handle.bold(&line)),
         );
         lines.push(String::new());
-        lines.extend(self.rename_input.render(width));
+        lines.extend(self.rename_input.render(width).iter().map(|line| line.to_string()));
         lines.push(String::new());
         lines.extend(
             pillar_tui::components::Text::new(
@@ -955,7 +955,7 @@ impl SessionSelectorComponent {
                 1,
                 0,
             )
-            .render(width)
+            .render(width).iter().map(|line| line.to_string())
             .into_iter()
             .map(|line| theme_handle.fg("muted", &line)),
         );
@@ -971,11 +971,11 @@ fn now_ms() -> u64 {
 }
 
 impl Component for SessionSelectorComponent {
-    fn render(&mut self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> RenderLines {
         let mut lines: Vec<String> = Vec::new();
         lines.push(String::new());
         lines.extend(
-            DynamicBorder::with_color(Box::new(|text| theme().fg("accent", text))).render(width),
+            DynamicBorder::with_color(Box::new(|text| theme().fg("accent", text))).render(width).iter().map(|line| line.to_string()),
         );
         lines.push(String::new());
         if self.rename_active {
@@ -987,9 +987,9 @@ impl Component for SessionSelectorComponent {
         }
         lines.push(String::new());
         lines.extend(
-            DynamicBorder::with_color(Box::new(|text| theme().fg("accent", text))).render(width),
+            DynamicBorder::with_color(Box::new(|text| theme().fg("accent", text))).render(width).iter().map(|line| line.to_string()),
         );
-        lines
+        render_lines(lines)
     }
 }
 

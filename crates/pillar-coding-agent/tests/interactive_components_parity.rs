@@ -3,6 +3,7 @@
 //! borders, visual truncation, countdown timer, markdown transforms, diff
 //! rendering, status indicators, the bordered loader and custom entries.
 
+use pillar_tui::tui::RenderLines;
 use std::sync::{Arc, Mutex};
 
 use pillar_coding_agent::core::extensions_types::{
@@ -31,6 +32,11 @@ use pillar_tui::tui::Component;
 
 static THEME_LOCK: Mutex<()> = Mutex::new(());
 
+
+/// The shared frame as owned lines (these assertions compare strings).
+fn to_vec(lines: RenderLines) -> Vec<String> {
+    lines.iter().map(|line| line.to_string()).collect()
+}
 fn install_dark() {
     theme::init_theme(Some("dark"));
 }
@@ -110,19 +116,19 @@ fn dynamic_border_stretches_to_the_width() {
     let _guard = THEME_LOCK.lock().expect("theme lock");
     install_dark();
     let mut plain = DynamicBorder::with_color(Box::new(|text| text.to_string()));
-    assert_eq!(plain.render(5), vec!["─────".to_string()]);
+    assert_eq!(to_vec(plain.render(5)), vec!["─────".to_string()]);
     // Zero width still draws one column (upstream `Math.max(1, width)`).
-    assert_eq!(plain.render(0), vec!["─".to_string()]);
+    assert_eq!(to_vec(plain.render(0)), vec!["─".to_string()]);
 
     // An explicit colour function is applied verbatim.
     let mut coloured = DynamicBorder::with_color(Box::new(|text| format!("[{text}]")));
-    assert_eq!(coloured.render(3), vec!["[───]".to_string()]);
+    assert_eq!(to_vec(coloured.render(3)), vec!["[───]".to_string()]);
     coloured.invalidate();
 
     // The themed border wraps the rule in the `border` colour.
     let dark = theme::get_theme_by_name("dark").expect("dark");
     let mut themed = DynamicBorder::new();
-    assert_eq!(themed.render(2), vec![dark.fg("border", "──")]);
+    assert_eq!(to_vec(themed.render(2)), vec![dark.fg("border", "──")]);
 }
 
 // --- visual truncation ----------------------------------------------------------------------------
@@ -255,7 +261,7 @@ fn render_diff_colours_lines_and_highlights_edits() {
         "{:?}",
         lines[2]
     );
-    assert_eq!(lines[3], dark.fg("toolDiffAdded", "+3 added"));
+    assert_eq!(&*lines[3], dark.fg("toolDiffAdded", "+3 added"));
     assert!(!lines[1].contains(&dark.inverse("old")), "{:?}", lines[1]);
 
     // A 1:1 modification highlights the changed tokens with inverse video and
@@ -317,7 +323,7 @@ fn working_status_indicator_renders_the_spinner() {
     let lines = indicator.render(20);
     // The loader renders a leading blank line plus its text line.
     assert_eq!(lines.len(), 2, "{lines:?}");
-    assert_eq!(lines[0], "");
+    assert_eq!(&*lines[0], "");
     assert!(
         lines[1].contains(&dark.fg("muted", "Thinking")),
         "{:?}",
@@ -392,7 +398,7 @@ fn compaction_and_branch_indicators_use_the_upstream_labels() {
 #[test]
 fn idle_status_renders_two_blank_rows() {
     let mut idle = IdleStatus;
-    assert_eq!(idle.render(4), vec!["    ".to_string(), "    ".to_string()]);
+    assert_eq!(to_vec(idle.render(4)), vec!["    ".to_string(), "    ".to_string()]);
 }
 
 // --- bordered loader ------------------------------------------------------------------------------
@@ -500,7 +506,7 @@ fn custom_entry_renders_through_the_renderer_and_toggles_expanded() {
     let lines = component.render(20);
     // A spacer precedes the rendered entry (upstream adds one).
     assert_eq!(lines.len(), 2, "{lines:?}");
-    assert_eq!(lines[0], "");
+    assert_eq!(&*lines[0], "");
     assert!(lines[1].contains("collapsed"), "{:?}", lines[1]);
     assert_eq!(
         seen.lock().unwrap().as_slice(),
@@ -564,7 +570,7 @@ fn container_composition_preserves_child_order() {
         text.to_string()
     }))));
     let lines = container.render(4);
-    assert_eq!(lines, vec!["────", "body", "────"]);
+    assert_eq!(to_vec(lines), vec!["────", "body", "────"]);
 }
 
 // --- message components ---------------------------------------------------------------------------
@@ -603,7 +609,7 @@ fn assistant_message(content: Vec<Content>, stop_reason: StopReason) -> Assistan
     }
 }
 
-fn plain_lines(lines: &[String]) -> Vec<String> {
+fn plain_lines(lines: &[std::sync::Arc<str>]) -> Vec<String> {
     lines
         .iter()
         .map(|line| strip_ansi(line))
@@ -909,7 +915,7 @@ fn custom_message_default_renderer_shows_label_and_text() {
     // Image blocks are dropped by the default renderer.
     assert!(!body.contains("image/png"), "{body:?}");
     // A leading spacer precedes the box.
-    assert_eq!(lines[0], "");
+    assert_eq!(&*lines[0], "");
 
     component.set_expanded(true);
     assert!(component.is_expanded());
@@ -994,7 +1000,7 @@ fn bash_execution_streams_output_and_reports_status() {
     assert!(body.contains("$ echo hi"), "{body:?}");
     assert!(body.contains("Running..."), "{body:?}");
     assert!(body.contains("to cancel"), "{body:?}");
-    assert_eq!(lines[0], "", "leading spacer");
+    assert_eq!(&*lines[0], "", "leading spacer");
     assert_eq!(
         strip_ansi(lines.last().expect("bottom border")),
         "─".repeat(40),

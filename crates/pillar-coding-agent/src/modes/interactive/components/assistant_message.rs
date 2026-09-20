@@ -9,7 +9,7 @@ use crate::modes::interactive::theme::theme;
 use pillar_ai::types::{AssistantMessage, Content, StopReason};
 use pillar_tui::components::{Spacer, Text};
 use pillar_tui::markdown::{DefaultTextStyle, Markdown, MarkdownOptions};
-use pillar_tui::tui::{Component, Container};
+use pillar_tui::tui::{Component, Container, RenderLines};
 
 const OSC133_ZONE_START: &str = "\u{1b}]133;A\u{7}";
 const OSC133_ZONE_END: &str = "\u{1b}]133;B\u{7}";
@@ -239,15 +239,19 @@ impl AssistantMessageComponent {
 }
 
 impl Component for AssistantMessageComponent {
-    fn render(&mut self, width: usize) -> Vec<String> {
-        let mut lines = self.container.render(width);
+    fn render(&mut self, width: usize) -> RenderLines {
+        let lines = self.container.render(width);
         if self.has_tool_calls || lines.is_empty() {
             return lines;
         }
-        lines[0] = format!("{OSC133_ZONE_START}{}", lines[0]);
-        let last = lines.len() - 1;
-        lines[last] = format!("{OSC133_ZONE_END}{OSC133_ZONE_FINAL}{}", lines[last]);
-        lines
+        // Two lines get an OSC 133 marker: rebuild those entries (the frame is
+        // shared, so it cannot be mutated in place).
+        let mut owned: Vec<std::sync::Arc<str>> = lines.iter().cloned().collect();
+        let last = owned.len() - 1;
+        owned[0] = std::sync::Arc::from(format!("{OSC133_ZONE_START}{}", owned[0]).as_str());
+        owned[last] =
+            std::sync::Arc::from(format!("{OSC133_ZONE_END}{OSC133_ZONE_FINAL}{}", owned[last]).as_str());
+        owned.into()
     }
 
     fn invalidate(&mut self) {

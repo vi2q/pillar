@@ -10,6 +10,7 @@
 
 use crate::terminal_image::{delete_kitty_image, is_image_line};
 use crate::text_utils::visible_width;
+use crate::tui::RenderLines;
 use std::sync::Arc;
 
 /// Kitty image header extracted from a line (upstream
@@ -72,8 +73,12 @@ pub fn delete_kitty_images(ids: &[u32]) -> String {
 /// Reserved rows for an image block starting at `index` (upstream
 /// `getKittyImageReservedRows`): the declared row count bounded by the
 /// remaining lines, extended only through empty rows.
-pub fn get_kitty_image_reserved_rows(lines: &[String], index: usize, max_index: usize) -> usize {
-    let rows = extract_kitty_image_rows(lines.get(index).map(String::as_str).unwrap_or(""));
+pub fn get_kitty_image_reserved_rows(
+    lines: &[Arc<str>],
+    index: usize,
+    max_index: usize,
+) -> usize {
+    let rows = extract_kitty_image_rows(lines.get(index).map(|line| &**line).unwrap_or(""));
     if rows <= 1 {
         return 1;
     }
@@ -84,7 +89,7 @@ pub fn get_kitty_image_reserved_rows(lines: &[String], index: usize, max_index: 
     while reserved_rows < max_rows {
         let line = lines
             .get(index + reserved_rows)
-            .map(String::as_str)
+            .map(|line| &**line)
             .unwrap_or("");
         if is_image_line(line) || visible_width(line) > 0 {
             break;
@@ -99,8 +104,8 @@ pub fn get_kitty_image_reserved_rows(lines: &[String], index: usize, max_index: 
 pub fn expand_changed_range_for_kitty_images(
     first_changed: usize,
     last_changed: usize,
-    previous_lines: &[String],
-    new_lines: &[String],
+    previous_lines: &[Arc<str>],
+    new_lines: &[Arc<str>],
 ) -> (usize, usize) {
     let mut expanded_first = first_changed;
     let mut expanded_last = last_changed;
@@ -125,7 +130,7 @@ pub fn expand_changed_range_for_kitty_images(
 pub fn delete_changed_kitty_images(
     first_changed: usize,
     last_changed: usize,
-    previous_lines: &[String],
+    previous_lines: &[Arc<str>],
 ) -> String {
     let mut ids = Vec::new();
     let max_line = last_changed.min(previous_lines.len().saturating_sub(1));
@@ -165,7 +170,7 @@ pub enum RenderDecision {
 /// to deep-clone every line on every frame (`docs/PERF-BASELINE.md`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MainScreenRenderState {
-    pub previous_lines: Arc<[String]>,
+    pub previous_lines: RenderLines,
     pub previous_width: usize,
     pub previous_height: usize,
     pub max_lines_rendered: usize,
@@ -178,7 +183,7 @@ pub struct MainScreenRenderState {
 impl Default for MainScreenRenderState {
     fn default() -> Self {
         Self {
-            previous_lines: Arc::from(Vec::new()),
+            previous_lines: crate::tui::empty_lines(),
             previous_width: 0,
             previous_height: 0,
             max_lines_rendered: 0,
@@ -199,7 +204,7 @@ pub type ChangedRange = (Option<usize>, Option<usize>, bool);
 /// (upstream the doRender decision tree).
 pub fn decide_render(
     state: &MainScreenRenderState,
-    new_lines: &[String],
+    new_lines: &[Arc<str>],
     width: usize,
     height: usize,
 ) -> RenderDecision {
@@ -211,7 +216,7 @@ pub fn decide_render(
 /// same lines (upstream's single scan; the port's `do_render` reuses it).
 pub fn decide_render_with_range(
     state: &MainScreenRenderState,
-    new_lines: &[String],
+    new_lines: &[Arc<str>],
     width: usize,
     height: usize,
     (first_changed, last_changed, _appended): ChangedRange,
@@ -250,16 +255,23 @@ pub fn decide_render_with_range(
 /// First/last changed line indices plus whether lines were appended
 /// (upstream the changed-range loop).
 pub fn changed_range(
-    previous_lines: &[String],
-    new_lines: &[String],
+    previous_lines: &[Arc<str>],
+    new_lines: &[Arc<str>],
 ) -> (Option<usize>, Option<usize>, bool) {
     let mut first_changed: Option<usize> = None;
     let mut last_changed: Option<usize> = None;
     let max_lines = previous_lines.len().max(new_lines.len());
     for i in 0..max_lines {
-        let old_line = previous_lines.get(i).map(String::as_str).unwrap_or("");
-        let new_line = new_lines.get(i).map(String::as_str).unwrap_or("");
-        if old_line != new_line {
+        let old_line = previous_lines.get(i);
+        let new_line = new_lines.get(i);
+        // A line that was not re-rendered is the *same* `Arc`, so the pointer
+        // check settles most of the scan without touching the text.
+        let same = match (old_line, new_line) {
+            (Some(old), Some(new)) => Arc::ptr_eq(old, new) || old == new,
+            (None, None) => true,
+            _ => false,
+        };
+        if !same {
             if first_changed.is_none() {
                 first_changed = Some(i);
             }
@@ -278,15 +290,23 @@ pub fn changed_range(
 
 /// Whether the append-only fast path applies (upstream `appendStart`):
 /// appending from the very end of the previous content.
-pub fn is_append_start(first_changed: usize, appended: bool, previous_lines: &[String]) -> bool {
+pub fn is_append_start(first_changed: usize, appended: bool, previous_lines: &[Arc<str>]) -> bool {
     appended && first_changed == previous_lines.len() && first_changed > 0
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::render_lines;
 
-    fn lines(items: &[&str]) -> Vec<String> {
+    /// A shared frame from literal lines (the pure functions take
+    /// `&[Arc<str>]`).
+    fn lines(items: &[&str]) -> RenderLines {
+        render_lines(items.iter().map(|s| s.to_string()).collect())
+    }
+
+    /// Owned lines for the cases that build or mutate them.
+    fn owned(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()
     }
 
@@ -340,29 +360,32 @@ mod tests {
 
     #[test]
     fn reserved_rows_extends_through_empty_rows() {
-        let mut lines = lines(&["\u{1b}_Gi=1,r=4;X\u{1b}\\"]);
-        lines.push(String::new());
-        lines.push(String::new());
-        lines.push(String::new());
-        lines.push("text".to_string());
+        let mut items = owned(&["\u{1b}_Gi=1,r=4;X\u{1b}\\"]);
+        items.push(String::new());
+        items.push(String::new());
+        items.push(String::new());
+        items.push("text".to_string());
+        let lines = render_lines(items);
         // Declared 4 rows, empty rows confirmed.
         assert_eq!(get_kitty_image_reserved_rows(&lines, 0, 4), 4);
     }
 
     #[test]
     fn reserved_rows_stops_at_non_empty_row() {
-        let mut lines = lines(&["\u{1b}_Gi=1,r=4;X\u{1b}\\"]);
-        lines.push(String::new());
-        lines.push("text".to_string());
+        let mut items = owned(&["\u{1b}_Gi=1,r=4;X\u{1b}\\"]);
+        items.push(String::new());
+        items.push("text".to_string());
+        let lines = render_lines(items);
         assert_eq!(get_kitty_image_reserved_rows(&lines, 0, 3), 2);
     }
 
     #[test]
     fn reserved_rows_bounded_by_max_index() {
-        let mut lines = lines(&["\u{1b}_Gi=1,r=8;X\u{1b}\\"]);
+        let mut items = owned(&["\u{1b}_Gi=1,r=8;X\u{1b}\\"]);
         for _ in 0..4 {
-            lines.push(String::new());
+            items.push(String::new());
         }
+        let lines = render_lines(items);
         // Only 5 lines total → max 5 rows.
         assert_eq!(get_kitty_image_reserved_rows(&lines, 0, 4), 5);
     }
@@ -414,9 +437,7 @@ mod tests {
 
     #[test]
     fn expand_changed_range_covers_image_block() {
-        let mut prev = lines(&["plain", "\u{1b}_Gi=1,r=3;X\u{1b}\\", "", "", "tail"]);
-        prev[2] = String::new();
-        prev[3] = String::new();
+        let prev = lines(&["plain", "\u{1b}_Gi=1,r=3;X\u{1b}\\", "", "", "tail"]);
         let new = lines(&["plain", "\u{1b}_Gi=1,r=3;X\u{1b}\\", "", "", "tail"]);
         // Change only the tail (row 4): the image block at 1..=3 is
         // untouched, so the range stays.
@@ -426,9 +447,7 @@ mod tests {
 
     #[test]
     fn expand_changed_range_includes_intersecting_block() {
-        let mut prev = lines(&["plain", "\u{1b}_Gi=1,r=3;X\u{1b}\\", "", "", "tail"]);
-        prev[2] = String::new();
-        prev[3] = String::new();
+        let prev = lines(&["plain", "\u{1b}_Gi=1,r=3;X\u{1b}\\", "", "", "tail"]);
         let new = lines(&["plain", "\u{1b}_Gi=1,r=3;X\u{1b}\\", "", "", "CHANGED"]);
         // Row 2 changed; the image block starting at 1 ends at 3, which
         // intersects the change → expanded to 1..=3.
@@ -455,7 +474,7 @@ mod tests {
 
     fn state_with_previous(items: &[&str], width: usize, height: usize) -> MainScreenRenderState {
         MainScreenRenderState {
-            previous_lines: lines(items).into(),
+            previous_lines: lines(items),
             previous_width: width,
             previous_height: height,
             ..MainScreenRenderState::default()
@@ -512,7 +531,7 @@ mod tests {
             max_lines_rendered: 10,
             previous_width: 80,
             previous_height: 24,
-            previous_lines: previous.into(),
+            previous_lines: render_lines(previous),
             ..MainScreenRenderState::default()
         };
         assert_eq!(
@@ -560,7 +579,7 @@ mod tests {
     #[test]
     fn change_above_viewport_requires_full_redraw() {
         let state = MainScreenRenderState {
-            previous_lines: lines(&["a", "b", "c"]).into(),
+            previous_lines: lines(&["a", "b", "c"]),
             previous_width: 80,
             previous_height: 2,
             previous_viewport_top: 2,

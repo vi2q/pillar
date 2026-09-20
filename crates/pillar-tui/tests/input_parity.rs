@@ -1,6 +1,7 @@
 //! Parity tests for the Input component (pi v0.84.3
 //! components/input.ts) and printable key decoding (keys.ts).
 
+use pillar_tui::tui::RenderLines;
 use pillar_tui::edit_support::KillRing;
 use pillar_tui::input::{CURSOR_MARKER, Input};
 use pillar_tui::keys::{
@@ -8,7 +9,13 @@ use pillar_tui::keys::{
 };
 use pillar_tui::text_utils::visible_width;
 
+
 // --- Input basics -----------------------------------------------------------------------------
+
+/// The shared frame as owned lines (the parity assertions compare strings).
+fn to_vec(lines: RenderLines) -> Vec<String> {
+    lines.iter().map(|line| line.to_string()).collect()
+}
 
 #[test]
 fn input_starts_empty() {
@@ -229,7 +236,7 @@ fn input_accepts_unicode() {
 fn render_short_value_fits_with_cursor() {
     let mut input = Input::new();
     input.set_value("hi");
-    let lines = input.render(20);
+    let lines = to_vec(input.render(20));
     assert_eq!(lines.len(), 1);
     assert!(lines[0].starts_with("> "), "{:?}", lines[0]);
     // Cursor (inverse video) sits at the value start, over 'h'.
@@ -239,7 +246,7 @@ fn render_short_value_fits_with_cursor() {
 #[test]
 fn render_prompt_only_when_too_narrow() {
     let input = Input::new();
-    assert_eq!(input.render(2), vec!["> ".to_string()]);
+    assert_eq!(to_vec(input.render(2)), vec!["> ".to_string()]);
 }
 
 #[test]
@@ -248,7 +255,7 @@ fn render_scrolls_horizontally_when_long() {
     let long = "x".repeat(50);
     input.set_value(&long);
     input.set_cursor(50);
-    let lines = input.render(20);
+    let lines = to_vec(input.render(20));
     assert_eq!(lines.len(), 1);
     // Line is prompt + scrolled window.
     assert!(lines[0].starts_with("> "), "{:?}", lines[0]);
@@ -259,13 +266,13 @@ fn render_scrolls_horizontally_when_long() {
 fn render_emits_cursor_marker_when_focused() {
     let mut input = Input::new();
     input.focused = true;
-    let lines = input.render(20);
+    let lines = to_vec(input.render(20));
     assert!(lines[0].contains(CURSOR_MARKER), "{:?}", lines[0]);
 }
 
 #[test]
 fn render_no_marker_when_unfocused() {
     let input = Input::new();
-    let lines = input.render(20);
+    let lines = to_vec(input.render(20));
     assert!(!lines[0].contains(CURSOR_MARKER));
 }

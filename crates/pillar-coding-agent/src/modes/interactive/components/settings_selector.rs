@@ -16,7 +16,7 @@ use pillar_tui::input::dispatch_input_keybinding;
 use pillar_tui::keybindings::with_global_keybindings;
 use pillar_tui::select_list::SelectItem;
 use pillar_tui::settings_list::{SettingItem, SettingsActivation, SettingsList};
-use pillar_tui::tui::{Component, Focusable};
+use pillar_tui::tui::{Component, Focusable, RenderLines, render_lines};
 
 use crate::core::http_dispatcher::{HTTP_IDLE_TIMEOUT_CHOICES, format_http_idle_timeout_ms};
 use crate::modes::interactive::components::dynamic_border::DynamicBorder;
@@ -322,8 +322,8 @@ impl WarningSettingsSubmenu {
         WarningsOutcome::Consumed
     }
 
-    fn render(&mut self, width: usize) -> Vec<String> {
-        self.list.render(width, &get_settings_list_theme())
+    fn render(&mut self, width: usize) -> RenderLines {
+        render_lines(self.list.render(width, &get_settings_list_theme()))
     }
 }
 
@@ -605,7 +605,7 @@ impl ThemeSubmenu {
         ThemeSubmenuOutcome::Consumed
     }
 
-    fn render(&mut self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> RenderLines {
         if let Some((_, picker)) = self.nested.as_mut() {
             return picker.render(width);
         }
@@ -620,7 +620,7 @@ impl ThemeSubmenu {
                 0,
                 0,
             )
-            .render(width),
+            .render(width).iter().map(|line| line.to_string()),
         );
         lines.push(String::new());
         lines.extend(
@@ -632,7 +632,7 @@ impl ThemeSubmenu {
                 0,
                 0,
             )
-            .render(width),
+            .render(width).iter().map(|line| line.to_string()),
         );
         lines.extend(
             Text::new(
@@ -640,11 +640,11 @@ impl ThemeSubmenu {
                 0,
                 0,
             )
-            .render(width),
+            .render(width).iter().map(|line| line.to_string()),
         );
         lines.push(String::new());
-        lines.extend(self.automatic.render(width, &get_settings_list_theme()));
-        lines
+        lines.extend(self.automatic.render(width, &get_settings_list_theme()).iter().map(|line| line.to_string()));
+        render_lines(lines)
     }
 }
 
@@ -1021,17 +1021,18 @@ impl SettingsSelectorComponent {
 }
 
 impl Component for SettingsSelectorComponent {
-    fn render(&mut self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> RenderLines {
         let mut lines: Vec<String> = Vec::new();
-        lines.extend(DynamicBorder::new().render(width));
-        lines.extend(match &mut self.active_submenu {
+        lines.extend(DynamicBorder::new().render(width).iter().map(|line| line.to_string()));
+        let submenu_lines = match &mut self.active_submenu {
             Some(ActiveSubmenu::Theme(submenu)) => submenu.render(width),
             Some(ActiveSubmenu::Warnings(submenu)) => submenu.render(width),
             Some(ActiveSubmenu::Stepped(submenu)) => submenu.render(width),
-            None => self.list.render(width, &get_settings_list_theme()),
-        });
-        lines.extend(DynamicBorder::new().render(width));
-        lines
+            None => render_lines(self.list.render(width, &get_settings_list_theme())),
+        };
+        lines.extend(submenu_lines.iter().map(|line| line.to_string()));
+        lines.extend(DynamicBorder::new().render(width).iter().map(|line| line.to_string()));
+        render_lines(lines)
     }
 }
 

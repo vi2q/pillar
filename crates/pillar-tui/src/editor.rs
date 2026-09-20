@@ -18,7 +18,7 @@ use crate::keys::{decode_printable_key, matches_key};
 use crate::select_list::{SelectList, SelectListTheme};
 use crate::stack_layout::slice_by_column;
 use crate::text_utils::visible_width;
-use crate::tui::{Component, Focusable};
+use crate::tui::{Component, Focusable, RenderLines, render_lines};
 
 /// Editor state (upstream `EditorState`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1575,7 +1575,7 @@ impl Editor {
 }
 
 impl Component for Editor {
-    fn render(&mut self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> RenderLines {
         Editor::render(self, width)
     }
 
@@ -1980,7 +1980,7 @@ impl Editor {
     /// above and below, the word-wrapped lines between them, the fake cursor
     /// (with the hardware-cursor marker while focused), scroll indicators when
     /// content is hidden, and the autocomplete dropdown underneath.
-    pub fn render(&mut self, width: usize) -> Vec<String> {
+    pub fn render(&mut self, width: usize) -> RenderLines {
         let max_padding = width.saturating_sub(1) / 2;
         let padding_x = self.padding_x.min(max_padding);
         let content_width = width.saturating_sub(padding_x * 2).max(1);
@@ -2097,6 +2097,6 @@ impl Editor {
             }
         }
 
-        result
+        render_lines(result)
     }
 }

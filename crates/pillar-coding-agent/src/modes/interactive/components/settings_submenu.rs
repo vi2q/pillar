@@ -15,7 +15,7 @@ use pillar_tui::fuzzy::fuzzy_filter_by;
 use pillar_tui::input::{Input, dispatch_input_keybinding};
 use pillar_tui::keybindings::with_global_keybindings;
 use pillar_tui::select_list::{SelectItem, SelectList, SelectListLayoutOptions};
-use pillar_tui::tui::Component;
+use pillar_tui::tui::{Component, RenderLines, render_lines};
 
 use crate::modes::interactive::theme::{get_select_list_theme, theme};
 
@@ -189,7 +189,7 @@ fn build_select_list(
 }
 
 impl Component for SelectSubmenu {
-    fn render(&mut self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> RenderLines {
         let theme_handle = theme();
         let mut lines: Vec<String> = Vec::new();
         lines.extend(
@@ -198,28 +198,28 @@ impl Component for SelectSubmenu {
                 0,
                 0,
             )
-            .render(width),
+            .render(width).iter().map(|line| line.to_string()),
         );
         if !self.description.is_empty() {
             lines.push(String::new());
             lines.extend(
-                Text::new(&theme_handle.fg("muted", &self.description), 0, 0).render(width),
+                Text::new(&theme_handle.fg("muted", &self.description), 0, 0).render(width).iter().map(|line| line.to_string()),
             );
         }
         if let Some(input) = self.search_input.as_mut() {
             lines.push(String::new());
-            lines.extend(input.render(width));
+            lines.extend(input.render(width).iter().map(|line| line.to_string()));
         }
         lines.push(String::new());
-        lines.extend(self.list.render(width, &get_select_list_theme()));
+        lines.extend(self.list.render(width, &get_select_list_theme()).iter().map(|line| line.to_string()));
         lines.push(String::new());
         let hint = if self.searchable {
             "  Type to filter · Enter to select · Esc to go back"
         } else {
             "  Enter to select · Esc to go back"
         };
-        lines.extend(Text::new(&theme_handle.fg("dim", hint), 0, 0).render(width));
-        lines
+        lines.extend(Text::new(&theme_handle.fg("dim", hint), 0, 0).render(width).iter().map(|line| line.to_string()));
+        render_lines(lines)
     }
 }
 
@@ -368,7 +368,7 @@ impl SteppedSubmenu {
 }
 
 impl Component for SteppedSubmenu {
-    fn render(&mut self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> RenderLines {
         self.active.render(width)
     }
 }

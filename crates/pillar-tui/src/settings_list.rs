@@ -263,7 +263,7 @@ impl SettingsList {
 
         if self.search_enabled {
             if let Some(input) = &self.search_input {
-                lines.extend(input.render(width));
+                lines.extend(input.render(width).iter().map(|line| line.to_string()));
                 lines.push(String::new());
             }
         }

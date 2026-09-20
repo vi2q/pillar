@@ -16,7 +16,7 @@ use crate::modes::interactive::components::visual_truncate::truncate_to_visual_l
 use crate::modes::interactive::theme::{Theme, theme};
 use pillar_tui::components::Text;
 use pillar_tui::loaders::Loader;
-use pillar_tui::tui::Component;
+use pillar_tui::tui::{Component, RenderLines, render_lines};
 
 /// Preview line limit when collapsed (upstream `PREVIEW_LINES`).
 const PREVIEW_LINES: usize = 20;
@@ -158,7 +158,7 @@ impl BashExecutionComponent {
         )
     }
 
-    fn border(&self, width: usize) -> Vec<String> {
+    fn border(&self, width: usize) -> RenderLines {
         let color_key = if self.exclude_from_context {
             "dim"
         } else {
@@ -171,12 +171,12 @@ impl BashExecutionComponent {
 }
 
 impl Component for BashExecutionComponent {
-    fn render(&mut self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> RenderLines {
         let theme_handle = theme();
         let mut lines: Vec<String> = Vec::new();
         // Spacer + top border.
         lines.push(String::new());
-        lines.extend(self.border(width));
+        lines.extend(self.border(width).iter().map(|line| line.to_string()));
 
         // Upstream's `updateDisplay` always colours the header with `bashMode`
         // (only the constructor uses the dim colour for `!!`), which the port
@@ -184,7 +184,7 @@ impl Component for BashExecutionComponent {
         let header = format!("$ {}", self.command);
         let header_text = theme_handle.fg("bashMode", &theme_handle.bold(&header));
         let mut header_component = Text::new(&header_text, 1, 0);
-        lines.extend(header_component.render(width));
+        lines.extend(header_component.render(width).iter().map(|line| line.to_string()));
 
         // Output.
         let context_truncation = self.context_truncation();
@@ -214,7 +214,7 @@ impl Component for BashExecutionComponent {
                     .collect::<Vec<_>>()
                     .join("\n");
                 let mut text = Text::new(&format!("\n{display_text}"), 1, 0);
-                lines.extend(text.render(width));
+                lines.extend(text.render(width).iter().map(|line| line.to_string()));
             } else {
                 // Width-aware preview truncation, cached per width (upstream
                 // caches inside the closure component).
@@ -241,7 +241,7 @@ impl Component for BashExecutionComponent {
 
         // Loader or status.
         if self.status == BashExecutionStatus::Running {
-            lines.extend(self.loader.render(width));
+            lines.extend(self.loader.render(width).iter().map(|line| line.to_string()));
         } else {
             let mut status_parts: Vec<String> = Vec::new();
             if hidden_line_count > 0 {
@@ -292,12 +292,12 @@ impl Component for BashExecutionComponent {
 
             if !status_parts.is_empty() {
                 let mut text = Text::new(&format!("\n{}", status_parts.join("\n")), 1, 0);
-                lines.extend(text.render(width));
+                lines.extend(text.render(width).iter().map(|line| line.to_string()));
             }
         }
 
-        lines.extend(self.border(width));
-        lines
+        lines.extend(self.border(width).iter().map(|line| line.to_string()));
+        render_lines(lines)
     }
 
     fn invalidate(&mut self) {

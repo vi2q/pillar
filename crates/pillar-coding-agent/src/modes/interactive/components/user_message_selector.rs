@@ -11,7 +11,7 @@
 use pillar_tui::components::Text;
 use pillar_tui::keybindings::with_global_keybindings;
 use pillar_tui::text_utils::truncate_to_width;
-use pillar_tui::tui::{Component, Focusable};
+use pillar_tui::tui::{Component, Focusable, RenderLines, render_lines};
 
 use crate::modes::interactive::components::dynamic_border::DynamicBorder;
 use crate::modes::interactive::theme::theme;
@@ -160,11 +160,11 @@ impl UserMessageSelectorComponent {
 }
 
 impl Component for UserMessageSelectorComponent {
-    fn render(&mut self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> RenderLines {
         let theme_handle = theme();
         let mut lines: Vec<String> = Vec::new();
         lines.push(String::new());
-        lines.extend(Text::new(&theme_handle.bold("Fork from Message"), 1, 0).render(width));
+        lines.extend(Text::new(&theme_handle.bold("Fork from Message"), 1, 0).render(width).iter().map(|line| line.to_string()));
         lines.extend(
             Text::new(
                 &theme_handle.fg(
@@ -174,15 +174,15 @@ impl Component for UserMessageSelectorComponent {
                 1,
                 0,
             )
-            .render(width),
+            .render(width).iter().map(|line| line.to_string()),
         );
         lines.push(String::new());
-        lines.extend(DynamicBorder::new().render(width));
+        lines.extend(DynamicBorder::new().render(width).iter().map(|line| line.to_string()));
         lines.push(String::new());
-        lines.extend(self.message_list.render(width));
+        lines.extend(self.message_list.render(width).iter().map(|line| line.to_string()));
         lines.push(String::new());
-        lines.extend(DynamicBorder::new().render(width));
-        lines
+        lines.extend(DynamicBorder::new().render(width).iter().map(|line| line.to_string()));
+        render_lines(lines)
     }
 }
 

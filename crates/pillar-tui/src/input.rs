@@ -10,6 +10,7 @@
 //! dispatch loop.
 
 use crate::edit_support::{KillRing, UndoStack, find_word_backward, find_word_forward};
+use crate::tui::{RenderLines, render_lines};
 use crate::keybindings::with_global_keybindings;
 use crate::keys::decode_printable_key;
 use crate::stack_layout::slice_by_column;
@@ -338,16 +339,16 @@ impl Input {
 
     /// Render a single line with prompt and inverse-video fake cursor
     /// (upstream `render`).
-    pub fn render(&self, width: usize) -> Vec<String> {
+    pub fn render(&self, width: usize) -> RenderLines {
         let prompt = "> ";
         let Some(available_width) = (width as isize - prompt.len() as isize)
             .checked_rem(1)
             .map(|_| width - prompt.len())
         else {
-            return vec![prompt.to_string()];
+            return render_lines(vec![prompt.to_string()]);
         };
         if available_width == 0 {
-            return vec![prompt.to_string()];
+            return render_lines(vec![prompt.to_string()]);
         }
 
         let mut visible_text = String::new();
@@ -403,7 +404,7 @@ impl Input {
 
         let visual_length = visible_width(&text_with_cursor);
         let padding = " ".repeat(available_width.saturating_sub(visual_length));
-        vec![format!("{prompt}{text_with_cursor}{padding}")]
+        render_lines(vec![format!("{prompt}{text_with_cursor}{padding}")])
     }
 }
 
@@ -495,7 +496,7 @@ pub fn dispatch_input_keybinding(input: &mut Input, data: &str) -> bool {
 }
 
 impl crate::tui::Component for Input {
-    fn render(&mut self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> RenderLines {
         Input::render(self, width)
     }
 

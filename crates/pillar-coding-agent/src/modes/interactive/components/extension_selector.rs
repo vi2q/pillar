@@ -11,7 +11,7 @@
 
 use pillar_tui::components::Text;
 use pillar_tui::keybindings::with_global_keybindings;
-use pillar_tui::tui::{Component, Focusable};
+use pillar_tui::tui::{Component, Focusable, RenderLines, render_lines};
 
 use crate::modes::interactive::components::dynamic_border::DynamicBorder;
 use crate::modes::interactive::components::keybinding_hints::{key_hint, raw_key_hint};
@@ -78,10 +78,10 @@ impl ExtensionSelectorComponent {
 }
 
 impl Component for ExtensionSelectorComponent {
-    fn render(&mut self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> RenderLines {
         let theme_handle = theme();
         let mut lines: Vec<String> = Vec::new();
-        lines.extend(DynamicBorder::new().render(width));
+        lines.extend(DynamicBorder::new().render(width).iter().map(|line| line.to_string()));
         lines.push(String::new());
         lines.extend(
             Text::new(
@@ -89,7 +89,7 @@ impl Component for ExtensionSelectorComponent {
                 1,
                 0,
             )
-            .render(width),
+            .render(width).iter().map(|line| line.to_string()),
         );
         lines.push(String::new());
         for (index, option) in self.options.iter().enumerate() {
@@ -103,7 +103,7 @@ impl Component for ExtensionSelectorComponent {
             } else {
                 format!("  {}", theme_handle.fg("text", option))
             };
-            lines.extend(Text::new(&text, 1, 0).render(width));
+            lines.extend(Text::new(&text, 1, 0).render(width).iter().map(|line| line.to_string()));
         }
         lines.push(String::new());
         lines.extend(
@@ -117,11 +117,11 @@ impl Component for ExtensionSelectorComponent {
                 1,
                 0,
             )
-            .render(width),
+            .render(width).iter().map(|line| line.to_string()),
         );
         lines.push(String::new());
-        lines.extend(DynamicBorder::new().render(width));
-        lines
+        lines.extend(DynamicBorder::new().render(width).iter().map(|line| line.to_string()));
+        render_lines(lines)
     }
 }
 

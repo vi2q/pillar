@@ -10,7 +10,7 @@ use crate::modes::interactive::components::keybinding_hints::key_hint;
 use crate::modes::interactive::theme::Theme;
 use pillar_tui::components::{Spacer, Text};
 use pillar_tui::loaders::Loader;
-use pillar_tui::tui::Component;
+use pillar_tui::tui::{Component, RenderLines, render_lines};
 
 /// Loader wrapped with borders (upstream `BorderedLoader`).
 pub struct BorderedLoader {
@@ -122,18 +122,18 @@ impl BorderedLoader {
 }
 
 impl Component for BorderedLoader {
-    fn render(&mut self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> RenderLines {
         let mut border = DynamicBorder::with_color(Box::new(|text: &str| text.to_string()));
         let _ = &mut border;
         let mut lines = self.border(width);
-        lines.extend(self.loader.render(width));
+        lines.extend(self.loader.render(width).iter().map(|line| line.to_string()));
         if let Some(cancel_hint) = self.cancel_hint.as_mut() {
-            lines.extend(self.spacer.render(width));
-            lines.extend(cancel_hint.render(width));
+            lines.extend(self.spacer.render(width).iter().map(|line| line.to_string()));
+            lines.extend(cancel_hint.render(width).iter().map(|line| line.to_string()));
         }
-        lines.extend(self.spacer.render(width));
+        lines.extend(self.spacer.render(width).iter().map(|line| line.to_string()));
         lines.extend(self.border(width));
-        lines
+        render_lines(lines)
     }
 
     fn handle_input(&mut self, _data: &str) {

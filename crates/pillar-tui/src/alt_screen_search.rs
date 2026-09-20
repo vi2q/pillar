@@ -12,7 +12,7 @@
 
 use crate::input::Input;
 use crate::text_utils::{truncate_to_width, visible_width};
-use crate::tui::{Component, Focusable};
+use crate::tui::{Component, Focusable, RenderLines, render_lines};
 
 /// A mapped source span (upstream `SearchSourceSpan` / segment).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -252,7 +252,7 @@ impl Default for AltScreenSearchComponent {
 }
 
 impl Component for AltScreenSearchComponent {
-    fn render(&mut self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> RenderLines {
         let safe_width = width.max(1);
         let label = " Find transcript";
         let query = self.input.get_value();
@@ -269,8 +269,8 @@ impl Component for AltScreenSearchComponent {
         let title = truncate_to_width(&format!("{label}{gap}{status}"), safe_width, "", false);
         let padding = " ".repeat(safe_width.saturating_sub(visible_width(&title)));
         let mut lines = vec![format!("\u{1b}[7m{title}{padding}\u{1b}[27m")];
-        lines.extend(self.input.render(safe_width));
-        lines
+        lines.extend(self.input.render(safe_width).iter().map(|line| line.to_string()));
+        render_lines(lines)
     }
 
     fn handle_input(&mut self, data: &str) {

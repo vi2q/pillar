@@ -6,11 +6,17 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use pillar_tui::process_terminal::Terminal;
-use pillar_tui::tui::{
+use pillar_tui::tui::{RenderLines, render_lines, 
+
     Component, ComponentId, Container, Focusable, InputListenerResult, OverlayAnchor,
     OverlayMargin, OverlayOptions, SizeValue, TuiBase, TuiMode, TuiStopOptions, is_focusable,
     is_key_release,
 };
+
+/// The shared frame as owned lines (the parity assertions compare strings).
+fn to_vec(lines: RenderLines) -> Vec<String> {
+    lines.iter().map(|line| line.to_string()).collect()
+}
 
 #[derive(Default)]
 struct Leaf {
@@ -49,9 +55,9 @@ impl Focusable for Leaf {
 }
 
 impl Component for Leaf {
-    fn render(&mut self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> RenderLines {
         self.renders += 1;
-        vec![format!("leaf:{width}")]
+        render_lines(vec![format!("leaf:{width}")])
     }
 
     fn handle_input(&mut self, data: &str) {
@@ -167,12 +173,12 @@ fn container_renders_children_and_propagates_lifecycle() {
     let mut container = Container::new();
     container.add_child(Box::new(Leaf::new()));
     container.add_child(Box::new(Leaf::new()));
-    assert_eq!(container.render(20), vec!["leaf:20", "leaf:20"]);
+    assert_eq!(to_vec(container.render(20)), vec!["leaf:20", "leaf:20"]);
     container.invalidate();
     container.handle_input("x");
 
     let mut removed = container.remove_child(0).expect("child");
-    assert_eq!(removed.render(1), vec!["leaf:1"]);
+    assert_eq!(to_vec(removed.render(1)), vec!["leaf:1"]);
     assert!(container.remove_child(9).is_none());
     container.clear();
     assert!(container.is_empty());

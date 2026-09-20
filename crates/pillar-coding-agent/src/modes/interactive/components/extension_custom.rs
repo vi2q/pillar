@@ -12,7 +12,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use pillar_tui::tui::Component;
+use pillar_tui::tui::{Component, RenderLines, render_lines};
 
 use crate::core::extensions_types::{
     ExtensionCustomEvent, ExtensionCustomEvents, ExtensionCustomSurface,
@@ -57,16 +57,18 @@ impl ExtensionCustomComponent {
 }
 
 impl Component for ExtensionCustomComponent {
-    fn render(&mut self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> RenderLines {
         if self.last_width != Some(width) {
             self.last_width = Some(width);
             self.events.send(ExtensionCustomEvent::Resize(width));
         }
         self.last_revision = self.revision.load(Ordering::SeqCst);
-        self.lines
+        let lines = self
+            .lines
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
+            .clone();
+        render_lines(lines)
     }
 
     fn handle_input(&mut self, data: &str) {

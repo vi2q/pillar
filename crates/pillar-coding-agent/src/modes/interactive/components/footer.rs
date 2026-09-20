@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use pillar_tui::text_utils::{truncate_to_width, visible_width};
-use pillar_tui::tui::Component;
+use pillar_tui::tui::{Component, RenderLines, render_lines};
 
 use crate::core::agent_session_class::AgentSession;
 use crate::core::footer_data_provider::FooterDataProvider;
@@ -171,7 +171,7 @@ impl FooterComponent {
 }
 
 impl Component for FooterComponent {
-    fn render(&mut self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> RenderLines {
         let session = self.session.as_ref();
         // Snapshot what render needs from the session manager and drop the
         // lock before `context_usage()` takes it again.
@@ -442,6 +442,6 @@ impl Component for FooterComponent {
             ));
         }
 
-        lines
+        render_lines(lines)
     }
 }

@@ -12,7 +12,7 @@ use pillar_tui::input::{Input, dispatch_input_keybinding};
 use pillar_tui::keybindings::with_global_keybindings;
 use pillar_tui::keys::matches_key;
 use pillar_tui::select_list::{SelectItem, SelectList, SelectListLayoutOptions};
-use pillar_tui::tui::{Component, Focusable};
+use pillar_tui::tui::{Component, Focusable, RenderLines, render_lines};
 
 use crate::modes::interactive::components::dynamic_border::DynamicBorder;
 use crate::modes::interactive::components::keybinding_hints::key_display_text;
@@ -195,12 +195,12 @@ fn build_select_list(items: &[SelectItem], preselect: Option<&str>) -> SelectLis
 }
 
 impl Component for ThinkingSelectorComponent {
-    fn render(&mut self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> RenderLines {
         let theme_handle = theme();
         let mut lines: Vec<String> = Vec::new();
-        lines.extend(DynamicBorder::new().render(width));
+        lines.extend(DynamicBorder::new().render(width).iter().map(|line| line.to_string()));
         lines.push(String::new());
-        lines.extend(Text::new("Thinking Level", 0, 0).render(width));
+        lines.extend(Text::new("Thinking Level", 0, 0).render(width).iter().map(|line| line.to_string()));
         lines.push(String::new());
         lines.extend(
             Text::new(
@@ -211,12 +211,12 @@ impl Component for ThinkingSelectorComponent {
                 0,
                 0,
             )
-            .render(width),
+            .render(width).iter().map(|line| line.to_string()),
         );
         lines.push(String::new());
-        lines.extend(self.search_input.render(width));
+        lines.extend(self.search_input.render(width).iter().map(|line| line.to_string()));
         lines.push(String::new());
-        lines.extend(self.select_list.render(width, &get_select_list_theme()));
+        lines.extend(self.select_list.render(width, &get_select_list_theme()).iter().map(|line| line.to_string()));
         lines.push(String::new());
         lines.extend(
             Text::new(
@@ -227,10 +227,10 @@ impl Component for ThinkingSelectorComponent {
                 0,
                 0,
             )
-            .render(width),
+            .render(width).iter().map(|line| line.to_string()),
         );
-        lines.extend(DynamicBorder::new().render(width));
-        lines
+        lines.extend(DynamicBorder::new().render(width).iter().map(|line| line.to_string()));
+        render_lines(lines)
     }
 }
 
