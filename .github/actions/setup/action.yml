@@ -6,9 +6,9 @@ runs:
     # The caller must run actions/checkout@v4 first, so this local action can be
     # resolved before it runs.
 
-    # The toolchain is pinned: the recorded baselines used 1.91.1, and a
+    # The toolchain is pinned: the recorded baselines used 1.98.1, and a
     # different compiler changes the artifact the comparison gate runs.
-    - uses: dtolnay/rust-toolchain@1.91.1
+    - uses: dtolnay/rust-toolchain@1.98.1
       with:
         targets: wasm32-unknown-unknown
         components: clippy, rustfmt

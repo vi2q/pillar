@@ -51,7 +51,7 @@ Luau runtime and an embeddable agent runtime.
 
 ## Installation
 
-Rust 1.85 or newer (edition 2024) is required; CI pins 1.91.1.
+Rust 1.88 or newer (edition 2024) is required; CI pins 1.98.1.
 
 From git:
 

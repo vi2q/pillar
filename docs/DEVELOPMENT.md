@@ -23,9 +23,10 @@ loop. The turn-level rule is one targeted test per change (docs/RULES.md).
   CI the same conditions are failures; the local run still degrades to a skip.
 - the missing target / host is reported before the long build.
 
-`.github/workflows/ci.yml` pins the toolchain (1.91.1, the version the recorded
-baselines used) and installs `wasm32-unknown-unknown`; it adds nothing else to
-the run.
+`.github/workflows/ci.yml` pins the toolchain (1.98.1; the perf baselines in
+`docs/PERF-BASELINE.md` were recorded on 1.91.1, so re-measure before comparing
+across toolchains) and installs `wasm32-unknown-unknown`; it adds nothing else
+to the run.
 
 What the verification does **not** prove: `PILLAR_OFFLINE` and the dead proxy are
 smoke aids, and the source-string lints are heuristics — none of them is an
