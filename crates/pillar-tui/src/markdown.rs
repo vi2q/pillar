@@ -1071,6 +1071,24 @@ fn build_block(
                                         next_kind: inner_next,
                                     });
                                 }
+                                Event::Code(text) => {
+                                    // Tight list items emit bare `Event::Code`
+                                    // without a Paragraph start (upstream
+                                    // handles inline code spans here too).
+                                    if let Some(last) = item_blocks.last_mut() {
+                                        if let BlockKind::Paragraph(inline) = &mut last.kind {
+                                            inline.push(Inline::Code(text.to_string()));
+                                            continue;
+                                        }
+                                    }
+                                    let inner_next = String::new();
+                                    let kind =
+                                        BlockKind::Paragraph(vec![Inline::Code(text.to_string())]);
+                                    item_blocks.push(Block {
+                                        kind,
+                                        next_kind: inner_next,
+                                    });
+                                }
                                 Event::Start(Tag::Paragraph) => {
                                     saw_paragraph = true;
                                     let inline = collect_inline_until(iter, TagEnd::Paragraph);

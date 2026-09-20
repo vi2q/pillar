@@ -443,3 +443,18 @@ fn default_style_not_applied_inside_blockquote() {
     // Quote line contains the text but not the default color wrap.
     assert!(!lines[0].contains("[c]"), "{:?}", lines[0]);
 }
+
+// --- regression: inline code inside list items -------------------------------------------------
+
+#[test]
+fn inline_code_inside_list_item_renders() {
+    let lines = render(
+        "- SDK restore via `SessionManager.inMemory()`\n- vLLM settings `vllmPriority` and `supportsMaxOutputTokens`",
+        60,
+    );
+    let p = plain(&lines);
+    println!("{p:#?}");
+    assert!(p.iter().any(|l| l.contains("SessionManager.inMemory()")), "missing inMemory: {p:?}");
+    assert!(p.iter().any(|l| l.contains("vllmPriority")), "missing vllmPriority: {p:?}");
+    assert!(p.iter().any(|l| l.contains("supportsMaxOutputTokens")), "missing supportsMaxOutputTokens: {p:?}");
+}
