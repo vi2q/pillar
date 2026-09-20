@@ -714,9 +714,11 @@ impl Shell for StdFsExecutionEnv {
 fn kill_process_tree(pid: u32) {
     // The port spawns with its own process group (upstream detached +
     // `process.kill(-pid)`); kill the group via the external kill binary
-    // (no libc dependency).
+    // (no libc dependency). The `--` is required: Linux util-linux `kill`
+    // parses a bare `-<pid>` as an option cluster and leaves the group alive
+    // (the cleanup test then waits out the whole `sleep 60`).
     let _ = std::process::Command::new("kill")
-        .args(["-9", &format!("-{pid}")])
+        .args(["-9", "--", &format!("-{pid}")])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
