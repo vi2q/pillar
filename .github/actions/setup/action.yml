@@ -3,7 +3,8 @@ description: Checkout, pinned Rust toolchain, Node, cargo caches and a network f
 runs:
   using: composite
   steps:
-    - uses: actions/checkout@v4
+    # The caller must run actions/checkout@v4 first, so this local action can be
+    # resolved before it runs.
 
     # The toolchain is pinned: the recorded baselines used 1.91.1, and a
     # different compiler changes the artifact the comparison gate runs.

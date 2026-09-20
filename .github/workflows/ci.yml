@@ -25,6 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
+      - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
       # scripts/check.sh --quick is the build / no-Luau build / clippy -D warnings
       # / sandboxed smoke half of the gate (the test and Wasm phases are their
@@ -36,6 +37,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
+      - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
       - name: tests
         run: cargo test --locked --workspace
@@ -47,6 +49,7 @@ jobs:
       # A missing host or target must fail this job, not skip it.
       PILLAR_REQUIRE_WASM_COMPARE: "1"
     steps:
+      - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
       # The compile axis and the §5-7 native/Wasm comparison (scripts/check.sh
       # runs the same lines when it is invoked in full).
