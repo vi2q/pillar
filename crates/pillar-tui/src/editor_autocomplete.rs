@@ -548,6 +548,43 @@ mod tests {
         }
     }
 
+    /// Regression for a crash report from a long session: the render buffer
+    /// stopped 56 bytes short of the byte budget and the next fragment put a
+    /// CJK character across byte 56, so `&value[offset..end]` panicked with
+    /// "byte index 56 is not a char boundary; it is inside 'ド' (bytes
+    /// 54..57)". The fragment keeps the reported layout: 24 bytes of SGR
+    /// resets, then the Japanese text whose byte 56 falls inside 'ド'.
+    #[test]
+    fn bounded_writer_survives_a_split_inside_a_cjk_character_at_the_reported_offset() {
+        const REPORTED_INDEX: usize = 56;
+        let escape_prefix = "\u{1b}[0m".repeat(6);
+        assert_eq!(escape_prefix.len(), 24);
+        let fragment = "残る判断：履歴に内部ドキュメントが残っている";
+        let value = format!("{escape_prefix}{fragment}");
+        assert_eq!(
+            value.get(REPORTED_INDEX - 2..REPORTED_INDEX + 1),
+            Some("ド"),
+            "the fragment must reproduce the reported byte layout"
+        );
+        assert!(!value.is_char_boundary(REPORTED_INDEX));
+
+        let filler = "x".repeat(MAX_RENDER_WRITE_CHARS - REPORTED_INDEX);
+        let mut chunks: Vec<String> = Vec::new();
+        {
+            let mut writer = BoundedTerminalWriter::new(|data| chunks.push(data.to_string()));
+            writer.append(&filler);
+            writer.append(&value);
+            writer.flush();
+        }
+        // No byte is lost, no chunk overruns the budget, and every chunk ends
+        // on a char boundary.
+        assert_eq!(chunks.concat(), format!("{filler}{value}"));
+        for chunk in &chunks {
+            assert!(chunk.len() <= MAX_RENDER_WRITE_CHARS);
+            assert!(chunk.is_char_boundary(chunk.len()));
+        }
+    }
+
     /// When the remaining budget is smaller than one character, flush and
     /// retry rather than looping forever or slicing mid-character.
     #[test]
