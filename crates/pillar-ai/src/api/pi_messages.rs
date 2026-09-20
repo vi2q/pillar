@@ -525,10 +525,14 @@ async fn read_pi_messages_events(
     use futures::StreamExt;
     let mut stream = body;
     let mut buffer = String::new();
+    // A chunk boundary can split a multi-byte character; decode incrementally
+    // so the torn bytes are carried to the next chunk instead of becoming U+FFFD.
+    let mut decoder = crate::api::Utf8ChunkDecoder::new();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|error| ProviderRequestError::transport(error.to_string()))?;
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        buffer.push_str(&decoder.push(&chunk));
     }
+    buffer.push_str(&decoder.finish());
     buffer = buffer.replace("\r\n", "\n");
 
     let mut events = Vec::new();

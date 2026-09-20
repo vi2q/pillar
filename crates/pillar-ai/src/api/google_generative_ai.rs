@@ -574,6 +574,9 @@ async fn decode_fetch_response(
     let mut events: Vec<crate::api::anthropic_messages::ServerSentEvent> = Vec::new();
     let byte_stream = response.body;
     tokio::pin!(byte_stream);
+    // A chunk boundary can split a multi-byte character; decode incrementally
+    // so the torn bytes are carried to the next chunk instead of becoming U+FFFD.
+    let mut decoder = crate::api::Utf8ChunkDecoder::new();
 
     loop {
         // Race the abort: a quiet body must not delay the cancellation
@@ -587,9 +590,17 @@ async fn decode_fetch_response(
             Some(Err(error)) => return Err(error.to_string()),
             None => break,
         };
-        let text = String::from_utf8_lossy(&chunk);
+        let text = decoder.push(&chunk);
         events.extend(crate::api::anthropic_messages::decode_sse_chunk(
             &text,
+            &mut state,
+            &mut buffer,
+        ));
+    }
+    let tail = decoder.finish();
+    if !tail.is_empty() {
+        events.extend(crate::api::anthropic_messages::decode_sse_chunk(
+            &tail,
             &mut state,
             &mut buffer,
         ));

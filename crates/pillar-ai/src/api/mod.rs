@@ -325,3 +325,134 @@ pub(crate) fn format_stream_error(error: &ProviderRequestError) -> String {
 pub(crate) fn zeroed_usage() -> Usage {
     Usage::default()
 }
+
+/// Incremental UTF-8 decoder for a byte chunk stream.
+///
+/// A network chunk may split a multi-byte character, so `String::from_utf8_lossy`
+/// per chunk turns a torn character into U+FFFD (the CJK corruption seen in
+/// streaming). This keeps the trailing incomplete bytes and prepends them to the
+/// next chunk, emitting only whole characters. Invalid sequences are still
+/// replaced lossily once they cannot be a prefix of a valid character.
+/// Public so provider integration tests can exercise the shared decoder.
+pub struct Utf8ChunkDecoder {
+    pending: Vec<u8>,
+}
+
+impl Default for Utf8ChunkDecoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Utf8ChunkDecoder {
+    pub fn new() -> Self {
+        Self {
+            pending: Vec::new(),
+        }
+    }
+
+    /// Decode `chunk`, carrying any trailing incomplete character forward.
+    pub fn push(&mut self, chunk: &[u8]) -> String {
+        self.pending.extend_from_slice(chunk);
+        match std::str::from_utf8(&self.pending) {
+            Ok(text) => {
+                let text = text.to_string();
+                self.pending.clear();
+                text
+            }
+            Err(error) => {
+                let valid_up_to = error.valid_up_to();
+                let text = String::from_utf8_lossy(&self.pending[..valid_up_to]).into_owned();
+                match error.error_len() {
+                    // The tail could still be the start of a valid character:
+                    // keep it and wait for the next chunk.
+                    None => {
+                        let tail = self.pending.split_off(valid_up_to);
+                        self.pending = tail;
+                    }
+                    // A definite error in the bytes: replace the bad byte(s)
+                    // and continue after them.
+                    Some(length) => {
+                        let consumed = valid_up_to + length;
+                        let rest = self.pending.split_off(consumed);
+                        let mut text = text;
+                        text.push('\u{fffd}');
+                        self.pending = rest;
+                        // Re-run on what is left so a trailing partial char is
+                        // still carried rather than lost.
+                        return format!("{text}{}", self.push(&[]));
+                    }
+                }
+                text
+            }
+        }
+    }
+
+    /// Flush a trailing incomplete character as a replacement (stream end).
+    pub fn finish(&mut self) -> String {
+        if self.pending.is_empty() {
+            return String::new();
+        }
+        let text = String::from_utf8_lossy(&self.pending).into_owned();
+        self.pending.clear();
+        text
+    }
+}
+
+#[cfg(test)]
+mod utf8_chunk_decoder_tests {
+    use super::Utf8ChunkDecoder;
+
+    /// Encode `text` and feed it one byte at a time: no character may be
+    /// lost or replaced, no matter where the chunk boundaries fall.
+    #[test]
+    fn single_byte_chunks_preserve_every_character() {
+        let text = "\u{5909}\u{66f4}\u{304c}\u{7121}\u{3044} chat `Container` \u{304c}\u{8fd4}\u{3059}\u{3002}";
+        let bytes = text.as_bytes();
+        let mut decoder = Utf8ChunkDecoder::new();
+        let mut decoded = String::new();
+        for byte in bytes {
+            decoded.push_str(&decoder.push(std::slice::from_ref(byte)));
+        }
+        decoded.push_str(&decoder.finish());
+        assert_eq!(decoded, text);
+    }
+
+    /// Every possible split point of the text yields the original text.
+    #[test]
+    fn every_split_point_preserves_the_text() {
+        let text = "a\u{5909}b\u{66f4}c\u{304c}d";
+        let bytes = text.as_bytes();
+        for split in 1..bytes.len() {
+            let mut decoder = Utf8ChunkDecoder::new();
+            let mut decoded = decoder.push(&bytes[..split]);
+            decoded.push_str(&decoder.push(&bytes[split..]));
+            decoded.push_str(&decoder.finish());
+            assert_eq!(decoded, text, "split={split}");
+        }
+    }
+
+    /// A genuinely invalid byte is still replaced, and the decoder recovers
+    /// for the following valid text.
+    #[test]
+    fn invalid_bytes_are_replaced_and_decoding_recovers() {
+        let mut decoder = Utf8ChunkDecoder::new();
+        let mut decoded = decoder.push(&[0xff, 0xfe]);
+        decoded.push_str(&decoder.push("ok".as_bytes()));
+        decoded.push_str(&decoder.finish());
+        assert!(decoded.contains("ok"), "{decoded:?}");
+        assert!(decoded.contains('\u{fffd}'), "{decoded:?}");
+    }
+
+    /// An incomplete character at stream end becomes exactly one replacement.
+    #[test]
+    fn finish_flushes_a_dangling_character() {
+        let mut decoder = Utf8ChunkDecoder::new();
+        let first = "\u{5909}".as_bytes();
+        // Leave the last two bytes pending.
+        let partial = &first[..first.len() - 1];
+        let mut decoded = decoder.push(partial);
+        decoded.push_str(&decoder.finish());
+        assert_eq!(decoded, "\u{fffd}");
+    }
+}
