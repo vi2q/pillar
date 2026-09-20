@@ -1,4 +1,9 @@
 /target
 .DS_Store
 .backups/
+.ruff_cache/
+.pi/
+.pillar/
+
+# pi gitignores this by exact path; the whole `.pi/` is local tool state.
 .pi/extensions/command-guard.ts
