@@ -158,24 +158,63 @@ fn missing_mut_message(root: &str) -> String {
     )
 }
 
+fn trait_bound_human(root: &str) -> String {
+    format!(
+        "error[E0277]: the trait bound `Widget: Clone` is not satisfied\n \
+         --> {root}/src/main.rs:9:22\n  |\n9 |     let (a, b) = duplicate(w);\n  |                  ^^^^^^^^^^^^ the trait `Clone` is not implemented for `Widget`\n  |\n  \
+         note: required by a bound in `duplicate`\n \
+         --> {root}/src/main.rs:3:20\n  |\n3 | fn duplicate<T: Clone>(value: T) -> (T, T) {{\n  |                    ^^^^^ required by this bound in `duplicate`\n  |\n  \
+         help: consider annotating `Widget` with `#[derive(Clone)]`\n  |\n1 | #[derive(Debug, Clone)]\n  |                +++++++\n"
+    )
+}
+
+fn trait_bound_message(root: &str) -> String {
+    let rendered = serde_json::to_string(&trait_bound_human(root)).expect("rendered");
+    format!(
+        r##"{{"reason":"compiler-message","package_id":"example-core","target":{{"name":"example_core"}},"message":{{"rendered":{rendered},"code":{{"code":"E0277"}},"level":"error","message":"the trait bound `Widget: Clone` is not satisfied","spans":[{{"file_name":"{root}/src/main.rs","byte_start":120,"byte_end":132,"line_start":9,"line_end":9,"column_start":22,"column_end":34,"is_primary":true,"label":"the trait `Clone` is not implemented for `Widget`"}},{{"file_name":"{root}/src/main.rs","byte_start":40,"byte_end":45,"line_start":3,"line_end":3,"column_start":20,"column_end":25,"is_primary":false,"label":"required by this bound in `duplicate`"}}],"children":[{{"code":null,"level":"note","message":"required by a bound in `duplicate`","spans":[],"children":[]}}]}}}}"##
+    )
+}
+
+const PROMPT_A_MISSING_MUT: &str = "Fix the Rust compile error reported in build.log, for the source in src/main.rs. \
+     Read build.log and src/main.rs with the read tool, then fix src/main.rs with the edit tool. \
+     When the compile error is fixed, reply DONE with no tool call.";
+
+const PROMPT_B_MISSING_MUT: &str = "Fix the Rust compile error reported by the build tools, for the source in src/main.rs. \
+     The saved workspace metadata has the approved configuration id `native-default`. Call \
+     rs_verify_plan with changed_paths [\"src/main.rs\"], configuration_ids [\"native-default\"], \
+     goal \"validate_change\", scope \"focused\"; rs_run the returned step; then rs_diagnostics on \
+     the returned run to read the error and the source line. Fix src/main.rs with the edit tool. \
+     When the compile error is fixed, reply DONE with no tool call.";
+
+const PROMPT_B_TRAIT_BOUND: &str = "Fix the Rust compile error reported by the build tools, for the source in src/main.rs. \
+     The saved workspace metadata has the approved configuration id `native-default`. Call \
+     rs_verify_plan with changed_paths [\"src/main.rs\"], configuration_ids [\"native-default\"], \
+     goal \"validate_change\", scope \"focused\"; rs_run the returned step; then rs_diagnostics on \
+     the returned run to read the error, including its primary and secondary spans and the source \
+     line. Fix src/main.rs with the edit tool. When the compile error is fixed, reply DONE with no \
+     tool call.";
+
 fn tasks() -> Vec<Task> {
-    vec![Task {
-        name: "missing_mut",
-        source: "fn main() {\n    let values = Vec::new();\n    values.push(1);\n    println!(\"{values:?}\");\n}\n",
-        expected: "fn main() {\n    let mut values = Vec::new();\n    values.push(1);\n    println!(\"{values:?}\");\n}\n",
-        human_log: missing_mut_human,
-        message: missing_mut_message,
-        prompt_a: "Fix the Rust compile error reported in build.log, for the source in src/main.rs. \
-             Read build.log and src/main.rs with the read tool, then fix src/main.rs with the \
-             edit tool. When the compile error is fixed, reply DONE with no tool call.",
-        prompt_b: "Fix the Rust compile error reported by the build tools, for the source in \
-             src/main.rs. The saved workspace metadata has the approved configuration id \
-             `native-default`. Call rs_verify_plan with changed_paths [\"src/main.rs\"], \
-             configuration_ids [\"native-default\"], goal \"validate_change\", scope \"focused\"; \
-             rs_run the returned step; then rs_diagnostics on the returned run to read the error \
-             and the source line. Fix src/main.rs with the edit tool. When the compile error is \
-             fixed, reply DONE with no tool call.",
-    }]
+    vec![
+        Task {
+            name: "missing_mut",
+            source: "fn main() {\n    let values = Vec::new();\n    values.push(1);\n    println!(\"{values:?}\");\n}\n",
+            expected: "fn main() {\n    let mut values = Vec::new();\n    values.push(1);\n    println!(\"{values:?}\");\n}\n",
+            human_log: missing_mut_human,
+            message: missing_mut_message,
+            prompt_a: PROMPT_A_MISSING_MUT,
+            prompt_b: PROMPT_B_MISSING_MUT,
+        },
+        Task {
+            name: "trait_bound",
+            source: "#[derive(Debug)]\nstruct Widget;\n\nfn duplicate<T: Clone>(value: T) -> (T, T) {\n    (value.clone(), value)\n}\n\nfn main() {\n    let w = Widget;\n    let (a, b) = duplicate(w);\n    println!(\"{a:?} {b:?}\");\n}\n",
+            expected: "#[derive(Debug, Clone)]\nstruct Widget;\n\nfn duplicate<T: Clone>(value: T) -> (T, T) {\n    (value.clone(), value)\n}\n\nfn main() {\n    let w = Widget;\n    let (a, b) = duplicate(w);\n    println!(\"{a:?} {b:?}\");\n}\n",
+            human_log: trait_bound_human,
+            message: trait_bound_message,
+            prompt_a: PROMPT_A_MISSING_MUT,
+            prompt_b: PROMPT_B_TRAIT_BOUND,
+        },
+    ]
 }
 
 // --- the two conditions ---------------------------------------------------
