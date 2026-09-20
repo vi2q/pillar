@@ -79,7 +79,7 @@ cargo install --path crates/pillar-cli --no-default-features
 Update an existing install in place:
 
 ```sh
-pillar --update        # alias: pillar update self (or `pi`)
+pillar --update        # alias: pillar update self (or `pillar`)
 ```
 
 This reruns `cargo install --git https://github.com/vi2q/pillar pillar-cli --force`

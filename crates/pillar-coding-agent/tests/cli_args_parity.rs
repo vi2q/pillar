@@ -44,8 +44,8 @@ fn parses_update_flag() {
 }
 
 #[test]
-fn update_self_and_pi_are_subcommand_sources() {
-    for source in ["self", "pi"] {
+fn update_self_and_pillar_are_subcommand_sources() {
+    for source in ["self", "pillar"] {
         let result = parse(&["update", source]);
         let args = result.subcommand.expect("a subcommand");
         assert_eq!(args.source.as_deref(), Some(source));

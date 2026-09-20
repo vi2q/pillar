@@ -61,9 +61,9 @@ pub fn run_subcommand_with(
         _ => {}
     }
 
-    // `pillar update self` / `pillar update pi` name the CLI itself, not a
-    // package (the help line documents the `self|pi` forms). Same path as
-    // `pillar --update`.
+    // `pillar update self` / `pillar update pillar` name the CLI itself, not
+    // a package (the help line documents the `self|pillar` forms). Same path
+    // as `pillar --update`.
     if args.command == Subcommand::Update
         && self_update::is_self_update_source(args.source.as_deref())
     {
@@ -150,7 +150,7 @@ pub fn help_for(command: Subcommand) -> String {
             "Usage: pillar remove <source> [-l]\n\nRemove an installed extension source (alias: uninstall).".to_string()
         }
         Subcommand::Update => {
-            "Usage: pillar update [<source>|self|pi] [-l]\n\nUpdate one configured source, or every source when none is given. `self` / `pi` reinstall the pillar CLI itself from git (same as `pillar --update`).".to_string()
+            "Usage: pillar update [<source>|self|pillar] [-l]\n\nUpdate one configured source, or every source when none is given. `self` / `pillar` reinstall the pillar CLI itself from git (same as `pillar --update`).".to_string()
         }
         Subcommand::List => {
             "Usage: pillar list\n\nList the configured package sources and whether they are installed.".to_string()

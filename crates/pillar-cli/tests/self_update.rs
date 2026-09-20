@@ -1,4 +1,4 @@
-//! `pillar --update` / `pillar update self` / `pillar update pi`: the
+//! `pillar --update` / `pillar update self` / `pillar update pillar`: the
 //! self-updater's command shape and its routing, without invoking cargo.
 
 use std::sync::Mutex;
@@ -35,9 +35,10 @@ fn cargo_install_command_is_the_documented_one() {
 }
 
 #[test]
-fn self_update_sources_are_self_and_pi() {
+fn self_update_sources_are_self_and_pillar() {
     assert!(self_update::is_self_update_source(Some("self")));
-    assert!(self_update::is_self_update_source(Some("pi")));
+    assert!(self_update::is_self_update_source(Some("pillar")));
+    assert!(!self_update::is_self_update_source(Some("pi")));
     assert!(!self_update::is_self_update_source(Some("npm:@foo/bar")));
     assert!(!self_update::is_self_update_source(None));
 }

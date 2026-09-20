@@ -37,9 +37,9 @@ pub fn cargo_install_args() -> Vec<String> {
 }
 
 /// Whether `source` names the CLI itself rather than a package
-/// (`pillar update self` / `pillar update pi`).
+/// (`pillar update self` / `pillar update pillar`).
 pub fn is_self_update_source(source: Option<&str>) -> bool {
-    matches!(source, Some("self") | Some("pi"))
+    matches!(source, Some("self") | Some("pillar"))
 }
 
 /// Whether offline mode is set through the environment.
