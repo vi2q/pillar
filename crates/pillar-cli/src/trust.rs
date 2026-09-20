@@ -1,7 +1,7 @@
 //! Startup project-trust resolution.
 //!
 //! The decision must exist before any project-local resource is read:
-//! `.pillar/extensions` is evaluated Luau with `pi.exec` / `pillar.fs`
+//! `.pillar/extensions` is evaluated Luau with `pillar.exec` / `pillar.fs`
 //! available and `.pillar/settings.json` can change agent behavior, so an
 //! untrusted checkout must never reach either
 //! (docs/ARCHITECTURE-REVIEW-s05c0.md A).

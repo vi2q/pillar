@@ -108,7 +108,7 @@ pub fn client_name_with(env: Option<&str>) -> String {
         .unwrap_or_else(|| DEFAULT_CLIENT_NAME.to_string())
 }
 
-/// The client name sent to providers (`PILLAR_CLIENT_NAME`, default `pi`).
+/// The client name sent to providers (`PILLAR_CLIENT_NAME`, default `pillar`).
 pub fn client_name() -> String {
     client_name_with(std::env::var(CLIENT_NAME_ENV).ok().as_deref())
 }
@@ -144,7 +144,7 @@ pub fn user_agent_for(client: &str) -> String {
 /// divergence: upstream uses the Node `os` module (platform, release,
 /// architecture); the Rust port uses compile-time `std::env::consts` and has
 /// no OS release string. The client name is overridable with
-/// `PILLAR_CLIENT_NAME` (default `pi`).
+/// `PILLAR_CLIENT_NAME` (default `pillar`).
 pub fn get_user_agent() -> String {
     user_agent_for(&client_name())
 }

@@ -1150,7 +1150,7 @@ pub fn custom_themes_dir() -> String {
 ///
 /// divergence: the port embeds `dark.json` / `light.json` with
 /// `include_str!`, so this path is informational (the theme list's `path`)
-/// and resolves next to the executable or `$PI_PACKAGE_DIR`.
+/// and resolves next to the executable or `$PILLAR_PACKAGE_DIR`.
 pub fn themes_dir() -> String {
     if let Ok(dir) = std::env::var("PILLAR_PACKAGE_DIR")
         && !dir.is_empty()

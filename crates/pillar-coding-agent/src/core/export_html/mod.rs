@@ -290,7 +290,10 @@ pub fn default_output_path(session_file: &Path) -> PathBuf {
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default();
-    PathBuf::from(format!("pi-session-{basename}.html"))
+    PathBuf::from(format!(
+        "{}-session-{basename}.html",
+        crate::cli::args::APP_NAME
+    ))
 }
 
 /// Write the export to disk, returning the output path (upstream

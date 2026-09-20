@@ -408,7 +408,7 @@ fn a_denied_fs_write_keeps_the_file_absent() {
     );
 }
 
-/// `pi.exec` must be authorized before a process is spawned: the same
+/// `pillar.exec` must be authorized before a process is spawned: the same
 /// extension writes the marker with a permissive broker and does not with a
 /// denying one.
 #[test]

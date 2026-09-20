@@ -98,7 +98,7 @@ impl ExtensionWiring {
 ///
 /// The caller must resolve `project_dir` through
 /// [`crate::trust::project_extension_dir`]: loading an extension evaluates
-/// arbitrary Luau with `pi.exec` / `pillar.fs` available, so an untrusted
+/// arbitrary Luau with `pillar.exec` / `pillar.fs` available, so an untrusted
 /// checkout must not reach this function.
 pub fn build_extension_runner(
     cwd: &str,
@@ -187,7 +187,7 @@ fn split_command_occurrence(name: &str) -> Option<(&str, usize)> {
     (!base.is_empty() && occurrence >= 1).then(|| (base, occurrence - 1))
 }
 
-/// Install the `pi.exec` host (upstream the process layer behind `exec`):
+/// Install the `pillar.exec` host (upstream the process layer behind `exec`):
 /// the command runs with the session's cwd, and the extension receives
 /// `{ stdout, stderr, code, killed }`. The broker authorizes and executes
 /// (never call the process API from here).

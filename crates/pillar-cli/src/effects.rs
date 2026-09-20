@@ -58,7 +58,7 @@ impl EffectBroker {
         (self.authorizer)(intent)
     }
 
-    /// `pi.exec`: authorize, then run the command with the session's cwd. A
+    /// `pillar.exec`: authorize, then run the command with the session's cwd. A
     /// denial answers the same shape as a failed run, so an extension cannot
     /// tell the policy from a missing binary. The command runs through
     /// `core::exec`, so `signal` / `timeout` cancel it (upstream
@@ -76,7 +76,7 @@ impl EffectBroker {
         };
         if let EffectDecision::Deny { reason } = self.authorize(&intent) {
             return pillar_coding_agent::core::exec::ExecResult::spawn_failure(format!(
-                "pi.exec denied: {reason}"
+                "pillar.exec denied: {reason}"
             ));
         }
         let resolved_cwd = match options.cwd.as_deref() {

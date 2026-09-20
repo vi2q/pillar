@@ -332,7 +332,7 @@ async fn build_session_with(
 
     let global_extensions = PathBuf::from(&agent_dir).join("extensions");
     // An untrusted project's extensions are never evaluated: loading one runs
-    // arbitrary Luau with `pi.exec` / `pillar.fs` available
+    // arbitrary Luau with `pillar.exec` / `pillar.fs` available
     // (docs/ARCHITECTURE-REVIEW-s05c0.md A). The gate result travels into the
     // rebuild inputs too, so `/reload` cannot resurrect them.
     let project_trusted =
