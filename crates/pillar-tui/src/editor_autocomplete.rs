@@ -296,6 +296,12 @@ impl<W: FnMut(&str)> BoundedTerminalWriter<W> {
     }
 
     /// Append data, flushing full chunks (upstream `append`).
+    ///
+    /// The chunk limit is a byte budget (`MAX_RENDER_WRITE_CHARS`), so the
+    /// slice point must be moved back to a UTF-8 char boundary. Cutting a
+    /// multi-byte character would panic (or emit a torn sequence): a long
+    /// session whose rendered frame crosses the 1 MiB limit used to slice
+    /// inside a CJK character.
     pub fn append(&mut self, value: &str) {
         let mut offset = 0usize;
         while offset < value.len() {
@@ -304,7 +310,13 @@ impl<W: FnMut(&str)> BoundedTerminalWriter<W> {
                 self.flush();
                 continue;
             }
-            let end = (value.len()).min(offset + capacity);
+            let mut end = (value.len()).min(offset + capacity);
+            // Never end the slice inside a character: back up to the nearest
+            // boundary. `capacity >= 1` guarantees progress unless the whole
+            // chunk limit is consumed by one multi-byte character.
+            while end > offset && !value.is_char_boundary(end) {
+                end -= 1;
+            }
             if end == offset {
                 self.flush();
                 continue;
@@ -503,5 +515,53 @@ mod tests {
         assert_eq!(writer.length(), 3);
         writer.flush();
         assert_eq!(writer.length(), 3);
+    }
+
+    /// A cut exactly at the byte limit falls inside a multi-byte character:
+    /// the writer must back up to a char boundary instead of panicking on
+    /// `value[offset..end]`. This is the shape a long session hits when a
+    /// rendered frame crosses the 1 MiB budget.
+    #[test]
+    fn bounded_writer_never_splits_a_character() {
+        let mut chunks: Vec<String> = Vec::new();
+        {
+            let mut writer = BoundedTerminalWriter::new(|data| chunks.push(data.to_string()));
+            // One byte short of the boundary, then 3-byte CJK characters: the
+            // first slice would end inside '変' (bytes 0..3).
+            writer.append(&"a".repeat(MAX_RENDER_WRITE_CHARS - 1));
+            let text = "\u{5909}\u{66f4}\u{304c}\u{7121}\u{3044}";
+            writer.append(text);
+            writer.flush();
+            assert_eq!(
+                chunks.concat().chars().filter(|c| *c == 'a').count(),
+                MAX_RENDER_WRITE_CHARS - 1
+            );
+            assert!(
+                chunks.concat().ends_with(text),
+                "the multi-byte run must survive intact"
+            );
+        }
+        // Every chunk is a valid &str and within the byte budget.
+        for chunk in &chunks {
+            assert!(chunk.len() <= MAX_RENDER_WRITE_CHARS);
+            assert!(chunk.is_char_boundary(chunk.len()));
+        }
+    }
+
+    /// When the remaining budget is smaller than one character, flush and
+    /// retry rather than looping forever or slicing mid-character.
+    #[test]
+    fn bounded_writer_handles_a_budget_smaller_than_one_character() {
+        let mut chunks: Vec<String> = Vec::new();
+        {
+            let mut writer = BoundedTerminalWriter::new(|data| chunks.push(data.to_string()));
+            // Fill one whole chunk so its buffer is flushed, leaving room to
+            // append a 3-byte character right after the boundary.
+            writer.append(&"a".repeat(MAX_RENDER_WRITE_CHARS));
+            writer.flush();
+            writer.append("\u{5909}\u{66f4}");
+            writer.flush();
+        }
+        assert!(chunks.concat().ends_with("\u{5909}\u{66f4}"));
     }
 }
