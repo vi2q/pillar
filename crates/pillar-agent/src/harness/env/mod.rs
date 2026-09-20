@@ -355,6 +355,14 @@ impl FileSystem for StdFsExecutionEnv {
             .map_err(|error| file_error_from_io(&error, &resolved))?;
         file.write_all(content)
             .await
+            .map_err(|error| file_error_from_io(&error, &resolved))?;
+        // tokio's `File` buffers writes and performs the actual syscall in a
+        // mandatory blocking task that completes asynchronously; without the
+        // flush, a reader that opens the file right after `write_all` returns
+        // can observe a still-empty append (upstream Node fs.appendFile is
+        // synchronous and coherent).
+        file.flush()
+            .await
             .map_err(|error| file_error_from_io(&error, &resolved))
     }
 
