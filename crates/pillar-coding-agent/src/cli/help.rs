@@ -97,6 +97,7 @@ Options:
   --approve, -a                  Trust project-local files for this run
   --no-approve, -na              Ignore project-local files for this run
   --offline                      Disable startup network operations (same as PILLAR_OFFLINE=1)
+  --update                       Reinstall the pillar CLI from git (same as `pillar update self`)
   --                             End option parsing; treat remaining arguments as messages/files
   --help, -h                     Show this help
   --version, -v                  Show version number

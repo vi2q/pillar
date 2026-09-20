@@ -11,4 +11,5 @@ pub mod effects;
 #[cfg(feature = "luau")]
 pub mod extension_sources;
 pub mod runner;
+pub mod self_update;
 pub mod trust;

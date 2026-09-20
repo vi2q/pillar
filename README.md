@@ -74,6 +74,21 @@ resolves automatically. To build without it:
 cargo install --path crates/pillar-cli --no-default-features
 ```
 
+### Updating
+
+Update an existing install in place:
+
+```sh
+pillar --update        # alias: pillar update self (or `pi`)
+```
+
+This reruns `cargo install --git https://github.com/vi2q/pillar pillar-cli --force`
+and streams the build. `cargo install` builds first and only replaces the
+installed binary on success, so a failed update leaves the current binary in
+place. It refuses to run in offline mode (`--offline` / `PILLAR_OFFLINE=1`).
+The first update still has to be installed from git (or run the command above)
+because the older binary does not know `--update` yet.
+
 ## Usage
 
 ```sh

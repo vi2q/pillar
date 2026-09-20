@@ -148,6 +148,9 @@ pub struct Args {
     pub resume: Option<bool>,
     pub help: Option<bool>,
     pub version: Option<bool>,
+    /// `--update`: reinstall the pillar CLI from git (same as
+    /// `pillar update self`). Handled before the mode dispatch.
+    pub update: Option<bool>,
     pub mode: Option<Mode>,
     pub name: Option<String>,
     pub no_session: Option<bool>,
@@ -256,6 +259,8 @@ pub fn parse_args(args: &[String]) -> Args {
             result.help = Some(true);
         } else if arg == "--version" || arg == "-v" {
             result.version = Some(true);
+        } else if arg == "--update" {
+            result.update = Some(true);
         } else if arg == "--mode" && i + 1 < args.len() {
             let mode = value_at(args, &mut i).expect("checked length");
             match mode.as_str() {

@@ -92,6 +92,20 @@ async fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    // `pillar --update`: reinstall the CLI from git (`pillar update self`).
+    // Like `--version`, it runs before the session and mode dispatch.
+    if parsed.update == Some(true) {
+        let mut stdout = std::io::stdout();
+        let offline = parsed.offline == Some(true) || pillar_cli::self_update::offline_from_env();
+        return match pillar_cli::self_update::run(&mut stdout, offline) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("Error: {error}");
+                ExitCode::from(1)
+            }
+        };
+    }
+
     if parsed.mode == Some(Mode::Rpc) && !parsed.file_args.is_empty() {
         eprintln!("Error: @file arguments are not supported in RPC mode");
         return ExitCode::from(1);

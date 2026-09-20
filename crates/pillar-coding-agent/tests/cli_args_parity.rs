@@ -32,6 +32,27 @@ fn parses_version_flag() {
     assert_eq!(parse(&["--version"]).version, Some(true));
 }
 
+// --- --update flag ---------------------------------------------------------
+
+#[test]
+fn parses_update_flag() {
+    let result = parse(&["--update"]);
+    assert_eq!(result.update, Some(true));
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    // It is a recognized option, not an extension flag.
+    assert!(!result.unknown_flags.contains_key("update"));
+}
+
+#[test]
+fn update_self_and_pi_are_subcommand_sources() {
+    for source in ["self", "pi"] {
+        let result = parse(&["update", source]);
+        let args = result.subcommand.expect("a subcommand");
+        assert_eq!(args.source.as_deref(), Some(source));
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    }
+}
+
 #[test]
 fn parses_v_shorthand() {
     assert_eq!(parse(&["-v"]).version, Some(true));

@@ -16,6 +16,7 @@ use pillar_coding_agent::core::package_manager::{
 use pillar_coding_agent::core::settings_manager::{SettingsManager, SettingsManagerCreateOptions};
 
 use crate::effects::EffectBroker;
+use crate::self_update;
 use crate::trust::stored_project_trust;
 
 /// Run one `pillar <command>` invocation, writing user-facing output to `out`.
@@ -25,6 +26,27 @@ pub fn run_subcommand(
     agent_dir: &str,
     trust_override: Option<bool>,
     out: &mut dyn Write,
+) -> Result<(), String> {
+    run_subcommand_with(
+        args,
+        cwd,
+        agent_dir,
+        trust_override,
+        out,
+        &self_update::spawn,
+    )
+}
+
+/// [`run_subcommand`] with an injected process runner, so the self-update path
+/// (`pillar update self` / `pi`) is testable without invoking cargo.
+#[allow(clippy::too_many_arguments)]
+pub fn run_subcommand_with(
+    args: &SubcommandArgs,
+    cwd: &str,
+    agent_dir: &str,
+    trust_override: Option<bool>,
+    out: &mut dyn Write,
+    command_runner: &self_update::CommandRunner<'_>,
 ) -> Result<(), String> {
     if args.help {
         return writeln!(out, "{}", help_for(args.command)).map_err(|error| error.to_string());
@@ -37,6 +59,15 @@ pub fn run_subcommand(
             return Err("`pillar auth` runs before subcommand dispatch".to_string());
         }
         _ => {}
+    }
+
+    // `pillar update self` / `pillar update pi` name the CLI itself, not a
+    // package (the help line documents the `self|pi` forms). Same path as
+    // `pillar --update`.
+    if args.command == Subcommand::Update
+        && self_update::is_self_update_source(args.source.as_deref())
+    {
+        return self_update::run_checked(command_runner, out, self_update::offline_from_env());
     }
 
     // The user's trust decision gates a project-scope (`-l`) install exactly as
@@ -119,7 +150,7 @@ pub fn help_for(command: Subcommand) -> String {
             "Usage: pillar remove <source> [-l]\n\nRemove an installed extension source (alias: uninstall).".to_string()
         }
         Subcommand::Update => {
-            "Usage: pillar update [<source>] [-l]\n\nUpdate one configured source, or every source when none is given.".to_string()
+            "Usage: pillar update [<source>|self|pi] [-l]\n\nUpdate one configured source, or every source when none is given. `self` / `pi` reinstall the pillar CLI itself from git (same as `pillar --update`).".to_string()
         }
         Subcommand::List => {
             "Usage: pillar list\n\nList the configured package sources and whether they are installed.".to_string()
