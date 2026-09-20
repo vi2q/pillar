@@ -15,6 +15,15 @@
 /// Input handler type (raw terminal data callback).
 pub type InputHandler = Box<dyn FnMut(&str)>;
 
+/// Byte cap for a short escape form (CSI and two-char escapes): these are
+/// fixed-shape and never legitimately long, so a longer run is malformed.
+const MAX_ESCAPE_LEN: usize = 32;
+
+/// Byte cap for OSC/APC sequences. Unlike CSI these carry arbitrary payloads
+/// (the renderer's window title embeds the session id), so the guard is only a
+/// memory bound, not a validity heuristic.
+const MAX_OSC_APC_LEN: usize = 4096;
+
 /// A minimal terminal screen model for renderer tests (upstream
 /// `VirtualTerminal`).
 pub struct VirtualTerminal {
@@ -94,10 +103,21 @@ impl VirtualTerminal {
             if self.try_interpret_pending() {
                 return;
             }
-            // Still incomplete unless clearly invalid; keep buffering
-            // (sequences here are short).
-            if self.pending_escape.len() > 32 {
-                // Give up: flush as text.
+            // A malformed sequence must not buffer forever. OSC/APC can be
+            // legitimately long (a title embeds the session id), so they only
+            // get a generous memory bound; the fixed-shape escapes keep the
+            // tight one.
+            let limit = if self.pending_escape.starts_with("\u{1b}]")
+                || self.pending_escape.starts_with("\u{1b}_")
+            {
+                MAX_OSC_APC_LEN
+            } else {
+                MAX_ESCAPE_LEN
+            };
+            if self.pending_escape.len() > limit {
+                // Give up and flush as text. This must not feed the buffer
+                // back through `write_char`: the leading ESC would start a
+                // new pending escape and recurse until the stack overflows.
                 let text = std::mem::take(&mut self.pending_escape);
                 self.write_plain(&text);
             }
@@ -107,10 +127,17 @@ impl VirtualTerminal {
             self.pending_escape.push(ch);
             return;
         }
+        self.put_plain_char(ch);
+    }
+
+    /// Write one character without treating it as the start of an escape
+    /// sequence.
+    fn put_plain_char(&mut self, ch: char) {
         match ch {
             '\r' => self.cursor_x = 0,
             '\n' => self.line_feed(),
-            '\u{7}' => {}
+            // A stray sequence introducer / terminator carries no cell.
+            '\u{1b}' | '\u{7}' => {}
             _ => self.put_char(ch),
         }
     }
@@ -291,7 +318,7 @@ impl VirtualTerminal {
 
     fn write_plain(&mut self, text: &str) {
         for ch in text.chars() {
-            self.write_char(ch);
+            self.put_plain_char(ch);
         }
     }
 
@@ -434,6 +461,45 @@ mod tests {
         let mut vt = VirtualTerminal::new(80, 24);
         vt.write("\u{1b}]0;my title\u{7}content");
         assert_eq!(vt.get_viewport()[0], "content");
+    }
+
+    #[test]
+    fn long_osc_title_is_ignored() {
+        // The renderer's title embeds the session id and is routinely longer
+        // than the short escape cap; it must still be consumed as an OSC, not
+        // flushed as text (this used to recurse and overflow the stack).
+        let mut vt = VirtualTerminal::new(80, 24);
+        let title = "x".repeat(200);
+        vt.write(&format!("\u{1b}]0;{title}\u{7}content"));
+        assert_eq!(vt.get_viewport()[0], "content");
+    }
+
+    #[test]
+    fn long_apc_marker_is_ignored() {
+        let mut vt = VirtualTerminal::new(80, 24);
+        let marker = "y".repeat(200);
+        vt.write(&format!("\u{1b}_{marker}\u{7}content"));
+        assert_eq!(vt.get_viewport()[0], "content");
+    }
+
+    #[test]
+    fn oversized_escape_flushes_as_text_without_recursing() {
+        // A CSI that never terminates (a digit run) exceeds the short cap: the
+        // parser gives up, renders it as text and keeps going. Before the fix
+        // the give-up path re-entered the parser and recursed until the stack
+        // overflowed.
+        let mut vt = VirtualTerminal::new(80, 24);
+        vt.write("\u{1b}[");
+        vt.write(&"1".repeat(100));
+        // The malformed run was flushed as text (the stray ESC is dropped).
+        assert!(
+            vt.get_viewport()[0].starts_with("[111"),
+            "{:?}",
+            vt.get_viewport()[0]
+        );
+        // Parsing resumed: a normal escape still works afterwards.
+        vt.write("\r\u{1b}[2Kafter");
+        assert_eq!(vt.get_viewport()[0], "after");
     }
 
     #[test]
