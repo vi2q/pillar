@@ -28,13 +28,13 @@ use pillar_tui::tui::{Component as _, RenderLines, TuiMode};
 
 static THEME_LOCK: Mutex<()> = Mutex::new(());
 
-/// In-memory credential store so the runtime's availability snapshot can be
-/// refreshed without touching a real auth file.
-
 /// The shared frame as owned lines (these assertions compare strings).
 fn to_vec(lines: RenderLines) -> Vec<String> {
     lines.iter().map(|line| line.to_string()).collect()
 }
+
+/// In-memory credential store so the runtime's availability snapshot can be
+/// refreshed without touching a real auth file.
 #[derive(Default)]
 struct MemCredentials(Mutex<BTreeMap<String, Credential>>);
 

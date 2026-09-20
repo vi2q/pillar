@@ -938,9 +938,9 @@ impl SessionSelectorComponent {
         let mut lines = Vec::new();
         lines.extend(
             pillar_tui::components::Text::new(" Rename Session", 1, 0)
-                .render(width).iter().map(|line| line.to_string())
-                .into_iter()
-                .map(|line| theme_handle.bold(&line)),
+                .render(width)
+                .iter()
+                .map(|line| theme_handle.bold(line)),
         );
         lines.push(String::new());
         lines.extend(self.rename_input.render(width).iter().map(|line| line.to_string()));
@@ -955,9 +955,9 @@ impl SessionSelectorComponent {
                 1,
                 0,
             )
-            .render(width).iter().map(|line| line.to_string())
-            .into_iter()
-            .map(|line| theme_handle.fg("muted", &line)),
+            .render(width)
+                .iter()
+                .map(|line| theme_handle.fg("muted", line)),
         );
         lines
     }

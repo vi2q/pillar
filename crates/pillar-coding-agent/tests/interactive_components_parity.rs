@@ -261,7 +261,7 @@ fn render_diff_colours_lines_and_highlights_edits() {
         "{:?}",
         lines[2]
     );
-    assert_eq!(&*lines[3], dark.fg("toolDiffAdded", "+3 added"));
+    assert_eq!(lines[3].to_string(), dark.fg("toolDiffAdded", "+3 added"));
     assert!(!lines[1].contains(&dark.inverse("old")), "{:?}", lines[1]);
 
     // A 1:1 modification highlights the changed tokens with inverse video and
