@@ -13,15 +13,6 @@ pub mod diagnostics;
 pub mod effects;
 pub mod event_bus;
 pub mod exec;
-/// Native host adapters for the Rust workflow tools (design
-/// docs/RUST-TOOLING-DESIGN.md §2, §9). Native-only: the embedding profiles
-/// have no process or filesystem capability.
-#[cfg(not(target_arch = "wasm32"))]
-pub mod rust_host;
-/// The optional rust-analyzer semantic provider (design §6, stage R2).
-/// Native-only: it drives a server process.
-#[cfg(not(target_arch = "wasm32"))]
-pub mod rust_analyzer;
 pub mod export_html;
 pub mod extensions_loader;
 pub mod extensions_luau;

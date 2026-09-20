@@ -15,11 +15,6 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 
-use pillar_agent::rust_tools::host::OwnerId;
-use pillar_agent::rust_tools::{
-    ContractLimits, ContractService, RustToolLimits, RustToolkit, SemanticProvider,
-    UnavailableProvider,
-};
 use pillar_coding_agent::cli::args::{Args, DiagnosticKind, Mode, VERSION, parse_args};
 use pillar_coding_agent::cli::help::render_help;
 use pillar_coding_agent::cli::main::{AppMode, resolve_app_mode};
@@ -38,8 +33,6 @@ use pillar_coding_agent::core::model_resolver::{
 };
 use pillar_coding_agent::core::model_runtime::{CreateModelRuntimeOptions, ModelRuntime};
 use pillar_coding_agent::core::resource_loader::ResourceLoader;
-use pillar_coding_agent::core::rust_analyzer::{RustAnalyzerConfig, RustAnalyzerProvider};
-use pillar_coding_agent::core::rust_host::NativeRustHost;
 use pillar_coding_agent::core::sdk::{CreateAgentSessionOptions, create_agent_session};
 use pillar_coding_agent::core::session_manager::SessionManager;
 use pillar_coding_agent::core::settings_manager::SettingsManager;
@@ -306,76 +299,6 @@ fn resolve_cli_model_selection(
 
 /// Create the runtime (model runtime, Luau extension runner, session). The
 /// returned wiring must outlive the session (it owns the Luau runtime).
-/// Whether the opt-in Rust workflow profile is enabled. This is an
-/// experimental profile, not a default tool set (design docs/RUST-TOOLING-DESIGN.md
-/// §4, §9: the `rs_*` tools are registered explicitly).
-fn rust_tools_enabled() -> bool {
-    matches!(
-        std::env::var("PILLAR_RUST_TOOLS").ok().as_deref(),
-        Some("1") | Some("true") | Some("yes") | Some("on")
-    )
-}
-
-/// The rust-analyzer command, or empty when the analyzer is off. The value may
-/// be `1`/`on` (the default command) or an argv override.
-fn rust_analyzer_command() -> Vec<String> {
-    let value = std::env::var("PILLAR_RUST_ANALYZER").unwrap_or_default();
-    match value.as_str() {
-        "" | "1" | "true" | "yes" | "on" => vec!["rust-analyzer".to_string()],
-        "0" | "false" | "no" | "off" => Vec::new(),
-        other => other.split_whitespace().map(str::to_string).collect(),
-    }
-}
-
-/// Build the opt-in Rust workflow toolkit: the native host adapters plus the
-/// pure `rs_*` tools. The metadata refresh here is the explicit, effect-gated
-/// one (design §9); if it fails, the tools still load and report
-/// `metadata_unavailable` rather than silently planning against nothing.
-///
-/// The analyzer is a second explicit opt-in (`PILLAR_RUST_ANALYZER`); when it
-/// fails to start the contract provider is the source-only fallback
-/// (design §6: the analyzer is optional).
-async fn build_rust_toolkit(cwd: &str, broker: &Arc<EffectBroker>) -> Option<Arc<RustToolkit>> {
-    if !rust_tools_enabled() {
-        return None;
-    }
-    let host = NativeRustHost::new(cwd, Some(broker.authorizer()));
-    if let Err(error) = host.refresh_metadata() {
-        eprintln!("Warning: Rust tools: metadata refresh failed: {error}");
-    }
-    let mut toolkit = host.toolkit(
-        OwnerId::new(pillar_ai::uuid::uuidv7()),
-        RustToolLimits::default(),
-    );
-
-    let analyzer = rust_analyzer_command();
-    if !analyzer.is_empty() {
-        let provider: Arc<dyn SemanticProvider> = match RustAnalyzerProvider::start(
-            RustAnalyzerConfig {
-                command: analyzer,
-                workspace_root: cwd.to_string(),
-                timeout_ms: 30_000,
-            },
-            host.documents(),
-        )
-        .await
-        {
-            Ok(provider) => Arc::new(provider),
-            Err(error) => {
-                eprintln!("Warning: Rust analyzer unavailable, using source fallback: {error}");
-                Arc::new(UnavailableProvider::default())
-            }
-        };
-        let contract = Arc::new(ContractService::new(
-            provider,
-            host.sources(),
-            ContractLimits::default(),
-        ));
-        toolkit = toolkit.with_contract(contract);
-    }
-    Some(Arc::new(toolkit))
-}
-
 async fn build_session_with(
     parsed: &Args,
     model_runtime: Arc<ModelRuntime>,
@@ -427,9 +350,6 @@ async fn build_session_with(
     }
     let rebuild_inputs = wiring.rebuild.clone();
     let extension_runner: Arc<Mutex<ExtensionRunner>> = Arc::new(Mutex::new(wiring.take_runner()));
-    // The opt-in Rust workflow tools share one toolkit across `/reload`, so a
-    // plan id issued before a reload is still valid after it.
-    let rust_toolkit = build_rust_toolkit(&cwd, &broker).await;
 
     let selection = resolve_cli_model_selection(parsed, &model_runtime)?;
 
@@ -446,13 +366,7 @@ async fn build_session_with(
         tools: parsed.tools.clone(),
         no_tools: no_tools(parsed),
         exclude_tools: parsed.exclude_tools.clone().unwrap_or_default(),
-        custom_tools: {
-            let mut tools = wiring.custom_tools();
-            if let Some(toolkit) = &rust_toolkit {
-                tools.extend(toolkit.tools());
-            }
-            tools
-        },
+        custom_tools: wiring.custom_tools(),
         extension_runner,
         project_trusted: Some(project_trusted),
         effect_authorizer: Some(broker.authorizer()),
@@ -470,7 +384,6 @@ async fn build_session_with(
         // (docs/ARCHITECTURE-REVIEW-s05c0.md C).
         extension_runner_rebuild: {
             let inputs = rebuild_inputs;
-            let rust_toolkit = rust_toolkit.clone();
             Some(Arc::new(move |flag_values| {
                 let mut rebuilt = build_extension_runner_with_slots(
                     &inputs.cwd,
@@ -489,13 +402,7 @@ async fn build_session_with(
                 // runner) only once the build reported no error.
                 Ok(ExtensionGeneration {
                     command_handler: Some(extension_command_handler(&rebuilt.runtime)),
-                    tools: {
-                        let mut tools = rebuilt.custom_tools();
-                        if let Some(toolkit) = &rust_toolkit {
-                            tools.extend(toolkit.tools());
-                        }
-                        tools
-                    },
+                    tools: rebuilt.custom_tools(),
                     runner: rebuilt.take_runner(),
                 })
             }))
