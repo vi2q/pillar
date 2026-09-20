@@ -146,7 +146,8 @@ enum UiCommand {
         /// The resolved post-login state, present when the login succeeded.
         /// Boxed: the enum travels through a channel, and this rare variant is
         /// far larger than the common ones.
-        authentication: Option<Box<crate::modes::interactive::interactive_mode::PostLoginAuthentication>>,
+        authentication:
+            Option<Box<crate::modes::interactive::interactive_mode::PostLoginAuthentication>>,
         error: Option<String>,
         /// True when the error is a credential-store synchronization failure
         /// (upstream `error instanceof CredentialSynchronizationError`).
@@ -1406,8 +1407,15 @@ fn pump_loop(
         }
 
         // Rendering (a shutdown request still paints the final frame).
+        //
+        // divergence: upstream only calls `ui.invalidate()` on a theme change,
+        // a syntax-grammar load and a TUI-mode switch; components drop their own
+        // caches when their content changes. The port used to invalidate the
+        // whole tree here on every dirty frame, which cleared every component's
+        // `(text, width)` cache and made the frame re-parse the entire
+        // transcript's markdown (~40 ms/frame at 8k lines, ~18x the cost of a
+        // differential frame; docs/PERF-BASELINE.md).
         if mode.take_dirty() {
-            screen.base_mut().invalidate();
             screen.base_mut().request_render(false);
         }
         if requested_shutdown {

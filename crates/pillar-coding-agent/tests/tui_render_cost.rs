@@ -18,10 +18,11 @@
 //!
 //! - `tick` changes the tail (the status line): the frame takes the
 //!   differential path, like a spinner tick or a streaming token.
-//! - `invalidate` also calls `ui.invalidate()` first, which is what the port's
-//!   pump does on every dirty frame and upstream only does on a theme change
-//!   or a TUI-mode switch. It clears every component's `(text, width)` cache,
-//!   so all of the transcript's markdown is parsed again.
+//! - `invalidate` also calls `ui.invalidate()` first. The port's pump used to
+//!   do this on every dirty frame (upstream only does it on a theme change, a
+//!   grammar load or a TUI-mode switch); that is fixed, so this variant is now
+//!   the upper bound for "every component cache was dropped" — a theme change,
+//!   or a regression that reintroduces the per-frame invalidation.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -258,7 +259,7 @@ fn one_frame_costs_the_whole_transcript() {
         }),
     );
     stage(
-        "apply_line_resets (one new String per line)",
+        "apply_line_resets (fullscreen path only now)",
         200,
         Box::new(|| {
             std::hint::black_box(apply_line_resets(next.clone()));

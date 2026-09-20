@@ -14,14 +14,16 @@
 //! - frames are built as bounded chunks and written afterwards (Rust borrow
 //!   rules; the chunking itself matches upstream).
 
+use std::sync::Arc;
+
 use crate::editor_autocomplete::BoundedTerminalWriter;
 use crate::main_screen::{
-    MainScreenRenderState, RenderDecision, changed_range, decide_render,
+    MainScreenRenderState, RenderDecision, changed_range, decide_render_with_range,
     delete_changed_kitty_images, delete_kitty_images, expand_changed_range_for_kitty_images,
     extract_kitty_image_ids, get_kitty_image_reserved_rows,
 };
 use crate::overlay::{
-    ResolvedOverlayLayout, apply_line_resets, composite_overlays, extract_cursor_position,
+    ResolvedOverlayLayout, SEGMENT_RESET, composite_overlays, extract_cursor_position,
     prepare_overlay,
 };
 use crate::process_terminal::Terminal;
@@ -37,7 +39,7 @@ const CLEAR_SCREEN: &str = "\u{1b}[2J\u{1b}[H\u{1b}[3J";
 /// `TuiMainScreenRenderState`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TuiMainScreenRenderState {
-    pub previous_lines: Vec<String>,
+    pub previous_lines: Arc<[String]>,
     pub previous_width: usize,
     pub previous_height: usize,
     pub cursor_row: usize,
@@ -50,7 +52,9 @@ pub struct TuiMainScreenRenderState {
 /// `TuiMainScreen`).
 pub struct TuiMainScreen {
     base: TuiBase,
-    previous_lines: Vec<String>,
+    /// The last frame's lines, shared: a frame that changes one line must not
+    /// copy the whole history (`docs/PERF-BASELINE.md`).
+    previous_lines: Arc<[String]>,
     previous_kitty_image_ids: Vec<u32>,
     previous_width: usize,
     previous_height: usize,
@@ -67,7 +71,7 @@ impl TuiMainScreen {
     pub fn new(terminal: Box<dyn Terminal>) -> Self {
         Self {
             base: TuiBase::new(terminal, TuiMode::Regular),
-            previous_lines: Vec::new(),
+            previous_lines: Arc::from(Vec::new()),
             previous_kitty_image_ids: Vec::new(),
             previous_width: 0,
             previous_height: 0,
@@ -104,7 +108,7 @@ impl TuiMainScreen {
 
     pub fn capture_render_state(&self) -> TuiMainScreenRenderState {
         TuiMainScreenRenderState {
-            previous_lines: self.previous_lines.clone(),
+            previous_lines: Arc::clone(&self.previous_lines),
             previous_width: self.previous_width,
             previous_height: self.previous_height,
             cursor_row: self.cursor_row,
@@ -127,7 +131,8 @@ impl TuiMainScreen {
                     line.clone()
                 }
             })
-            .collect();
+            .collect::<Vec<String>>()
+            .into();
         self.previous_kitty_image_ids = Vec::new();
         self.previous_width = state.previous_width;
         self.previous_height = state.previous_height;
@@ -139,7 +144,7 @@ impl TuiMainScreen {
 
     /// Drop all incremental render state (upstream `resetRenderState`).
     pub fn reset_render_state(&mut self) {
-        self.previous_lines.clear();
+        self.previous_lines = Arc::from(Vec::new());
         self.previous_width = 0;
         self.previous_height = 0;
         self.cursor_row = 0;
@@ -189,7 +194,7 @@ impl TuiMainScreen {
 
     fn render_state(&self, has_overlays: bool) -> MainScreenRenderState {
         MainScreenRenderState {
-            previous_lines: self.previous_lines.clone(),
+            previous_lines: Arc::clone(&self.previous_lines),
             previous_width: self.previous_width,
             previous_height: self.previous_height,
             max_lines_rendered: self.max_lines_rendered,
@@ -263,13 +268,23 @@ impl TuiMainScreen {
 
         let mut new_lines = self.compose(width, height);
         let cursor_pos = extract_cursor_position(&mut new_lines, height);
-        new_lines = apply_line_resets(new_lines);
+        // The segment reset is appended when a line is written (upstream maps
+        // over the frame here): rebuilding every line just to add a constant
+        // suffix cost ~1.2 ms per frame on an 8k-line transcript
+        // (docs/PERF-BASELINE.md). Line equality is unaffected by the suffix,
+        // so the diff and the stored `previous_lines` stay suffix-free.
+        let new_lines: Arc<[String]> = new_lines.into();
 
-        let decision = decide_render(
+        // One diff scan per frame: `decide_render` classifies the frame from
+        // the same range the differential paths below use (upstream computes
+        // it once; the port used to run the full scan twice).
+        let range = changed_range(&self.previous_lines, &new_lines);
+        let decision = decide_render_with_range(
             &self.render_state(self.base.has_overlay_entries()),
             &new_lines,
             width,
             height,
+            range,
         );
 
         // First render / width / height / clearOnShrink: redraw everything.
@@ -280,8 +295,8 @@ impl TuiMainScreen {
                 | RenderDecision::HeightChanged
                 | RenderDecision::ClearOnShrink
         ) {
-            let clear = self.clear_on_first_render
-                || !matches!(decision, RenderDecision::FirstRender);
+            let clear =
+                self.clear_on_first_render || !matches!(decision, RenderDecision::FirstRender);
             self.clear_on_first_render = false;
             self.full_render(&new_lines, width, height, clear, cursor_pos);
             return Ok(());
@@ -289,16 +304,26 @@ impl TuiMainScreen {
 
         // Compute the precise changed range (the decision tree classifies the
         // frame, the paths below need the indices).
-        let (first, last, appended) = changed_range(&self.previous_lines, &new_lines);
+        //
+        // The kitty-image ids of the new frame are collected here, before the
+        // range is expanded: with no image line in either frame there is
+        // nothing to expand, and the expansion walk is two full scans of both
+        // line sets (~0.26 ms on an 8k-line transcript, docs/PERF-BASELINE.md).
+        let new_kitty_image_ids = self.collect_kitty_image_ids(&new_lines);
+        let (first, last, appended) = range;
         let (first_changed, last_changed) = match (first, last) {
             (Some(first), Some(last)) => {
-                let (expanded_first, expanded_last) = expand_changed_range_for_kitty_images(
-                    first,
-                    last,
-                    &self.previous_lines,
-                    &new_lines,
-                );
-                (Some(expanded_first), Some(expanded_last))
+                if self.previous_kitty_image_ids.is_empty() && new_kitty_image_ids.is_empty() {
+                    (Some(first), Some(last))
+                } else {
+                    let (expanded_first, expanded_last) = expand_changed_range_for_kitty_images(
+                        first,
+                        last,
+                        &self.previous_lines,
+                        &new_lines,
+                    );
+                    (Some(expanded_first), Some(expanded_last))
+                }
             }
             _ => (None, None),
         };
@@ -373,7 +398,7 @@ impl TuiMainScreen {
             }
             self.position_hardware_cursor(cursor_pos, new_lines.len());
             self.previous_lines = new_lines;
-            self.previous_kitty_image_ids = self.collect_kitty_image_ids(&self.previous_lines);
+            self.previous_kitty_image_ids = new_kitty_image_ids;
             self.previous_width = width;
             self.previous_height = height;
             self.previous_viewport_top = prev_viewport_top;
@@ -472,6 +497,9 @@ impl TuiMainScreen {
                 return Err(error);
             }
             output.append(line);
+            if !is_image_line(line) {
+                output.append(SEGMENT_RESET);
+            }
             index += 1;
         }
 
@@ -501,7 +529,7 @@ impl TuiMainScreen {
         self.position_hardware_cursor(cursor_pos, new_lines.len());
 
         self.previous_lines = new_lines;
-        self.previous_kitty_image_ids = self.collect_kitty_image_ids(&self.previous_lines);
+        self.previous_kitty_image_ids = new_kitty_image_ids;
         self.previous_width = width;
         self.previous_height = height;
         Ok(())
@@ -509,7 +537,7 @@ impl TuiMainScreen {
 
     fn full_render(
         &mut self,
-        new_lines: &[String],
+        new_lines: &Arc<[String]>,
         width: usize,
         height: usize,
         clear: bool,
@@ -547,6 +575,9 @@ impl TuiMainScreen {
                 continue;
             }
             output.append(line);
+            if !is_image_line(line) {
+                output.append(SEGMENT_RESET);
+            }
             index += 1;
         }
         output.append(SYNC_END);
@@ -563,7 +594,9 @@ impl TuiMainScreen {
         let buffer_length = height.max(new_lines.len());
         self.previous_viewport_top = buffer_length.saturating_sub(height);
         self.position_hardware_cursor(cursor_pos, new_lines.len());
-        self.previous_lines = new_lines.to_vec();
+        // Share the frame instead of copying every line (the caller already
+        // owns it as an `Arc`).
+        self.previous_lines = Arc::clone(new_lines);
         self.previous_kitty_image_ids = self.collect_kitty_image_ids(new_lines);
         self.previous_width = width;
         self.previous_height = height;

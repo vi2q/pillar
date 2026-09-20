@@ -284,8 +284,17 @@ fn render_state_is_captured_restored_and_reset() {
     let terminal = terminal(40, 10);
     let mut screen = screen(&terminal, &["alpha"]);
     screen.do_render().expect("render");
+    // The segment reset is appended at the write site, so the stored lines
+    // carry no suffix (docs/PERF-BASELINE.md) while the terminal still sees it.
+    assert!(
+        terminal
+            .written()
+            .contains("alpha\u{1b}[0m\u{1b}]8;;\u{7}"),
+        "{:?}",
+        terminal.written()
+    );
     let state: TuiMainScreenRenderState = screen.capture_render_state();
-    assert_eq!(state.previous_lines, vec!["alpha\u{1b}[0m\u{1b}]8;;\u{7}"]);
+    assert_eq!(state.previous_lines.as_ref(), ["alpha".to_string()]);
     assert_eq!(state.previous_width, 40);
     assert_eq!(state.previous_height, 10);
 

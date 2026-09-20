@@ -10,6 +10,7 @@
 
 use crate::terminal_image::{delete_kitty_image, is_image_line};
 use crate::text_utils::visible_width;
+use std::sync::Arc;
 
 /// Kitty image header extracted from a line (upstream
 /// `KittyImageHeader`).
@@ -158,9 +159,13 @@ pub enum RenderDecision {
 }
 
 /// Render state tracked between frames (upstream the private fields).
+///
+/// `previous_lines` is shared rather than owned so that handing the state to
+/// [`decide_render`] (and storing the new frame) costs nothing: the port used
+/// to deep-clone every line on every frame (`docs/PERF-BASELINE.md`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MainScreenRenderState {
-    pub previous_lines: Vec<String>,
+    pub previous_lines: Arc<[String]>,
     pub previous_width: usize,
     pub previous_height: usize,
     pub max_lines_rendered: usize,
@@ -173,7 +178,7 @@ pub struct MainScreenRenderState {
 impl Default for MainScreenRenderState {
     fn default() -> Self {
         Self {
-            previous_lines: Vec::new(),
+            previous_lines: Arc::from(Vec::new()),
             previous_width: 0,
             previous_height: 0,
             max_lines_rendered: 0,
@@ -185,6 +190,11 @@ impl Default for MainScreenRenderState {
     }
 }
 
+/// The changed range one frame's diff produced (upstream computes it once per
+/// frame; the port's `do_render` needs the indices too, so the scan is shared
+/// instead of run twice).
+pub type ChangedRange = (Option<usize>, Option<usize>, bool);
+
 /// Decide how to render the new lines given the tracked state
 /// (upstream the doRender decision tree).
 pub fn decide_render(
@@ -192,6 +202,19 @@ pub fn decide_render(
     new_lines: &[String],
     width: usize,
     height: usize,
+) -> RenderDecision {
+    let range = changed_range(&state.previous_lines, new_lines);
+    decide_render_with_range(state, new_lines, width, height, range)
+}
+
+/// [`decide_render`] for a caller that already ran [`changed_range`] over the
+/// same lines (upstream's single scan; the port's `do_render` reuses it).
+pub fn decide_render_with_range(
+    state: &MainScreenRenderState,
+    new_lines: &[String],
+    width: usize,
+    height: usize,
+    (first_changed, last_changed, _appended): ChangedRange,
 ) -> RenderDecision {
     let width_changed = state.previous_width != 0 && state.previous_width != width;
     let height_changed = state.previous_height != 0 && state.previous_height != height;
@@ -209,8 +232,6 @@ pub fn decide_render(
     if state.clear_on_shrink && new_lines.len() < state.max_lines_rendered && !state.has_overlays {
         return RenderDecision::ClearOnShrink;
     }
-    let (first_changed, last_changed, appended) = changed_range(&state.previous_lines, new_lines);
-    let _ = appended;
     if first_changed.is_none() {
         return RenderDecision::NoChanges;
     }
@@ -434,7 +455,7 @@ mod tests {
 
     fn state_with_previous(items: &[&str], width: usize, height: usize) -> MainScreenRenderState {
         MainScreenRenderState {
-            previous_lines: lines(items),
+            previous_lines: lines(items).into(),
             previous_width: width,
             previous_height: height,
             ..MainScreenRenderState::default()
@@ -491,7 +512,7 @@ mod tests {
             max_lines_rendered: 10,
             previous_width: 80,
             previous_height: 24,
-            previous_lines: previous,
+            previous_lines: previous.into(),
             ..MainScreenRenderState::default()
         };
         assert_eq!(
@@ -539,7 +560,7 @@ mod tests {
     #[test]
     fn change_above_viewport_requires_full_redraw() {
         let state = MainScreenRenderState {
-            previous_lines: lines(&["a", "b", "c"]),
+            previous_lines: lines(&["a", "b", "c"]).into(),
             previous_width: 80,
             previous_height: 2,
             previous_viewport_top: 2,

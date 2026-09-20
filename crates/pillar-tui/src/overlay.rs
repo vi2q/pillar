@@ -374,8 +374,13 @@ pub fn extract_cursor_position(lines: &mut [String], height: usize) -> Option<(u
 }
 
 /// Apply trailing segment resets per line (upstream `applyLineResets`).
+/// The reset suffix every rendered line carries (upstream the constant inside
+/// `applyLineResets`). The main screen appends it at the write site instead of
+/// rebuilding the line vector every frame; the fullscreen renderer still maps
+/// over its lines with [`apply_line_resets`].
+pub const SEGMENT_RESET: &str = "\u{1b}[0m\u{1b}]8;;\u{7}";
+
 pub fn apply_line_resets(lines: Vec<String>) -> Vec<String> {
-    const SEGMENT_RESET: &str = "\u{1b}[0m\u{1b}]8;;\u{7}";
     lines
         .into_iter()
         .map(|line| {
