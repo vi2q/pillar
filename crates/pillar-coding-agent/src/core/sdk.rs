@@ -567,10 +567,25 @@ pub async fn create_agent_session(
         }
     }
 
+    let prompt_tool_names = tools.iter().map(|tool| tool.tool.name.clone()).collect();
+    let prompt_tool_snippets = tools
+        .iter()
+        .map(|tool| {
+            (
+                tool.tool.name.clone(),
+                tool.tool
+                    .description
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .to_owned(),
+            )
+        })
+        .collect();
     let system_prompt = build_system_prompt(&BuildSystemPromptOptions {
         custom_prompt: None,
-        selected_tools: Some(initial_active_tool_names.clone()),
-        tool_snippets: None,
+        selected_tools: Some(prompt_tool_names),
+        tool_snippets: Some(prompt_tool_snippets),
         prompt_guidelines: None,
         append_system_prompt: None,
         cwd: cwd.clone(),
