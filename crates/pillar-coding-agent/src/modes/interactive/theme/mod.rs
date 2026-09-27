@@ -13,7 +13,7 @@
 //!   `truecolor`).
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::LazyLock;
+use std::sync::{LazyLock, OnceLock};
 use std::time::Duration;
 
 use pillar_tui::editor::EditorTheme;
@@ -1306,17 +1306,68 @@ pub fn get_language_from_path(file_path: &str) -> Option<&'static str> {
 }
 
 /// Highlight code for a markdown code block (upstream `highlightCode`).
-///
-/// divergence: upstream highlights with `highlight.js` (`cli-highlight`) and
-/// falls back to painting every line with `mdCodeBlock` when the language is
-/// unknown. No JS/JSX highlighter is ported, so the port always takes that
-/// upstream fallback path; a Rust highlighter (e.g. syntect/tree-sitter) is a
-/// follow-up.
 pub fn highlight_code(code: &str, lang: Option<&str>) -> Vec<String> {
-    let _ = lang;
+    static SYNTAXES: OnceLock<syntect::parsing::SyntaxSet> = OnceLock::new();
+    static THEMES: OnceLock<syntect::highlighting::ThemeSet> = OnceLock::new();
+    let syntaxes = SYNTAXES.get_or_init(syntect::parsing::SyntaxSet::load_defaults_newlines);
+    let fallback = || {
+        code.split('\n')
+            .map(|line| theme().fg("mdCodeBlock", line))
+            .collect()
+    };
+    let Some(syntax) = lang.and_then(|name| {
+        syntaxes
+            .find_syntax_by_token(name)
+            .or_else(|| syntaxes.find_syntax_by_extension(name))
+    }) else {
+        return fallback();
+    };
+    let themes = THEMES.get_or_init(syntect::highlighting::ThemeSet::load_defaults);
+    let theme_name = if theme().name() == Some("light") {
+        "InspiredGitHub"
+    } else {
+        "base16-ocean.dark"
+    };
+    let Some(colors) = themes.themes.get(theme_name) else {
+        return fallback();
+    };
+    let mut highlighter = syntect::easy::HighlightLines::new(syntax, colors);
     code.split('\n')
-        .map(|line| theme().fg("mdCodeBlock", line))
+        .map(|line| {
+            let parsed = format!("{line}\n");
+            match highlighter.highlight_line(&parsed, syntaxes) {
+                Ok(ranges) => ranges
+                    .into_iter()
+                    .filter_map(|(style, text)| {
+                        let text = text.trim_end_matches('\n');
+                        (!text.is_empty()).then(|| {
+                            let color = style.foreground;
+                            format!(
+                                "\x1b[38;2;{};{};{}m{text}\x1b[39m",
+                                color.r, color.g, color.b
+                            )
+                        })
+                    })
+                    .collect(),
+                Err(_) => theme().fg("mdCodeBlock", line),
+            }
+        })
         .collect()
+}
+
+#[cfg(test)]
+mod syntax_highlight_tests {
+    #[test]
+    fn rust_code_uses_distinct_syntax_colors() {
+        super::init_theme(Some("dark"));
+        let rendered = super::highlight_code("pub fn answer() -> u32 { 42 }", Some("rust"));
+        let colors = rendered[0]
+            .split("\x1b[38;2;")
+            .skip(1)
+            .filter_map(|part| part.split('m').next())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(colors.len() > 1);
+    }
 }
 
 /// Markdown theme backed by the active theme (upstream `getMarkdownTheme`).

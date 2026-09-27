@@ -42,7 +42,7 @@ use crate::modes::interactive::theme;
 use crate::modes::interactive::theme::controller::{
     InteractiveThemeController, InteractiveThemeControllerOptions,
 };
-use crate::modes::interactive::transcript::TranscriptSettings;
+use crate::modes::interactive::transcript::{ToolRendererLookup, TranscriptSettings};
 
 /// How often the pump drains the terminal and re-renders (upstream relies on
 /// the event loop; the port polls).
@@ -206,6 +206,7 @@ pub struct InteractiveRunOptions {
     pub mode: InteractiveModeOptions,
     pub transcript: TranscriptSettings,
     pub markdown_transformers: Vec<MarkdownTransformer>,
+    pub tool_renderer_lookup: Option<ToolRendererLookup>,
     /// The `ctx.ui` bridge the run fills with its pump-backed sender
     /// (upstream the mode owns the extension UI context).
     pub extension_ui: Option<ExtensionUiSlot>,
@@ -238,6 +239,7 @@ impl Default for InteractiveRunOptions {
             mode: InteractiveModeOptions::default(),
             transcript: TranscriptSettings::default(),
             markdown_transformers: Vec::new(),
+            tool_renderer_lookup: None,
             extension_ui: None,
             initial_message: None,
             initial_editor_text: None,
@@ -259,6 +261,7 @@ pub async fn run_interactive(
         mode: mut mode_options,
         transcript,
         markdown_transformers,
+        tool_renderer_lookup,
         extension_ui,
         initial_message,
         initial_editor_text,
@@ -347,6 +350,9 @@ pub async fn run_interactive(
         markdown_transformers,
         mode_options,
     ));
+    mode.transcript()
+        .lock()
+        .set_tool_renderer_lookup(tool_renderer_lookup);
     mode.render_initial_messages();
     mode.update_terminal_title();
     mode.update_editor_border_color();

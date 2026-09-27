@@ -20,10 +20,9 @@
 //!   omitted.
 //! - the retry-attempt count for abort messages is a field the host updates
 //!   (upstream reads `session.retryAttempt` inline).
-//! - extension-provided tool definitions are not registered yet, so
-//!   `getRegisteredToolDefinition` answers `None` (built-ins resolve inside
-//!   `ToolExecutionComponent`); entry/message renderers come from injected
-//!   lookup callbacks (the extension runner surface lands later).
+//! - tool renderers can be supplied by the host; built-ins resolve inside
+//!   `ToolExecutionComponent`. Entry/message renderers use injected lookup
+//!   callbacks.
 //! - cache-miss notices: the render helpers live here, but the
 //!   `showCacheMissNotices` gating and the `detectCacheMiss` wiring stay
 //!   with the host (cache-stats entries are built from sessions by the
@@ -106,6 +105,11 @@ pub type EntryRendererLookup = Box<dyn Fn(&str) -> Option<EntryRenderer> + Send>
 /// Message renderer lookup (upstream
 /// `session.extensionRunner.getMessageRenderer`).
 pub type MessageRendererLookup = Box<dyn Fn(&str) -> Option<MessageRenderer> + Send>;
+pub type ToolRendererLookup = Arc<
+    dyn Fn(&str) -> Option<Box<dyn crate::core::tools::render_definitions::ToolRenderer>>
+        + Send
+        + Sync,
+>;
 
 /// Editor history sink (upstream `editor.addToHistory`).
 pub type HistorySink = Box<dyn FnMut(&str) + Send>;
@@ -297,6 +301,7 @@ pub struct InteractiveTranscript {
     entry_renderer_lookup: Option<EntryRendererLookup>,
     /// Upstream `session.extensionRunner.getMessageRenderer`.
     message_renderer_lookup: Option<MessageRendererLookup>,
+    tool_renderer_lookup: Option<ToolRendererLookup>,
     /// Editor history sink (upstream `editor.addToHistory?.(textContent)`).
     on_history: Option<HistorySink>,
     /// Upstream `session.retryAttempt`, host-updated.
@@ -325,6 +330,7 @@ impl InteractiveTranscript {
             markdown_transformers,
             entry_renderer_lookup: None,
             message_renderer_lookup: None,
+            tool_renderer_lookup: None,
             on_history: None,
             retry_attempt: 0,
             cwd: cwd.to_string(),
@@ -339,6 +345,10 @@ impl InteractiveTranscript {
 
     pub fn set_message_renderer_lookup(&mut self, lookup: Option<MessageRendererLookup>) {
         self.message_renderer_lookup = lookup;
+    }
+
+    pub fn set_tool_renderer_lookup(&mut self, lookup: Option<ToolRendererLookup>) {
+        self.tool_renderer_lookup = lookup;
     }
 
     pub fn set_on_history(&mut self, on_history: Option<HistorySink>) {
@@ -451,15 +461,14 @@ impl InteractiveTranscript {
         lookup(custom_type)
     }
 
-    /// A pending tool's renderer for a tool name (upstream
-    /// `getRegisteredToolDefinition`; extension definitions are not
-    /// registered yet, so only `None` for now — built-ins resolve inside the
-    /// component).
+    /// A pending tool's host renderer for a tool name.
     fn registered_tool_definition(
         &self,
-        _tool_name: &str,
+        tool_name: &str,
     ) -> Option<Box<dyn crate::core::tools::render_definitions::ToolRenderer>> {
-        None
+        self.tool_renderer_lookup
+            .as_ref()
+            .and_then(|lookup| lookup(tool_name))
     }
 
     fn new_tool_component(
