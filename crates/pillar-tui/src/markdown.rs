@@ -964,6 +964,21 @@ fn collect_inline_until(
     }
 }
 
+fn push_list_inline(blocks: &mut Vec<Block>, inline: Inline) {
+    if let Some(Block {
+        kind: BlockKind::Paragraph(content),
+        ..
+    }) = blocks.last_mut()
+    {
+        content.push(inline);
+    } else {
+        blocks.push(Block {
+            kind: BlockKind::Paragraph(vec![inline]),
+            next_kind: String::new(),
+        });
+    }
+}
+
 fn build_block(
     event: Event,
     iter: &mut std::iter::Peekable<std::vec::IntoIter<Event>>,
@@ -1048,38 +1063,22 @@ fn build_block(
                                     if first_text.is_none() {
                                         first_text = Some(text.to_string());
                                     }
-                                    // Capture into first paragraph inline.
-                                    if let Some(last) = item_blocks.last_mut()
-                                        && let BlockKind::Paragraph(inline) = &mut last.kind
-                                    {
-                                        inline.push(Inline::Text(text.to_string()));
-                                        continue;
-                                    }
-                                    let inner_next = String::new();
-                                    let kind =
-                                        BlockKind::Paragraph(vec![Inline::Text(text.to_string())]);
-                                    item_blocks.push(Block {
-                                        kind,
-                                        next_kind: inner_next,
-                                    });
+                                    push_list_inline(
+                                        &mut item_blocks,
+                                        Inline::Text(text.to_string()),
+                                    );
                                 }
                                 Event::Code(text) => {
-                                    // Tight list items emit bare `Event::Code`
-                                    // without a Paragraph start (upstream
-                                    // handles inline code spans here too).
-                                    if let Some(last) = item_blocks.last_mut()
-                                        && let BlockKind::Paragraph(inline) = &mut last.kind
-                                    {
-                                        inline.push(Inline::Code(text.to_string()));
-                                        continue;
-                                    }
-                                    let inner_next = String::new();
-                                    let kind =
-                                        BlockKind::Paragraph(vec![Inline::Code(text.to_string())]);
-                                    item_blocks.push(Block {
-                                        kind,
-                                        next_kind: inner_next,
-                                    });
+                                    push_list_inline(
+                                        &mut item_blocks,
+                                        Inline::Code(text.to_string()),
+                                    );
+                                }
+                                Event::SoftBreak => {
+                                    push_list_inline(&mut item_blocks, Inline::SoftBreak)
+                                }
+                                Event::HardBreak => {
+                                    push_list_inline(&mut item_blocks, Inline::HardBreak)
                                 }
                                 Event::Start(Tag::Paragraph) => {
                                     saw_paragraph = true;
@@ -1117,6 +1116,32 @@ fn build_block(
                                         kind: BlockKind::List(list2),
                                         next_kind: inner_next,
                                     });
+                                }
+                                Event::Start(
+                                    tag @ (Tag::Strong
+                                    | Tag::Emphasis
+                                    | Tag::Strikethrough
+                                    | Tag::Link { .. }),
+                                ) => {
+                                    let inline = match tag {
+                                        Tag::Strong => Inline::Strong(collect_inline_until(
+                                            iter,
+                                            TagEnd::Strong,
+                                        )),
+                                        Tag::Emphasis => {
+                                            Inline::Em(collect_inline_until(iter, TagEnd::Emphasis))
+                                        }
+                                        Tag::Strikethrough => Inline::Del(collect_inline_until(
+                                            iter,
+                                            TagEnd::Strikethrough,
+                                        )),
+                                        Tag::Link { dest_url, .. } => Inline::Link {
+                                            text: collect_inline_until(iter, TagEnd::Link),
+                                            href: dest_url.to_string(),
+                                        },
+                                        _ => unreachable!(),
+                                    };
+                                    push_list_inline(&mut item_blocks, inline);
                                 }
                                 Event::Start(tag) => {
                                     let mut inner_next = String::new();

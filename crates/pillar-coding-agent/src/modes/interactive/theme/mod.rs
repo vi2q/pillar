@@ -1357,6 +1357,33 @@ pub fn highlight_code(code: &str, lang: Option<&str>) -> Vec<String> {
 
 #[cfg(test)]
 mod syntax_highlight_tests {
+    use pillar_tui::markdown::{Markdown, MarkdownOptions};
+    use pillar_tui::text_utils::strip_terminal_sequences;
+
+    #[test]
+    fn styled_list_keeps_marker_with_first_line() {
+        super::init_theme(Some("light"));
+        let mut markdown = Markdown::new(
+            "## 実行・トランスポート\n- **run_command** / **run_commands_batch** – エンジンコマンドの単体・連続実行\n- **validate_commands_batch** – コマンドの一括バリデーション",
+            1,
+            0,
+            super::get_markdown_theme(),
+            None,
+            MarkdownOptions::default(),
+        );
+        let plain: Vec<_> = markdown
+            .render(80)
+            .iter()
+            .map(|line| strip_terminal_sequences(line))
+            .collect();
+        assert!(
+            plain
+                .iter()
+                .any(|line| line.contains("- run_command / run_commands_batch")),
+            "{plain:?}"
+        );
+    }
+
     #[test]
     fn rust_code_uses_distinct_syntax_colors() {
         super::init_theme(Some("dark"));
