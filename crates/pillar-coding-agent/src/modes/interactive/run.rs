@@ -228,6 +228,8 @@ pub struct InteractiveRunOptions {
     pub clear_screen_on_start: bool,
     /// Where `<agentDir>/keybindings.json` lives.
     pub agent_dir: PathBuf,
+    /// Set to true to stop an embedded interactive run from its host.
+    pub shutdown_signal: Option<Arc<AtomicBool>>,
 }
 
 impl Default for InteractiveRunOptions {
@@ -242,6 +244,7 @@ impl Default for InteractiveRunOptions {
             initial_status: None,
             clear_screen_on_start: false,
             agent_dir: PathBuf::new(),
+            shutdown_signal: None,
         }
     }
 }
@@ -262,6 +265,7 @@ pub async fn run_interactive(
         initial_status,
         clear_screen_on_start,
         agent_dir,
+        shutdown_signal,
     } = options;
 
     // Upstream `setKeybindings(this.keybindings)`: the merged app + TUI table
@@ -466,7 +470,7 @@ pub async fn run_interactive(
         }
     }
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
-    let pump_shutdown = Arc::new(AtomicBool::new(false));
+    let pump_shutdown = shutdown_signal.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
 
     if let Some(initial_message) = initial_message {
         let _ = action_tx.send(ModeAction::Prompt {

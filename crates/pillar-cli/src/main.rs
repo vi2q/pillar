@@ -871,6 +871,7 @@ async fn run_interactive(
         // binary in; only a rebuilt (replacement) run clears.
         clear_screen_on_start: false,
         agent_dir: PathBuf::from(agent_dir()),
+        shutdown_signal: None,
     };
 
     // Upstream `runtimeHost.switchSession` rebinds the live session inside

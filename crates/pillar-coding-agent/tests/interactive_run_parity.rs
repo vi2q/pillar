@@ -388,11 +388,43 @@ fn run_options(agent_dir: PathBuf) -> InteractiveRunOptions {
         clear_screen_on_start: false,
         agent_dir,
         extension_ui: None,
+        shutdown_signal: None,
     }
 }
 
 fn rendered(writes: &Arc<Mutex<String>>) -> String {
     strip_terminal_sequences(&writes.lock().unwrap())
+}
+
+#[tokio::test]
+async fn host_shutdown_stops_an_idle_interactive_run() {
+    install_dark();
+    let fixture = harness(Vec::new(), None);
+    let stopped = Arc::clone(&fixture.stopped);
+    let started = Arc::clone(&fixture.started);
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let mut options = run_options(temp_dir("host_shutdown").join("agent"));
+    options.shutdown_signal = Some(Arc::clone(&shutdown));
+    let task = tokio::spawn(run_interactive(
+        session(echo_stream("unused"), "host_shutdown"),
+        Box::new(fixture.terminal),
+        options,
+    ));
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while !started.load(Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("terminal should start");
+    shutdown.store(true, Ordering::SeqCst);
+    let outcome = tokio::time::timeout(Duration::from_secs(3), task)
+        .await
+        .expect("host shutdown should stop the run")
+        .expect("interactive task should not panic")
+        .expect("interactive run should exit normally");
+    assert!(matches!(outcome, InteractiveOutcome::Exit(0)));
+    assert!(stopped.load(Ordering::SeqCst));
 }
 
 #[tokio::test]
