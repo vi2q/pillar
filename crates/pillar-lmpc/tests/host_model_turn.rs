@@ -90,6 +90,8 @@ fn the_host_can_drive_a_tool_call() {
                 .to_string();
             Box::pin(async move {
                 Ok(pillar_agent::AgentToolResult {
+                    structured_content: None,
+                    is_error: false,
                     content: vec![pillar_ai::types::Content::text(format!("{key} = 42"))],
                     details: serde_json::json!({}),
                     usage: None,

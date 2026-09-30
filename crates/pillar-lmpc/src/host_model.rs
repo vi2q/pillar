@@ -167,6 +167,11 @@ fn parse_tool_result(json: &str) -> Result<AgentToolResult, ToolExecuteError> {
         .and_then(|content| serde_json::from_value::<Vec<Content>>(content.clone()).ok())
         .unwrap_or_default();
     Ok(AgentToolResult {
+        structured_content: value.get("structuredContent").cloned(),
+        is_error: value
+            .get("isError")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
         content,
         details: value
             .get("details")

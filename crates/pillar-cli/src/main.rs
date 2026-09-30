@@ -861,6 +861,7 @@ async fn run_interactive(
         },
         transcript,
         markdown_transformers: Vec::new(),
+        tool_renderer_lookup: None,
         // The run installs its pump-backed `ctx.ui` bridge here (upstream the
         // mode owns the extension UI context).
         extension_ui: Some(Arc::clone(&wiring.ui_slot)),

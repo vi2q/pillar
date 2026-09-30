@@ -89,9 +89,6 @@ fn echo_tool(executed: Arc<Mutex<Vec<String>>>) -> AgentTool {
         execute: Arc::new(move |_tool_call_id, params, _signal, _on_update| {
             let executed = Arc::clone(&executed);
             Box::pin(async move {
-                // Record the raw value form: upstream's test tool accepts
-                // string|number, and the beforeToolCall mutation writes a
-                // number (123).
                 let value = match params.get("value") {
                     Some(serde_json::Value::String(text)) => text.clone(),
                     Some(serde_json::Value::Number(number)) => number.to_string(),
@@ -99,6 +96,8 @@ fn echo_tool(executed: Arc<Mutex<Vec<String>>>) -> AgentTool {
                 };
                 executed.lock().unwrap().push(value.clone());
                 Ok(AgentToolResult {
+                    structured_content: None,
+                    is_error: false,
                     content: vec![Content::text(format!("echoed: {value}"))],
                     details: serde_json::json!({ "value": value }),
                     usage: Some(Usage {
@@ -594,7 +593,7 @@ async fn should_not_execute_tool_calls_from_a_length_truncated_assistant_message
 }
 
 #[tokio::test]
-async fn should_execute_mutated_before_tool_call_args_without_revalidation() {
+async fn should_reject_invalid_mutated_before_tool_call_args() {
     let executed = Arc::new(Mutex::new(Vec::<String>::new()));
     let tool = echo_tool(Arc::clone(&executed));
 
@@ -608,10 +607,9 @@ async fn should_execute_mutated_before_tool_call_args_without_revalidation() {
         model: Some(create_model()),
         before_tool_call: Some(Arc::new(|context, _signal| {
             Box::pin(async move {
-                // Mutate validated args in place before execution.
                 let mut args = context.args.lock().unwrap();
                 if let Some(object) = args.as_object_mut() {
-                    object.insert("value".into(), serde_json::json!(123));
+                    object.insert("value".into(), serde_json::json!({"invalid":"object"}));
                 }
                 None::<BeforeToolCallResult>
             })
@@ -641,11 +639,7 @@ async fn should_execute_mutated_before_tool_call_args_without_revalidation() {
     );
     let _events = drain(&stream).await;
     let _ = stream.result().await;
-
-    // The mutation upstream rewrote args to 123 before execution; the echo
-    // tool receives the mutated value. Our echo reads "value" as a string,
-    // so assert the executed record shows the mutated number's string form.
-    assert_eq!(*executed.lock().unwrap(), vec!["123".to_owned()]);
+    assert!(executed.lock().unwrap().is_empty());
 }
 
 #[tokio::test]

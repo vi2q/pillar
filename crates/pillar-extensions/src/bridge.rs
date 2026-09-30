@@ -525,6 +525,11 @@ pub fn tool_result_from_json(json: serde_json::Value) -> AgentToolResult {
             })]
         });
     AgentToolResult {
+        structured_content: json.get("structuredContent").cloned(),
+        is_error: json
+            .get("isError")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
         content,
         details: json
             .get("details")

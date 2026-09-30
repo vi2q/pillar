@@ -701,13 +701,24 @@ impl ExtensionWiring {
                     .map_err(|error| format!("the host call task failed: {error}"))?
             })
         });
-        pillar_extensions::bridge::bridge_to_agent_tools_with(&self.runtime, Some(runner))
+        let mut tools =
+            pillar_extensions::bridge::bridge_to_agent_tools_with(&self.runtime, Some(runner));
+        for tool in crate::codemode::tools_for_slot(&self.session_slot) {
+            if !tools
+                .iter()
+                .any(|registered| registered.name() == tool.name())
+            {
+                tools.push(tool);
+            }
+        }
+        tools
     }
 
     /// Bind the live session the `@pillar` host callbacks resolve (upstream
     /// the runtime constructing the ExtensionAPI with the session).
     pub fn bind_session(&self, session: &Arc<AgentSession>) {
         bind_session(&self.session_slot, session);
+        crate::codemode::bind_tools(session);
     }
 
     /// Refresh the command / tool snapshot the `@pillar` getters answer.

@@ -149,9 +149,12 @@ pub struct BeforeToolCallResult {
 }
 
 /// Partial override returned from `after_tool_call`. Field-by-field merge:
-/// provided fields replace; omitted fields keep the executed result's values.
+/// Provided fields replace existing values. Replacing content also clears structured data
+/// unless replacement structured data is explicitly supplied.
 #[derive(Debug, Clone, Default)]
 pub struct AfterToolCallResult {
+    /// Replacement data for programmatic callers. Replacing content alone clears it.
+    pub structured_content: Option<Value>,
     pub content: Option<Vec<pillar_ai::types::Content>>,
     pub details: Option<Value>,
     pub is_error: Option<bool>,
@@ -162,6 +165,10 @@ pub struct AfterToolCallResult {
 /// Final or partial result produced by a tool.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AgentToolResult {
+    /// Data returned to programmatic callers independently of display content.
+    pub structured_content: Option<Value>,
+    /// A failed result may still carry structured data.
+    pub is_error: bool,
     /// Text or image content returned to the model.
     pub content: Vec<pillar_ai::types::Content>,
     /// Arbitrary structured details for logs or UI rendering.
@@ -456,9 +463,11 @@ impl AgentEvent {
 
 /// Context passed to `before_tool_call`. `args` is a shared handle so an
 /// in-place hook mutation (upstream mutates the object) propagates to
-/// execution without revalidation.
+/// execution; arguments are validated again after interception.
 #[derive(Debug, Clone)]
 pub struct BeforeToolCallContext {
+    /// The owning tool call for a nested execution.
+    pub parent_tool_call_id: Option<String>,
     pub assistant_message: AssistantMessage,
     pub tool_call: AgentToolCall,
     pub args: std::sync::Arc<std::sync::Mutex<Value>>,
@@ -467,6 +476,8 @@ pub struct BeforeToolCallContext {
 /// Context passed to `after_tool_call`.
 #[derive(Debug, Clone)]
 pub struct AfterToolCallContext {
+    /// The owning tool call for a nested execution.
+    pub parent_tool_call_id: Option<String>,
     pub assistant_message: AssistantMessage,
     pub tool_call: AgentToolCall,
     pub args: Value,
@@ -622,6 +633,8 @@ impl std::fmt::Debug for StreamCallOptions {
 
 #[derive(Clone)]
 pub struct AgentLoopConfig {
+    /// Execution-owned contexts for live parent calls; supplied automatically by `Agent`.
+    pub running_tool_calls: Option<crate::tool_dispatch::RunningToolCalls>,
     pub model: Option<FauxModelRef>,
     /// Requested reasoning level for future turns (`None` = off/absent).
     /// Authoritative over `stream_options.reasoning`; prepared by the Agent
@@ -680,6 +693,7 @@ pub type AfterToolFuture =
 impl Default for AgentLoopConfig {
     fn default() -> Self {
         Self {
+            running_tool_calls: None,
             model: None,
             reasoning: None,
             thinking_budgets: None,

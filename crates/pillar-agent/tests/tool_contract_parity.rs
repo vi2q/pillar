@@ -52,6 +52,8 @@ fn checked_tool(seen: Arc<Mutex<Vec<serde_json::Value>>>) -> AgentTool {
             Box::pin(async move {
                 seen.lock().unwrap().push(args);
                 Ok(AgentToolResult {
+                    structured_content: None,
+                    is_error: false,
                     content: vec![Content::text("ran")],
                     details: serde_json::json!({}),
                     usage: None,
@@ -79,6 +81,8 @@ fn counting_tool(calls: Arc<AtomicUsize>) -> AgentTool {
             Box::pin(async move {
                 calls.fetch_add(1, Ordering::SeqCst);
                 Ok(AgentToolResult {
+                    structured_content: None,
+                    is_error: false,
                     content: vec![Content::text("ran")],
                     details: serde_json::json!({}),
                     usage: None,
@@ -467,6 +471,8 @@ async fn progress_reaches_a_subscriber_before_the_tool_settles() {
                 Box::pin(async move {
                     if let Some(update) = update {
                         update(AgentToolResult {
+                            structured_content: None,
+                            is_error: false,
                             content: vec![Content::text("halfway")],
                             details: serde_json::json!({"step": 1}),
                             usage: None,
@@ -482,6 +488,8 @@ async fn progress_reaches_a_subscriber_before_the_tool_settles() {
                     }
                     let observed = seen.load(Ordering::SeqCst);
                     Ok(AgentToolResult {
+                        structured_content: None,
+                        is_error: false,
                         content: vec![Content::text(format!("subscriber_saw_update={observed}"))],
                         details: serde_json::json!({}),
                         usage: None,

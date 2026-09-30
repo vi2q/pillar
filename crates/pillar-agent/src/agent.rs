@@ -11,6 +11,8 @@
 //! `agent_end` listeners settle, like upstream.
 
 use std::collections::BTreeSet;
+
+mod tool_dispatch;
 use std::sync::{Arc, Mutex};
 
 use pillar_ai::types::{Content, Message, Usage, UsageCost};
@@ -238,6 +240,9 @@ impl PendingMessageQueue {
 /// Stateful wrapper around the low-level agent loop.
 pub struct Agent {
     state: Arc<Mutex<AgentState>>,
+    registrations: Mutex<Vec<crate::tool_dispatch::ToolRegistration>>,
+    nested_sequence: std::sync::atomic::AtomicU64,
+    running_tool_calls: crate::tool_dispatch::RunningToolCalls,
     listeners: Arc<Mutex<Vec<ListenerEntry>>>,
     steering_queue: Arc<Mutex<PendingMessageQueue>>,
     follow_up_queue: Arc<Mutex<PendingMessageQueue>>,
@@ -333,7 +338,16 @@ impl Agent {
         // Agent constructor; the loop entry points apply the same fallback
         // for their own legacy callers.
         let stream_function = options.stream_fn.take();
+        let registrations = state
+            .tools
+            .iter()
+            .cloned()
+            .map(crate::tool_dispatch::ToolRegistration::direct)
+            .collect();
         Self {
+            registrations: Mutex::new(registrations),
+            nested_sequence: std::sync::atomic::AtomicU64::new(1),
+            running_tool_calls: Default::default(),
             state: Arc::new(Mutex::new(state)),
             listeners: Arc::new(Mutex::new(Vec::new())),
             // Upstream queues default to "one-at-a-time".
@@ -395,8 +409,6 @@ impl Agent {
         self.state.lock().expect("agent state lock").clone()
     }
 
-    // --- State mutators -------------------------------------------------
-
     pub fn set_system_prompt(&self, system_prompt: impl Into<String>) {
         self.state.lock().expect("agent state lock").system_prompt = system_prompt.into();
     }
@@ -411,6 +423,20 @@ impl Agent {
 
     /// Replaces the tool list (copies the top-level vector).
     pub fn set_tools(&self, tools: Vec<AgentTool>) {
+        let registrations = self.registrations.lock().unwrap_or_else(|p| p.into_inner());
+        let tools = tools
+            .into_iter()
+            .filter(|tool| {
+                registrations.iter().all(|entry| {
+                    entry.tool.name() != tool.name()
+                        || !matches!(
+                            entry.exposure,
+                            crate::tool_dispatch::ToolExposure::Hidden
+                                | crate::tool_dispatch::ToolExposure::Codemode
+                        )
+                })
+            })
+            .collect();
         self.state.lock().expect("agent state lock").tools = tools;
     }
 
@@ -493,8 +519,6 @@ impl Agent {
         self.session_id.lock().expect("session id lock").clone()
     }
 
-    // --- Queue API ------------------------------------------------------
-
     /// Controls how queued steering messages are drained.
     pub fn set_steering_mode(&self, mode: QueueMode) {
         self.steering_queue.lock().expect("queue lock").mode = mode;
@@ -548,8 +572,6 @@ impl Agent {
         self.steering_queue.lock().expect("queue lock").has_items()
             || self.follow_up_queue.lock().expect("queue lock").has_items()
     }
-
-    // --- Run lifecycle --------------------------------------------------
 
     /// Active abort signal for the current run, if any.
     pub fn signal(&self) -> Option<AbortSignal> {
@@ -665,8 +687,6 @@ impl Agent {
         Ok(())
     }
 
-    // --- Internals --------------------------------------------------------
-
     async fn run_prompt_messages(
         &self,
         messages: Vec<AgentMessage>,
@@ -761,6 +781,7 @@ impl Agent {
         });
 
         AgentLoopConfig {
+            running_tool_calls: Some(self.running_tool_calls.clone()),
             spawn: self.spawn.clone(),
             model: Some(state.model.clone()),
             reasoning: state.thinking_level.to_thinking_level(),

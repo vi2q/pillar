@@ -218,11 +218,7 @@ struct ExecutedToolCallBatch {
 }
 
 /// Finalized tool-call outcome: tool call plus its result and error flag.
-struct FinalizedToolCall {
-    tool_call: AgentToolCall,
-    result: AgentToolResult,
-    is_error: bool,
-}
+type FinalizedToolCall = crate::tool_dispatch::ToolCallOutcome;
 
 /// Main loop shared by `agent_loop` and `agent_loop_continue`.
 async fn run_loop(
@@ -640,45 +636,16 @@ async fn execute_tool_calls_sequential(
     let mut messages: Vec<ToolResultMessage> = Vec::new();
 
     for tool_call in tool_calls {
-        emit.emit(AgentEvent::ToolExecutionStart {
-            tool_call_id: tool_call.id.clone(),
-            tool_name: tool_call.name.clone(),
-            args: tool_call.arguments.clone(),
-        })
-        .await;
-
-        let preparation = prepare_tool_call(
+        let finalized = run_tool_call(
             current_context,
             assistant_message,
             &tool_call,
             config,
             signal.clone(),
+            emit,
+            None,
         )
         .await;
-        let finalized = match preparation {
-            Preparation::Immediate { result, is_error } => FinalizedToolCall {
-                tool_call,
-                result,
-                is_error,
-            },
-            Preparation::Prepared { tool, args } => {
-                let executed_args = args.clone();
-                let executed =
-                    execute_prepared_tool_call(&tool_call, &tool, args, signal.clone(), emit).await;
-                finalize_executed_tool_call(
-                    current_context,
-                    assistant_message,
-                    &tool_call,
-                    &executed_args,
-                    executed,
-                    config,
-                    signal.clone(),
-                )
-                .await
-            }
-        };
-
-        emit_tool_execution_end(&finalized, emit).await;
         let tool_result_message = create_tool_result_message(&finalized);
         emit_tool_result_message(&tool_result_message, emit).await;
         finalized_calls.push(finalized);
@@ -703,23 +670,57 @@ async fn execute_tool_calls_parallel(
     signal: Option<AbortSignal>,
     emit: &AgentEventSink,
 ) -> ExecutedToolCallBatch {
-    // Phase 1: prepare sequentially, emitting start events in source order.
-    // Immediate outcomes are finalized (end event emitted) inline like
-    // upstream, which keeps them in the same source-ordered array as the
-    // pending calls (`agent-loop.ts` `executeToolCallsParallel`).
-    //
-    // `slots` is that array: a position is the assistant's tool-call index, and
-    // the result reported for a call is the one that fills its own slot.
-    // Reporting immediate failures first would reorder the history (and with it
-    // replay and the model's view of what happened in what order).
+    let ordered = run_tool_calls_parallel(
+        current_context,
+        assistant_message,
+        tool_calls,
+        config,
+        signal,
+        emit,
+        None,
+    )
+    .await;
+    let mut messages: Vec<ToolResultMessage> = Vec::new();
+    for finalized in &ordered {
+        let tool_result_message = create_tool_result_message(finalized);
+        emit_tool_result_message(&tool_result_message, emit).await;
+        messages.push(tool_result_message);
+    }
+
+    ExecutedToolCallBatch {
+        messages,
+        terminate: should_terminate_tool_batch(&ordered),
+    }
+}
+
+/// Prepare in request order, execute concurrently, and return outcomes in request order.
+/// Emits execution events only; callers decide whether to add transcript messages.
+pub async fn run_tool_calls_parallel(
+    current_context: &AgentContext,
+    assistant_message: &AssistantMessage,
+    tool_calls: Vec<AgentToolCall>,
+    config: &AgentLoopConfig,
+    signal: Option<AbortSignal>,
+    emit: &AgentEventSink,
+    parent_tool_call_id: Option<&str>,
+) -> Vec<crate::tool_dispatch::ToolCallOutcome> {
     let mut slots: Vec<Option<FinalizedToolCall>> = Vec::new();
     let mut pending: Vec<(
         usize,
         AgentToolCall,
         crate::types::AgentTool,
         serde_json::Value,
+        Option<crate::tool_dispatch::RunningToolCallGuard>,
     )> = Vec::new();
     for tool_call in tool_calls {
+        let guard = if parent_tool_call_id.is_none() {
+            config
+                .running_tool_calls
+                .as_ref()
+                .map(|calls| calls.enter(&tool_call.id, assistant_message, current_context))
+        } else {
+            None
+        };
         emit.emit(AgentEvent::ToolExecutionStart {
             tool_call_id: tool_call.id.clone(),
             tool_name: tool_call.name.clone(),
@@ -733,10 +734,15 @@ async fn execute_tool_calls_parallel(
             &tool_call,
             config,
             signal.clone(),
+            parent_tool_call_id,
         )
         .await;
         match preparation {
-            Preparation::Immediate { result, is_error } => {
+            Preparation::Immediate {
+                mut result,
+                is_error,
+            } => {
+                result.is_error = is_error;
                 let finalized = FinalizedToolCall {
                     tool_call: tool_call.clone(),
                     result,
@@ -748,7 +754,7 @@ async fn execute_tool_calls_parallel(
             Preparation::Prepared { tool, args } => {
                 let index = slots.len();
                 slots.push(None);
-                pending.push((index, tool_call, tool, args));
+                pending.push((index, tool_call, tool, args, guard));
             }
         }
         if signal.as_ref().map(|s| s.is_aborted()).unwrap_or(false) {
@@ -756,17 +762,16 @@ async fn execute_tool_calls_parallel(
         }
     }
 
-    // Phase 2: execute concurrently. Each future emits its own
-    // `tool_execution_end` on completion (upstream: the awaited per-tool async
-    // entry emits end in completion order), then fills its source slot.
     let mut futures = Vec::new();
-    for (index, tool_call, tool, args) in pending {
+    for (index, tool_call, tool, args, guard) in pending {
         let assistant_message = assistant_message.clone();
         let config = config.clone();
         let current_context = current_context.clone();
         let signal = signal.clone();
         let emit = emit.clone();
+        let parent = parent_tool_call_id.map(str::to_owned);
         futures.push(async move {
+            let _guard = guard;
             let executed_args = args.clone();
             let executed =
                 execute_prepared_tool_call(&tool_call, &tool, args, signal.clone(), &emit).await;
@@ -778,6 +783,7 @@ async fn execute_tool_calls_parallel(
                 executed,
                 &config,
                 signal,
+                parent.as_deref(),
             )
             .await;
             emit_tool_execution_end(&finalized, &emit).await;
@@ -787,19 +793,73 @@ async fn execute_tool_calls_parallel(
     for (index, finalized) in futures::future::join_all(futures).await {
         slots[index] = Some(finalized);
     }
-    let ordered: Vec<FinalizedToolCall> = slots.into_iter().flatten().collect();
+    slots.into_iter().flatten().collect()
+}
 
-    let mut messages: Vec<ToolResultMessage> = Vec::new();
-    for finalized in &ordered {
-        let tool_result_message = create_tool_result_message(finalized);
-        emit_tool_result_message(&tool_result_message, emit).await;
-        messages.push(tool_result_message);
-    }
-
-    ExecutedToolCallBatch {
-        messages,
-        terminate: should_terminate_tool_batch(&ordered),
-    }
+/// Execute one call through validation, interception, progress and result normalization.
+/// Nested calls emit execution events without adding independent transcript messages.
+pub async fn run_tool_call(
+    context: &AgentContext,
+    assistant: &AssistantMessage,
+    call: &AgentToolCall,
+    config: &AgentLoopConfig,
+    signal: Option<AbortSignal>,
+    emit: &AgentEventSink,
+    parent_tool_call_id: Option<&str>,
+) -> crate::tool_dispatch::ToolCallOutcome {
+    let _guard = if parent_tool_call_id.is_none() {
+        config
+            .running_tool_calls
+            .as_ref()
+            .map(|calls| calls.enter(&call.id, assistant, context))
+    } else {
+        None
+    };
+    emit.emit(AgentEvent::ToolExecutionStart {
+        tool_call_id: call.id.clone(),
+        tool_name: call.name.clone(),
+        args: call.arguments.clone(),
+    })
+    .await;
+    let outcome = match prepare_tool_call(
+        context,
+        assistant,
+        call,
+        config,
+        signal.clone(),
+        parent_tool_call_id,
+    )
+    .await
+    {
+        Preparation::Immediate {
+            mut result,
+            is_error,
+        } => {
+            result.is_error = is_error;
+            FinalizedToolCall {
+                tool_call: call.clone(),
+                result,
+                is_error,
+            }
+        }
+        Preparation::Prepared { tool, args } => {
+            let executed =
+                execute_prepared_tool_call(call, &tool, args.clone(), signal.clone(), emit).await;
+            finalize_executed_tool_call(
+                context,
+                assistant,
+                call,
+                &args,
+                executed,
+                config,
+                signal,
+                parent_tool_call_id,
+            )
+            .await
+        }
+    };
+    emit_tool_execution_end(&outcome, emit).await;
+    outcome
 }
 
 /// Prepared tool call: resolved tool plus validated args; or an immediate
@@ -821,6 +881,7 @@ async fn prepare_tool_call(
     tool_call: &AgentToolCall,
     config: &AgentLoopConfig,
     signal: Option<AbortSignal>,
+    parent_tool_call_id: Option<&str>,
 ) -> Preparation {
     let Some(tool) = current_context
         .tools
@@ -833,8 +894,6 @@ async fn prepare_tool_call(
         };
     };
 
-    // Argument preparation shim, then JSON-Schema validation (fail-closed: a
-    // schema the validator cannot interpret is refused, not ignored).
     let prepared_args = match &tool.prepare_arguments {
         Some(prepare) => prepare(&tool_call.arguments),
         None => tool_call.arguments.clone(),
@@ -858,6 +917,7 @@ async fn prepare_tool_call(
         let hook_args = Arc::new(std::sync::Mutex::new(validated_args.clone()));
         let before_result = before(
             crate::types::BeforeToolCallContext {
+                parent_tool_call_id: parent_tool_call_id.map(str::to_owned),
                 assistant_message: _assistant_message.clone(),
                 tool_call: tool_call.clone(),
                 args: Arc::clone(&hook_args),
@@ -893,7 +953,20 @@ async fn prepare_tool_call(
         };
         return Preparation::Prepared {
             tool: tool.clone(),
-            args: executed_args,
+            args: match crate::tool_schema::validate_tool_arguments(
+                &tool.tool.parameters,
+                &executed_args,
+            ) {
+                Ok(args) => args,
+                Err(errors) => {
+                    return Preparation::Immediate {
+                        result: create_error_tool_result(format!(
+                            "Validation failed after tool interception: {errors}"
+                        )),
+                        is_error: true,
+                    };
+                }
+            },
         };
     }
 
@@ -941,7 +1014,6 @@ async fn execute_prepared_tool_call(
             if !accepting.load(std::sync::atomic::Ordering::SeqCst) {
                 return;
             }
-            // A closed receiver only means the call already finished.
             let _ = sender.send(AgentEvent::ToolExecutionUpdate {
                 tool_call_id: tool_call.id.clone(),
                 tool_name: tool_call.name.clone(),
@@ -954,12 +1026,16 @@ async fn execute_prepared_tool_call(
         })
     };
 
-    let execution = (tool.execute)(
-        tool_call.id.clone(),
-        args.clone(),
-        signal,
-        Some(update_sink),
-    );
+    let execution = std::panic::AssertUnwindSafe(async {
+        (tool.execute)(
+            tool_call.id.clone(),
+            args.clone(),
+            signal,
+            Some(update_sink),
+        )
+        .await
+    })
+    .catch_unwind();
     futures::pin_mut!(execution);
     let mut execution = execution.fuse();
 
@@ -986,11 +1062,15 @@ async fn execute_prepared_tool_call(
         emit.emit(event).await;
     }
 
+    let outcome = match outcome {
+        Ok(outcome) => outcome,
+        Err(panic) => Err(crate::types::ToolExecuteError(panic_message(&panic))),
+    };
     match outcome {
         Ok(result) => FinalizedToolCall {
+            is_error: result.is_error,
             tool_call: tool_call.clone(),
             result,
-            is_error: false,
         },
         Err(error) => FinalizedToolCall {
             tool_call: tool_call.clone(),
@@ -1008,6 +1088,7 @@ async fn finalize_executed_tool_call(
     executed: FinalizedToolCall,
     config: &AgentLoopConfig,
     signal: Option<AbortSignal>,
+    parent_tool_call_id: Option<&str>,
 ) -> FinalizedToolCall {
     let mut result = executed.result;
     let mut is_error = executed.is_error;
@@ -1015,6 +1096,7 @@ async fn finalize_executed_tool_call(
     if let Some(after) = &config.after_tool_call
         && let Some(after_result) = after(
             crate::types::AfterToolCallContext {
+                parent_tool_call_id: parent_tool_call_id.map(str::to_owned),
                 assistant_message: _assistant_message.clone(),
                 tool_call: tool_call.clone(),
                 // Upstream passes the arguments the tool actually ran with
@@ -1030,6 +1112,10 @@ async fn finalize_executed_tool_call(
     {
         if let Some(content) = after_result.content {
             result.content = content;
+            result.structured_content = None;
+        }
+        if let Some(data) = after_result.structured_content {
+            result.structured_content = Some(data);
         }
         if let Some(details) = after_result.details {
             result.details = details;
@@ -1045,6 +1131,7 @@ async fn finalize_executed_tool_call(
         }
     }
 
+    result.is_error = is_error;
     FinalizedToolCall {
         tool_call: tool_call.clone(),
         result,
@@ -1058,6 +1145,8 @@ fn should_terminate_tool_batch(finalized_calls: &[FinalizedToolCall]) -> bool {
 
 fn create_error_tool_result(message: impl Into<String>) -> AgentToolResult {
     AgentToolResult {
+        structured_content: None,
+        is_error: true,
         content: vec![Content::text(message)],
         details: serde_json::Value::Object(Default::default()),
         usage: None,
@@ -1073,6 +1162,7 @@ async fn emit_tool_execution_end(finalized: &FinalizedToolCall, emit: &AgentEven
         result: serde_json::json!({
             "content": finalized.result.content,
             "details": finalized.result.details,
+            "structuredContent": finalized.result.structured_content,
             "usage": finalized.result.usage,
             "addedToolNames": finalized.result.added_tool_names,
             "terminate": finalized.result.terminate,

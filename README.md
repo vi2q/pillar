@@ -101,6 +101,11 @@ pillar auth --help              # provider credentials
 Inside the TUI, type `/` for commands such as `/model`, `/resume`, `/compact`,
 `/export` and `/settings`.
 
+Luau-enabled builds also provide `codemode`: the model can orchestrate multiple
+tools in one Luau body and return selected data. `tool_search` discovers callable
+tools and their schemas. Calls use the session's validation, authorization and
+result hooks. See [Code mode](docs/CODEMODE.md) for the SDK contract and limits.
+
 ## Extensions
 
 ```sh

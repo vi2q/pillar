@@ -592,7 +592,19 @@ impl ExtensionRunner {
             for handler in handlers {
                 match handler(&current) {
                     Ok(Some(handler_result)) => {
-                        for field in ["content", "details", "isError", "usage"] {
+                        if handler_result.get("content").is_some()
+                            && handler_result.get("structuredContent").is_none()
+                            && let Some(obj) = current.as_object_mut()
+                        {
+                            obj.remove("structuredContent");
+                        }
+                        for field in [
+                            "content",
+                            "details",
+                            "structuredContent",
+                            "isError",
+                            "usage",
+                        ] {
                             if let Some(value) = handler_result.get(field) {
                                 if let Some(obj) = current.as_object_mut() {
                                     obj.insert(field.to_string(), value.clone());

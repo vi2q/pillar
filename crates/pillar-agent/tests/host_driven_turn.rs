@@ -105,6 +105,8 @@ fn echo_tool(seen: Arc<Mutex<Vec<String>>>) -> AgentTool {
                         .to_string();
                     seen.lock().unwrap().push(value.clone());
                     Ok(AgentToolResult {
+                        structured_content: None,
+                        is_error: false,
                         content: vec![pillar_ai::types::Content::text(format!("echo:{value}"))],
                         details: serde_json::json!({}),
                         usage: None,

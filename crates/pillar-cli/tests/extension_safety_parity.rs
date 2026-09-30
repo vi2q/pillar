@@ -215,7 +215,14 @@ async fn reload_swaps_the_extension_generation() {
         published_for_session.store(true, Ordering::SeqCst);
     }));
 
-    assert_eq!(tool_names(&session), vec!["v1tool".to_string()]);
+    assert_eq!(
+        tool_names(&session),
+        vec![
+            "v1tool".to_string(),
+            "codemode".to_string(),
+            "tool_search".to_string()
+        ]
+    );
     session.prompt("/gen", None).await.expect("v1 command runs");
     assert_eq!(std::fs::read_to_string(&out).unwrap(), "v1");
 
@@ -223,7 +230,11 @@ async fn reload_swaps_the_extension_generation() {
 
     assert_eq!(
         tool_names(&session),
-        vec!["v2tool".to_string()],
+        vec![
+            "v2tool".to_string(),
+            "codemode".to_string(),
+            "tool_search".to_string()
+        ],
         "the rebuilt generation's tools replace the old ones"
     );
     session.prompt("/gen", None).await.expect("v2 command runs");
@@ -275,7 +286,14 @@ async fn a_failed_rebuild_keeps_the_previous_generation() {
         .await
         .expect_err("a failed rebuild is reported");
     assert!(error.contains("broken"), "{error}");
-    assert_eq!(tool_names(&session), vec!["v1tool".to_string()]);
+    assert_eq!(
+        tool_names(&session),
+        vec![
+            "v1tool".to_string(),
+            "codemode".to_string(),
+            "tool_search".to_string()
+        ]
+    );
     session
         .prompt("/gen", None)
         .await
@@ -358,9 +376,7 @@ fn base_session_config(
     )
 }
 
-// ============================================================================
 // Effect gate (docs/ARCHITECTURE-REVIEW-s05c0.md 0)
-// ============================================================================
 
 /// A policy that denies every effect with a fixed reason.
 fn deny_all(reason: &str) -> Arc<EffectBroker> {
@@ -472,6 +488,7 @@ async fn tool_calls_pass_the_same_effect_gate() {
 
 fn tool_context(name: &str) -> pillar_agent::BeforeToolCallContext {
     pillar_agent::BeforeToolCallContext {
+        parent_tool_call_id: None,
         assistant_message: AssistantMessage {
             content: Vec::new(),
             api: "anthropic-messages".to_string(),
@@ -512,9 +529,7 @@ fn host_callbacks_do_not_bypass_the_effect_broker() {
     );
 }
 
-// ============================================================================
 // Lifetime: the host slots must not keep the session alive
-// ============================================================================
 
 /// The extension host callbacks resolve the session through the slot, and the
 /// session owns the runner that reaches it: a strong reference there would

@@ -26,4 +26,4 @@ default = ["luau"]
 luau = ["dep:pillar-extensions"]
 
 [dev-dependencies]
-tokio = { version = "1.47", features = ["rt", "macros", "time"] }
+tokio = { version = "1.47", features = ["rt", "macros", "time", "sync"] }

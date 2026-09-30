@@ -6,6 +6,8 @@
 //! startup trust decision in [`trust`], and the effect gate in [`effects`].
 
 pub mod auth;
+#[cfg(feature = "luau")]
+pub mod codemode;
 pub mod commands;
 pub mod effects;
 #[cfg(feature = "luau")]

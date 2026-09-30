@@ -16,6 +16,8 @@ use std::time::Duration;
 
 fn result() -> AgentToolResult {
     AgentToolResult {
+        structured_content: None,
+        is_error: false,
         content: vec![Content::text("finished")],
         details: serde_json::json!({}),
         usage: None,

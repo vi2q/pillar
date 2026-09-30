@@ -216,6 +216,8 @@ fn remember_tool(model: Arc<DemoModel>) -> AgentTool {
                         .to_string();
                     model.remember(value.clone());
                     Ok(AgentToolResult {
+                        structured_content: None,
+                        is_error: false,
                         content: vec![Content::text(format!("remembered: {value}"))],
                         details: serde_json::json!({ "value": value }),
                         usage: None,

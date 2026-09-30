@@ -1684,7 +1684,10 @@ impl AgentSession {
                 .filter(|tool| runner.tool_owner(tool.name()).is_none())
                 .collect()
         };
-        kept.extend(tools);
+        for tool in tools {
+            kept.retain(|existing| existing.name() != tool.name());
+            kept.push(tool);
+        }
         self.inner.agent.set_tools(kept);
     }
 
@@ -1726,6 +1729,7 @@ impl AgentSession {
                         "type": "tool_call",
                         "toolName": context.tool_call.name,
                         "toolCallId": context.tool_call.id,
+                        "parentToolCallId": context.parent_tool_call_id,
                         "input": args,
                     }));
                     drop(runner);
@@ -1778,9 +1782,11 @@ impl AgentSession {
                             "type": "tool_result",
                             "toolName": context.tool_call.name,
                             "toolCallId": context.tool_call.id,
+                            "parentToolCallId": context.parent_tool_call_id,
                             "input": context.args,
                             "content": context.result.content,
                             "details": context.result.details,
+                            "structuredContent": context.result.structured_content,
                             "isError": context.is_error,
                             "usage": context.result.usage,
                         }))
@@ -1794,13 +1800,19 @@ impl AgentSession {
                     });
                     let parsed: Result<Vec<Content>, _> = serde_json::from_value(content);
                     Some(pillar_agent::types::AfterToolCallResult {
+                        structured_content: hook_result
+                            .get("structuredContent")
+                            .filter(|value| !value.is_null())
+                            .cloned(),
                         content: parsed.ok(),
                         details: hook_result.get("details").cloned(),
                         is_error: hook_result
                             .get("isError")
                             .and_then(Value::as_bool)
                             .or(Some(context.is_error)),
-                        usage: None,
+                        usage: hook_result
+                            .get("usage")
+                            .and_then(|value| serde_json::from_value(value.clone()).ok()),
                         terminate: None,
                     })
                 })

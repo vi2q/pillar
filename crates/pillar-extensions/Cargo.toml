@@ -24,8 +24,8 @@ pillar-ai = { path = "../pillar-ai", default-features = false }
 luaur-rt = { version = "0.1.8", features = ["serde", "typecheck", "send", "async"] }
 serde.workspace = true
 serde_json.workspace = true
+futures = "0.3.31"
 
 [dev-dependencies]
-futures = "0.3.31"
 tempfile = "3"
 tokio = { version = "1.47", features = ["rt", "macros", "time"] }

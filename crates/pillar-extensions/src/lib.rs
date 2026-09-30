@@ -12,6 +12,7 @@
 //! naming-convention table.
 
 pub mod bridge;
+pub mod codemode;
 pub mod loader;
 pub mod runtime;
 
