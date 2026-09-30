@@ -4,6 +4,8 @@ pi v0.99.0 の「モデルがプログラムを書き、その中から複数ツ
 
 Luau を有効にした CLI は `codemode` と `tool_search` を提供する。同名の拡張ツールがある場合は拡張を優先する。SDK では `pillar_extensions::codemode::create_tools(CodeModeHost)` を使い、カタログ、共通の実行経路、ツールの宣言、専用 VM 実行スレッドを注入する。SDK セッションを組み立てるホストは CLI の `tools_for_slot` / `bind_tools` も利用できる。VM と OS の結合は CLI に置き、agent / coding-agent は VM に依存しない。
 
+Code mode だけを組み込む SDK ホストは `pillar-extensions` に `default-features = false` を指定する。VM は専用スレッド内で生成・実行・破棄され、Luaur の `send` / `async` / `typecheck` を必要としない。共有 VM を持つ拡張 runtime・bridge・loader は既定の `extension-runtime` feature に含める。複数ホストをまとめてビルドすると Cargo が依存 feature を統合するため、SDK は使わない拡張 runtime の `send` 要件を他ホストへ波及させない。
+
 ## モデルが書くコード
 
 `codemode` は `{ "code": "..." }` を受け取る。コードは Luau の関数本体として実行し、JSON で表現できる値を `return` する。

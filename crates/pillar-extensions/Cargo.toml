@@ -4,24 +4,27 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = ["extension-runtime"]
+# Shared extension handlers need Send and asynchronous host callbacks; opting
+# into that runtime must not impose Send on other hosts using only Code mode.
+extension-runtime = ["dep:pillar-extensions-contract", "luaur-rt/typecheck", "luaur-rt/send", "luaur-rt/async"]
+
 [dependencies]
-# No dependency on pillar-coding-agent: the shared shapes live in the contract
-# crate, and the host joins the two (docs/DEVELOPMENT-STRATEGY.md §4). The
-# profile gate asserts this edge stays gone.
+# Shared extension contracts keep the VM independent of the coding-agent host.
 # The VM takes the *contract* form of the runtime, not the coding agent's native
 # surface: the OS-bound features (harness tools, the provider catalog, the
 # file-backed session store, the native search scanner) stay off here, and the
-# development CLI turns them on at its own root. Otherwise "LMPC plus Luau"
-# silently re-enables every provider and the terminal-adjacent tooling (policy
-# review sb39f R9).
+# development CLI turns them on at its own root. Otherwise a VM dependency
+# silently re-enables every provider and the terminal-adjacent tooling.
 pillar-agent = { path = "../pillar-agent", default-features = false }
-pillar-extensions-contract = { path = "../pillar-extensions-contract" }
+pillar-extensions-contract = { path = "../pillar-extensions-contract", optional = true }
 pillar-ai = { path = "../pillar-ai", default-features = false }
 # `async`: waiting host calls (pillar.exec, ctx.ui.*) suspend the Lua coroutine
 # and resume when the host's future is ready, so the wait does not block the
-# extension's thread (TASKS: 非同期 host 呼出). The executor stays the host's —
+# extension's thread. The executor stays the host's —
 # luaur-rt is executor-agnostic like mlua.
-luaur-rt = { version = "0.1.8", features = ["serde", "typecheck", "send", "async"] }
+luaur-rt = { version = "0.1.8", features = ["serde"] }
 serde.workspace = true
 serde_json.workspace = true
 futures = "0.3.31"
@@ -29,3 +32,35 @@ futures = "0.3.31"
 [dev-dependencies]
 tempfile = "3"
 tokio = { version = "1.47", features = ["rt", "macros", "time"] }
+
+[[test]]
+name = "instructions_extension"
+required-features = ["extension-runtime"]
+
+[[test]]
+name = "build_extension"
+required-features = ["extension-runtime"]
+
+[[test]]
+name = "capability_ledger"
+required-features = ["extension-runtime"]
+
+[[test]]
+name = "vm_quirk_probe"
+required-features = ["extension-runtime"]
+
+[[test]]
+name = "vm_async_probe"
+required-features = ["extension-runtime"]
+
+[[test]]
+name = "luau_tool_call"
+required-features = ["extension-runtime"]
+
+[[test]]
+name = "vm_resume_probe"
+required-features = ["extension-runtime"]
+
+[[test]]
+name = "vm_yield_depth_probe"
+required-features = ["extension-runtime"]
