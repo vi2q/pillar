@@ -21,7 +21,9 @@ globset = "0.4.19"
 ignore = "0.4"
 similar = "3"
 semver = "1"
-syntect = { version = "5.3", default-features = false, features = ["default-fancy"] }
+# The built-in syntaxes and themes only: the loaders for syntax and theme
+# files would bring the unmaintained yaml-rust and a plist reader for nothing.
+syntect = { version = "5.3", default-features = false, features = ["default-syntaxes", "default-themes", "regex-fancy"] }
 tokio = { version = "1.47", features = ["sync", "time"] }
 
 # Native-only: advisory file locks (wasm32 has no descriptor locking).
